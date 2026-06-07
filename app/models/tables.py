@@ -10,6 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Float,
@@ -26,6 +27,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, PKMixin, TimestampMixin
 
 MONEY = Numeric(18, 4)
+# Postgres uses native JSONB; SQLite (local dev) falls back to generic JSON.
+JSONB_OR_JSON = JSONB().with_variant(JSON(), "sqlite")
 
 
 # --- Identity / structure ---------------------------------------------------
@@ -102,7 +105,7 @@ class Position(Base, PKMixin, TimestampMixin):
     cost_basis: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     current_price: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     lifecycle_stage: Mapped[str] = mapped_column(String(16), default="DETECTED")
-    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    meta: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
 
     account: Mapped["Account"] = relationship(back_populates="positions")
     transactions: Mapped[list["Transaction"]] = relationship(
@@ -135,7 +138,7 @@ class TaxProfile(Base, PKMixin, TimestampMixin):
     surtax_status: Mapped[bool] = mapped_column(Boolean, default=False)
     loss_carry_forward: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     trapped_profit_flag: Mapped[bool] = mapped_column(Boolean, default=False)
-    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    data: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
 
 
 # --- Decisions / feed -------------------------------------------------------
@@ -172,7 +175,7 @@ class DecisionItem(Base, PKMixin, TimestampMixin):
     time_sensitivity: Mapped[str] = mapped_column(String(16), default="Monitor")
     veto_flag: Mapped[bool] = mapped_column(Boolean, default=False)
     risk_critique: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload: Mapped[dict] = mapped_column(JSONB, default=dict)  # full output contract
+    payload: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)  # full output contract
 
     feed: Mapped["DecisionFeed"] = relationship(back_populates="items")
     actions: Mapped[list["UserAction"]] = relationship(
@@ -194,7 +197,7 @@ class WhsSnapshot(Base, PKMixin, TimestampMixin):
     taken_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+    detail: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
 
 
 # --- Learning loop ----------------------------------------------------------
