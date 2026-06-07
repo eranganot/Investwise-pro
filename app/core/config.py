@@ -1,0 +1,61 @@
+"""Application configuration (12-factor, env-driven)."""
+from functools import lru_cache
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    # Runtime
+    app_name: str = "InvestWise Pro"
+    app_version: str = "22.1"
+    environment: str = "development"
+    debug: bool = True
+    auto_create_tables: bool = True
+
+    # Database (async Postgres)
+    database_url: str = (
+        "postgresql+asyncpg://investwise:investwise@localhost:5432/investwise"
+    )
+
+    # Frontend / CORS
+    frontend_origin: str = "http://localhost:5173"
+
+    # SuperAdmin
+    superadmin_name: str = "Eran Ganot"
+    tax_year: int = 2026
+
+    # Tax engine (Section 4.1) -- CONFIRM with accountant; never hardcoded in logic
+    cgt_rate: float = 0.25
+    surtax_rate: float = 0.05
+    surtax_threshold_ils: float = 721_000.0
+
+    # Risk engine (Section 4.4)
+    max_drawdown_cap: float = 0.20
+    volatility_cap: float = 0.15
+    monte_carlo_runs: int = 10_000
+
+    # Decision engine (Section 4.5) display gates
+    min_impact_score: float = 20.0
+    min_confidence: float = 60.0
+
+    @field_validator("database_url")
+    @classmethod
+    def _force_asyncpg(cls, v: str) -> str:
+        """Normalize Railway/Heroku-style URLs to the async driver."""
+        if v.startswith("postgresql+asyncpg://"):
+            return v
+        if v.startswith("postgresql://"):
+            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        return v
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,55 @@
+"""InvestWise Pro - FastAPI application entrypoint."""
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.routes import decision_feed, health, tax
+from app.core.config import get_settings
+from app.core.database import engine
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("investwise")
+settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Dev convenience: create tables from models. Production uses Alembic.
+    if settings.auto_create_tables:
+        from app import models  # noqa: F401  register all tables
+        from app.models.base import Base
+
+        logger.info("Ensuring database schema (auto_create_tables=True)...")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    yield
+    await engine.dispose()
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title=settings.app_name,
+        version=settings.app_version,
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.frontend_origin],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(health.router)
+    app.include_router(decision_feed.router)
+    app.include_router(tax.router)
+
+    @app.get("/")
+    async def root() -> dict:
+        return {"service": settings.app_name, "version": settings.app_version, "docs": "/docs"}
+
+    return app
+
+
+app = create_app()
