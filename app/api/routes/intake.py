@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_session
+from app.api.deps import acting_user
 from app.core.auth import Role, require_role
+from app.core.database import get_session
+from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
-from app.services.feed_service import ensure_superadmin
 from app.services.intake_service import (
     ensure_account, ensure_entity, list_positions, upsert_positions,
 )
@@ -45,8 +46,7 @@ def _row_to_position(row: dict) -> IntakePosition:
     )
 
 
-async def _persist(session: AsyncSession, entity_name, entity_type, account_name, positions):
-    user = await ensure_superadmin(session)
+async def _persist(session: AsyncSession, user: User, entity_name, entity_type, account_name, positions):
     entity = await ensure_entity(session, user, entity_name, entity_type)
     account = await ensure_account(session, entity, account_name)
     n = await upsert_positions(session, account, positions)
@@ -60,10 +60,12 @@ async def intake_template() -> str:
 
 
 @router.post("/intake/portfolio", dependencies=[Depends(require_role(Role.ANALYST))])
-async def intake_portfolio(req: PortfolioIntakeRequest, session: AsyncSession = Depends(get_session)) -> dict:
+async def intake_portfolio(req: PortfolioIntakeRequest,
+                           session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
     if not req.positions:
         raise HTTPException(400, "no positions provided")
-    return await _persist(session, req.entity_name, req.entity_type, req.account_name, req.positions)
+    return await _persist(session, user, req.entity_name, req.entity_type, req.account_name, req.positions)
 
 
 @router.post("/intake/portfolio/csv", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -73,27 +75,27 @@ async def intake_portfolio_csv(
     entity_type: str = "Personal",
     account_name: str = "Main",
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(acting_user),
 ) -> dict:
     raw = (await file.read()).decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(raw))
     positions, errors = [], []
-    for i, row in enumerate(reader, start=2):  # row 1 = header
+    for i, row in enumerate(reader, start=2):
         try:
             positions.append(_row_to_position(row))
         except Exception as exc:  # noqa: BLE001
             errors.append({"row": i, "error": str(exc)})
     if not positions:
         raise HTTPException(400, {"message": "no valid rows", "errors": errors})
-    result = await _persist(session, entity_name, entity_type, account_name, positions)
+    result = await _persist(session, user, entity_name, entity_type, account_name, positions)
     result["row_errors"] = errors
     return result
 
 
 @router.get("/portfolio")
-async def get_portfolio(
-    entity: str | None = None, session: AsyncSession = Depends(get_session)
-) -> dict:
-    user = await ensure_superadmin(session)
+async def get_portfolio(entity: str | None = None,
+                        session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
     positions = await list_positions(session, user, entity)
     return {
         "count": len(positions),

@@ -5,14 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.decision_feed import DEFAULT_OBSERVATIONS
+from app.api.deps import acting_user
 from app.core.database import get_session
 from app.engines.lag_engine import LagEngine
 from app.engines.risk_engine import RiskEngine
 from app.engines.scenario_engine import SUPPORTED, ScenarioEngine
 from app.engines.state_machine import DisplayedItem, StateMachine
 from app.engines.xai_engine import XaiEngine
-from app.services.feed_service import ensure_superadmin
+from app.models.tables import User
+from app.services.demo_data import DEFAULT_OBSERVATIONS
+from app.services.intake_service import list_positions as orm_list_positions, position_to_observation
 from app.services.portfolio_analytics import (
     compute_snapshot, health_opportunities, health_scores, load_positions,
     risk_alerts, tax_opportunities,
@@ -28,8 +30,8 @@ FEED_CATEGORIES = ["BUY", "SELL", "REBALANCE", "TAX_OPTIMIZATION", "RISK_REDUCTI
 # --- X.1 Portfolio Health Check ---
 @router.get("/health-check")
 async def portfolio_health_check(entity: str | None = None,
-                                 session: AsyncSession = Depends(get_session)) -> dict:
-    user = await ensure_superadmin(session)
+                                 session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
     snap = compute_snapshot(await load_positions(session, user, entity))
     if not snap["nav"]:
         return {"wealth_health_score": None,
@@ -48,8 +50,8 @@ async def portfolio_health_check(entity: str | None = None,
 # --- X.3 Tax Optimization Review ---
 @router.get("/tax/review")
 async def tax_optimization_review(entity: str | None = None,
-                                  session: AsyncSession = Depends(get_session)) -> dict:
-    user = await ensure_superadmin(session)
+                                  session: AsyncSession = Depends(get_session),
+                                  user: User = Depends(acting_user)) -> dict:
     positions = await load_positions(session, user, entity)
     if not positions:
         return {"opportunity_count": 0, "total_estimated_annual_savings_currency": 0.0,
@@ -60,8 +62,8 @@ async def tax_optimization_review(entity: str | None = None,
 # --- X.4 Risk Alert Center ---
 @router.get("/risk/alerts")
 async def risk_alert_center(entity: str | None = None,
-                            session: AsyncSession = Depends(get_session)) -> dict:
-    user = await ensure_superadmin(session)
+                            session: AsyncSession = Depends(get_session),
+                            user: User = Depends(acting_user)) -> dict:
     snap = compute_snapshot(await load_positions(session, user, entity))
     return risk_alerts(snap)
 
@@ -83,10 +85,10 @@ async def scenario_supported() -> dict:
 
 @router.post("/scenario")
 async def scenario_planning(req: ScenarioRequest,
-                            session: AsyncSession = Depends(get_session)) -> dict:
+                            session: AsyncSession = Depends(get_session),
+                            user: User = Depends(acting_user)) -> dict:
     nav = req.nav
     if nav is None:
-        user = await ensure_superadmin(session)
         nav = compute_snapshot(await load_positions(session, user))["nav"] or 1_000_000.0
     try:
         return ScenarioEngine().run(
@@ -99,11 +101,15 @@ async def scenario_planning(req: ScenarioRequest,
 
 # --- X.2 Weekly Decision Feed (cap 10, categorized) ---
 @router.get("/decision-feed/weekly")
-async def weekly_decision_feed() -> dict:
+async def weekly_decision_feed(session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
     lag = LagEngine()
     sm = StateMachine(risk=RiskEngine(seed=7))
+    positions = await orm_list_positions(session, user)
+    observations = [o for p in positions if (o := position_to_observation(p)) is not None] \
+        or DEFAULT_OBSERVATIONS
     items = []
-    for s in lag.scan(DEFAULT_OBSERVATIONS):
+    for s in lag.scan(observations):
         result = sm.run(s)
         if isinstance(result, DisplayedItem):
             ranked = result.source

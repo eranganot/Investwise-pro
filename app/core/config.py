@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     min_impact_score: float = 20.0
     min_confidence: float = 60.0
     score_unknown_default: float = 25.0  # sub-score for unassessed dimensions (penalizes incomplete data)
+    rec_ttl_now_days: int = 1
+    rec_ttl_week_days: int = 7
+    rec_ttl_monitor_days: int = 30
 
     @field_validator("database_url")
     @classmethod

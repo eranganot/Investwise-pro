@@ -18,20 +18,21 @@ def _complexity_int(factor: float) -> int:
     return _FACTOR_TO_INT.get(round(factor, 2), 3)
 
 
-async def ensure_superadmin(session: AsyncSession) -> User:
-    settings = get_settings()
-    res = await session.execute(select(User).where(User.email == SUPERADMIN_EMAIL))
+async def ensure_user(session: AsyncSession, email: str, *, name: str | None = None,
+                      role: str = "SuperAdmin") -> User:
+    res = await session.execute(select(User).where(User.email == email))
     user = res.scalar_one_or_none()
     if user is None:
-        user = User(
-            email=SUPERADMIN_EMAIL,
-            name=settings.superadmin_name,
-            role="SuperAdmin",
-            tax_year=settings.tax_year,
-        )
+        user = User(email=email, name=name or email, role=role,
+                    tax_year=get_settings().tax_year)
         session.add(user)
         await session.flush()
     return user
+
+
+async def ensure_superadmin(session: AsyncSession) -> User:
+    return await ensure_user(session, SUPERADMIN_EMAIL,
+                             name=get_settings().superadmin_name, role="SuperAdmin")
 
 
 def build_recommendation(item: DisplayedItem) -> Recommendation:

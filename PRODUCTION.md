@@ -31,6 +31,9 @@ For a fresh database:
 ```bash
 alembic upgrade head
 ```
+Migration `0002_auth_tables` adds the auth tables (credentials, revoked_tokens). New
+tables are also auto-created under `AUTO_CREATE_TABLES`, but **new columns on existing
+tables require a migration** - switch prod to Alembic before any column change.
 To run migrations automatically on deploy, set the Railway start command to:
 ```
 alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000

@@ -9,6 +9,8 @@ Loop personalization (Section 9).
                                   by the user's learned preferences
 - GET  /decision-feed/latest    : read back the most recent persisted feed
 """
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import desc, select
@@ -30,24 +32,31 @@ from app.models.tables import DecisionFeed, DecisionItem
 from app.schemas.allocation import AllocationRequest
 from app.schemas.lag import LagObservation
 from app.schemas.state_machine import ActionType, DisplayedItem, Market, VetoedSignal
-from app.services.feed_service import build_recommendation, ensure_superadmin
+from app.api.deps import acting_user
+from app.models.tables import User
+from app.services.demo_data import DEFAULT_OBSERVATIONS
+from app.services.feed_service import build_recommendation
 from app.services.intake_service import list_positions, position_to_observation
 
 router = APIRouter(prefix="/api/v1", tags=["decision-feed"])
 
-DEFAULT_OBSERVATIONS = [
-    LagObservation(ticker="TEVA", market=Market.NYSE, depth=3, spot_price=100,
-                   listing_price=108.2, expected_return_pct=10, volatility_pct=12,
-                   action_type=ActionType.BUY),
-    LagObservation(ticker="HYPE", market=Market.NYSE, depth=1, spot_price=100,
-                   listing_price=112, expected_return_pct=15, volatility_pct=40,
-                   action_type=ActionType.BUY),
-    LagObservation(ticker="GOLD", market=Market.SPOT, depth=1, spot_price=100,
-                   listing_price=103.1, expected_return_pct=6, volatility_pct=8,
-                   action_type=ActionType.REBALANCE),
-    LagObservation(ticker="NOISE", market=Market.TASE, depth=1, spot_price=100,
-                   listing_price=100.6, action_type=ActionType.BUY),
-]
+_TTL = {"Now": "rec_ttl_now_days", "This Week": "rec_ttl_week_days", "Monitor": "rec_ttl_monitor_days"}
+
+
+def _expiry(time_sensitivity: str) -> str:
+    from app.core.config import get_settings
+    days = getattr(get_settings(), _TTL.get(time_sensitivity, "rec_ttl_week_days"))
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+def _is_stale(expires_at: str | None) -> bool:
+    if not expires_at:
+        return False
+    try:
+        return datetime.now(timezone.utc) > datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+
 
 
 def _machine():
@@ -110,11 +119,11 @@ class GenerateRequest(BaseModel):
 async def generate_feed(
     req: GenerateRequest | None = None,
     session: AsyncSession = Depends(get_session),
+    user: User = Depends(acting_user),
 ) -> dict:
     lag, sm = _machine()
     safety_engine = SafetyEngine()
 
-    user = await ensure_superadmin(session)
     if req and req.from_portfolio:
         positions = await list_positions(session, user, req.entity_name)
         observations = [o for p in positions if (o := position_to_observation(p)) is not None]
@@ -193,6 +202,7 @@ async def generate_feed(
             payload = rec.model_dump()
             payload["adversary_critique"] = crit
             payload["explanation"] = XaiEngine().build(result).model_dump()
+            payload["expires_at"] = _expiry(rec.time_sensitivity)
             if safety:
                 payload["safety_flags"] = [f.model_dump() for f in safety.flags]
             session.add(DecisionItem(
@@ -232,9 +242,11 @@ async def generate_feed(
 
 
 @router.get("/decision-feed/latest")
-async def latest_feed(session: AsyncSession = Depends(get_session)) -> dict:
+async def latest_feed(session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
     res = await session.execute(
         select(DecisionFeed).options(selectinload(DecisionFeed.items))
+        .where(DecisionFeed.user_id == user.id)
         .order_by(desc(DecisionFeed.generated_at)).limit(1)
     )
     feed = res.scalar_one_or_none()
@@ -249,5 +261,7 @@ async def latest_feed(session: AsyncSession = Depends(get_session)) -> dict:
             "impact_score": i.impact_score, "confidence": i.confidence,
             "veto_flag": i.veto_flag, "time_sensitivity": i.time_sensitivity,
             "risk_critique": i.risk_critique,
+            "expires_at": (i.payload or {}).get("expires_at"),
+            "stale": _is_stale((i.payload or {}).get("expires_at")),
         } for i in feed.items],
     }

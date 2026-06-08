@@ -10,7 +10,8 @@ from app.core.database import get_session
 from app.core.auth import Role, require_role
 from app.engines.learning_engine import compute_profile
 from app.models.tables import DecisionItem, UserAction
-from app.services.feed_service import ensure_superadmin
+from app.api.deps import acting_user
+from app.models.tables import User
 
 router = APIRouter(prefix="/api/v1", tags=["learning"])
 
@@ -22,7 +23,8 @@ class ActionRequest(BaseModel):
 
 
 @router.post("/actions", dependencies=[Depends(require_role(Role.ANALYST))])
-async def record_action(req: ActionRequest, session: AsyncSession = Depends(get_session)) -> dict:
+async def record_action(req: ActionRequest, session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
     if req.action not in ("accepted", "ignored"):
         raise HTTPException(400, "action must be 'accepted' or 'ignored'")
     item = (await session.execute(
@@ -30,7 +32,6 @@ async def record_action(req: ActionRequest, session: AsyncSession = Depends(get_
     )).scalar_one_or_none()
     if item is None:
         raise HTTPException(404, "decision_item not found")
-    user = await ensure_superadmin(session)
     session.add(UserAction(
         user_id=user.id, decision_item_id=item.id, action=req.action, note=req.note,
     ))
@@ -40,6 +41,6 @@ async def record_action(req: ActionRequest, session: AsyncSession = Depends(get_
 
 
 @router.get("/learning/profile")
-async def learning_profile(session: AsyncSession = Depends(get_session)) -> dict:
-    user = await ensure_superadmin(session)
+async def learning_profile(session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
     return await compute_profile(session, user.id)
