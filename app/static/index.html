@@ -84,6 +84,20 @@
     <div class="card"><div class="lbl">Learning</div><div class="big" id="acc">—</div><div class="small" id="style">no actions yet</div></div>
   </div>
 
+  <h2>Product Workflows</h2>
+  <div class="panel">
+    <div class="tabs">
+      <div class="tab" onclick="wf('health')">Health Check</div>
+      <div class="tab" onclick="wf('tax')">Tax Review</div>
+      <div class="tab" onclick="wf('risk')">Risk Alerts</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin:4px 0 4px">
+      <select id="scn" style="max-width:240px"><option>MARKET_CRASH</option><option selected>INFLATION_SHOCK</option><option>INTEREST_RATE_INCREASE</option><option>FX_SHOCK</option><option>COMMODITY_SHOCK</option></select>
+      <button onclick="wf('scenario')" style="margin:0;width:auto;padding:8px 14px">Run scenario</button>
+    </div>
+    <div class="out" id="wf_out">Pick a workflow (uses your intaken portfolio).</div>
+  </div>
+
   <h2>Decision Feed</h2>
   <div class="tabs">
     <div class="tab active" id="tab_demo" onclick="showTab('demo')">Preview</div>
@@ -275,6 +289,26 @@ async function runAlloc(){
   try{const r=await(await fetch("/api/v1/allocation/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
     if(!r.rebalance_required){o.innerHTML='<span class="ok">Within policy — no rebalance needed.</span>';return;}
     o.innerHTML=r.rebalance_actions.map(a=>`<div><b>${a.action_type} ${a.asset_class}</b> — gross ${ils(a.estimated_trade_value_currency)} · <span class="k">net after tax/costs</span> <b>${ils(a.net_trade_value_currency)}</b></div>`).join("");
+  }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
+}
+
+async function wf(kind){
+  const o=$("wf_out"); o.textContent="\u2026";
+  try{
+    if(kind==="health"){const r=await(await fetch("/api/v1/health-check")).json();
+      if(r.wealth_health_score==null){o.textContent=r.message;return;}
+      o.innerHTML=`<div><b>WHS ${r.wealth_health_score}</b> · Risk ${r.risk_score} · Tax ${r.tax_efficiency_score} · Liq ${r.liquidity_score} · Diversification ${r.diversification_score}</div>`+
+        (r.top_improvement_opportunities||[]).map(op=>`<div class="crit">[${op.severity}] ${op.dimension}: ${op.description}</div>`).join("");
+    }else if(kind==="tax"){const r=await(await fetch("/api/v1/tax/review")).json();
+      o.innerHTML=`<div><b>Est. annual savings: ${ils(r.total_estimated_annual_savings_currency||0)}</b></div>`+
+        ((r.opportunities||[]).map(op=>`<div class="crit">${op.trigger}: ${op.description} <b>(${ils(op.estimated_annual_tax_savings_currency)})</b></div>`).join("")||(r.message||""));
+    }else if(kind==="risk"){const r=await(await fetch("/api/v1/risk/alerts")).json();
+      o.innerHTML=`<div class="k">Vectors: ${r.vectors_monitored.join(", ")}</div>`+
+        ((r.alerts||[]).map(a=>`<div class="crit">[${a.severity}] ${a.vector}: ${a.detail}</div>`).join("")||'<div class="ok">No alerts.</div>');
+    }else if(kind==="scenario"){const sc=$("scn").value;
+      const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:sc})})).json();
+      o.innerHTML=`<div><b>${r.scenario}</b> — value Δ <b>${r.expected_portfolio_value_delta_pct}%</b> · drawdown prob ${pct(r.drawdown_probability)} · tax impact ${ils(r.projected_tax_impact_currency)} · recovery ${r.estimated_recovery_timeline_days}d</div>`;
+    }
   }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
 }
 

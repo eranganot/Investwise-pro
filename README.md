@@ -107,6 +107,11 @@ alembic upgrade head
 | GET    | `/api/v1/entities`            | List entities (Personal/Spouse/Corp) |
 | GET    | `/api/v1/auth/status`         | Whether API-key auth is enabled      |
 | POST   | `/api/v1/allocation/analyze`  | SAA/TAA drift + cost-adjusted rebalance |
+| GET    | `/api/v1/health-check`        | Portfolio Health Check (≤5 opps)       |
+| GET    | `/api/v1/decision-feed/weekly`| Weekly feed (cap 10, categorized)    |
+| GET    | `/api/v1/tax/review`          | Tax Optimization Review (₪ savings)    |
+| GET    | `/api/v1/risk/alerts`         | Risk Alert Center (5 vectors)        |
+| POST   | `/api/v1/scenario`            | Scenario Planning (macro stress)     |
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |
