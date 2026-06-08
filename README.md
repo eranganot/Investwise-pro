@@ -97,6 +97,9 @@ alembic upgrade head
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |
 | GET    | `/api/v1/whs`                 | Wealth Health Score (weighted)       |
 | GET    | `/api/v1/simulation`          | Forward projection (CPI/FX/horizon)  |
+| POST   | `/api/v1/safety/check`        | Safety Layer (concentration/liquidity) |
+| POST   | `/api/v1/actions`             | Record accepted/ignored (learning)   |
+| GET    | `/api/v1/learning/profile`    | Personalization profile              |
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |

@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     lag_min_divergence_pct: float = 2.0  # Lag noise floor; smaller divergences ignored
     sim_cpi_pct: float = 3.0          # default annual inflation (CPI) for projections
     sim_fx_change_pct: float = 0.0    # default annual FX drift for projections
+    concentration_cap: float = 0.25   # max single-position weight before concentration flag
+    min_liquidity_ratio: float = 0.05 # min liquid/cash ratio before liquidity flag
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

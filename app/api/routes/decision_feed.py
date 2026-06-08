@@ -1,7 +1,12 @@
-"""Decision Feed routes - the full Lag -> Risk -> Tax -> Decision pipeline.
+"""Decision Feed routes - full Lag -> Risk -> Tax -> Decision pipeline,
+with the Adversary critique (Section 6), Safety Layer (Section 8), and Learning
+Loop personalization (Section 9).
 
-- GET  /decision-feed/demo      : in-memory run (no DB), quick view
-- POST /decision-feed/generate  : run + PERSIST feed/items to Postgres (Section 4)
+- GET  /decision-feed/demo      : in-memory run (no DB), every item carries an
+                                  Adversary critique
+- POST /decision-feed/generate  : run + persist; optional portfolio context runs
+                                  the Safety Layer (block -> veto); items re-ranked
+                                  by the user's learned preferences
 - GET  /decision-feed/latest    : read back the most recent persisted feed
 """
 from fastapi import APIRouter, Depends
@@ -10,9 +15,12 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agents import adversary
 from app.core.database import get_session
 from app.engines.lag_engine import LagEngine
+from app.engines.learning_engine import compute_profile, impact_boost
 from app.engines.risk_engine import RiskEngine
+from app.engines.safety_engine import SafetyEngine
 from app.engines.state_machine import StateMachine
 from app.models.tables import DecisionFeed, DecisionItem
 from app.schemas.lag import LagObservation
@@ -36,7 +44,7 @@ DEFAULT_OBSERVATIONS = [
 ]
 
 
-def _machine() -> tuple[LagEngine, StateMachine]:
+def _machine():
     return LagEngine(), StateMachine(risk=RiskEngine(seed=7))
 
 
@@ -47,33 +55,43 @@ async def demo_feed() -> dict:
     for s in lag.scan(DEFAULT_OBSERVATIONS):
         result = sm.run(s)
         if result is None:
-            items.append({"ticker": s.ticker, "depth": s.depth, "decision": "No Action Recommended"})
+            items.append({"ticker": s.ticker, "depth": s.depth, "decision": "No Action Recommended",
+                          "adversary_critique": "Below the Impact/Confidence quality bar - holding."})
         elif isinstance(result, VetoedSignal):
             items.append({"ticker": s.ticker, "depth": s.depth, "decision": "VETOED",
                           "reason": result.reason,
+                          "adversary_critique": result.reason,
                           "prob_of_ruin": round(result.source.probability_of_ruin, 3)
                           if result.source.probability_of_ruin is not None else None})
         elif isinstance(result, DisplayedItem):
             ranked = result.source
             vetted = ranked.source.source
+            crit = adversary.critique(path=result.path, risk_critique=vetted.risk_critique,
+                                      confidence=ranked.confidence, impact=ranked.impact_score)
             items.append({"ticker": s.ticker, "depth": s.depth, "title": result.title,
                           "path": result.path, "stage": result.stage.value,
                           "impact_score": round(ranked.impact_score, 1),
                           "confidence": ranked.confidence,
-                          "r_score": round(ranked.r_score, 1),
-                          "t_score": round(ranked.t_score, 1),
+                          "r_score": round(ranked.r_score, 1), "t_score": round(ranked.t_score, 1),
                           "risk_score": round(ranked.risk_score, 1),
                           "prob_of_ruin": round(vetted.probability_of_ruin, 3)
                           if vetted.probability_of_ruin is not None else None,
                           "max_drawdown": round(vetted.max_drawdown, 3)
-                          if vetted.max_drawdown is not None else None})
+                          if vetted.max_drawdown is not None else None,
+                          "adversary_critique": crit})
     return {"generated": "demo (Lag-driven pipeline)",
             "backbone_vs_hype": lag.backbone_vs_hype(DEFAULT_OBSERVATIONS),
             "count": len(items), "items": items}
 
 
+class PortfolioContext(BaseModel):
+    holdings: dict[str, float] = {}
+    liquidity_ratio: float = 1.0
+
+
 class GenerateRequest(BaseModel):
     observations: list[LagObservation] | None = None
+    portfolio: PortfolioContext | None = None
 
 
 @router.post("/decision-feed/generate")
@@ -83,7 +101,10 @@ async def generate_feed(
 ) -> dict:
     observations = (req.observations if req and req.observations else DEFAULT_OBSERVATIONS)
     lag, sm = _machine()
+    safety_engine = SafetyEngine()
+
     user = await ensure_superadmin(session)
+    profile = await compute_profile(session, user.id)   # learning loop
     feed = DecisionFeed(user_id=user.id, horizon="month", status="OPEN")
     session.add(feed)
     await session.flush()
@@ -91,18 +112,57 @@ async def generate_feed(
     out = []
     for s in lag.scan(observations):
         result = sm.run(s)
+
         if isinstance(result, DisplayedItem):
+            ranked = result.source
+            vetted = ranked.source.source
+
+            safety = None
+            if req and req.portfolio:
+                safety = safety_engine.check(
+                    holdings=req.portfolio.holdings,
+                    liquidity_ratio=req.portfolio.liquidity_ratio,
+                    proposals=[{"ticker": s.ticker, "action": s.action_type.value,
+                                "weight_delta": 0.05, "risk_score": ranked.risk_score}],
+                )
+
+            if adversary.should_veto(safety):
+                reason = "VETO (safety): " + "; ".join(f.detail for f in safety.flags)
+                session.add(DecisionItem(
+                    feed_id=feed.id, title=result.title, action_type=s.action_type.value,
+                    trigger=s.trigger, impact_score=0.0, confidence=0.0, veto_flag=True,
+                    time_sensitivity="Monitor", risk_critique=reason,
+                    payload={"decision": "VETOED", "reason": reason,
+                             "safety_flags": [f.model_dump() for f in safety.flags]},
+                ))
+                out.append({"ticker": s.ticker, "decision": "VETOED", "reason": reason,
+                            "adversary_critique": reason, "personalized_impact": -1,
+                            "safety_flags": [f.model_dump() for f in safety.flags]})
+                continue
+
+            crit = adversary.critique(path=result.path, risk_critique=vetted.risk_critique,
+                                      confidence=ranked.confidence, impact=ranked.impact_score,
+                                      safety=safety)
+            boost = impact_boost(profile, s.action_type.value)
+            personalized = round(ranked.impact_score * boost, 2)
             rec = build_recommendation(result)
+            payload = rec.model_dump()
+            payload["adversary_critique"] = crit
+            if safety:
+                payload["safety_flags"] = [f.model_dump() for f in safety.flags]
             session.add(DecisionItem(
                 feed_id=feed.id, title=rec.title, action_type=rec.action_type,
                 trigger=rec.trigger, execution_plan=rec.execution_plan,
                 impact_score=rec.impact_score, confidence=rec.confidence,
                 urgency=rec.urgency, complexity=rec.complexity,
                 time_sensitivity=rec.time_sensitivity, veto_flag=False,
-                risk_critique=rec.risk_critique, payload=rec.model_dump(),
+                risk_critique=crit, payload=payload,
             ))
             out.append({"ticker": s.ticker, "title": rec.title, "path": result.path,
-                        "impact_score": rec.impact_score, "time_sensitivity": rec.time_sensitivity})
+                        "impact_score": rec.impact_score, "personalized_impact": personalized,
+                        "time_sensitivity": rec.time_sensitivity, "adversary_critique": crit,
+                        "safety_flags": [f.model_dump() for f in safety.flags] if safety else []})
+
         elif isinstance(result, VetoedSignal):
             session.add(DecisionItem(
                 feed_id=feed.id, title=f"{s.action_type.value} {s.ticker}",
@@ -111,10 +171,17 @@ async def generate_feed(
                 time_sensitivity="Monitor", risk_critique=result.reason,
                 payload={"decision": "VETOED", "reason": result.reason},
             ))
-            out.append({"ticker": s.ticker, "decision": "VETOED"})
+            out.append({"ticker": s.ticker, "decision": "VETOED", "reason": result.reason,
+                        "adversary_critique": result.reason, "personalized_impact": -1})
+
     await session.commit()
-    return {"feed_id": str(feed.id), "user": user.email,
-            "persisted_items": len(out), "items": out}
+    out.sort(key=lambda x: x.get("personalized_impact", -1), reverse=True)
+    return {
+        "feed_id": str(feed.id), "user": user.email,
+        "persisted_items": len(out),
+        "personalization": {"applied": (profile.get("total_actions") or 0) >= 3, "profile": profile},
+        "items": out,
+    }
 
 
 @router.get("/decision-feed/latest")
@@ -129,10 +196,9 @@ async def latest_feed(session: AsyncSession = Depends(get_session)) -> dict:
     return {
         "feed_id": str(feed.id),
         "generated_at": feed.generated_at.isoformat() if feed.generated_at else None,
-        "status": feed.status,
-        "item_count": len(feed.items),
+        "status": feed.status, "item_count": len(feed.items),
         "items": [{
-            "title": i.title, "action_type": i.action_type,
+            "id": str(i.id), "title": i.title, "action_type": i.action_type,
             "impact_score": i.impact_score, "confidence": i.confidence,
             "veto_flag": i.veto_flag, "time_sensitivity": i.time_sensitivity,
             "risk_critique": i.risk_critique,
