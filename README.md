@@ -97,6 +97,9 @@ alembic upgrade head
 | GET    | `/api/v1/fx/rate`             | FX rate                              |
 | GET    | `/api/v1/research/events`     | Research Agent evidence (read-only)  |
 | GET    | `/api/v1/providers/health`    | Provider circuit-breaker status      |
+| GET    | `/api/v1/jobs`                | Async mode + supported jobs          |
+| POST   | `/api/v1/jobs/monte-carlo`    | Enqueue Monte Carlo (async/eager)    |
+| POST   | `/api/v1/jobs/simulation`     | Enqueue projection                   |
 | GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |

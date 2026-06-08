@@ -50,3 +50,18 @@ The project only needs the **Postgres** plugin. Delete the **Redis** and
 - Confirm the tax parameters (CGT %, surtax %, threshold) with your accountant;
   they are config-driven (`CGT_RATE`, `SURTAX_RATE`, `SURTAX_THRESHOLD_ILS`).
 - Move the project out of OneDrive locally (git/Docker behave better elsewhere).
+
+
+## 7. Async workers (event-driven architecture)
+Heavy jobs (Monte Carlo, simulation, WHS, feed builds) run via Celery. With no
+`REDIS_URL` the app runs them **eager** (synchronous, in-process) - fine for now.
+To offload them off the request thread:
+1. App service Variables: set `REDIS_URL=${{Redis.DATABASE_URL}}` (or the Redis
+   service's connection URL). This flips Celery into broker mode.
+2. Add a **second Railway service from the same repo** with start command:
+   `celery -A app.worker.celery_app worker --loglevel=info`
+   and the same `REDIS_URL`.
+3. Optionally set `ENABLE_SCHEDULER=true` on one instance to run APScheduler crons.
+
+Enqueue + poll: `POST /api/v1/jobs/monte-carlo`, `POST /api/v1/jobs/simulation`,
+then `GET /api/v1/jobs/{task_id}`. `GET /api/v1/jobs` reports the active mode.

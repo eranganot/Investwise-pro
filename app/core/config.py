@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     provider_cb_failure_threshold: int = 5
     provider_cb_recovery_sec: float = 30.0
     provider_cache_ttl_sec: float = 15.0
+    redis_url: str = ""               # if set, Celery uses Redis; else runs eager (synchronous)
+    enable_scheduler: bool = False    # start APScheduler cron jobs in-process
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

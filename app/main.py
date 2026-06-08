@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    allocation, decision_feed, entities, health, intake, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
+    allocation, decision_feed, entities, health, intake, jobs, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
 )
 from app.core.config import get_settings
 from app.core.database import engine
@@ -35,7 +35,13 @@ async def lifespan(app: FastAPI):
             logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")
         if not settings.api_key:
             logger.warning("API_KEY is not set in production - write endpoints are unauthenticated.")
+    if settings.enable_scheduler:
+        from app.worker.scheduler import start_scheduler
+        start_scheduler()
     yield
+    if settings.enable_scheduler:
+        from app.worker.scheduler import shutdown_scheduler
+        shutdown_scheduler()
     await engine.dispose()
 
 
@@ -74,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(allocation.router)
     app.include_router(workflows.router)
     app.include_router(market.router)
+    app.include_router(jobs.router)
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
