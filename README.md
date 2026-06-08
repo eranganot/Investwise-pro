@@ -92,6 +92,7 @@ alembic upgrade head
 |--------|-------------------------------|--------------------------------------|
 | GET    | `/`                           | service info                         |
 | GET    | `/health`                     | health check                         |
+| GET    | `/health/ready`               | readiness probe (DB check)           |
 | GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |

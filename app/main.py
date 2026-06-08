@@ -30,6 +30,11 @@ async def lifespan(app: FastAPI):
         logger.info("Ensuring database schema (auto_create_tables=True)...")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    if settings.environment == "production":
+        if settings.auto_create_tables:
+            logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")
+        if not settings.api_key:
+            logger.warning("API_KEY is not set in production - write endpoints are unauthenticated.")
     yield
     await engine.dispose()
 
@@ -47,6 +52,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        return resp
     app.include_router(health.router)
     app.include_router(decision_feed.router)
     app.include_router(tax.router)
