@@ -100,6 +100,10 @@ alembic upgrade head
 | GET    | `/api/v1/jobs`                | Async mode + supported jobs          |
 | POST   | `/api/v1/jobs/monte-carlo`    | Enqueue Monte Carlo (async/eager)    |
 | POST   | `/api/v1/jobs/simulation`     | Enqueue projection                   |
+| POST   | `/api/v1/auth/token`          | Login → access + refresh (JWT)       |
+| POST   | `/api/v1/auth/refresh`        | Rotate refresh token                 |
+| POST   | `/api/v1/auth/m2m`            | Issue M2M token (SUPERADMIN)         |
+| GET    | `/api/v1/auth/me`             | Current principal                    |
 | GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |

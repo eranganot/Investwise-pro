@@ -20,7 +20,7 @@ from app.engines.xai_engine import XaiEngine
 from app.agents.allocation_agent import AllocationAgent, VetoException
 from app.engines.allocation_engine import AllocationEngine
 from app.core.database import get_session
-from app.core.security import require_api_key
+from app.core.auth import Role, require_role
 from app.engines.lag_engine import LagEngine
 from app.engines.learning_engine import compute_profile, impact_boost
 from app.engines.risk_engine import RiskEngine
@@ -106,7 +106,7 @@ class GenerateRequest(BaseModel):
     asset_class_map: dict[str, str] | None = None
 
 
-@router.post("/decision-feed/generate", dependencies=[Depends(require_api_key)])
+@router.post("/decision-feed/generate", dependencies=[Depends(require_role(Role.ANALYST))])
 async def generate_feed(
     req: GenerateRequest | None = None,
     session: AsyncSession = Depends(get_session),

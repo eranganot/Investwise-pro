@@ -65,3 +65,17 @@ To offload them off the request thread:
 
 Enqueue + poll: `POST /api/v1/jobs/monte-carlo`, `POST /api/v1/jobs/simulation`,
 then `GET /api/v1/jobs/{task_id}`. `GET /api/v1/jobs` reports the active mode.
+
+
+## 8. Authentication / RBAC (Section AC)
+Auth is **off by default** (open demo). To enforce it:
+1. Set `REQUIRE_AUTH=true`, a strong `AUTH_PASSWORD`, and an RS256 keypair
+   (`JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` as PEM). If the keys are blank an ephemeral
+   pair is generated per process (tokens won't survive restarts).
+2. `POST /api/v1/auth/token` to log in (returns access + refresh). Send
+   `Authorization: Bearer <access>` on protected routes. Roles:
+   SUPERADMIN > ADVISOR > ANALYST > READ_ONLY (write routes need ANALYST+).
+3. `POST /api/v1/auth/refresh` rotates the refresh token (single-use).
+4. `POST /api/v1/auth/m2m` (SUPERADMIN) issues a long-lived M2M token for
+   automated ingestion. Every state mutation is audit-logged (timestamp, role,
+   origin IP, route, payload SHA-256).

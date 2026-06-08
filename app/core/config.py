@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     provider_cache_ttl_sec: float = 15.0
     redis_url: str = ""               # if set, Celery uses Redis; else runs eager (synchronous)
     enable_scheduler: bool = False    # start APScheduler cron jobs in-process
+    require_auth: bool = False        # if True, JWT + RBAC enforced on protected routes
+    auth_password: str = "changeme-dev"  # SuperAdmin login password (set in prod)
+    jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank
+    jwt_public_key: str = ""
+    access_token_ttl_sec: int = 900
+    refresh_token_ttl_sec: int = 1209600
+    m2m_token_ttl_sec: int = 31536000
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

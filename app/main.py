@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    allocation, decision_feed, entities, health, intake, jobs, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
+    allocation, auth, decision_feed, entities, health, intake, jobs, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
 )
 from app.core.config import get_settings
 from app.core.database import engine
@@ -66,7 +66,25 @@ def create_app() -> FastAPI:
         resp.headers["X-Frame-Options"] = "SAMEORIGIN"
         resp.headers["Referrer-Policy"] = "no-referrer"
         return resp
+
+    @app.middleware("http")
+    async def _audit(request, call_next):
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            body = await request.body()
+            role = "open"
+            auth_h = request.headers.get("authorization")
+            if auth_h and auth_h.startswith("Bearer "):
+                try:
+                    from app.core.auth import decode_token
+                    role = decode_token(auth_h.split(" ", 1)[1]).get("role", "unknown")
+                except Exception:
+                    role = "invalid"
+            from app.core.audit import audit
+            audit(method=request.method, path=request.url.path,
+                  ip=request.client.host if request.client else "?", role=role, payload=body)
+        return await call_next(request)
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(decision_feed.router)
     app.include_router(tax.router)
     app.include_router(risk.router)
