@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
+from app.core.security import require_api_key
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.services.feed_service import ensure_superadmin
 from app.services.intake_service import (
@@ -58,14 +59,14 @@ async def intake_template() -> str:
     return TEMPLATE
 
 
-@router.post("/intake/portfolio")
+@router.post("/intake/portfolio", dependencies=[Depends(require_api_key)])
 async def intake_portfolio(req: PortfolioIntakeRequest, session: AsyncSession = Depends(get_session)) -> dict:
     if not req.positions:
         raise HTTPException(400, "no positions provided")
     return await _persist(session, req.entity_name, req.entity_type, req.account_name, req.positions)
 
 
-@router.post("/intake/portfolio/csv")
+@router.post("/intake/portfolio/csv", dependencies=[Depends(require_api_key)])
 async def intake_portfolio_csv(
     file: UploadFile,
     entity_name: str = "Personal",
@@ -89,9 +90,11 @@ async def intake_portfolio_csv(
 
 
 @router.get("/portfolio")
-async def get_portfolio(session: AsyncSession = Depends(get_session)) -> dict:
+async def get_portfolio(
+    entity: str | None = None, session: AsyncSession = Depends(get_session)
+) -> dict:
     user = await ensure_superadmin(session)
-    positions = await list_positions(session, user)
+    positions = await list_positions(session, user, entity)
     return {
         "count": len(positions),
         "positions": [{

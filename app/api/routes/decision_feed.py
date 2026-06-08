@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from app.agents import adversary
 from app.core.database import get_session
+from app.core.security import require_api_key
 from app.engines.lag_engine import LagEngine
 from app.engines.learning_engine import compute_profile, impact_boost
 from app.engines.risk_engine import RiskEngine
@@ -94,9 +95,10 @@ class GenerateRequest(BaseModel):
     observations: list[LagObservation] | None = None
     portfolio: PortfolioContext | None = None
     from_portfolio: bool = False
+    entity_name: str | None = None
 
 
-@router.post("/decision-feed/generate")
+@router.post("/decision-feed/generate", dependencies=[Depends(require_api_key)])
 async def generate_feed(
     req: GenerateRequest | None = None,
     session: AsyncSession = Depends(get_session),
@@ -106,7 +108,7 @@ async def generate_feed(
 
     user = await ensure_superadmin(session)
     if req and req.from_portfolio:
-        positions = await list_positions(session, user)
+        positions = await list_positions(session, user, req.entity_name)
         observations = [o for p in positions if (o := position_to_observation(p)) is not None]
         if not observations:
             observations = DEFAULT_OBSERVATIONS
@@ -186,6 +188,7 @@ async def generate_feed(
     out.sort(key=lambda x: x.get("personalized_impact", -1), reverse=True)
     return {
         "feed_id": str(feed.id), "user": user.email,
+        "entity": (req.entity_name if req else None),
         "persisted_items": len(out),
         "personalization": {"applied": (profile.get("total_actions") or 0) >= 3, "profile": profile},
         "items": out,

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
+from app.core.security import require_api_key
 from app.engines.learning_engine import compute_profile
 from app.models.tables import DecisionItem, UserAction
 from app.services.feed_service import ensure_superadmin
@@ -20,7 +21,7 @@ class ActionRequest(BaseModel):
     note: str | None = None
 
 
-@router.post("/actions")
+@router.post("/actions", dependencies=[Depends(require_api_key)])
 async def record_action(req: ActionRequest, session: AsyncSession = Depends(get_session)) -> dict:
     if req.action not in ("accepted", "ignored"):
         raise HTTPException(400, "action must be 'accepted' or 'ignored'")

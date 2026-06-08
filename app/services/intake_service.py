@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import Account, Entity, Position, User
@@ -76,12 +76,29 @@ async def upsert_positions(
     return len(positions)
 
 
-async def list_positions(session: AsyncSession, user: User) -> list[Position]:
-    return (await session.execute(
-        select(Position).join(Account, Position.account_id == Account.id)
-        .join(Entity, Account.entity_id == Entity.id)
-        .where(Entity.user_id == user.id)
+async def list_positions(
+    session: AsyncSession, user: User, entity_name: str | None = None
+) -> list[Position]:
+    q = (select(Position).join(Account, Position.account_id == Account.id)
+         .join(Entity, Account.entity_id == Entity.id)
+         .where(Entity.user_id == user.id))
+    if entity_name:
+        q = q.where(Entity.name == entity_name)
+    return (await session.execute(q)).scalars().all()
+
+
+async def get_entities(session: AsyncSession, user: User) -> list[dict]:
+    rows = (await session.execute(
+        select(Entity).where(Entity.user_id == user.id)
     )).scalars().all()
+    out = []
+    for e in rows:
+        cnt = (await session.execute(
+            select(func.count(Position.id)).join(Account, Position.account_id == Account.id)
+            .where(Account.entity_id == e.id)
+        )).scalar_one()
+        out.append({"id": str(e.id), "name": e.name, "type": e.entity_type, "positions": cnt})
+    return out
 
 
 def position_to_observation(p: Position) -> LagObservation | None:

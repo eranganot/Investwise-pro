@@ -134,6 +134,7 @@
     </div>
     <div class="panel">
       <h3>Data Intake — your portfolio</h3>
+      <label>Entity</label><input id="ent_name" type="text" value="Personal" />
       <label>Upload positions CSV</label><input id="csv_file" type="file" accept=".csv" />
       <button onclick="uploadCsv()">Upload CSV</button>
       <div class="out" id="intake_out"><a href="/api/v1/intake/template.csv">Download CSV template</a></div>
@@ -199,7 +200,7 @@ async function generateLive(fromPortfolio){
   showTab("live");
   $("live_items").innerHTML=`<div class="row">Generating…</div>`;
   try{
-    await fetch("/api/v1/decision-feed/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({from_portfolio:!!fromPortfolio})});
+    await fetch("/api/v1/decision-feed/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({from_portfolio:!!fromPortfolio, entity_name: fromPortfolio?(($("ent_name")||{}).value||null):null})});
     const l=await(await fetch("/api/v1/decision-feed/latest?cb="+Date.now())).json();
     $("live_items").innerHTML=(l.items||[]).map(liveCard).join("");
     loadProfile();
@@ -247,7 +248,8 @@ async function uploadCsv(){
   if(!f){o.innerHTML='<span class="err">Choose a CSV first</span>';return;}
   o.textContent="Uploading…";
   const fd=new FormData(); fd.append("file",f);
-  try{const r=await(await fetch("/api/v1/intake/portfolio/csv",{method:"POST",body:fd})).json();
+  const ent=encodeURIComponent(($("ent_name")||{}).value||"Personal");
+  try{const r=await(await fetch("/api/v1/intake/portfolio/csv?entity_name="+ent,{method:"POST",body:fd})).json();
     o.innerHTML=`Saved <b>${r.positions_saved}</b> positions to ${r.entity}/${r.account}. Now click \u201cRun pipeline on my portfolio\u201d.`;
   }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
 }

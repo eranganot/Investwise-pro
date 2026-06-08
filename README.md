@@ -103,6 +103,8 @@ alembic upgrade head
 | POST   | `/api/v1/intake/portfolio`    | Ingest positions (JSON)              |
 | POST   | `/api/v1/intake/portfolio/csv`| Ingest positions (CSV upload)        |
 | GET    | `/api/v1/portfolio`           | List persisted positions             |
+| GET    | `/api/v1/entities`            | List entities (Personal/Spouse/Corp) |
+| GET    | `/api/v1/auth/status`         | Whether API-key auth is enabled      |
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |

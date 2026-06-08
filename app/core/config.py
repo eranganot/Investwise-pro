@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     sim_fx_change_pct: float = 0.0    # default annual FX drift for projections
     concentration_cap: float = 0.25   # max single-position weight before concentration flag
     min_liquidity_ratio: float = 0.05 # min liquid/cash ratio before liquidity flag
+    api_key: str = ""                 # if set, write endpoints require X-API-Key header
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0
