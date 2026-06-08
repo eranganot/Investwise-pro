@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     rebalance_txn_cost_bps: float = 10.0       # transaction cost in basis points
     rebalance_slippage_bps: float = 5.0        # slippage in basis points
     rebalance_assumed_gain_ratio: float = 0.30 # fraction of a SELL assumed to be taxable gain
+    market_data_provider: str = "builtin"      # builtin | polygon | alphavantage (DIP-selected)
+    fx_provider: str = "builtin"
+    provider_rate_limit_per_sec: float = 20.0
+    provider_cb_failure_threshold: int = 5
+    provider_cb_recovery_sec: float = 30.0
+    provider_cache_ttl_sec: float = 15.0
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

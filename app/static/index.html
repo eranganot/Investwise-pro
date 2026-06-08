@@ -166,6 +166,13 @@
         <div><label>&nbsp;</label><button onclick="runAlloc()">Analyze drift</button></div></div>
       <div class="out" id="al_out"></div>
     </div>
+    <div class="panel">
+      <h3>Research Agent — evidence (read-only)</h3>
+      <div style="display:flex;gap:8px"><input id="q_tkr" type="text" value="TEVA" placeholder="ticker" />
+        <button onclick="runQuote()" style="margin:0;width:auto;padding:8px 12px">Quote</button>
+        <button onclick="runResearch()" style="margin:0;width:auto;padding:8px 12px;background:#23303f">Scan events</button></div>
+      <div class="out" id="rs_out"></div>
+    </div>
   </div>
 
   <footer>InvestWise Pro · served by the API · <a href="/docs">API docs</a></footer>
@@ -316,6 +323,16 @@ async function wf(kind){
     }
   }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
 }
+
+async function runQuote(){const t=$("q_tkr").value,o=$("rs_out");o.textContent="…";
+  try{const r=await(await fetch("/api/v1/market/quote?ticker="+encodeURIComponent(t))).json();
+    const fx=await(await fetch("/api/v1/fx/rate?base=USD&quote=ILS")).json();
+    o.innerHTML=`<div><b>${r.ticker}</b> ${r.price} ${r.currency} (${r.market}) · USD/ILS ${fx.rate}</div>`;
+  }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}}
+async function runResearch(){const o=$("rs_out");o.textContent="…";
+  try{const r=await(await fetch("/api/v1/research/events")).json();
+    o.innerHTML=r.events.map(e=>`<div class="crit">[${e.relevance_score}] <b>${e.event_type}</b> → ${e.affected_assets.join(", ")} · ${e.expected_time_horizon} · conf ${e.confidence}</div>`).join("");
+  }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}}
 
 loadHealth(); loadDemo(); runWhs(); loadProfile();
 </script>

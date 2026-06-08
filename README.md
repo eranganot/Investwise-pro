@@ -93,6 +93,10 @@ alembic upgrade head
 | GET    | `/`                           | service info                         |
 | GET    | `/health`                     | health check                         |
 | GET    | `/health/ready`               | readiness probe (DB check)           |
+| GET    | `/api/v1/market/quote`        | Market quote (resilient provider)    |
+| GET    | `/api/v1/fx/rate`             | FX rate                              |
+| GET    | `/api/v1/research/events`     | Research Agent evidence (read-only)  |
+| GET    | `/api/v1/providers/health`    | Provider circuit-breaker status      |
 | GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |

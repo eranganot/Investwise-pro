@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    allocation, decision_feed, entities, health, intake, lag, learning, risk, safety, simulation, tax, whs, workflows,
+    allocation, decision_feed, entities, health, intake, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
 )
 from app.core.config import get_settings
 from app.core.database import engine
@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(entities.router)
     app.include_router(allocation.router)
     app.include_router(workflows.router)
+    app.include_router(market.router)
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
