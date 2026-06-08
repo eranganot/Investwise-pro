@@ -31,12 +31,13 @@ class DecisionEngine:
         detected = vetted.source
 
         # --- Impact sub-scores (0-100) ---
+        unknown = self.settings.score_unknown_default
         ret = clamp_score(max(detected.expected_return_pct or 0.0, abs(detected.divergence_pct)) * 5.0)
         tax = (clamp_score(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
-               if signal.net_gain_delta is not None and detected.gross_gain_ils else 50.0)
+               if signal.net_gain_delta is not None and detected.gross_gain_ils else unknown)
         risk = (clamp_score((1.0 - vetted.probability_of_ruin) * 100.0)
-                if vetted.probability_of_ruin is not None else 50.0)
-        liquidity = clamp_score(detected.liquidity_score) if detected.liquidity_score is not None else 50.0
+                if vetted.probability_of_ruin is not None else unknown)
+        liquidity = clamp_score(detected.liquidity_score) if detected.liquidity_score is not None else unknown
         conviction = clamp_score(detected.depth / 3.0 * 100.0)
         scores = ImpactScores(ret=ret, tax=tax, risk=risk, liquidity=liquidity, conviction=conviction)
 

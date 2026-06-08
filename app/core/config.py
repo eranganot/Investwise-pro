@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     risk_horizon_years: float = 1.0
     risk_mc_steps: int = 252  # trading days per year
     ruin_probability_cap: float = 0.20  # veto if >20% of paths breach the drawdown cap
+    risk_distribution: str = "normal"   # normal | t (Student-t fat tails)
+    risk_t_dof: int = 5                  # degrees of freedom for the t distribution
     lag_min_divergence_pct: float = 2.0  # Lag noise floor; smaller divergences ignored
     sim_cpi_pct: float = 3.0          # default annual inflation (CPI) for projections
     sim_fx_change_pct: float = 0.0    # default annual FX drift for projections
@@ -70,6 +72,7 @@ class Settings(BaseSettings):
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0
     min_confidence: float = 60.0
+    score_unknown_default: float = 25.0  # sub-score for unassessed dimensions (penalizes incomplete data)
 
     @field_validator("database_url")
     @classmethod

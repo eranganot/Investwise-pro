@@ -34,6 +34,8 @@ class RiskEngine:
         runs: int | None = None,
         steps: int | None = None,
         seed: int | None = None,
+        distribution: str | None = None,
+        dof: int | None = None,
     ) -> RiskAssessment:
         """Run a GBM Monte Carlo. Rates are decimals (0.18 == 18%)."""
         s = self.settings
@@ -41,9 +43,15 @@ class RiskEngine:
         steps = steps or s.risk_mc_steps
         horizon = s.risk_horizon_years if horizon_years is None else horizon_years
         rng = np.random.default_rng(self.seed if seed is None else seed)
+        dist = (distribution or s.risk_distribution).lower()
+        df = dof or s.risk_t_dof
 
         dt = horizon / steps
-        z = rng.standard_normal((runs, steps))
+        if dist == "t" and df > 2:
+            z = rng.standard_t(df, (runs, steps)) * np.sqrt((df - 2) / df)  # unit-variance fat tails
+        else:
+            dist = "normal"
+            z = rng.standard_normal((runs, steps))
         log_incr = (expected_return - 0.5 * volatility**2) * dt + volatility * np.sqrt(dt) * z
         rel = np.exp(np.cumsum(log_incr, axis=1))
         rel = np.concatenate([np.ones((runs, 1)), rel], axis=1)  # start at 1.0
@@ -63,6 +71,14 @@ class RiskEngine:
             worst_case_drawdown_p95=float(np.percentile(path_max_dd, 95)),
             expected_terminal_return=float(np.mean(terminal_return)),
             terminal_return_volatility=float(np.std(terminal_return)),
+            distribution=dist,
+            assumptions=[
+                "Geometric Brownian Motion price paths",
+                f"{dist} shocks" + (f" (Student-t, dof={df})" if dist == "t" else ""),
+                "returns i.i.d. - no autocorrelation or volatility clustering",
+                "single asset - no cross-position covariance",
+                f"Probability of Ruin = P(max drawdown >= {s.max_drawdown_cap:.0%})",
+            ],
         )
 
     def assess(self, expected_return_pct: float, volatility_pct: float) -> tuple[RiskAssessment, bool, str]:

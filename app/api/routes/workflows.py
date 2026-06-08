@@ -73,6 +73,7 @@ class ScenarioRequest(BaseModel):
     custom_delta_pct: float | None = None
     custom_drawdown: float | None = None
     custom_recovery_days: int | None = None
+    allocation: dict[str, float] | None = None
 
 
 @router.get("/scenario/supported")
@@ -90,7 +91,8 @@ async def scenario_planning(req: ScenarioRequest,
     try:
         return ScenarioEngine().run(
             req.scenario, nav, custom_delta_pct=req.custom_delta_pct,
-            custom_drawdown=req.custom_drawdown, custom_recovery_days=req.custom_recovery_days)
+            custom_drawdown=req.custom_drawdown, custom_recovery_days=req.custom_recovery_days,
+            allocation=req.allocation)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

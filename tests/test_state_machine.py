@@ -88,3 +88,10 @@ def test_rebalance_uses_bulletproof_path():
     result = sm.run(make_signal(action=ActionType.REBALANCE))
     assert isinstance(result, DisplayedItem)
     assert result.path == "Bulletproof"
+
+
+def test_weak_signal_below_gate_returns_no_action():
+    sm = StateMachine()
+    weak = DetectedSignal(ticker="WEAK", market=Market.TASE, action_type=ActionType.BUY,
+                          trigger="marginal", depth=1, divergence_pct=1.0)
+    assert sm.run(weak) is None

@@ -35,6 +35,7 @@ class SimulationEngine:
         fx_change_pct: float | None = None,
         runs: int | None = None,
         seed: int | None = None,
+        distribution: str | None = None,
     ) -> SimulationResult:
         s = self.settings
         if horizon not in HORIZONS:
@@ -47,7 +48,13 @@ class SimulationEngine:
         sigma = volatility_pct / 100.0
 
         rng = np.random.default_rng(self.seed if seed is None else seed)
-        z = rng.standard_normal(runs)
+        dist = (distribution or s.risk_distribution).lower()
+        df = s.risk_t_dof
+        if dist == "t" and df > 2:
+            z = rng.standard_t(df, runs) * np.sqrt((df - 2) / df)
+        else:
+            dist = "normal"
+            z = rng.standard_normal(runs)
         gbm = np.exp((mu - 0.5 * sigma**2) * T + sigma * np.sqrt(T) * z)
 
         fx_factor = (1.0 + fx) ** T          # deterministic FX drift over horizon
@@ -70,4 +77,10 @@ class SimulationEngine:
             expected_return=mu, volatility=sigma, cpi=cpi, fx_change=fx,
             nominal=band(nominal), real=band(real),
             probability_of_loss_real=prob_loss, probability_of_gain_real=1.0 - prob_loss,
+            distribution=dist,
+            assumptions=[
+                f"lognormal terminal value under {dist} shocks",
+                "deterministic CPI/FX drift over the horizon",
+                "no rebalancing or cash flows during the horizon",
+            ],
         )

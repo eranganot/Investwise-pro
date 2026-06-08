@@ -14,3 +14,5 @@ class RiskAssessment(BaseModel):
     worst_case_drawdown_p95: float     # p95 of per-path max drawdown
     expected_terminal_return: float    # mean terminal return across paths
     terminal_return_volatility: float  # std of terminal returns
+    distribution: str = "normal"
+    assumptions: list[str] = []

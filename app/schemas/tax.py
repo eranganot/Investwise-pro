@@ -16,3 +16,4 @@ class TaxBreakdown(BaseModel):
     effective_rate: float        # total_tax / gross_gain (0 if gross<=0)
     surtax_applies: bool
     notes: str = ""
+    assumptions: list[str] = []
