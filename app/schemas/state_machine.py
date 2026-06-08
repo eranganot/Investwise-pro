@@ -88,6 +88,9 @@ class RankedSignal(_StageBase):
     source: OptimizedSignal
     impact_score: float = 0.0
     confidence: float = 0.0
+    r_score: float = 0.0       # return sub-score (0-100)
+    t_score: float = 0.0       # tax-efficiency sub-score (0-100)
+    risk_score: float = 0.0    # risk sub-score (0-100, higher = safer)
     complexity: int = Field(default=1, ge=1, le=5)
     urgency: int = Field(default=1, ge=1, le=100)
 

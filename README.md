@@ -95,5 +95,8 @@ alembic upgrade head
 | GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |
+| GET    | `/api/v1/whs`                 | Wealth Health Score (weighted)       |
+| POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
+| GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |
 | GET    | `/docs`                       | OpenAPI / Swagger UI                 |

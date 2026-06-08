@@ -17,8 +17,7 @@
   .badge { font-size:12px; padding:5px 11px; border-radius:999px; white-space:nowrap; }
   .badge.ok { background:#0f2e1c; color:#4ade80; } .badge.bad { background:#3a1414; color:#f87171; }
   h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:#9aa4b2; margin:34px 0 12px; }
-  .stat { color:#8b949e; font-size:12px; margin:-4px 0 14px; }
-  .stat b { color:#cdd6e2; }
+  .stat { color:#8b949e; font-size:12px; margin:-4px 0 14px; } .stat b { color:#cdd6e2; }
   .feed { display:grid; gap:12px; }
   .card { background:#111722; border:1px solid #1f2a3a; border-radius:12px; padding:14px 16px; }
   .card .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
@@ -28,6 +27,7 @@
   .pill.veto { background:#3a1414; color:#f87171; } .pill.none { background:#23282f; color:#9aa4b2; }
   .metrics { display:flex; flex-wrap:wrap; gap:16px; margin-top:9px; font-size:13px; color:#c9d1d9; }
   .metrics b { color:#fff; }
+  .break { margin-top:7px; font-size:12px; color:#7d8694; }
   .reason { color:#f1a1a1; font-size:12.5px; margin-top:8px; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
   @media (max-width:720px){ .grid2 { grid-template-columns:1fr; } }
@@ -37,11 +37,18 @@
   input { width:100%; background:#0b0f17; border:1px solid #283449; color:#e6edf3;
           border-radius:8px; padding:8px 10px; font-size:14px; }
   button { margin-top:14px; width:100%; background:#2f6df6; color:#fff; border:0; border-radius:8px;
-           padding:10px; font-size:14px; font-weight:600; cursor:pointer; }
-  button:hover { background:#255ad6; }
+           padding:10px; font-size:14px; font-weight:600; cursor:pointer; } button:hover { background:#255ad6; }
   .out { margin-top:12px; font-size:13px; color:#c9d1d9; line-height:1.7; }
   .out .k { color:#8b949e; } .out .veto { color:#f87171; font-weight:600; } .out .ok { color:#4ade80; }
   .err { color:#f87171; font-size:13px; margin-top:8px; }
+  .whs { display:flex; gap:22px; align-items:center; flex-wrap:wrap; }
+  .gauge { font-size:46px; font-weight:800; line-height:1; }
+  .gauge small { display:block; font-size:13px; font-weight:600; margin-top:6px; }
+  .bars { flex:1; min-width:240px; }
+  .bar { display:flex; align-items:center; gap:10px; margin:6px 0; font-size:12px; color:#9aa4b2; }
+  .bar .track { flex:1; height:8px; background:#1b2433; border-radius:999px; overflow:hidden; }
+  .bar .fill { height:100%; background:#2f6df6; }
+  .bar .val { width:34px; text-align:right; color:#cdd6e2; }
   footer { margin-top:40px; color:#5b6370; font-size:12px; text-align:center; }
   a { color:#6ea8fe; }
 </style>
@@ -51,7 +58,7 @@
   <header>
     <div>
       <h1>InvestWise Pro <span class="v" id="ver">v—</span></h1>
-      <p class="sub">Multi-Agent Wealth OS · Decision Feed (Lag → Risk → Tax → Decision)</p>
+      <p class="sub">Multi-Agent Wealth OS · Lag → Risk → Tax → Decision</p>
     </div>
     <span id="health" class="badge bad">API: …</span>
   </header>
@@ -59,6 +66,26 @@
   <h2>Decision Feed</h2>
   <div class="stat" id="bvh"></div>
   <div class="feed" id="feed"><div class="card">Loading…</div></div>
+
+  <h2>Wealth Health Score</h2>
+  <div class="panel">
+    <div class="whs">
+      <div><div class="gauge" id="whs_score">—<small id="whs_rating">&nbsp;</small></div></div>
+      <div class="bars" id="whs_bars"></div>
+    </div>
+    <div class="grid2" style="margin-top:14px">
+      <div>
+        <label>Risk (0-100)</label><input id="w_risk" type="number" value="70" />
+        <label>Tax (0-100)</label><input id="w_tax" type="number" value="80" />
+        <label>Allocation (0-100)</label><input id="w_alloc" type="number" value="60" />
+      </div>
+      <div>
+        <label>Liquidity (0-100)</label><input id="w_liq" type="number" value="90" />
+        <label>Thematic (0-100)</label><input id="w_thematic" type="number" value="50" />
+        <button onclick="runWhs()">Compute WHS</button>
+      </div>
+    </div>
+  </div>
 
   <h2>Calculators</h2>
   <div class="grid2">
@@ -98,8 +125,7 @@ function cardHTML(it){
   const depth = it.depth ? `<span class="d">Depth ${it.depth}</span>` : "";
   let pill="", body="";
   if(it.decision==="VETOED"){
-    pill=`<span class="pill veto">VETOED</span>`;
-    body=`<div class="reason">${it.reason||""}</div>`;
+    pill=`<span class="pill veto">VETOED</span>`; body=`<div class="reason">${it.reason||""}</div>`;
   } else if(it.decision){
     pill=`<span class="pill none">No Action</span>`;
   } else {
@@ -108,6 +134,7 @@ function cardHTML(it){
     if(it.prob_of_ruin!=null) m.push(`P(ruin) <b>${pct(it.prob_of_ruin)}</b>`);
     if(it.max_drawdown!=null) m.push(`Median DD <b>${pct(it.max_drawdown)}</b>`);
     body=`<div class="metrics">${m.join("")}</div>`;
+    if(it.r_score!=null) body+=`<div class="break">Impact mix — Return ${it.r_score} · Tax ${it.t_score} · Risk ${it.risk_score}</div>`;
   }
   return `<div class="card"><div class="top"><div class="tk">${it.title||it.ticker}${depth}</div>${pill}</div>${body}</div>`;
 }
@@ -117,10 +144,24 @@ async function loadFeed(){
     const d = await (await fetch("/api/v1/decision-feed/demo")).json();
     const bvh = d.backbone_vs_hype;
     document.getElementById("bvh").innerHTML =
-      `${d.count} item(s) · Backbone-vs-Hype ratio: <b>${bvh==null?"n/a":bvh.toFixed(2)}</b> `+
+      `${d.count} item(s) · Backbone-vs-Hype: <b>${bvh==null?"n/a":bvh.toFixed(2)}</b> `+
       `<span style="color:#5b6370">(&gt;1 = backbone-led conviction)</span>`;
     document.getElementById("feed").innerHTML = d.items.map(cardHTML).join("");
   }catch(e){ document.getElementById("feed").innerHTML=`<div class="err">Failed to load feed: ${e}</div>`; }
+}
+
+async function runWhs(){
+  const q = ["risk","tax","alloc","liq","thematic"].map(k=>`${k}=${document.getElementById("w_"+k).value}`).join("&");
+  try{
+    const r = await (await fetch("/api/v1/whs?"+q)).json();
+    document.getElementById("whs_score").innerHTML = `${r.score}<small id="whs_rating">${r.rating}</small>`;
+    const order=[["risk","Risk"],["tax","Tax"],["alloc","Allocation"],["liq","Liquidity"],["thematic","Thematic"]];
+    document.getElementById("whs_bars").innerHTML = order.map(([k,lbl])=>{
+      const v=r.components[k], w=Math.round(r.weights[k]*100);
+      return `<div class="bar"><span style="width:90px">${lbl} <span style="color:#5b6370">${w}%</span></span>
+        <span class="track"><span class="fill" style="width:${v}%"></span></span><span class="val">${v}</span></div>`;
+    }).join("");
+  }catch(e){ document.getElementById("whs_bars").innerHTML=`<div class="err">${e}</div>`; }
 }
 
 async function runTax(){
@@ -145,7 +186,7 @@ async function runRisk(){
   }catch(e){ o.innerHTML=`<div class="err">${e}</div>`; }
 }
 
-loadHealth(); loadFeed();
+loadHealth(); loadFeed(); runWhs();
 </script>
 </body>
 </html>

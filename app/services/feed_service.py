@@ -1,0 +1,67 @@
+"""Persistence helpers for decision feeds (Section 4 DB schema)."""
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import get_settings
+from app.models.tables import User
+from app.schemas.output_contract import ExpectedImpact, Recommendation, TradeOffs
+from app.schemas.state_machine import DisplayedItem
+
+SUPERADMIN_EMAIL = "eran.ganot@gmail.com"
+
+
+async def ensure_superadmin(session: AsyncSession) -> User:
+    settings = get_settings()
+    res = await session.execute(select(User).where(User.email == SUPERADMIN_EMAIL))
+    user = res.scalar_one_or_none()
+    if user is None:
+        user = User(
+            email=SUPERADMIN_EMAIL,
+            name=settings.superadmin_name,
+            role="SuperAdmin",
+            tax_year=settings.tax_year,
+        )
+        session.add(user)
+        await session.flush()
+    return user
+
+
+def build_recommendation(item: DisplayedItem) -> Recommendation:
+    """Map a DISPLAYED lifecycle item to the Section 7 output contract."""
+    ranked = item.source
+    optimized = ranked.source
+    vetted = optimized.source
+    detected = vetted.source
+
+    if ranked.urgency >= 70:
+        time_sensitivity = "Now"
+    elif ranked.urgency >= 40:
+        time_sensitivity = "This Week"
+    else:
+        time_sensitivity = "Monitor"
+
+    return Recommendation(
+        title=item.title,
+        action_type=detected.action_type.value,
+        trigger=detected.trigger,
+        execution_plan=f"{detected.action_type.value} {detected.ticker} on {detected.market.value}",
+        expected_impact=ExpectedImpact(
+            roi_delta=detected.expected_return_pct,
+            risk_reduction=(round(vetted.max_drawdown * 100, 2)
+                            if vetted.max_drawdown is not None else None),
+            tax_impact=optimized.tax_saved,
+        ),
+        impact_score=round(ranked.impact_score, 2),
+        confidence=ranked.confidence,
+        urgency=ranked.urgency,
+        complexity=ranked.complexity,
+        time_sensitivity=time_sensitivity,
+        trade_offs=TradeOffs(
+            gains=f"{item.path} path - impact {round(ranked.impact_score, 1)}, "
+                  f"R {ranked.r_score:.0f} / T {ranked.t_score:.0f} / Risk {ranked.risk_score:.0f}",
+            risks=vetted.risk_critique,
+        ),
+        risk_critique=vetted.risk_critique,
+    )
