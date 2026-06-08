@@ -216,3 +216,16 @@ class UserAction(Base, PKMixin, TimestampMixin):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     decision_item: Mapped["DecisionItem"] = relationship(back_populates="actions")
+
+
+# --- Auth (Section AC) ---
+class Credential(Base, PKMixin, TimestampMixin):
+    __tablename__ = "credentials"
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(32), default="READ_ONLY")
+
+
+class RevokedToken(Base, PKMixin, TimestampMixin):
+    __tablename__ = "revoked_tokens"
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)

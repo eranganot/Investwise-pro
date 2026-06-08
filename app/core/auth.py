@@ -49,10 +49,6 @@ def _keys() -> tuple[bytes, bytes]:
     return priv, pub
 
 
-# in-memory revocation set for rotated refresh tokens (resets on restart)
-_REVOKED: set[str] = set()
-
-
 def create_token(sub: str, role: Role, token_type: str = "access", ttl: int | None = None) -> str:
     s = get_settings()
     default_ttl = {"access": s.access_token_ttl_sec, "refresh": s.refresh_token_ttl_sec,
@@ -71,20 +67,6 @@ def issue_pair(sub: str, role: Role) -> dict:
     return {"access_token": create_token(sub, role, "access"),
             "refresh_token": create_token(sub, role, "refresh"),
             "token_type": "bearer", "role": role.value}
-
-
-def rotate_refresh(refresh_token: str) -> dict:
-    try:
-        payload = decode_token(refresh_token)
-    except Exception:  # noqa: BLE001
-        raise HTTPException(401, "invalid refresh token")
-    if payload.get("type") != "refresh":
-        raise HTTPException(401, "not a refresh token")
-    jti = payload.get("jti")
-    if jti in _REVOKED:
-        raise HTTPException(401, "refresh token already used (rotated)")
-    _REVOKED.add(jti)  # rotation: old refresh is single-use
-    return issue_pair(payload["sub"], Role(payload["role"]))
 
 
 def _principal_from_header(authorization: str | None) -> Principal:

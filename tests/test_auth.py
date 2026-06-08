@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 from app.core import auth as A
 from app.core.auth import (
-    Role, create_token, decode_token, issue_pair, require_role, rotate_refresh,
+    Role, create_token, decode_token, issue_pair, require_role,
 )
 from app.core.config import Settings
 
@@ -38,14 +38,6 @@ async def test_refresh_token_rejected_for_resource_access(monkeypatch):
     pair = issue_pair("u", Role.ADVISOR)
     with pytest.raises(HTTPException):
         await require_role(Role.READ_ONLY)(authorization="Bearer " + pair["refresh_token"])
-
-
-def test_refresh_rotation_is_single_use():
-    pair = issue_pair("u", Role.SUPERADMIN)
-    new = rotate_refresh(pair["refresh_token"])
-    assert "access_token" in new and "refresh_token" in new
-    with pytest.raises(HTTPException):
-        rotate_refresh(pair["refresh_token"])  # already rotated
 
 
 def test_m2m_token_carries_role_and_type():

@@ -1,6 +1,7 @@
 from app.models.base import Base
 from app.models.tables import (
     Account,
+    Credential,
     Bucket,
     DecisionFeed,
     DecisionItem,
@@ -11,6 +12,7 @@ from app.models.tables import (
     User,
     UserAction,
     WhsSnapshot,
+    RevokedToken,
 )
 
 __all__ = [
