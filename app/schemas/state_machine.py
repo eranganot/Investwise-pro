@@ -56,6 +56,9 @@ class DetectedSignal(_StageBase):
     gross_gain_ils: Optional[float] = None
     prior_taxable_income_ils: float = 0.0
     loss_carry_forward_ils: float = 0.0
+    # Risk context for the Risk Engine (annual %, optional; None => Awaiting Data).
+    expected_return_pct: Optional[float] = None
+    volatility_pct: Optional[float] = None
 
 
 class VettedSignal(_StageBase):

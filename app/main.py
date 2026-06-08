@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import decision_feed, health, tax
+from app.api.routes import decision_feed, health, risk, tax
 from app.core.config import get_settings
 from app.core.database import engine
 
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(decision_feed.router)
     app.include_router(tax.router)
+    app.include_router(risk.router)
 
     @app.get("/")
     async def root() -> dict:

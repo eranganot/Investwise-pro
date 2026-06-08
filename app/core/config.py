@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     max_drawdown_cap: float = 0.20
     volatility_cap: float = 0.15
     monte_carlo_runs: int = 10_000
+    risk_horizon_years: float = 1.0
+    risk_mc_steps: int = 252  # trading days per year
+    ruin_probability_cap: float = 0.20  # veto if >20% of paths breach the drawdown cap
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0
