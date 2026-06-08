@@ -67,3 +67,11 @@ def test_confidence_breakdown_is_complete_and_weighted():
     # confidence equals the weighted sum of its breakdown
     expected = 0.40 * b.data_quality + 0.30 * b.model_agreement + 0.20 * b.historical_accuracy + 0.10 * b.market_stability
     assert r.confidence == A(expected)
+
+
+def test_return_scale_is_config_driven():
+    from app.core.config import Settings
+    base = DecisionEngine().rank(optimized(expected_return=10, divergence=0)).scores.ret
+    doubled = DecisionEngine(Settings(decision_return_scale=10.0)).rank(
+        optimized(expected_return=10, divergence=0)).scores.ret
+    assert base == A(50) and doubled == A(100)

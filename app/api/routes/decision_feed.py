@@ -1,52 +1,31 @@
-"""Decision Feed routes - full Lag -> Risk -> Tax -> Decision pipeline,
-with the Adversary critique (Section 6), Safety Layer (Section 8), and Learning
-Loop personalization (Section 9).
+"""Decision Feed routes.
 
-- GET  /decision-feed/demo      : in-memory run (no DB), every item carries an
-                                  Adversary critique
-- POST /decision-feed/generate  : run + persist; optional portfolio context runs
-                                  the Safety Layer (block -> veto); items re-ranked
-                                  by the user's learned preferences
-- GET  /decision-feed/latest    : read back the most recent persisted feed
+- GET  /decision-feed/demo      : in-memory run (no DB), every item carries an Adversary critique
+- POST /decision-feed/generate  : run + persist (delegates to PipelineOrchestrator)
+- GET  /decision-feed/latest    : read back the most recent persisted feed (scoped to the user)
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents import adversary
-from app.engines.xai_engine import XaiEngine
-from app.agents.allocation_agent import AllocationAgent, VetoException
-from app.engines.allocation_engine import AllocationEngine
-from app.core.database import get_session
-from app.core.auth import Role, require_role
-from app.engines.lag_engine import LagEngine
-from app.engines.learning_engine import compute_profile, impact_boost
-from app.engines.risk_engine import RiskEngine
-from app.engines.safety_engine import SafetyEngine
-from app.engines.state_machine import StateMachine
-from app.models.tables import DecisionFeed, DecisionItem
-from app.schemas.allocation import AllocationRequest
-from app.schemas.lag import LagObservation
-from app.schemas.state_machine import ActionType, DisplayedItem, Market, VetoedSignal
 from app.api.deps import acting_user
-from app.models.tables import User
+from app.core.auth import Role, require_role
+from app.core.database import get_session
+from app.engines.lag_engine import LagEngine
+from app.engines.risk_engine import RiskEngine
+from app.engines.state_machine import StateMachine
+from app.engines.xai_engine import XaiEngine
+from app.models.tables import DecisionFeed, User
+from app.schemas.feed import GenerateRequest
+from app.schemas.state_machine import DisplayedItem, VetoedSignal
 from app.services.demo_data import DEFAULT_OBSERVATIONS
-from app.services.feed_service import build_recommendation
-from app.services.intake_service import list_positions, position_to_observation
+from app.services.pipeline import PipelineOrchestrator
 
 router = APIRouter(prefix="/api/v1", tags=["decision-feed"])
-
-_TTL = {"Now": "rec_ttl_now_days", "This Week": "rec_ttl_week_days", "Monitor": "rec_ttl_monitor_days"}
-
-
-def _expiry(time_sensitivity: str) -> str:
-    from app.core.config import get_settings
-    days = getattr(get_settings(), _TTL.get(time_sensitivity, "rec_ttl_week_days"))
-    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
 def _is_stale(expires_at: str | None) -> bool:
@@ -56,7 +35,6 @@ def _is_stale(expires_at: str | None) -> bool:
         return datetime.now(timezone.utc) > datetime.fromisoformat(expires_at)
     except ValueError:
         return False
-
 
 
 def _machine():
@@ -74,8 +52,7 @@ async def demo_feed() -> dict:
                           "adversary_critique": "Below the Impact/Confidence quality bar - holding."})
         elif isinstance(result, VetoedSignal):
             items.append({"ticker": s.ticker, "depth": s.depth, "decision": "VETOED",
-                          "reason": result.reason,
-                          "adversary_critique": result.reason,
+                          "reason": result.reason, "adversary_critique": result.reason,
                           "prob_of_ruin": round(result.source.probability_of_ruin, 3)
                           if result.source.probability_of_ruin is not None else None})
         elif isinstance(result, DisplayedItem):
@@ -101,144 +78,11 @@ async def demo_feed() -> dict:
             "count": len(items), "items": items}
 
 
-class PortfolioContext(BaseModel):
-    holdings: dict[str, float] = {}
-    liquidity_ratio: float = 1.0
-
-
-class GenerateRequest(BaseModel):
-    observations: list[LagObservation] | None = None
-    portfolio: PortfolioContext | None = None
-    from_portfolio: bool = False
-    entity_name: str | None = None
-    allocation: AllocationRequest | None = None
-    asset_class_map: dict[str, str] | None = None
-
-
 @router.post("/decision-feed/generate", dependencies=[Depends(require_role(Role.ANALYST))])
-async def generate_feed(
-    req: GenerateRequest | None = None,
-    session: AsyncSession = Depends(get_session),
-    user: User = Depends(acting_user),
-) -> dict:
-    lag, sm = _machine()
-    safety_engine = SafetyEngine()
-
-    if req and req.from_portfolio:
-        positions = await list_positions(session, user, req.entity_name)
-        observations = [o for p in positions if (o := position_to_observation(p)) is not None]
-        if not observations:
-            observations = DEFAULT_OBSERVATIONS
-    else:
-        observations = (req.observations if req and req.observations else DEFAULT_OBSERVATIONS)
-    profile = await compute_profile(session, user.id)   # learning loop
-    feed = DecisionFeed(user_id=user.id, horizon="month", status="OPEN")
-    session.add(feed)
-    await session.flush()
-
-    alloc_report = None
-    alloc_agent = None
-    if req and req.allocation:
-        alloc_report = AllocationEngine().compute(
-            target_allocation=req.allocation.target_allocation,
-            current_allocation=req.allocation.current_allocation,
-            nav=req.allocation.nav,
-        )
-        alloc_agent = AllocationAgent()
-
-    out = []
-    for s in lag.scan(observations):
-        result = sm.run(s)
-
-        if isinstance(result, DisplayedItem):
-            ranked = result.source
-            vetted = ranked.source.source
-
-            if alloc_report is not None and req.asset_class_map and s.action_type == ActionType.BUY:
-                ac = req.asset_class_map.get(s.ticker)
-                if ac:
-                    try:
-                        alloc_agent.review_buy(ac, alloc_report)
-                    except VetoException as ve:
-                        session.add(DecisionItem(
-                            feed_id=feed.id, title=result.title, action_type=s.action_type.value,
-                            trigger=s.trigger, impact_score=0.0, confidence=0.0, veto_flag=True,
-                            time_sensitivity="Monitor", risk_critique=ve.reason,
-                            payload={"decision": "VETOED", "reason": ve.reason},
-                        ))
-                        out.append({"ticker": s.ticker, "decision": "VETOED", "reason": ve.reason,
-                                    "adversary_critique": ve.reason, "personalized_impact": -1})
-                        continue
-
-            safety = None
-            if req and req.portfolio:
-                safety = safety_engine.check(
-                    holdings=req.portfolio.holdings,
-                    liquidity_ratio=req.portfolio.liquidity_ratio,
-                    proposals=[{"ticker": s.ticker, "action": s.action_type.value,
-                                "weight_delta": 0.05, "risk_score": ranked.scores.risk}],
-                )
-
-            if adversary.should_veto(safety):
-                reason = "VETO (safety): " + "; ".join(f.detail for f in safety.flags)
-                session.add(DecisionItem(
-                    feed_id=feed.id, title=result.title, action_type=s.action_type.value,
-                    trigger=s.trigger, impact_score=0.0, confidence=0.0, veto_flag=True,
-                    time_sensitivity="Monitor", risk_critique=reason,
-                    payload={"decision": "VETOED", "reason": reason,
-                             "safety_flags": [f.model_dump() for f in safety.flags]},
-                ))
-                out.append({"ticker": s.ticker, "decision": "VETOED", "reason": reason,
-                            "adversary_critique": reason, "personalized_impact": -1,
-                            "safety_flags": [f.model_dump() for f in safety.flags]})
-                continue
-
-            crit = adversary.critique(path=result.path, risk_critique=vetted.risk_critique,
-                                      confidence=ranked.confidence, impact=ranked.impact_score,
-                                      safety=safety)
-            boost = impact_boost(profile, s.action_type.value)
-            personalized = round(ranked.impact_score * boost, 2)
-            rec = build_recommendation(result)
-            payload = rec.model_dump()
-            payload["adversary_critique"] = crit
-            payload["explanation"] = XaiEngine().build(result).model_dump()
-            payload["expires_at"] = _expiry(rec.time_sensitivity)
-            if safety:
-                payload["safety_flags"] = [f.model_dump() for f in safety.flags]
-            session.add(DecisionItem(
-                feed_id=feed.id, title=rec.title, action_type=rec.action_type,
-                trigger=rec.trigger, execution_plan=rec.execution_plan,
-                impact_score=rec.impact_score, confidence=rec.confidence,
-                urgency=rec.urgency, complexity=rec.complexity,
-                time_sensitivity=rec.time_sensitivity, veto_flag=False,
-                risk_critique=crit, payload=payload,
-            ))
-            out.append({"ticker": s.ticker, "title": rec.title, "path": result.path,
-                        "impact_score": rec.impact_score, "personalized_impact": personalized,
-                        "time_sensitivity": rec.time_sensitivity, "adversary_critique": crit,
-                        "safety_flags": [f.model_dump() for f in safety.flags] if safety else []})
-
-        elif isinstance(result, VetoedSignal):
-            session.add(DecisionItem(
-                feed_id=feed.id, title=f"{s.action_type.value} {s.ticker}",
-                action_type=s.action_type.value, trigger=s.trigger,
-                impact_score=0.0, confidence=0.0, veto_flag=True,
-                time_sensitivity="Monitor", risk_critique=result.reason,
-                payload={"decision": "VETOED", "reason": result.reason},
-            ))
-            out.append({"ticker": s.ticker, "decision": "VETOED", "reason": result.reason,
-                        "adversary_critique": result.reason, "personalized_impact": -1})
-
-    await session.commit()
-    out.sort(key=lambda x: x.get("personalized_impact", -1), reverse=True)
-    return {
-        "feed_id": str(feed.id), "user": user.email,
-        "entity": (req.entity_name if req else None),
-        "persisted_items": len(out),
-        "personalization": {"applied": (profile.get("total_actions") or 0) >= 3, "profile": profile},
-        "allocation": alloc_report.model_dump() if alloc_report else None,
-        "items": out,
-    }
+async def generate_feed(req: GenerateRequest | None = None,
+                        session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
+    return await PipelineOrchestrator().generate(session, user, req or GenerateRequest())
 
 
 @router.get("/decision-feed/latest")

@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     min_impact_score: float = 20.0
     min_confidence: float = 60.0
     score_unknown_default: float = 25.0  # sub-score for unassessed dimensions (penalizes incomplete data)
+    decision_return_scale: float = 5.0          # maps return/divergence % to the 0-100 return sub-score
+    confidence_dq_base: float = 60.0            # base data-quality score
+    confidence_dq_bonus: float = 20.0           # +per available data dimension (risk, tax)
+    confidence_model_agreement: float = 80.0    # baseline model agreement
+    confidence_conflict_agreement: float = 55.0 # agreement when return/risk conflict
+    analytics_vol_risk_factor: float = 2.0      # health: risk_score = 100 - vol% * factor
+    analytics_geo_cap: float = 0.80             # geographic concentration alert threshold
+    analytics_tax_efficiency_base: float = 85.0 # base tax-efficiency before loss penalty
     rec_ttl_now_days: int = 1
     rec_ttl_week_days: int = 7
     rec_ttl_monitor_days: int = 30

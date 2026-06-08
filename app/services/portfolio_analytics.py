@@ -65,12 +65,13 @@ def compute_snapshot(positions: list[dict]) -> dict:
 
 
 def health_scores(snap: dict) -> dict:
-    cap = get_settings().concentration_cap
-    risk_score = clamp_score(100.0 - snap["avg_volatility_pct"] * 2.0)
+    st = get_settings()
+    cap = st.concentration_cap
+    risk_score = clamp_score(100.0 - snap["avg_volatility_pct"] * st.analytics_vol_risk_factor)
     div = clamp_score(100.0 - max(0.0, snap["max_weight"] - 0.20) * 250.0)
     liquidity = clamp_score(snap["liquidity_avg"])
     loss_ratio = (snap["unrealized_losses"] / snap["nav"]) if snap["nav"] else 0.0
-    tax_eff = clamp_score(85.0 - loss_ratio * 200.0)  # unharvested losses dent efficiency
+    tax_eff = clamp_score(st.analytics_tax_efficiency_base - loss_ratio * 200.0)  # unharvested losses dent efficiency
     whs = WhsEngine().compute(risk=risk_score, tax=tax_eff, alloc=div, liq=liquidity, thematic=60.0)
     return {
         "wealth_health_score": round(whs["score"]),
@@ -174,11 +175,11 @@ def risk_alerts(snap: dict) -> dict:
         alerts.append({"vector": "single_position", "severity": "HIGH",
                        "detail": f"{top} is {snap['max_weight']:.0%} (> {cap:.0%} single-position cap)."})
     for geo, w in snap["exposure_geo"].items():
-        if w > 0.80 and snap["nav"]:
+        if w > st.analytics_geo_cap and snap["nav"]:
             alerts.append({"vector": "geographic", "severity": "MEDIUM",
                            "detail": f"{geo} geography is {w:.0%} of the book (> 80%)."})
     for cur, w in snap["exposure_cur"].items():
-        if w > 0.80 and snap["nav"]:
+        if w > st.analytics_geo_cap and snap["nav"]:
             alerts.append({"vector": "currency", "severity": "MEDIUM",
                            "detail": f"{cur} currency exposure is {w:.0%} (> 80%); FX imbalance."})
     if snap["liquidity_avg"] < 50:

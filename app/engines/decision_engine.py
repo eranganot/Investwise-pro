@@ -32,7 +32,7 @@ class DecisionEngine:
 
         # --- Impact sub-scores (0-100) ---
         unknown = self.settings.score_unknown_default
-        ret = clamp_score(max(detected.expected_return_pct or 0.0, abs(detected.divergence_pct)) * 5.0)
+        ret = clamp_score(max(detected.expected_return_pct or 0.0, abs(detected.divergence_pct)) * self.settings.decision_return_scale)
         tax = (clamp_score(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
                if signal.net_gain_delta is not None and detected.gross_gain_ils else unknown)
         risk = (clamp_score((1.0 - vetted.probability_of_ruin) * 100.0)
@@ -47,8 +47,10 @@ class DecisionEngine:
 
         # --- Confidence breakdown (0-100) ---
         vol = detected.volatility_pct
-        data_quality = 60.0 + (20.0 if vol is not None else 0.0) + (20.0 if detected.gross_gain_ils else 0.0)
-        model_agreement = 55.0 if (ret >= 60 and risk < 40) else 80.0  # return/risk conflict lowers agreement
+        s = self.settings
+        data_quality = s.confidence_dq_base + (s.confidence_dq_bonus if vol is not None else 0.0) \
+            + (s.confidence_dq_bonus if detected.gross_gain_ils else 0.0)
+        model_agreement = s.confidence_conflict_agreement if (ret >= 60 and risk < 40) else s.confidence_model_agreement
         market_stability = clamp_score(100.0 - max(0.0, (vol if vol is not None else 10.0) - 10.0) * 2.0) \
             if vol is not None else 70.0
         breakdown = ConfidenceBreakdown(
