@@ -1,72 +1,62 @@
-"""Demo Decision Feed - runs the full lifecycle on sample signals.
+"""Demo Decision Feed - the full Lag -> Risk -> Tax -> Decision pipeline.
 
-Now exercises the Risk Engine (Phase 2): high-volatility names are vetoed
-regardless of ROI ("risk overrides return"). Risk uses a fixed seed here so
-the demo output is stable across reloads.
+Phase 3: signals now originate from the Lag Engine scanning spot-vs-listing
+observations. Depth 3 (backbone) outranks Depth 1 (hype); sub-noise-floor moves
+(NOISE) are filtered before they ever enter the lifecycle.
 """
 from fastapi import APIRouter
 
+from app.engines.lag_engine import LagEngine
 from app.engines.risk_engine import RiskEngine
 from app.engines.state_machine import StateMachine
-from app.schemas.state_machine import (
-    ActionType,
-    DetectedSignal,
-    DisplayedItem,
-    Market,
-    VetoedSignal,
-)
+from app.schemas.lag import LagObservation
+from app.schemas.state_machine import ActionType, DisplayedItem, Market, VetoedSignal
 
 router = APIRouter(prefix="/api/v1", tags=["decision-feed"])
 
 
 @router.get("/decision-feed/demo")
 async def demo_feed() -> dict:
-    sm = StateMachine(risk=RiskEngine(seed=7))
-    signals = [
-        DetectedSignal(
-            ticker="TEVA", market=Market.NYSE, action_type=ActionType.BUY,
-            trigger="Depth 3 backbone divergence vs TASE listing",
-            depth=3, divergence_pct=8.2,
-            expected_return_pct=10.0, volatility_pct=12.0,
-        ),
-        DetectedSignal(
-            ticker="HYPE", market=Market.NYSE, action_type=ActionType.BUY,
-            trigger="Momentum spike (high ROI, high risk)",
-            depth=2, divergence_pct=12.0,
-            expected_return_pct=15.0, volatility_pct=40.0,
-        ),
-        DetectedSignal(
-            ticker="GOLD", market=Market.SPOT, action_type=ActionType.REBALANCE,
-            trigger="Commodity spot delta vs allocation target",
-            depth=1, divergence_pct=3.1,
-            expected_return_pct=6.0, volatility_pct=8.0,
-        ),
-        DetectedSignal(
-            ticker="NOISE", market=Market.TASE, action_type=ActionType.BUY,
-            trigger="Marginal Depth 1 wiggle",
-            depth=1, divergence_pct=0.6,
-        ),
+    lag = LagEngine()
+    sm = StateMachine(risk=RiskEngine(seed=7))  # seeded for stable demo output
+
+    observations = [
+        LagObservation(ticker="TEVA", market=Market.NYSE, depth=3,
+                       spot_price=100, listing_price=108.2,
+                       expected_return_pct=10, volatility_pct=12,
+                       action_type=ActionType.BUY),
+        LagObservation(ticker="HYPE", market=Market.NYSE, depth=1,
+                       spot_price=100, listing_price=112,
+                       expected_return_pct=15, volatility_pct=40,
+                       action_type=ActionType.BUY),
+        LagObservation(ticker="GOLD", market=Market.SPOT, depth=1,
+                       spot_price=100, listing_price=103.1,
+                       expected_return_pct=6, volatility_pct=8,
+                       action_type=ActionType.REBALANCE),
+        LagObservation(ticker="NOISE", market=Market.TASE, depth=1,
+                       spot_price=100, listing_price=100.6,
+                       action_type=ActionType.BUY),
     ]
 
+    signals = lag.scan(observations)  # ranked; NOISE filtered out
     items = []
     for s in signals:
         result = sm.run(s)
         if result is None:
-            items.append({"ticker": s.ticker, "decision": "No Action Recommended"})
+            items.append({"ticker": s.ticker, "depth": s.depth,
+                          "decision": "No Action Recommended"})
         elif isinstance(result, VetoedSignal):
             items.append({
-                "ticker": s.ticker,
-                "decision": "VETOED",
+                "ticker": s.ticker, "depth": s.depth, "decision": "VETOED",
                 "reason": result.reason,
                 "prob_of_ruin": round(result.source.probability_of_ruin, 3)
                 if result.source.probability_of_ruin is not None else None,
             })
         elif isinstance(result, DisplayedItem):
-            vetted = result.source.source.source  # Ranked->Optimized->Vetted
+            vetted = result.source.source.source
             items.append({
-                "ticker": s.ticker,
-                "title": result.title,
-                "path": result.path,
+                "ticker": s.ticker, "depth": s.depth,
+                "title": result.title, "path": result.path,
                 "stage": result.stage.value,
                 "impact_score": round(result.source.impact_score, 1),
                 "confidence": result.source.confidence,
@@ -75,4 +65,10 @@ async def demo_feed() -> dict:
                 "max_drawdown": round(vetted.max_drawdown, 3)
                 if vetted.max_drawdown is not None else None,
             })
-    return {"generated": "demo", "count": len(items), "items": items}
+
+    return {
+        "generated": "demo (Lag-driven pipeline)",
+        "backbone_vs_hype": lag.backbone_vs_hype(observations),
+        "count": len(items),
+        "items": items,
+    }

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>InvestWise Pro — Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+         background:#0b0f17; color:#e6edf3; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  h1 { font-size:22px; margin:0; letter-spacing:.2px; }
+  h1 .v { font-size:12px; color:#8b949e; font-weight:500; margin-left:6px; }
+  .sub { color:#8b949e; font-size:13px; margin:4px 0 0; }
+  .badge { font-size:12px; padding:5px 11px; border-radius:999px; white-space:nowrap; }
+  .badge.ok { background:#0f2e1c; color:#4ade80; } .badge.bad { background:#3a1414; color:#f87171; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.08em; color:#9aa4b2; margin:34px 0 12px; }
+  .stat { color:#8b949e; font-size:12px; margin:-4px 0 14px; }
+  .stat b { color:#cdd6e2; }
+  .feed { display:grid; gap:12px; }
+  .card { background:#111722; border:1px solid #1f2a3a; border-radius:12px; padding:14px 16px; }
+  .card .top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+  .tk { font-weight:700; } .tk .d { color:#6e7681; font-weight:500; font-size:12px; margin-left:8px; }
+  .pill { font-size:11px; padding:3px 9px; border-radius:999px; white-space:nowrap; }
+  .pill.growth { background:#0f2619; color:#4ade80; } .pill.bullet { background:#10243a; color:#60a5fa; }
+  .pill.veto { background:#3a1414; color:#f87171; } .pill.none { background:#23282f; color:#9aa4b2; }
+  .metrics { display:flex; flex-wrap:wrap; gap:16px; margin-top:9px; font-size:13px; color:#c9d1d9; }
+  .metrics b { color:#fff; }
+  .reason { color:#f1a1a1; font-size:12.5px; margin-top:8px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:720px){ .grid2 { grid-template-columns:1fr; } }
+  .panel { background:#111722; border:1px solid #1f2a3a; border-radius:12px; padding:16px; }
+  .panel h3 { margin:0 0 12px; font-size:14px; }
+  label { display:block; font-size:12px; color:#9aa4b2; margin:10px 0 4px; }
+  input { width:100%; background:#0b0f17; border:1px solid #283449; color:#e6edf3;
+          border-radius:8px; padding:8px 10px; font-size:14px; }
+  button { margin-top:14px; width:100%; background:#2f6df6; color:#fff; border:0; border-radius:8px;
+           padding:10px; font-size:14px; font-weight:600; cursor:pointer; }
+  button:hover { background:#255ad6; }
+  .out { margin-top:12px; font-size:13px; color:#c9d1d9; line-height:1.7; }
+  .out .k { color:#8b949e; } .out .veto { color:#f87171; font-weight:600; } .out .ok { color:#4ade80; }
+  .err { color:#f87171; font-size:13px; margin-top:8px; }
+  footer { margin-top:40px; color:#5b6370; font-size:12px; text-align:center; }
+  a { color:#6ea8fe; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>InvestWise Pro <span class="v" id="ver">v—</span></h1>
+      <p class="sub">Multi-Agent Wealth OS · Decision Feed (Lag → Risk → Tax → Decision)</p>
+    </div>
+    <span id="health" class="badge bad">API: …</span>
+  </header>
+
+  <h2>Decision Feed</h2>
+  <div class="stat" id="bvh"></div>
+  <div class="feed" id="feed"><div class="card">Loading…</div></div>
+
+  <h2>Calculators</h2>
+  <div class="grid2">
+    <div class="panel">
+      <h3>Tax Engine — net after tax</h3>
+      <label>Gross gain (₪)</label><input id="t_gain" type="number" value="100000" />
+      <label>Prior taxable income (₪)</label><input id="t_income" type="number" value="700000" />
+      <label>Loss carry-forward (₪)</label><input id="t_loss" type="number" value="40000" />
+      <button onclick="runTax()">Calculate</button>
+      <div class="out" id="t_out"></div>
+    </div>
+    <div class="panel">
+      <h3>Risk Engine — Monte Carlo (10k)</h3>
+      <label>Expected annual return (%)</label><input id="r_mu" type="number" value="10" />
+      <label>Annual volatility (%)</label><input id="r_vol" type="number" value="18" />
+      <button onclick="runRisk()">Run simulation</button>
+      <div class="out" id="r_out"></div>
+    </div>
+  </div>
+
+  <footer>InvestWise Pro · served by the API · <a href="/docs">API docs</a></footer>
+</div>
+
+<script>
+const ils = n => "₪" + Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const pct = n => (Number(n)*100).toFixed(1) + "%";
+
+async function loadHealth(){
+  try{ const h = await (await fetch("/health")).json();
+    const b=document.getElementById("health"); b.textContent="API: "+h.status;
+    b.className="badge "+(h.status==="ok"?"ok":"bad");
+    document.getElementById("ver").textContent="v"+(h.version||"");
+  }catch(e){ document.getElementById("health").textContent="API: offline"; }
+}
+
+function cardHTML(it){
+  const depth = it.depth ? `<span class="d">Depth ${it.depth}</span>` : "";
+  let pill="", body="";
+  if(it.decision==="VETOED"){
+    pill=`<span class="pill veto">VETOED</span>`;
+    body=`<div class="reason">${it.reason||""}</div>`;
+  } else if(it.decision){
+    pill=`<span class="pill none">No Action</span>`;
+  } else {
+    pill=`<span class="pill ${it.path==="Growth"?"growth":"bullet"}">${it.path}</span>`;
+    const m=[`Impact <b>${it.impact_score}</b>`,`Confidence <b>${it.confidence}%</b>`];
+    if(it.prob_of_ruin!=null) m.push(`P(ruin) <b>${pct(it.prob_of_ruin)}</b>`);
+    if(it.max_drawdown!=null) m.push(`Median DD <b>${pct(it.max_drawdown)}</b>`);
+    body=`<div class="metrics">${m.join("")}</div>`;
+  }
+  return `<div class="card"><div class="top"><div class="tk">${it.title||it.ticker}${depth}</div>${pill}</div>${body}</div>`;
+}
+
+async function loadFeed(){
+  try{
+    const d = await (await fetch("/api/v1/decision-feed/demo")).json();
+    const bvh = d.backbone_vs_hype;
+    document.getElementById("bvh").innerHTML =
+      `${d.count} item(s) · Backbone-vs-Hype ratio: <b>${bvh==null?"n/a":bvh.toFixed(2)}</b> `+
+      `<span style="color:#5b6370">(&gt;1 = backbone-led conviction)</span>`;
+    document.getElementById("feed").innerHTML = d.items.map(cardHTML).join("");
+  }catch(e){ document.getElementById("feed").innerHTML=`<div class="err">Failed to load feed: ${e}</div>`; }
+}
+
+async function runTax(){
+  const g=+document.getElementById("t_gain").value, i=+document.getElementById("t_income").value, l=+document.getElementById("t_loss").value;
+  const o=document.getElementById("t_out"); o.textContent="…";
+  try{
+    const r=await (await fetch(`/api/v1/tax/preview?gross_gain=${g}&prior_income=${i}&loss_carry_forward=${l}`)).json();
+    o.innerHTML=`<div><span class="k">CGT:</span> ${ils(r.cgt)} &nbsp; <span class="k">Surtax:</span> ${ils(r.surtax)}</div>
+      <div><span class="k">Total tax:</span> <b>${ils(r.total_tax)}</b> &nbsp; <span class="k">Eff. rate:</span> ${pct(r.effective_rate)}</div>
+      <div><span class="k">Net gain:</span> <b>${ils(r.net_gain)}</b> &nbsp; <span class="ok">Saved by losses:</span> ${ils(r.tax_saved)}</div>`;
+  }catch(e){ o.innerHTML=`<div class="err">${e}</div>`; }
+}
+
+async function runRisk(){
+  const mu=+document.getElementById("r_mu").value, vol=+document.getElementById("r_vol").value;
+  const o=document.getElementById("r_out"); o.textContent="…";
+  try{
+    const r=await (await fetch(`/api/v1/risk/preview?expected_return=${mu}&volatility=${vol}`)).json();
+    o.innerHTML=`<div><span class="k">P(ruin):</span> <b>${pct(r.probability_of_ruin)}</b> &nbsp; <span class="k">Median max DD:</span> ${pct(r.median_max_drawdown)}</div>
+      <div><span class="k">Worst-case DD (p95):</span> ${pct(r.worst_case_drawdown_p95)}</div>
+      <div class="${r.veto_flag?"veto":"ok"}">${r.veto_flag?"⛔ "+r.critique:"✓ "+r.critique}</div>`;
+  }catch(e){ o.innerHTML=`<div class="err">${e}</div>`; }
+}
+
+loadHealth(); loadFeed();
+</script>
+</body>
+</html>
