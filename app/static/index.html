@@ -140,6 +140,18 @@
       <div class="out" id="intake_out"><a href="/api/v1/intake/template.csv">Download CSV template</a></div>
       <button onclick="generateLive(true)" style="background:#10331f;border:1px solid #1d5436;color:#34d399">▶ Run pipeline on my portfolio</button>
     </div>
+    <div class="panel">
+      <h3>Allocation — drift &amp; rebalance</h3>
+      <label>NAV (₪)</label><input id="al_nav" type="number" value="1000000" />
+      <div class="grid2"><div><label>Equities target / current</label>
+        <div class="grid2"><input id="al_eq_t" type="number" step="0.01" value="0.60" /><input id="al_eq_c" type="number" step="0.01" value="0.64" /></div></div>
+        <div><label>Fixed Income target / current</label>
+        <div class="grid2"><input id="al_fi_t" type="number" step="0.01" value="0.30" /><input id="al_fi_c" type="number" step="0.01" value="0.28" /></div></div></div>
+      <div class="grid2"><div><label>Commodities target / current</label>
+        <div class="grid2"><input id="al_co_t" type="number" step="0.01" value="0.10" /><input id="al_co_c" type="number" step="0.01" value="0.08" /></div></div>
+        <div><label>&nbsp;</label><button onclick="runAlloc()">Analyze drift</button></div></div>
+      <div class="out" id="al_out"></div>
+    </div>
   </div>
 
   <footer>InvestWise Pro · served by the API · <a href="/docs">API docs</a></footer>
@@ -252,6 +264,17 @@ async function uploadCsv(){
   const ent=encodeURIComponent(($("ent_name")||{}).value||"Personal");
   try{const r=await(await fetch("/api/v1/intake/portfolio/csv?entity_name="+ent,{method:"POST",body:fd})).json();
     o.innerHTML=`Saved <b>${r.positions_saved}</b> positions to ${r.entity}/${r.account}. Now click \u201cRun pipeline on my portfolio\u201d.`;
+  }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
+}
+
+async function runAlloc(){
+  const body={nav:+$("al_nav").value,
+    target_allocation:{"Equities":+$("al_eq_t").value,"Fixed Income":+$("al_fi_t").value,"Commodities":+$("al_co_t").value},
+    current_allocation:{"Equities":+$("al_eq_c").value,"Fixed Income":+$("al_fi_c").value,"Commodities":+$("al_co_c").value}};
+  const o=$("al_out");o.textContent="…";
+  try{const r=await(await fetch("/api/v1/allocation/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    if(!r.rebalance_required){o.innerHTML='<span class="ok">Within policy — no rebalance needed.</span>';return;}
+    o.innerHTML=r.rebalance_actions.map(a=>`<div><b>${a.action_type} ${a.asset_class}</b> — gross ${ils(a.estimated_trade_value_currency)} · <span class="k">net after tax/costs</span> <b>${ils(a.net_trade_value_currency)}</b></div>`).join("");
   }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
 }
 

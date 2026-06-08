@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     concentration_cap: float = 0.25   # max single-position weight before concentration flag
     min_liquidity_ratio: float = 0.05 # min liquid/cash ratio before liquidity flag
     api_key: str = ""                 # if set, write endpoints require X-API-Key header
+    allocation_drift_threshold: float = 0.03   # |drift| above this triggers a rebalance action
+    rebalance_txn_cost_bps: float = 10.0       # transaction cost in basis points
+    rebalance_slippage_bps: float = 5.0        # slippage in basis points
+    rebalance_assumed_gain_ratio: float = 0.30 # fraction of a SELL assumed to be taxable gain
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

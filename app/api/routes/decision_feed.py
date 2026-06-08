@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents import adversary
+from app.agents.allocation_agent import AllocationAgent, VetoException
+from app.engines.allocation_engine import AllocationEngine
 from app.core.database import get_session
 from app.core.security import require_api_key
 from app.engines.lag_engine import LagEngine
@@ -24,6 +26,7 @@ from app.engines.risk_engine import RiskEngine
 from app.engines.safety_engine import SafetyEngine
 from app.engines.state_machine import StateMachine
 from app.models.tables import DecisionFeed, DecisionItem
+from app.schemas.allocation import AllocationRequest
 from app.schemas.lag import LagObservation
 from app.schemas.state_machine import ActionType, DisplayedItem, Market, VetoedSignal
 from app.services.feed_service import build_recommendation, ensure_superadmin
@@ -97,6 +100,8 @@ class GenerateRequest(BaseModel):
     portfolio: PortfolioContext | None = None
     from_portfolio: bool = False
     entity_name: str | None = None
+    allocation: AllocationRequest | None = None
+    asset_class_map: dict[str, str] | None = None
 
 
 @router.post("/decision-feed/generate", dependencies=[Depends(require_api_key)])
@@ -120,6 +125,16 @@ async def generate_feed(
     session.add(feed)
     await session.flush()
 
+    alloc_report = None
+    alloc_agent = None
+    if req and req.allocation:
+        alloc_report = AllocationEngine().compute(
+            target_allocation=req.allocation.target_allocation,
+            current_allocation=req.allocation.current_allocation,
+            nav=req.allocation.nav,
+        )
+        alloc_agent = AllocationAgent()
+
     out = []
     for s in lag.scan(observations):
         result = sm.run(s)
@@ -127,6 +142,22 @@ async def generate_feed(
         if isinstance(result, DisplayedItem):
             ranked = result.source
             vetted = ranked.source.source
+
+            if alloc_report is not None and req.asset_class_map and s.action_type == ActionType.BUY:
+                ac = req.asset_class_map.get(s.ticker)
+                if ac:
+                    try:
+                        alloc_agent.review_buy(ac, alloc_report)
+                    except VetoException as ve:
+                        session.add(DecisionItem(
+                            feed_id=feed.id, title=result.title, action_type=s.action_type.value,
+                            trigger=s.trigger, impact_score=0.0, confidence=0.0, veto_flag=True,
+                            time_sensitivity="Monitor", risk_critique=ve.reason,
+                            payload={"decision": "VETOED", "reason": ve.reason},
+                        ))
+                        out.append({"ticker": s.ticker, "decision": "VETOED", "reason": ve.reason,
+                                    "adversary_critique": ve.reason, "personalized_impact": -1})
+                        continue
 
             safety = None
             if req and req.portfolio:
@@ -192,6 +223,7 @@ async def generate_feed(
         "entity": (req.entity_name if req else None),
         "persisted_items": len(out),
         "personalization": {"applied": (profile.get("total_actions") or 0) >= 3, "profile": profile},
+        "allocation": alloc_report.model_dump() if alloc_report else None,
         "items": out,
     }
 
