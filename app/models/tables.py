@@ -229,3 +229,12 @@ class Credential(Base, PKMixin, TimestampMixin):
 class RevokedToken(Base, PKMixin, TimestampMixin):
     __tablename__ = "revoked_tokens"
     jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+
+class AuditLog(Base, PKMixin, TimestampMixin):
+    __tablename__ = "audit_log"
+    method: Mapped[str] = mapped_column(String(8))
+    route: Mapped[str] = mapped_column(String(255))
+    origin_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    role: Mapped[str] = mapped_column(String(32), default="open")
+    payload_sha256: Mapped[str] = mapped_column(String(64))

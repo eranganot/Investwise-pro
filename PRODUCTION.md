@@ -82,3 +82,11 @@ Auth is **off by default** (open demo). To enforce it:
 4. `POST /api/v1/auth/m2m` (SUPERADMIN) issues a long-lived M2M token for
    automated ingestion. Every state mutation is audit-logged (timestamp, role,
    origin IP, route, payload SHA-256).
+
+
+## 9. Observability (review M3)
+- Structured **JSON logs** with a per-request `X-Request-ID` (correlated in logs).
+- **`GET /metrics`** - Prometheus exposition (request counts + latency histogram).
+- Every mutation is persisted to the append-only **`audit_log`** table; view recent
+  entries at **`GET /api/v1/audit`** (SUPERADMIN).
+- **Sentry**: set `SENTRY_DSN` and add `sentry-sdk` to enable error tracking (optional).

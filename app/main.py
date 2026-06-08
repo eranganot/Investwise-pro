@@ -1,5 +1,8 @@
 """InvestWise Pro - FastAPI application entrypoint."""
+import hashlib
 import logging
+import time
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,14 +13,26 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    allocation, auth, decision_feed, entities, health, intake, jobs, lag, learning, market, risk, safety, simulation, tax, whs, workflows,
+    allocation, auth, decision_feed, entities, health, intake, jobs, lag, learning, market,
+    observability, risk, safety, simulation, tax, whs, workflows,
 )
 from app.core.config import get_settings
-from app.core.database import engine
+from app.core.database import AsyncSessionLocal, engine
+from app.core.logging_config import configure_logging
+from app.core.metrics import LATENCY, REQUESTS
+from app.core.request_context import set_request_id
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger("investwise")
 settings = get_settings()
+
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)
+        logger.info("Sentry initialized")
+    except Exception:  # noqa: BLE001
+        logger.warning("SENTRY_DSN set but sentry-sdk not installed")
 
 
 @asynccontextmanager
@@ -60,6 +75,17 @@ def create_app() -> FastAPI:
     )
 
     @app.middleware("http")
+    async def _observe(request, call_next):
+        rid = uuid.uuid4().hex[:16]
+        set_request_id(rid)
+        start = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        REQUESTS.labels(request.method, str(response.status_code)).inc()
+        LATENCY.labels(request.method).observe(time.perf_counter() - start)
+        return response
+
+    @app.middleware("http")
     async def _security_headers(request, call_next):
         resp = await call_next(request)
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -80,10 +106,19 @@ def create_app() -> FastAPI:
                 except Exception:
                     role = "invalid"
             from app.core.audit import audit
-            audit(method=request.method, path=request.url.path,
-                  ip=request.client.host if request.client else "?", role=role, payload=body)
+            ip = request.client.host if request.client else "?"
+            audit(method=request.method, path=request.url.path, ip=ip, role=role, payload=body)
+            try:
+                from app.models.tables import AuditLog
+                async with AsyncSessionLocal() as s:
+                    s.add(AuditLog(method=request.method, route=request.url.path, origin_ip=ip,
+                                   role=role, payload_sha256=hashlib.sha256(body or b"").hexdigest()))
+                    await s.commit()
+            except Exception:  # noqa: BLE001 - audit must never break a request
+                logger.warning("audit persistence failed", exc_info=False)
         return await call_next(request)
     app.include_router(health.router)
+    app.include_router(observability.router)
     app.include_router(auth.router)
     app.include_router(decision_feed.router)
     app.include_router(tax.router)

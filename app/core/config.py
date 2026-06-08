@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     auth_password: str = "changeme-dev"  # SuperAdmin login password (set in prod)
     jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank
     jwt_public_key: str = ""
+    sentry_dsn: str = ""               # if set (and sentry-sdk installed), error tracking is enabled
     access_token_ttl_sec: int = 900
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000

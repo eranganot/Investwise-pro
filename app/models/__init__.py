@@ -13,6 +13,7 @@ from app.models.tables import (
     UserAction,
     WhsSnapshot,
     RevokedToken,
+    AuditLog,
 )
 
 __all__ = [
