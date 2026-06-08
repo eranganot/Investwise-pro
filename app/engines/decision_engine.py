@@ -1,72 +1,64 @@
-"""4.5 DECISION ENGINE - Impact Score + confidence (display gates).
+"""4.5 / Section Z DECISION ENGINE - 5-component Impact + 4-component Confidence.
 
-Impact Score = (0.4*R + 0.3*T + 0.3*Risk) / Complexity
-
-  R    (return)  - normalized opportunity: max(expected return, |divergence|),
-                   so a Lag divergence alone still scores when no return is given.
-  T    (tax)     - net-after-tax retention (net_gain_delta / gross gain); the
-                   spec names net_gain_delta the primary tax input. 50 if unknown.
-  Risk (safety)  - (1 - probability_of_ruin) * 100; higher = safer. 50 if unknown.
-
-Confidence rises with Lag depth (backbone conviction) and data completeness.
-Display gates: Impact >= min_impact_score and Confidence >= min_confidence.
+Impact = (0.30 R + 0.25 Tax + 0.25 Risk + 0.10 Liquidity + 0.10 Conviction)
+         / Complexity_Factor
+Confidence = 0.40 data_quality + 0.30 model_agreement + 0.20 historical_accuracy
+           + 0.10 market_stability   (with full breakdown)
+All sub-scores are normalized to 0-100 before combination.
 """
 from __future__ import annotations
 
 from app.core.config import Settings, get_settings
-from app.schemas.state_machine import OptimizedSignal, RankedSignal
+from app.engines.scoring import clamp_score, compute_confidence, compute_impact
+from app.schemas.scoring import COMPLEXITY_FACTOR, Complexity, ConfidenceBreakdown, ImpactScores
+from app.schemas.state_machine import ActionType, OptimizedSignal, RankedSignal
 
-W_RETURN, W_TAX, W_RISK = 0.4, 0.3, 0.3
-
-
-def _clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
-    return max(lo, min(hi, x))
+COMPLEXITY_BY_ACTION = {
+    ActionType.BUY: Complexity.EASY,
+    ActionType.SELL: Complexity.MODERATE,
+    ActionType.REBALANCE: Complexity.MODERATE,
+    ActionType.TAX: Complexity.DIFFICULT,
+    ActionType.RISK: Complexity.MODERATE,
+}
 
 
 class DecisionEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def rank(self, signal: OptimizedSignal) -> RankedSignal:
+    def rank(self, signal: OptimizedSignal, *, historical_accuracy: float = 70.0) -> RankedSignal:
         vetted = signal.source
         detected = vetted.source
 
-        # R - return / opportunity
-        ret_pct = detected.expected_return_pct or 0.0
-        r_score = _clamp(max(ret_pct, abs(detected.divergence_pct)) * 5.0)
+        # --- Impact sub-scores (0-100) ---
+        ret = clamp_score(max(detected.expected_return_pct or 0.0, abs(detected.divergence_pct)) * 5.0)
+        tax = (clamp_score(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
+               if signal.net_gain_delta is not None and detected.gross_gain_ils else 50.0)
+        risk = (clamp_score((1.0 - vetted.probability_of_ruin) * 100.0)
+                if vetted.probability_of_ruin is not None else 50.0)
+        liquidity = clamp_score(detected.liquidity_score) if detected.liquidity_score is not None else 50.0
+        conviction = clamp_score(detected.depth / 3.0 * 100.0)
+        scores = ImpactScores(ret=ret, tax=tax, risk=risk, liquidity=liquidity, conviction=conviction)
 
-        # T - tax efficiency (after-tax retention)
-        if signal.net_gain_delta is not None and detected.gross_gain_ils:
-            t_score = _clamp(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
-        else:
-            t_score = 50.0  # neutral when no tax economics provided
+        label = COMPLEXITY_BY_ACTION.get(detected.action_type, Complexity.MODERATE)
+        factor = COMPLEXITY_FACTOR[label]
+        impact = compute_impact(scores, factor)
 
-        # Risk - safety (inverse of ruin probability)
-        if vetted.probability_of_ruin is not None:
-            risk_score = _clamp((1.0 - vetted.probability_of_ruin) * 100.0)
-        else:
-            risk_score = 50.0  # neutral when not stress-tested
+        # --- Confidence breakdown (0-100) ---
+        vol = detected.volatility_pct
+        data_quality = 60.0 + (20.0 if vol is not None else 0.0) + (20.0 if detected.gross_gain_ils else 0.0)
+        model_agreement = 55.0 if (ret >= 60 and risk < 40) else 80.0  # return/risk conflict lowers agreement
+        market_stability = clamp_score(100.0 - max(0.0, (vol if vol is not None else 10.0) - 10.0) * 2.0) \
+            if vol is not None else 70.0
+        breakdown = ConfidenceBreakdown(
+            data_quality=clamp_score(data_quality), model_agreement=model_agreement,
+            historical_accuracy=clamp_score(historical_accuracy), market_stability=market_stability,
+        )
+        confidence = compute_confidence(breakdown)
 
-        complexity = 2  # medium default; per-action complexity is a later refinement
-        impact = (W_RETURN * r_score + W_TAX * t_score + W_RISK * risk_score) / complexity
-
-        # Confidence: depth conviction + data completeness
-        confidence = 40.0 + 20.0 * (detected.depth / 3.0)
-        if vetted.probability_of_ruin is not None:
-            confidence += 15.0
-        if signal.net_gain_delta is not None:
-            confidence += 15.0
-        confidence = _clamp(confidence)
-
-        urgency = int(_clamp(round(impact * 1.5), 1, 100))
-
+        urgency = int(max(1.0, min(100.0, round(impact * 1.5))))
         return RankedSignal(
-            source=signal,
-            impact_score=impact,
-            confidence=confidence,
-            complexity=complexity,
-            urgency=urgency,
-            r_score=r_score,
-            t_score=t_score,
-            risk_score=risk_score,
+            source=signal, impact_score=impact, confidence=confidence,
+            scores=scores, confidence_breakdown=breakdown,
+            complexity_label=label.value, complexity_factor=factor, urgency=urgency,
         )

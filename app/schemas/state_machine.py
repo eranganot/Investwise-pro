@@ -13,6 +13,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.scoring import ConfidenceBreakdown, ImpactScores
+
 
 class Stage(str, Enum):
     DETECTED = "DETECTED"
@@ -59,6 +61,7 @@ class DetectedSignal(_StageBase):
     # Risk context for the Risk Engine (annual %, optional; None => Awaiting Data).
     expected_return_pct: Optional[float] = None
     volatility_pct: Optional[float] = None
+    liquidity_score: Optional[float] = None  # 0-100 liquidity health, optional
 
 
 class VettedSignal(_StageBase):
@@ -83,15 +86,15 @@ class OptimizedSignal(_StageBase):
 
 
 class RankedSignal(_StageBase):
-    """Stage 4 - Decision Engine scores impact + confidence."""
+    """Stage 4 - Decision Engine scores impact + confidence (Section Z)."""
     stage: Literal[Stage.RANKED] = Stage.RANKED
     source: OptimizedSignal
     impact_score: float = 0.0
     confidence: float = 0.0
-    r_score: float = 0.0       # return sub-score (0-100)
-    t_score: float = 0.0       # tax-efficiency sub-score (0-100)
-    risk_score: float = 0.0    # risk sub-score (0-100, higher = safer)
-    complexity: int = Field(default=1, ge=1, le=5)
+    scores: ImpactScores
+    confidence_breakdown: ConfidenceBreakdown
+    complexity_label: str = "Moderate"
+    complexity_factor: float = 1.5
     urgency: int = Field(default=1, ge=1, le=100)
 
 

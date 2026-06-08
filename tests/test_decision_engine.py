@@ -1,4 +1,4 @@
-"""Decision Engine tests (Section 4.5) - Impact Score formula + gates."""
+"""Decision Engine tests (Section Z) - 5-component Impact + confidence."""
 import pytest
 
 from app.engines.decision_engine import DecisionEngine
@@ -10,43 +10,54 @@ A = pytest.approx
 
 
 def optimized(*, expected_return=10.0, divergence=0.0, gross=None, net=None,
-              prob_ruin=None, depth=3) -> OptimizedSignal:
+              prob_ruin=None, depth=3, action=ActionType.BUY, liquidity=None) -> OptimizedSignal:
     det = DetectedSignal(
-        ticker="X", market=Market.NYSE, action_type=ActionType.BUY, trigger="t",
+        ticker="X", market=Market.NYSE, action_type=action, trigger="t",
         depth=depth, divergence_pct=divergence, expected_return_pct=expected_return,
-        gross_gain_ils=gross,
+        gross_gain_ils=gross, liquidity_score=liquidity,
     )
     vet = VettedSignal(source=det, probability_of_ruin=prob_ruin)
     return OptimizedSignal(source=vet, net_gain_delta=net)
 
 
 def test_impact_formula_matches_spec():
-    # R: max(10, 0)*5 = 50 ; T: 75000/100000 = 75 ; Risk: (1-0.10)*100 = 90
-    r = DecisionEngine().rank(optimized(expected_return=10, gross=100_000, net=75_000, prob_ruin=0.10))
-    assert r.r_score == A(50)
-    assert r.t_score == A(75)
-    assert r.risk_score == A(90)
-    # (0.4*50 + 0.3*75 + 0.3*90) / 2 = 34.75
-    assert r.impact_score == A(34.75)
+    r = DecisionEngine().rank(optimized(expected_return=10, gross=100_000, net=75_000,
+                                        prob_ruin=0.10, depth=3, action=ActionType.BUY))
+    assert r.scores.ret == A(50)        # max(10,0)*5
+    assert r.scores.tax == A(75)        # 75000/100000*100
+    assert r.scores.risk == A(90)       # (1-0.10)*100
+    assert r.scores.liquidity == A(50)  # neutral
+    assert r.scores.conviction == A(100)  # depth 3
+    assert r.complexity_label == "Easy" and r.complexity_factor == A(1.25)
+    # (0.30*50 + 0.25*75 + 0.25*90 + 0.10*50 + 0.10*100) / 1.25 = 57.0
+    assert r.impact_score == A(57.0)
 
 
 def test_tax_neutral_when_no_economics():
-    r = DecisionEngine().rank(optimized(gross=None, net=None))
-    assert r.t_score == A(50)
+    assert DecisionEngine().rank(optimized(gross=None, net=None)).scores.tax == A(50)
 
 
 def test_risk_neutral_when_not_assessed():
-    r = DecisionEngine().rank(optimized(prob_ruin=None))
-    assert r.risk_score == A(50)
+    assert DecisionEngine().rank(optimized(prob_ruin=None)).scores.risk == A(50)
 
 
 def test_divergence_drives_return_when_no_expected_return():
-    r = DecisionEngine().rank(optimized(expected_return=0.0, divergence=8.0))
-    assert r.r_score == A(40)  # |8| * 5
+    assert DecisionEngine().rank(optimized(expected_return=0.0, divergence=8.0)).scores.ret == A(40)
 
 
-def test_confidence_increases_with_depth_and_data():
-    shallow = DecisionEngine().rank(optimized(depth=1, prob_ruin=None, net=None))
-    deep = DecisionEngine().rank(optimized(depth=3, prob_ruin=0.05, gross=100_000, net=80_000))
-    assert deep.confidence > shallow.confidence
-    assert 0 <= shallow.confidence <= 100 and 0 <= deep.confidence <= 100
+def test_complexity_factor_divides_impact():
+    buy = DecisionEngine().rank(optimized(action=ActionType.BUY))      # Easy 1.25
+    tax = DecisionEngine().rank(optimized(action=ActionType.TAX))      # Difficult 1.75
+    assert buy.complexity_factor == A(1.25) and tax.complexity_factor == A(1.75)
+    assert buy.impact_score > tax.impact_score  # same inputs, higher complexity -> lower impact
+
+
+def test_confidence_breakdown_is_complete_and_weighted():
+    r = DecisionEngine().rank(optimized(expected_return=10, gross=100_000, net=80_000,
+                                        prob_ruin=0.05, depth=3), historical_accuracy=75)
+    b = r.confidence_breakdown
+    assert 0 <= b.data_quality <= 100 and 0 <= b.market_stability <= 100
+    assert b.historical_accuracy == A(75)
+    # confidence equals the weighted sum of its breakdown
+    expected = 0.40 * b.data_quality + 0.30 * b.model_agreement + 0.20 * b.historical_accuracy + 0.10 * b.market_stability
+    assert r.confidence == A(expected)

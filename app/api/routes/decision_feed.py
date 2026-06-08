@@ -73,9 +73,10 @@ async def demo_feed() -> dict:
             items.append({"ticker": s.ticker, "depth": s.depth, "title": result.title,
                           "path": result.path, "stage": result.stage.value,
                           "impact_score": round(ranked.impact_score, 1),
-                          "confidence": ranked.confidence,
-                          "r_score": round(ranked.r_score, 1), "t_score": round(ranked.t_score, 1),
-                          "risk_score": round(ranked.risk_score, 1),
+                          "confidence": round(ranked.confidence, 1),
+                          "complexity": ranked.complexity_label,
+                          "scores": ranked.scores.as_contract(),
+                          "confidence_breakdown": ranked.confidence_breakdown.model_dump(),
                           "prob_of_ruin": round(vetted.probability_of_ruin, 3)
                           if vetted.probability_of_ruin is not None else None,
                           "max_drawdown": round(vetted.max_drawdown, 3)
@@ -133,7 +134,7 @@ async def generate_feed(
                     holdings=req.portfolio.holdings,
                     liquidity_ratio=req.portfolio.liquidity_ratio,
                     proposals=[{"ticker": s.ticker, "action": s.action_type.value,
-                                "weight_delta": 0.05, "risk_score": ranked.risk_score}],
+                                "weight_delta": 0.05, "risk_score": ranked.scores.risk}],
                 )
 
             if adversary.should_veto(safety):

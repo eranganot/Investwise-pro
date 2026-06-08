@@ -11,6 +11,12 @@ from app.schemas.state_machine import DisplayedItem
 
 SUPERADMIN_EMAIL = "eran.ganot@gmail.com"
 
+_FACTOR_TO_INT = {1.0: 1, 1.25: 2, 1.5: 3, 1.75: 4, 2.0: 5}
+
+
+def _complexity_int(factor: float) -> int:
+    return _FACTOR_TO_INT.get(round(factor, 2), 3)
+
 
 async def ensure_superadmin(session: AsyncSession) -> User:
     settings = get_settings()
@@ -54,13 +60,16 @@ def build_recommendation(item: DisplayedItem) -> Recommendation:
             tax_impact=optimized.tax_saved,
         ),
         impact_score=round(ranked.impact_score, 2),
-        confidence=ranked.confidence,
+        confidence=round(ranked.confidence, 2),
+        confidence_breakdown=ranked.confidence_breakdown,
         urgency=ranked.urgency,
-        complexity=ranked.complexity,
+        complexity=_complexity_int(ranked.complexity_factor),
         time_sensitivity=time_sensitivity,
         trade_offs=TradeOffs(
             gains=f"{item.path} path - impact {round(ranked.impact_score, 1)}, "
-                  f"R {ranked.r_score:.0f} / T {ranked.t_score:.0f} / Risk {ranked.risk_score:.0f}",
+                  f"R {ranked.scores.ret:.0f} / T {ranked.scores.tax:.0f} / "
+                  f"Risk {ranked.scores.risk:.0f} / Liq {ranked.scores.liquidity:.0f} / "
+                  f"Conv {ranked.scores.conviction:.0f}",
             risks=vetted.risk_critique,
         ),
         risk_critique=vetted.risk_critique,

@@ -182,7 +182,8 @@ function demoCard(it){
   else{pill=`<span class="pill ${it.path==="Growth"?"growth":"bullet"}">${it.path}</span>`;
     const m=[`Impact <b>${it.impact_score}</b>`,`Conf <b>${it.confidence}%</b>`];
     if(it.prob_of_ruin!=null)m.push(`P(ruin) <b>${pct(it.prob_of_ruin)}</b>`);
-    body=`<div class="metrics">${m.join("")}</div><div class="mix">Mix — Return ${it.r_score} · Tax ${it.t_score} · Risk ${it.risk_score}</div>`;}
+    const sc=it.scores||{};
+    body=`<div class="metrics">${m.join("")}</div><div class="mix">Mix — Return ${Math.round(sc.return||0)} · Tax ${Math.round(sc.tax||0)} · Risk ${Math.round(sc.risk||0)} · Liq ${Math.round(sc.liquidity||0)} · Conv ${Math.round(sc.conviction||0)} · ${it.complexity||""}</div>`;}
   return `<div class="row"><div class="top"><div class="name">${it.title||it.ticker}${depth}</div>${pill}</div>${body}${critBlock(it.adversary_critique)}</div>`;
 }
 

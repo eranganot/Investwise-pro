@@ -5,6 +5,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.scoring import ConfidenceBreakdown
+
 
 class ExpectedImpact(BaseModel):
     roi_delta: Optional[float] = None        # %
@@ -25,6 +27,7 @@ class Recommendation(BaseModel):
     expected_impact: ExpectedImpact = Field(default_factory=ExpectedImpact)
     impact_score: float = 0.0
     confidence: float = 0.0
+    confidence_breakdown: ConfidenceBreakdown | None = None
     urgency: int = 1            # 1-100
     complexity: int = 1         # 1-5
     time_sensitivity: str = "Monitor"  # Now | This Week | Monitor
