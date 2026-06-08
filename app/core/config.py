@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     risk_mc_steps: int = 252  # trading days per year
     ruin_probability_cap: float = 0.20  # veto if >20% of paths breach the drawdown cap
     lag_min_divergence_pct: float = 2.0  # Lag noise floor; smaller divergences ignored
+    sim_cpi_pct: float = 3.0          # default annual inflation (CPI) for projections
+    sim_fx_change_pct: float = 0.0    # default annual FX drift for projections
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

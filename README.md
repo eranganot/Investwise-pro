@@ -96,6 +96,7 @@ alembic upgrade head
 | GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
 | POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |
 | GET    | `/api/v1/whs`                 | Wealth Health Score (weighted)       |
+| GET    | `/api/v1/simulation`          | Forward projection (CPI/FX/horizon)  |
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |

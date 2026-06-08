@@ -34,7 +34,7 @@
   .panel { background:#111722; border:1px solid #1f2a3a; border-radius:12px; padding:16px; }
   .panel h3 { margin:0 0 12px; font-size:14px; }
   label { display:block; font-size:12px; color:#9aa4b2; margin:10px 0 4px; }
-  input { width:100%; background:#0b0f17; border:1px solid #283449; color:#e6edf3;
+  input, select { width:100%; background:#0b0f17; border:1px solid #283449; color:#e6edf3;
           border-radius:8px; padding:8px 10px; font-size:14px; }
   button { margin-top:14px; width:100%; background:#2f6df6; color:#fff; border:0; border-radius:8px;
            padding:10px; font-size:14px; font-weight:600; cursor:pointer; } button:hover { background:#255ad6; }
@@ -85,6 +85,25 @@
         <button onclick="runWhs()">Compute WHS</button>
       </div>
     </div>
+  </div>
+
+  <h2>Forward Simulation</h2>
+  <div class="panel">
+    <div class="grid2">
+      <div>
+        <label>Initial portfolio value (₪)</label><input id="s_init" type="number" value="1000000" />
+        <label>Expected annual return (%)</label><input id="s_ret" type="number" value="8" />
+        <label>Annual volatility (%)</label><input id="s_vol" type="number" value="15" />
+      </div>
+      <div>
+        <label>Horizon</label>
+        <select id="s_h"><option value="month">Month</option><option value="quarter">Quarter</option><option value="year" selected>Year</option></select>
+        <label>Inflation / CPI (%)</label><input id="s_cpi" type="number" value="3" />
+        <label>FX drift (%)</label><input id="s_fx" type="number" value="0" />
+        <button onclick="runSim()">Project</button>
+      </div>
+    </div>
+    <div class="out" id="s_out"></div>
   </div>
 
   <h2>Calculators</h2>
@@ -186,7 +205,18 @@ async function runRisk(){
   }catch(e){ o.innerHTML=`<div class="err">${e}</div>`; }
 }
 
-loadHealth(); loadFeed(); runWhs();
+async function runSim(){
+  const p = new URLSearchParams({initial_value:document.getElementById("s_init").value, expected_return:document.getElementById("s_ret").value, volatility:document.getElementById("s_vol").value, horizon:document.getElementById("s_h").value, cpi:document.getElementById("s_cpi").value, fx:document.getElementById("s_fx").value});
+  const o=document.getElementById("s_out"); o.textContent="\u2026";
+  try{
+    const r=await (await fetch("/api/v1/simulation?"+p)).json();
+    o.innerHTML=`<div><span class="k">Nominal ${r.horizon} (p50):</span> <b>${ils(r.nominal.p50)}</b> &nbsp;<span class="k">p5\u2013p95:</span> ${ils(r.nominal.p5)} \u2013 ${ils(r.nominal.p95)}</div>
+      <div><span class="k">Real (inflation-adj, p50):</span> <b>${ils(r.real.p50)}</b></div>
+      <div class="${r.probability_of_loss_real>0.5?"veto":"ok"}">P(real loss): ${pct(r.probability_of_loss_real)}</div>`;
+  }catch(e){ o.innerHTML=`<div class="err">${e}</div>`; }
+}
+
+loadHealth(); loadFeed(); runWhs(); runSim();
 </script>
 </body>
 </html>
