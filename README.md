@@ -100,6 +100,9 @@ alembic upgrade head
 | POST   | `/api/v1/safety/check`        | Safety Layer (concentration/liquidity) |
 | POST   | `/api/v1/actions`             | Record accepted/ignored (learning)   |
 | GET    | `/api/v1/learning/profile`    | Personalization profile              |
+| POST   | `/api/v1/intake/portfolio`    | Ingest positions (JSON)              |
+| POST   | `/api/v1/intake/portfolio/csv`| Ingest positions (CSV upload)        |
+| GET    | `/api/v1/portfolio`           | List persisted positions             |
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |

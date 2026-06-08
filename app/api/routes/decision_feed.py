@@ -26,6 +26,7 @@ from app.models.tables import DecisionFeed, DecisionItem
 from app.schemas.lag import LagObservation
 from app.schemas.state_machine import ActionType, DisplayedItem, Market, VetoedSignal
 from app.services.feed_service import build_recommendation, ensure_superadmin
+from app.services.intake_service import list_positions, position_to_observation
 
 router = APIRouter(prefix="/api/v1", tags=["decision-feed"])
 
@@ -92,6 +93,7 @@ class PortfolioContext(BaseModel):
 class GenerateRequest(BaseModel):
     observations: list[LagObservation] | None = None
     portfolio: PortfolioContext | None = None
+    from_portfolio: bool = False
 
 
 @router.post("/decision-feed/generate")
@@ -99,11 +101,17 @@ async def generate_feed(
     req: GenerateRequest | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    observations = (req.observations if req and req.observations else DEFAULT_OBSERVATIONS)
     lag, sm = _machine()
     safety_engine = SafetyEngine()
 
     user = await ensure_superadmin(session)
+    if req and req.from_portfolio:
+        positions = await list_positions(session, user)
+        observations = [o for p in positions if (o := position_to_observation(p)) is not None]
+        if not observations:
+            observations = DEFAULT_OBSERVATIONS
+    else:
+        observations = (req.observations if req and req.observations else DEFAULT_OBSERVATIONS)
     profile = await compute_profile(session, user.id)   # learning loop
     feed = DecisionFeed(user_id=user.id, horizon="month", status="OPEN")
     session.add(feed)

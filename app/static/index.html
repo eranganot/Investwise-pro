@@ -132,6 +132,13 @@
       </div>
       <div class="bars" id="whs_bars" style="margin-top:10px"></div>
     </div>
+    <div class="panel">
+      <h3>Data Intake — your portfolio</h3>
+      <label>Upload positions CSV</label><input id="csv_file" type="file" accept=".csv" />
+      <button onclick="uploadCsv()">Upload CSV</button>
+      <div class="out" id="intake_out"><a href="/api/v1/intake/template.csv">Download CSV template</a></div>
+      <button onclick="generateLive(true)" style="background:#10331f;border:1px solid #1d5436;color:#34d399">▶ Run pipeline on my portfolio</button>
+    </div>
   </div>
 
   <footer>InvestWise Pro · served by the API · <a href="/docs">API docs</a></footer>
@@ -188,10 +195,11 @@ function showTab(t){
   $("feed_demo").style.display=t==="demo"?"grid":"none";$("feed_live").style.display=t==="live"?"block":"none";
 }
 
-async function generateLive(){
+async function generateLive(fromPortfolio){
+  showTab("live");
   $("live_items").innerHTML=`<div class="row">Generating…</div>`;
   try{
-    await fetch("/api/v1/decision-feed/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    await fetch("/api/v1/decision-feed/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({from_portfolio:!!fromPortfolio})});
     const l=await(await fetch("/api/v1/decision-feed/latest?cb="+Date.now())).json();
     $("live_items").innerHTML=(l.items||[]).map(liveCard).join("");
     loadProfile();
@@ -233,6 +241,16 @@ async function runSim(){const p=new URLSearchParams({initial_value:$("s_init").v
     o.innerHTML=`<div><span class="k">Nominal ${r.horizon} p50</span> <b>${ils(r.nominal.p50)}</b></div>
       <div><span class="k">range p5–p95</span> ${ils(r.nominal.p5)} – ${ils(r.nominal.p95)}</div>
       <div><span class="k">Real p50</span> <b>${ils(r.real.p50)}</b> · <span class="${r.probability_of_loss_real>0.5?"veto":"ok"}">P(real loss) ${pct(r.probability_of_loss_real)}</span></div>`;}catch(e){o.innerHTML=`<div class="err">${e}</div>`;}}
+
+async function uploadCsv(){
+  const f=$("csv_file").files[0],o=$("intake_out");
+  if(!f){o.innerHTML='<span class="err">Choose a CSV first</span>';return;}
+  o.textContent="Uploading…";
+  const fd=new FormData(); fd.append("file",f);
+  try{const r=await(await fetch("/api/v1/intake/portfolio/csv",{method:"POST",body:fd})).json();
+    o.innerHTML=`Saved <b>${r.positions_saved}</b> positions to ${r.entity}/${r.account}. Now click \u201cRun pipeline on my portfolio\u201d.`;
+  }catch(e){o.innerHTML=`<span class="err">${e}</span>`;}
+}
 
 loadHealth(); loadDemo(); runWhs(); loadProfile();
 </script>
