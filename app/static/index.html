@@ -210,7 +210,12 @@ function demoCard(it){
     if(it.prob_of_ruin!=null)m.push(`P(ruin) <b>${pct(it.prob_of_ruin)}</b>`);
     const sc=it.scores||{};
     body=`<div class="metrics">${m.join("")}</div><div class="mix">Mix — Return ${Math.round(sc.return||0)} · Tax ${Math.round(sc.tax||0)} · Risk ${Math.round(sc.risk||0)} · Liq ${Math.round(sc.liquidity||0)} · Conv ${Math.round(sc.conviction||0)} · ${it.complexity||""}</div>`;}
-  return `<div class="row"><div class="top"><div class="name">${it.title||it.ticker}${depth}</div>${pill}</div>${body}${critBlock(it.adversary_critique)}</div>`;
+  let xai="";
+  if(it.explanation){const e=it.explanation;
+    xai=`<div class="crit">⚡ <b>Why now:</b> ${e.why_now}</div>`+
+      `<div class="break">✓ ${(e.supporting_factors||[]).slice(0,2).join(" · ")}</div>`+
+      `<div class="break">✗ ${(e.contradicting_factors||[]).slice(0,1).join(" · ")}</div>`;}
+  return `<div class="row"><div class="top"><div class="name">${it.title||it.ticker}${depth}</div>${pill}</div>${body}${critBlock(it.adversary_critique)}${xai}</div>`;
 }
 
 async function loadDemo(){try{const d=await(await fetch("/api/v1/decision-feed/demo")).json();

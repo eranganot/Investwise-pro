@@ -11,6 +11,7 @@ from app.engines.lag_engine import LagEngine
 from app.engines.risk_engine import RiskEngine
 from app.engines.scenario_engine import SUPPORTED, ScenarioEngine
 from app.engines.state_machine import DisplayedItem, StateMachine
+from app.engines.xai_engine import XaiEngine
 from app.services.feed_service import ensure_superadmin
 from app.services.portfolio_analytics import (
     compute_snapshot, health_opportunities, health_scores, load_positions,
@@ -113,6 +114,7 @@ async def weekly_decision_feed() -> dict:
                 "impact_score": round(ranked.impact_score, 1),
                 "confidence": round(ranked.confidence, 1),
                 "time_sensitivity": "Now" if ranked.urgency >= 70 else "This Week" if ranked.urgency >= 40 else "Monitor",
+                "explanation": XaiEngine().build(result).model_dump(),
             })
     items.sort(key=lambda x: x["impact_score"], reverse=True)
     return {"feed_max": 10, "count": min(len(items), 10),

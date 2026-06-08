@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents import adversary
+from app.engines.xai_engine import XaiEngine
 from app.agents.allocation_agent import AllocationAgent, VetoException
 from app.engines.allocation_engine import AllocationEngine
 from app.core.database import get_session
@@ -84,7 +85,8 @@ async def demo_feed() -> dict:
                           if vetted.probability_of_ruin is not None else None,
                           "max_drawdown": round(vetted.max_drawdown, 3)
                           if vetted.max_drawdown is not None else None,
-                          "adversary_critique": crit})
+                          "adversary_critique": crit,
+                          "explanation": XaiEngine().build(result).model_dump()})
     return {"generated": "demo (Lag-driven pipeline)",
             "backbone_vs_hype": lag.backbone_vs_hype(DEFAULT_OBSERVATIONS),
             "count": len(items), "items": items}
@@ -190,6 +192,7 @@ async def generate_feed(
             rec = build_recommendation(result)
             payload = rec.model_dump()
             payload["adversary_critique"] = crit
+            payload["explanation"] = XaiEngine().build(result).model_dump()
             if safety:
                 payload["safety_flags"] = [f.model_dump() for f in safety.flags]
             session.add(DecisionItem(

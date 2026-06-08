@@ -112,6 +112,8 @@ alembic upgrade head
 | GET    | `/api/v1/tax/review`          | Tax Optimization Review (₪ savings)    |
 | GET    | `/api/v1/risk/alerts`         | Risk Alert Center (5 vectors)        |
 | POST   | `/api/v1/scenario`            | Scenario Planning (macro stress)     |
+
+Every Decision Feed item also carries an XAI **explanation** (why_now, supporting/contradicting factors, assumptions, confidence breakdown, expected outcomes, failure conditions).
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
 | GET    | `/dashboard/`                 | Self-contained web dashboard         |
