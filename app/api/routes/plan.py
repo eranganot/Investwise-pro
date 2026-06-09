@@ -113,16 +113,21 @@ async def goal_projection(session: AsyncSession = Depends(get_session), user: Us
     if not stats["nav"]:
         return {"message": "Add holdings to project your goal."}
     years = max(1, plan.horizon_years if plan else 10)
+    target = float(plan.target_amount) if (plan and plan.target_amount) else None
     sim = SimulationEngine(seed=7).run(
         initial_value=stats["nav"], expected_return_pct=stats["expected_roi"] or 6.0,
-        volatility_pct=stats["volatility"] or 12.0, horizon_years=years)
-    target = float(plan.target_amount) if (plan and plan.target_amount) else None
+        volatility_pct=stats["volatility"] or 12.0, horizon_years=years, target_value=target)
     return {
         "years": years, "starting_value": round(stats["nav"], 2),
         "projected_median": round(sim.nominal.p50, 2),
         "projected_low": round(sim.nominal.p5, 2), "projected_high": round(sim.nominal.p95, 2),
         "target_amount": target,
         "on_track": (sim.nominal.p50 >= target) if target else None,
+        "probability_meets_target": (round(sim.probability_meets_target, 3)
+                                     if sim.probability_meets_target is not None else None),
+        "probability_of_loss_real": round(sim.probability_of_loss_real, 3),
+        "probability_of_gain_real": round(sim.probability_of_gain_real, 3),
+        "runs": sim.runs,
         "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, {stats['volatility'] or 12}% volatility, over {years} years"],
     }
 

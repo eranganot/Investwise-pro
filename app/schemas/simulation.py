@@ -24,5 +24,6 @@ class SimulationResult(BaseModel):
     real: Band               # inflation-adjusted (purchasing power)
     probability_of_loss_real: float   # P(real terminal < initial value)
     probability_of_gain_real: float
+    probability_meets_target: float | None = None
     distribution: str = "normal"
     assumptions: list[str] = []

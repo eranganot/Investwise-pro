@@ -37,6 +37,7 @@ class SimulationEngine:
         runs: int | None = None,
         seed: int | None = None,
         distribution: str | None = None,
+        target_value: float | None = None,
     ) -> SimulationResult:
         s = self.settings
         if horizon_years is not None:
@@ -76,11 +77,13 @@ class SimulationEngine:
             )
 
         prob_loss = float(np.mean(real < initial_value))
+        prob_meets = float(np.mean(nominal >= target_value)) if target_value else None
         return SimulationResult(
             horizon=horizon, horizon_years=T, runs=runs, initial_value=initial_value,
             expected_return=mu, volatility=sigma, cpi=cpi, fx_change=fx,
             nominal=band(nominal), real=band(real),
             probability_of_loss_real=prob_loss, probability_of_gain_real=1.0 - prob_loss,
+            probability_meets_target=prob_meets,
             distribution=dist,
             assumptions=[
                 f"lognormal terminal value under {dist} shocks",

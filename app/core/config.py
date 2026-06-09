@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     provider_cb_recovery_sec: float = 30.0
     provider_cache_ttl_sec: float = 15.0
     redis_url: str = ""               # if set, Celery uses Redis; else runs eager (synchronous)
-    enable_scheduler: bool = False    # start APScheduler cron jobs in-process
+    enable_scheduler: bool = True     # start APScheduler cron jobs in-process (hourly market refresh)
     require_auth: bool = False        # if True, JWT + RBAC enforced on protected routes
     auth_password: str = "changeme-dev"  # SuperAdmin login password (set in prod)
     jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank

@@ -10,6 +10,7 @@ from app.providers.registry import guarded_fx, guarded_quote, provider_health
 from app.providers.resilience import CircuitOpenError, RateLimitedError
 from app.services.intake_service import list_positions
 from app.services.market_impact import annotate
+from app.services.market_state import status as market_status
 
 router = APIRouter(prefix="/api/v1", tags=["market"])
 
@@ -37,7 +38,11 @@ async def research_events(
     user's actual holdings (which positions, how much is exposed, what to do)."""
     events = ResearchAgent().scan()
     rows = await list_positions(session, user)
-    return {"count": len(events), "has_portfolio": bool(rows), "events": annotate(events, rows)}
+    st = market_status()
+    return {"count": len(events), "has_portfolio": bool(rows),
+            "last_refreshed": st["last_refreshed"],
+            "refresh_interval_minutes": st["refresh_interval_minutes"],
+            "events": annotate(events, rows)}
 
 
 @router.get("/providers/health")

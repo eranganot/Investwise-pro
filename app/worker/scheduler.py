@@ -14,11 +14,13 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("APScheduler not installed; scheduler disabled.")
         return
+    from app.services.market_state import REFRESH_INTERVAL_MINUTES, refresh_market_data
     _scheduler = BackgroundScheduler(daemon=True)
-    _scheduler.add_job(lambda: logger.info("heartbeat: scheduled metric build tick"),
-                       "interval", minutes=60, id="heartbeat")
+    refresh_market_data()  # warm once at startup
+    _scheduler.add_job(refresh_market_data, "interval",
+                       minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh")
     _scheduler.start()
-    logger.info("APScheduler started (heartbeat hourly).")
+    logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
 
 
 def shutdown_scheduler() -> None:

@@ -75,6 +75,10 @@
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-bottom:12px}
   .seg button{background:var(--card2);color:var(--mut);border:0;padding:6px 15px;font-size:12px;font-weight:600;cursor:pointer}
   .seg button.on{background:var(--blue);color:#fff}
+  .rchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .rchips span{font-size:11px;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:#c9d3df}
+  .oc{display:flex;justify-content:space-between;padding:7px 0;border-top:1px dashed #20303f}.oc:first-of-type{border-top:0}
+  .oc .k{color:var(--mut);font-size:13px}.oc .v{font-weight:700}
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;z-index:50}
   .ov.show{display:flex}
   .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
@@ -130,6 +134,7 @@
       <div class="dims" id="dims"></div>
       <div class="goal" id="goal"></div>
     </div>
+    <div class="card hide" id="outcomes"></div>
     <h2>What to do now</h2>
     <div class="recs" id="recs"><div class="card muted">Checking…</div></div>
     <h2>Your biggest risk</h2>
@@ -215,6 +220,7 @@
 const ils=n=>"₪"+Math.round(Number(n)).toLocaleString();
 const pct=n=>(Number(n)*100).toFixed(0)+"%";
 const $=id=>document.getElementById(id);
+const ago=iso=>{if(!iso)return"";const m=(Date.now()-new Date(iso).getTime())/60000;return m<1?"just now":m<60?Math.round(m)+"m ago":Math.round(m/60)+"h ago";};
 const snoozed=JSON.parse(localStorage.getItem("iw_snoozed")||"[]");
 let charts={};
 
@@ -290,6 +296,21 @@ async function loadToday(){
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
   }catch(e){}
+  try{const r=await(await fetch("/api/v1/plan/projection")).json();const o=$("outcomes");
+    if(r&&!r.message){
+      const lossP=Math.round((r.probability_of_loss_real||0)*100);
+      const goalRow=(r.target_amount&&r.probability_meets_target!=null)
+        ?`<div class="oc"><span class="k">Chance of hitting your goal</span><span class="v ${r.probability_meets_target>=.6?'ok':r.probability_meets_target>=.4?'warn':'bad'}">${Math.round(r.probability_meets_target*100)}%</span></div>`:"";
+      o.innerHTML=`<b>Where this could end up</b> <span class="mk">· in ${r.years} years, ${(r.runs||10000).toLocaleString()} simulations</span>
+        <div class="oc"><span class="k">Expected (most likely)</span><span class="v">${ils(r.projected_median)}</span></div>
+        <div class="oc"><span class="k">Worst case (5%)</span><span class="v bad">${ils(r.projected_low)}</span></div>
+        <div class="oc"><span class="k">Best case (95%)</span><span class="v ok">${ils(r.projected_high)}</span></div>
+        <div class="oc"><span class="k">Chance of losing money (after inflation)</span><span class="v ${lossP<=20?'ok':lossP<=40?'warn':'bad'}">${lossP}%</span></div>
+        ${goalRow}
+        <div class="mk" style="margin-top:8px">See the full picture in <span class="link" onclick="show('explore')">Explore →</span></div>`;
+      o.classList.remove("hide");
+    }else o.classList.add("hide");
+  }catch(e){$("outcomes").classList.add("hide");}
   try{const r=await(await fetch("/api/v1/risk/alerts")).json();const a=(r.alerts||[])[0];
     $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
@@ -368,8 +389,11 @@ async function loadWar(){
 function sessCard(s){
   const cls=s.outcome==="DISPLAYED"?"disp":s.outcome==="VETOED"?"veto":"none";
   const lines=s.transcript.map((l,i)=>{const id=`${s.ticker}_${i}`;const hd=l.detail&&Object.keys(l.detail).length;
+    const d=l.detail||{};
+    const risk=(l.agent==="Risk"&&d.probability_of_ruin!=null)
+      ?`<div class="rchips"><span>P(deep loss) ${(d.probability_of_ruin*100).toFixed(0)}%</span><span>worst dip ${(d.median_max_drawdown*100).toFixed(0)}%</span>${d.volatility!=null?`<span>volatility ${(d.volatility*100).toFixed(0)}%</span>`:''}</div>`:'';
     return `<div class="line" onclick="${hd?`tgl('${id}')`:''}"><div class="av">${AV[l.agent]||"•"}</div>
-      <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div><div class="sy">${l.says}</div>
+      <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div><div class="sy">${l.says}</div>${risk}
       ${hd?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;}).join("");
   return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${lines}</div>`;
 }
@@ -390,7 +414,8 @@ async function loadExplore(){
   }catch(e){}
   // news — each event annotated with how it hits YOUR holdings + what to do
   try{const n=await(await fetch("/api/v1/research/events")).json();
-    $("news").innerHTML=n.events.map(e=>{
+    const cap=`<div class="mk" style="margin-bottom:8px">🕒 Updates hourly${n.last_refreshed?` · last refreshed ${ago(n.last_refreshed)}`:""}</div>`;
+    $("news").innerHTML=cap+n.events.map(e=>{
       const acts=(e.actions||[]).map(a=>`<li>${a}</li>`).join("");
       const exp=e.exposure_pct?` <span class="mk">· touches ${e.exposure_pct}% of your portfolio (${ils(e.exposure_ils)})</span>`:"";
       const titled=e.event_type.replace(/_/g,' ').toLowerCase();
@@ -410,26 +435,39 @@ function setGran(g){gran=g;localStorage.setItem("iw_gran",g);
   const q=$("seg_q"),y=$("seg_y"); if(q&&y){q.classList.toggle("on",g==="quarterly");y.classList.toggle("on",g==="yearly");}
   if(lastProj)drawProjection(lastProj);}
 function drawProjection(r){
-  const start=r.starting_value,end=r.projected_median,yrs=r.years;
+  const start=r.starting_value,p50=r.projected_median,p5=r.projected_low||start,p95=r.projected_high||p50,yrs=r.years;
   const steps=gran==="quarterly"?yrs*4:yrs;
-  const labels=[],med=[],tgt=[];
+  const labels=[],med=[],lo=[],hi=[],tgt=[];
   for(let i=0;i<=steps;i++){const frac=steps?i/steps:0;
     labels.push(i===0?"now":(gran==="quarterly"?("Q"+i):("yr "+i)));
-    med.push(Math.round(start*Math.pow(end/start,frac)));tgt.push(r.target_amount||null);}
-  drawChart("ch_proj","line",{labels,datasets:[{label:gran==="quarterly"?"Projected wealth (quarterly)":"Projected wealth (yearly)",data:med,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.15)",fill:true,tension:.3},
-    ...(r.target_amount?[{label:"Goal",data:tgt,borderColor:"#34d399",borderDash:[6,6],pointRadius:0}]:[])]});
-  $("proj_cap").innerHTML=r.target_amount?`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`:"Set a goal in Plan to see your target line.";
+    med.push(Math.round(start*Math.pow(p50/start,frac)));
+    lo.push(Math.round(start*Math.pow(p5/start,frac)));
+    hi.push(Math.round(start*Math.pow(p95/start,frac)));tgt.push(r.target_amount||null);}
+  const ds=[
+    {label:"Best case (95th %)",data:hi,borderColor:"rgba(52,211,153,.55)",backgroundColor:"rgba(52,211,153,.10)",fill:"+1",pointRadius:0,tension:.3},
+    {label:"Worst case (5th %)",data:lo,borderColor:"rgba(248,113,113,.55)",backgroundColor:"transparent",fill:false,pointRadius:0,tension:.3},
+    {label:gran==="quarterly"?"Expected (quarterly)":"Expected (yearly)",data:med,borderColor:"#3b82f6",backgroundColor:"transparent",fill:false,tension:.3}];
+  if(r.target_amount)ds.push({label:"Goal",data:tgt,borderColor:"#fbbf24",borderDash:[6,6],pointRadius:0});
+  drawChart("ch_proj","line",{labels,datasets:ds});
+  let cap;
+  if(r.target_amount&&r.probability_meets_target!=null){const p=Math.round(r.probability_meets_target*100);
+    cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}.`;}
+  else if(r.target_amount){cap=`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`;}
+  else{cap=`Likely between ${ils(p5)} and ${ils(p95)} in ${yrs} years. Set a goal in Plan to see your odds.`;}
+  $("proj_cap").innerHTML=cap+` <span class="mk">· ${(r.runs||10000).toLocaleString()} Monte Carlo runs</span>`;
 }
 function drawChart(id,type,data,extra){
   if(charts[id])charts[id].destroy();
   charts[id]=new Chart($(id),{type,data,options:Object.assign({responsive:true,plugins:{legend:{labels:{color:"#8b97a8"}}},
     scales:type==="line"?{x:{ticks:{color:"#8b97a8"},grid:{color:"#1f2a3a"}},y:{ticks:{color:"#8b97a8"},grid:{color:"#1f2a3a"}}}:{}},extra||{})});
 }
+const FREQ={MARKET_CRASH:"Drops this deep have happened roughly once a decade.",INFLATION_SHOCK:"Inflation shocks like this hit every few years.",INTEREST_RATE_INCREASE:"Rate-driven dips like this happen every few years.",FX_SHOCK:"Currency swings this size happen fairly often."};
 async function runScenario(code,label){
   const o=$("scn_out");o.classList.remove("hide");o.textContent="Running a stress test…";
   try{const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:code})})).json();
     const months=Math.round(r.estimated_recovery_timeline_days/30);
-    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>, ~<b>${months} month${months===1?'':'s'}</b> to recover.`;
+    const dip=r.drawdown_probability?` Worst-case dip along the way ~<b>${Math.round(r.drawdown_probability*100)}%</b>.`:"";
+    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>, ~<b>${months} month${months===1?'':'s'}</b> to recover.${dip}<div class="mk" style="margin-top:6px">${FREQ[code]||"Illustrative macro shock."}</div>`;
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 boot();

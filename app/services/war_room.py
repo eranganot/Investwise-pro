@@ -55,14 +55,24 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
 
         vetted = sm.vet(det)
         if vetted.veto_flag:
+            _rp = (f"~{vetted.probability_of_ruin:.0%} chance of a deep drawdown, "
+                   f"typical worst dip ~{vetted.max_drawdown:.0%}. "
+                   if vetted.probability_of_ruin is not None else "")
             t.append({"agent": "Risk", "role": "Red-Team · stress test",
-                      "says": f"I'm vetoing this. {vetted.risk_critique}",
-                      "detail": {"veto": True, "critique": vetted.risk_critique}})
+                      "says": (f"Ran 10,000 Monte Carlo simulations: {_rp}"
+                               f"That breaches your risk limits, so I'm vetoing it — this is why it isn't recommended. "
+                               f"{vetted.risk_critique}"),
+                      "detail": {"veto": True, "critique": vetted.risk_critique,
+                                 "probability_of_ruin": vetted.probability_of_ruin,
+                                 "median_max_drawdown": vetted.max_drawdown,
+                                 "volatility": vetted.volatility}})
             sessions.append({"ticker": det.ticker, "outcome": "VETOED", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
                              "outcome_label": "Skipped — too risky", "transcript": t})
             continue
         t.append({"agent": "Risk", "role": "Red-Team · stress test",
-                  "says": (f"Stress test passed. {vetted.risk_critique}"
+                  "says": ((f"Ran 10,000 Monte Carlo simulations: ~{vetted.probability_of_ruin:.0%} chance of a "
+                            f"deep drawdown, typical worst dip ~{vetted.max_drawdown:.0%}. "
+                            f"Within your limits, so I'm letting it through.")
                            if vetted.probability_of_ruin is not None
                            else "No volatility input, so I left risk unassessed (Awaiting Data)."),
                   "detail": {"probability_of_ruin": vetted.probability_of_ruin,
