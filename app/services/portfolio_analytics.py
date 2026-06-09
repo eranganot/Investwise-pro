@@ -16,9 +16,8 @@ from app.models.tables import User
 from app.services.intake_service import list_positions
 
 SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
-# crude geography proxy from listing venue
-GEO = {"NYSE": "US", "TASE": "IL", "SPOT": "GLOBAL"}
-CUR = {"NYSE": "USD", "TASE": "ILS", "SPOT": "USD"}
+# geography/currency proxy from listing venue (shared with the state machine)
+from app.schemas.state_machine import MARKET_CURRENCY as CUR, MARKET_REGION as GEO
 
 
 def _opp_id(*parts) -> str:

@@ -6,6 +6,8 @@ same abstract interfaces; core logic is unaffected.
 from __future__ import annotations
 
 import hashlib
+
+from app.schemas.state_machine import MARKET_CURRENCY
 from datetime import datetime, timezone
 
 from app.providers.base import (
@@ -29,7 +31,7 @@ class BuiltinMarketDataProvider(MarketDataProvider):
         price = 50 + _seed(ticker) % 45000 / 100.0  # deterministic 50.00 - 500.00
         market = "TASE" if ticker.upper().startswith("TA") else "NYSE"
         return Quote(ticker=ticker, market=market, price=round(price, 2),
-                     currency="ILS" if market == "TASE" else "USD", as_of=_now())
+                     currency=MARKET_CURRENCY.get(market, "USD"), as_of=_now())
 
 
 class BuiltinFXProvider(FXProvider):

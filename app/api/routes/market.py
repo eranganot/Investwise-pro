@@ -1,9 +1,15 @@
 """Market data + research endpoints (Sections AE, AA)."""
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research_agent import ResearchAgent
+from app.api.deps import acting_user
+from app.core.database import get_session
+from app.models.tables import User
 from app.providers.registry import guarded_fx, guarded_quote, provider_health
 from app.providers.resilience import CircuitOpenError, RateLimitedError
+from app.services.intake_service import list_positions
+from app.services.market_impact import annotate
 
 router = APIRouter(prefix="/api/v1", tags=["market"])
 
@@ -24,9 +30,14 @@ async def fx_rate(base: str = "USD", quote: str = "ILS") -> dict:
 
 
 @router.get("/research/events")
-async def research_events() -> dict:
+async def research_events(
+    session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)
+) -> dict:
+    """Read-only market intelligence, annotated with how each event touches the
+    user's actual holdings (which positions, how much is exposed, what to do)."""
     events = ResearchAgent().scan()
-    return {"count": len(events), "events": [e.model_dump() for e in events]}
+    rows = await list_positions(session, user)
+    return {"count": len(events), "has_portfolio": bool(rows), "events": annotate(events, rows)}
 
 
 @router.get("/providers/health")

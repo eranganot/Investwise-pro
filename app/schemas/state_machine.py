@@ -26,9 +26,39 @@ class Stage(str, Enum):
 
 
 class Market(str, Enum):
-    TASE = "TASE"
-    NYSE = "NYSE"
-    SPOT = "SPOT"
+    TASE = "TASE"          # Tel Aviv
+    NYSE = "NYSE"          # New York
+    NASDAQ = "NASDAQ"      # US (tech-heavy)
+    TSX = "TSX"            # Toronto
+    B3 = "B3"              # Sao Paulo
+    LSE = "LSE"            # London
+    XETRA = "XETRA"        # Frankfurt / Germany
+    EURONEXT = "EURONEXT"  # Paris / Amsterdam
+    SIX = "SIX"            # Zurich / Switzerland
+    JPX = "JPX"            # Tokyo
+    HKEX = "HKEX"          # Hong Kong
+    SSE = "SSE"            # Shanghai
+    NSE = "NSE"            # India
+    ASX = "ASX"            # Australia
+    SPOT = "SPOT"          # Commodities / crypto spot
+    OTHER = "OTHER"        # Any other venue
+
+
+# Crude region/currency proxies from listing venue (used by the risk &
+# currency-concentration vectors and the FX scenario layer). Unknown -> defaults.
+MARKET_REGION = {
+    "NYSE": "US", "NASDAQ": "US", "TSX": "North America", "B3": "LatAm",
+    "TASE": "Israel", "LSE": "UK", "XETRA": "Europe", "EURONEXT": "Europe",
+    "SIX": "Europe", "JPX": "Asia-Pacific", "HKEX": "Asia-Pacific",
+    "SSE": "Asia-Pacific", "NSE": "Asia-Pacific", "ASX": "Asia-Pacific",
+    "SPOT": "Global", "OTHER": "Global",
+}
+MARKET_CURRENCY = {
+    "NYSE": "USD", "NASDAQ": "USD", "TSX": "CAD", "B3": "BRL",
+    "TASE": "ILS", "LSE": "GBP", "XETRA": "EUR", "EURONEXT": "EUR",
+    "SIX": "CHF", "JPX": "JPY", "HKEX": "HKD", "SSE": "CNY", "NSE": "INR",
+    "ASX": "AUD", "SPOT": "USD", "OTHER": "USD",
+}
 
 
 class ActionType(str, Enum):

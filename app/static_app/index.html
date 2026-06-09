@@ -71,6 +71,10 @@
   .line .dt{display:none;margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:#8fa0b3;background:var(--soft);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-word}
   .ev{padding:9px 0;border-top:1px dashed #20303f}.ev:first-child{border-top:0}
   .gl{padding:9px 0;border-top:1px dashed #20303f}.gl:first-child{border-top:0}.gl b{color:var(--ink)}
+  .newsact{margin-top:7px;background:var(--soft);border-radius:8px;padding:8px 11px;color:#aebacb;font-size:13px}.newsact ol{margin:3px 0;padding-left:18px}.newsact li{margin:2px 0}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-bottom:12px}
+  .seg button{background:var(--card2);color:var(--mut);border:0;padding:6px 15px;font-size:12px;font-weight:600;cursor:pointer}
+  .seg button.on{background:var(--blue);color:#fff}
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;z-index:50}
   .ov.show{display:flex}
   .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
@@ -102,7 +106,7 @@
       <button class="soft" onclick="showAdd()">Add my holdings manually</button>
       <div id="addbox" class="hide" style="text-align:left;margin-top:14px">
         <div class="grid2"><div><label>Name / ticker</label><input id="a_t" placeholder="TEVA"/></div>
-          <div><label>Where</label><select id="a_m"><option>NYSE</option><option>TASE</option><option>SPOT</option></select></div></div>
+          <div><label>Where (market)</label><select id="a_m"><option value="NYSE">New York (NYSE)</option><option value="NASDAQ">NASDAQ (US)</option><option value="TASE">Tel Aviv (TASE)</option><option value="LSE">London (LSE)</option><option value="XETRA">Frankfurt (XETRA)</option><option value="EURONEXT">Euronext (EU)</option><option value="SIX">Zurich (SIX)</option><option value="TSX">Toronto (TSX)</option><option value="JPX">Tokyo (JPX)</option><option value="HKEX">Hong Kong (HKEX)</option><option value="SSE">Shanghai (SSE)</option><option value="NSE">India (NSE)</option><option value="ASX">Australia (ASX)</option><option value="B3">Brazil (B3)</option><option value="SPOT">Commodity / Crypto (Spot)</option><option value="OTHER">Other</option></select></div></div>
         <label>Asset class</label>
         <select id="a_cls"><option>Equities</option><option>Fixed Income</option><option>Cash</option><option>Commodities</option><option>Alternatives</option><option>Real Estate</option><option>Private Investments</option></select>
         <div class="grid2"><div><label>Shares</label><input id="a_q" type="number" value="100"/></div>
@@ -186,7 +190,7 @@
   <!-- EXPLORE -->
   <section id="view-explore" class="hide">
     <h2>Performance & projections</h2>
-    <div class="card"><canvas id="ch_proj" height="170"></canvas><div class="muted" id="proj_cap" style="margin-top:8px"></div></div>
+    <div class="card"><div class="seg"><button id="seg_q" onclick="setGran('quarterly')">Quarterly</button><button id="seg_y" class="on" onclick="setGran('yearly')">Yearly</button></div><canvas id="ch_proj" height="170"></canvas><div class="muted" id="proj_cap" style="margin-top:8px"></div></div>
     <div class="card" style="margin-top:10px"><canvas id="ch_mix" height="180"></canvas></div>
     <h2>What if…</h2>
     <div class="grid2">
@@ -372,16 +376,10 @@ function sessCard(s){
 function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
 async function loadExplore(){
-  // projection chart
+  // projection chart (granularity from the Quarterly/Yearly toggle)
   try{const r=await(await fetch("/api/v1/plan/projection")).json();
-    if(!r.message){
-      const labels=[],med=[],tgt=[];
-      const start=r.starting_value, end=r.projected_median, yrs=r.years;
-      for(let y=0;y<=yrs;y++){labels.push(y===0?"now":("yr "+y));med.push(Math.round(start*Math.pow(end/start,y/yrs)));tgt.push(r.target_amount||null);}
-      drawChart("ch_proj","line",{labels,datasets:[{label:"Projected wealth",data:med,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.15)",fill:true,tension:.3},
-        ...(r.target_amount?[{label:"Goal",data:tgt,borderColor:"#34d399",borderDash:[6,6],pointRadius:0}]:[])]});
-      $("proj_cap").innerHTML=r.target_amount?`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`:"Set a goal in Plan to see your target line.";
-    }
+    if(!r.message){lastProj=r;setGran(gran);}
+    else{$("proj_cap").textContent="Add holdings & a goal in Plan to project your wealth.";}
   }catch(e){}
   // mix donut
   try{const m=await(await fetch("/api/v1/mix")).json();
@@ -390,9 +388,15 @@ async function loadExplore(){
         backgroundColor:["#3b82f6","#34d399","#fbbf24","#f87171","#a78bfa","#22d3ee","#94a3b8"]}]},{plugins:{title:{display:true,text:"Your asset mix (%)",color:"#8b97a8"}}});
     }
   }catch(e){}
-  // news
+  // news — each event annotated with how it hits YOUR holdings + what to do
   try{const n=await(await fetch("/api/v1/research/events")).json();
-    $("news").innerHTML=n.events.map(e=>`<div class="ev"><b>${e.event_type.replace(/_/g,' ').toLowerCase()}</b> — affects ${e.affected_assets.join(", ")} <span class="mk">· ${e.expected_time_horizon.toLowerCase()} · relevance ${e.relevance_score}</span></div>`).join("");
+    $("news").innerHTML=n.events.map(e=>{
+      const acts=(e.actions||[]).map(a=>`<li>${a}</li>`).join("");
+      const exp=e.exposure_pct?` <span class="mk">· touches ${e.exposure_pct}% of your portfolio (${ils(e.exposure_ils)})</span>`:"";
+      const titled=e.event_type.replace(/_/g,' ').toLowerCase();
+      return `<div class="ev"><div><b>${titled}</b> <span class="mk">· ${e.expected_time_horizon.toLowerCase()} · relevance ${e.relevance_score}</span></div>
+        <div class="${e.direction==='info'?'muted':''}" style="margin-top:3px">${e.impact}${exp}</div>
+        ${acts?`<div class="newsact"><b>What to do:</b><ol>${acts}</ol></div>`:""}</div>`;}).join("");
   }catch(e){$("news").innerHTML=`<div class="muted">—</div>`;}
   // glossary
   const G=[["Depth 1/2/3","How 'structural' a signal is — Depth 1 is surface hype, Depth 3 is the backbone."],
@@ -400,6 +404,21 @@ async function loadExplore(){
     ["ROI","Total return — price gains plus income — as a %."],["Volatility","How much a holding bounces around."],
     ["Tax-loss harvesting","Selling a loser to offset gains and cut your tax."],["Rebalance","Trimming/adding to get back to your target mix."]];
   $("glossary").innerHTML=G.map(([t,d])=>`<div class="gl"><b>${t}</b> — <span class="muted">${d}</span></div>`).join("");
+}
+let lastProj=null, gran=localStorage.getItem("iw_gran")||"yearly";
+function setGran(g){gran=g;localStorage.setItem("iw_gran",g);
+  const q=$("seg_q"),y=$("seg_y"); if(q&&y){q.classList.toggle("on",g==="quarterly");y.classList.toggle("on",g==="yearly");}
+  if(lastProj)drawProjection(lastProj);}
+function drawProjection(r){
+  const start=r.starting_value,end=r.projected_median,yrs=r.years;
+  const steps=gran==="quarterly"?yrs*4:yrs;
+  const labels=[],med=[],tgt=[];
+  for(let i=0;i<=steps;i++){const frac=steps?i/steps:0;
+    labels.push(i===0?"now":(gran==="quarterly"?("Q"+i):("yr "+i)));
+    med.push(Math.round(start*Math.pow(end/start,frac)));tgt.push(r.target_amount||null);}
+  drawChart("ch_proj","line",{labels,datasets:[{label:gran==="quarterly"?"Projected wealth (quarterly)":"Projected wealth (yearly)",data:med,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.15)",fill:true,tension:.3},
+    ...(r.target_amount?[{label:"Goal",data:tgt,borderColor:"#34d399",borderDash:[6,6],pointRadius:0}]:[])]});
+  $("proj_cap").innerHTML=r.target_amount?`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`:"Set a goal in Plan to see your target line.";
 }
 function drawChart(id,type,data,extra){
   if(charts[id])charts[id].destroy();
