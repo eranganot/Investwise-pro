@@ -4,41 +4,44 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>InvestWise</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   *{box-sizing:border-box}
   :root{--bg:#0b0f17;--card:#111824;--card2:#0f1622;--ink:#e8eef6;--mut:#8b97a8;--line:#1f2a3a;
         --blue:#3b82f6;--green:#34d399;--amber:#fbbf24;--red:#f87171;--soft:#16202e;}
-  body{margin:0;background:var(--bg);color:var(--ink);
-       font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
   a{color:#6ea8fe}
-  .head{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-  .head .bar{max-width:600px;margin:0 auto;padding:12px 16px 0;display:flex;align-items:center;justify-content:space-between}
-  .head h1{font-size:17px;margin:0}.head .sub{color:var(--mut);font-size:11px}
-  .tabs{max-width:600px;margin:0 auto;display:flex;gap:4px;padding:8px 12px 0;overflow-x:auto}
-  .tabs button{flex:0 0 auto;background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);
-               font-size:13px;font-weight:600;padding:8px 12px 10px;cursor:pointer;white-space:nowrap}
+  .head{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .head .bar{max-width:1100px;margin:0 auto;padding:14px 18px 0;display:flex;align-items:center;justify-content:space-between}
+  .brand{font-size:18px;font-weight:800;letter-spacing:.2px;display:flex;align-items:center;gap:8px}
+  .brand .logo{color:var(--blue);font-size:16px}
+  .adv{font-size:12px;color:var(--mut);text-decoration:none;border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+  .adv:hover{color:var(--ink);border-color:var(--blue)}
+  .tabs{max-width:1100px;margin:0 auto;display:flex;gap:2px;padding:10px 12px 0;overflow-x:auto}
+  .tabs button{flex:0 0 auto;background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);font-size:13px;font-weight:600;padding:8px 13px 11px;cursor:pointer;white-space:nowrap}
   .tabs button.active{color:var(--ink);border-bottom-color:var(--blue)}
-  .wrap{max-width:600px;margin:0 auto;padding:16px}
+  .wrap{max-width:600px;margin:0 auto;padding:16px;transition:max-width .15s}
+  .wrap.wide{max-width:1100px}
   h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:22px 4px 10px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
   .hero .lbl{color:var(--mut);font-size:13px}
   .hero .big{font-size:30px;font-weight:800;margin:4px 0 2px;line-height:1.1;cursor:pointer}
-  .bar{height:10px;border-radius:999px;background:var(--soft);overflow:hidden;margin-top:12px}
-  .bar>i{display:block;height:100%;border-radius:999px}
+  .bar2{height:10px;border-radius:999px;background:var(--soft);overflow:hidden;margin-top:12px}
+  .bar2>i{display:block;height:100%;border-radius:999px}
   .dims{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-  .chip{font-size:12px;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:999px;
-        padding:5px 11px;cursor:pointer}
+  .chip{font-size:12px;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:5px 11px;cursor:pointer}
   .chip:hover{border-color:var(--blue)} .chip .q{color:var(--mut)}
   .goal{margin-top:10px;font-size:13px;color:var(--mut)}
-  .imp{display:grid;gap:10px}
-  .imp .row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px}
-  .imp .h{display:flex;justify-content:space-between;align-items:center;gap:8px}
-  .imp .t{font-weight:650}
+  .recs{display:grid;gap:10px}
+  .rec{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .rec .h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .rec .t{font-weight:700}
   .pill{font-size:11px;padding:3px 9px;border-radius:999px;white-space:nowrap}
-  .pill.important{background:#3a1414;color:var(--red)}.pill.worth{background:#3a2a14;color:var(--amber)}
-  .pill.nice{background:#0e2238;color:#60a5fa}.pill.minor{background:#222b36;color:var(--mut)}
-  .imp .desc{color:#c9d3df;font-size:14px;margin-top:6px;line-height:1.45}
-  .why{display:none;margin-top:9px;padding:10px 12px;background:var(--soft);border-radius:10px;color:#aebacb;font-size:13px;line-height:1.5}
+  .pill.CRITICAL{background:#3a1414;color:var(--red)} .pill.HIGH{background:#3a2a14;color:var(--amber)}
+  .pill.MEDIUM{background:#0e2238;color:#60a5fa} .pill.LOW{background:#222b36;color:var(--mut)}
+  .rec .act{color:#dbe3ee;font-size:14px;margin-top:7px;line-height:1.5}
+  .rec .how{display:none;margin-top:9px;padding:10px 12px;background:var(--soft);border-radius:10px;color:#aebacb;font-size:13px}
+  .rec .how ol{margin:0;padding-left:18px} .rec .how li{margin:3px 0}
   .acts{margin-top:10px;display:flex;gap:8px}
   .acts button{font-size:13px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card2);color:var(--ink);cursor:pointer;font-weight:600}
   .acts .ghost{color:var(--mut)}
@@ -53,31 +56,32 @@
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .muted{color:var(--mut);font-size:13px}.ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.center{text-align:center}.hide{display:none}
   .empty{padding:30px 18px;text-align:center}.empty .ico{font-size:34px}
+  .link{color:#6ea8fe;cursor:pointer;font-size:12px}
   /* war room */
-  .sess{margin-bottom:14px}
-  .sess .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  #war{display:grid;grid-template-columns:1fr;gap:14px}
+  .wrap.wide #war{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
+  .sess .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
   .sess .tk{font-weight:700}
   .badge{font-size:11px;padding:3px 10px;border-radius:999px}
   .badge.disp{background:#0f2619;color:var(--green)}.badge.veto{background:#3a1414;color:var(--red)}.badge.none{background:#222b36;color:var(--mut)}
-  .line{display:flex;gap:10px;padding:9px 0;border-top:1px dashed #20303f;cursor:pointer}
-  .line:first-child{border-top:0}
-  .av{font-size:18px;flex:0 0 24px;text-align:center}
+  .line{display:flex;gap:10px;padding:8px 0;border-top:1px dashed #20303f;cursor:pointer}.line:first-child{border-top:0}
+  .av{font-size:18px;flex:0 0 22px;text-align:center}
   .line .who{font-weight:650;font-size:13px}.line .ro{color:var(--mut);font-size:11px}
-  .line .sy{color:#c9d3df;font-size:13.5px;margin-top:2px;line-height:1.45}
+  .line .sy{color:#c9d3df;font-size:13px;margin-top:2px;line-height:1.4}
   .line .dt{display:none;margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:#8fa0b3;background:var(--soft);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-word}
-  /* modal */
+  .ev{padding:9px 0;border-top:1px dashed #20303f}.ev:first-child{border-top:0}
+  .gl{padding:9px 0;border-top:1px dashed #20303f}.gl:first-child{border-top:0}.gl b{color:var(--ink)}
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;z-index:50}
   .ov.show{display:flex}
   .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
-  .modal h3{margin:0 0 8px}.modal p{color:#c9d3df;line-height:1.55;font-size:14px}
-  .modal .x{float:right;color:var(--mut);cursor:pointer;font-size:20px;line-height:1}
+  .modal h3{margin:0 0 8px}.modal p{color:#c9d3df;line-height:1.55;font-size:14px}.modal .x{float:right;color:var(--mut);cursor:pointer;font-size:20px}
 </style>
 </head>
 <body>
 <div class="head">
   <div class="bar">
-    <div><h1>InvestWise</h1><div class="sub">your wealth, in plain language</div></div>
-    <a href="/dashboard/" class="muted" style="text-decoration:none;font-size:12px">advanced ↗</a>
+    <div class="brand"><span class="logo">◆</span> InvestWise</div>
+    <a class="adv" href="/dashboard/">Advanced ↗</a>
   </div>
   <div class="tabs" id="tabs">
     <button data-t="today" onclick="show('today')">🏠 Today</button>
@@ -88,17 +92,19 @@
   </div>
 </div>
 
-<div class="wrap">
+<div class="wrap" id="wrap">
   <!-- SETUP -->
   <section id="view-setup" class="hide">
     <div class="card empty">
       <div class="ico">👋</div><h3>Let's see how your wealth is doing</h3>
-      <p class="muted">Add what you own and InvestWise will tell you, plainly, how healthy it is and what to improve.</p>
+      <p class="muted">Add what you own and InvestWise will tell you, plainly, how healthy it is and exactly what to do.</p>
       <button class="primary" onclick="loadSample()">Try it with a sample portfolio</button>
       <button class="soft" onclick="showAdd()">Add my holdings manually</button>
       <div id="addbox" class="hide" style="text-align:left;margin-top:14px">
         <div class="grid2"><div><label>Name / ticker</label><input id="a_t" placeholder="TEVA"/></div>
           <div><label>Where</label><select id="a_m"><option>NYSE</option><option>TASE</option><option>SPOT</option></select></div></div>
+        <label>Asset class</label>
+        <select id="a_cls"><option>Equities</option><option>Fixed Income</option><option>Cash</option><option>Commodities</option><option>Alternatives</option><option>Real Estate</option><option>Private Investments</option></select>
         <div class="grid2"><div><label>Shares</label><input id="a_q" type="number" value="100"/></div>
           <div><label>Price you paid</label><input id="a_c" type="number" value="90"/></div></div>
         <label>Price today</label><input id="a_p" type="number" value="100"/>
@@ -115,13 +121,13 @@
     <div class="card hero">
       <div class="lbl">Your wealth is</div>
       <div class="big" id="rating" onclick="explain('health')">…</div>
-      <div class="muted"><span id="score">–</span>/100 health · <span class="q" style="cursor:pointer" onclick="explain('health')">what's this?</span></div>
-      <div class="bar"><i id="barfill" style="width:0%"></i></div>
+      <div class="muted"><span id="score">–</span>/100 health · <span class="link" onclick="explain('health')">what's this?</span></div>
+      <div class="bar2"><i id="barfill" style="width:0%"></i></div>
       <div class="dims" id="dims"></div>
       <div class="goal" id="goal"></div>
     </div>
-    <h2>Things you could improve</h2>
-    <div class="imp" id="improve"><div class="card muted">Checking…</div></div>
+    <h2>What to do now</h2>
+    <div class="recs" id="recs"><div class="card muted">Checking…</div></div>
     <h2>Your biggest risk</h2>
     <div class="card risk" id="risk"><div class="muted">Checking…</div></div>
   </section>
@@ -138,50 +144,50 @@
     <h2>Your plan & goals</h2>
     <div class="card">
       <div class="goal" id="goalbig"></div>
-      <div class="bar" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
+      <div class="bar2" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
       <div class="grid2">
         <div><label>What are you aiming for?</label>
           <select id="p_obj"><option>Grow</option><option selected>Balanced</option><option>Preserve</option><option>Income</option></select></div>
         <div><label>Risk tolerance</label>
           <select id="p_risk"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
       </div>
+      <label>Investment flavor <span class="link" onclick="explain('flavor')">examples?</span></label>
+      <select id="p_depth"><option value="">No preference</option><option value="1">Depth 1 — hot / hype names</option><option value="2">Depth 2 — mid</option><option value="3">Depth 3 — structural backbone</option></select>
       <div class="grid2">
         <div><label>Years invested (horizon)</label><input id="p_hor" type="number" value="10"/>
           <div class="mk">how long your money stays invested — sets how much risk fits</div></div>
-        <div><label>Target amount (₪)</label><input id="p_amt" type="number" placeholder="e.g. 2000000"/></div>
+        <div><label>Target amount (₪)</label><input id="p_amt" type="number" placeholder="2000000"/></div>
       </div>
       <label>Goal deadline (year)</label><input id="p_date" placeholder="2035"/>
       <div class="mk">the year you want to hit your target amount</div>
-      <div class="grid2" style="margin-top:8px">
-        <div><label>Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8"/></div>
-        <div><label>per</label><select id="p_roi_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
+      <label>Targets <span class="link" onclick="explain('roiyield')">ROI vs Yield?</span></label>
+      <div class="grid2">
+        <div><label class="mk">Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8"/></div>
+        <div><label class="mk">per</label><select id="p_roi_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
       </div>
       <div class="grid2">
-        <div><label>Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
-        <div><label>per</label><select id="p_yld_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
+        <div><label class="mk">Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
+        <div><label class="mk">per</label><select id="p_yld_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
       </div>
-      <div class="why" id="roi_note" style="display:none"></div>
+      <div class="how" id="roi_note" style="display:none;background:var(--soft);border-radius:10px;padding:10px;margin-top:10px;color:#aebacb;font-size:13px"></div>
       <button class="primary" onclick="savePlan()">Save my plan</button>
       <div class="muted" id="plan_out" style="margin-top:10px"></div>
-      <div class="why" id="plan_note" style="display:block;margin-top:12px"></div>
+      <div class="how" id="plan_note" style="display:block;background:var(--soft);border-radius:10px;padding:10px;margin-top:12px;color:#aebacb;font-size:13px"></div>
     </div>
   </section>
 
-  <!-- AGENTS / WAR ROOM -->
+  <!-- AGENTS -->
   <section id="view-agents" class="hide">
-    <h2>How the decision was made</h2>
-    <p class="muted" style="margin:-4px 4px 12px">Each specialist agent weighs in, in order. Tap any line to see the numbers behind it.</p>
-    <div id="war"><div class="card muted">Loading the war room…</div></div>
+    <h2>How the decisions are made</h2>
+    <p class="muted" style="margin:-4px 4px 12px">Each specialist agent weighs in, in order, optimizing your plan. Tap any line for the numbers.</p>
+    <div id="war"><div class="card muted">Loading…</div></div>
   </section>
 
   <!-- EXPLORE -->
   <section id="view-explore" class="hide">
-    <h2>Will I hit my goal?</h2>
-    <div class="card"><button class="soft" onclick="runProjection()">Project my goal</button><div class="out" id="proj_out"></div></div>
-    <h2>Could I save on tax?</h2>
-    <div class="card"><button class="soft" onclick="runTax()">Find tax savings</button><div class="out" id="tax_out"></div></div>
-    <h2>Is my mix off?</h2>
-    <div class="card"><button class="soft" onclick="runMix()">Check my mix</button><div class="out" id="mix_out"></div></div>
+    <h2>Performance & projections</h2>
+    <div class="card"><canvas id="ch_proj" height="170"></canvas><div class="muted" id="proj_cap" style="margin-top:8px"></div></div>
+    <div class="card" style="margin-top:10px"><canvas id="ch_mix" height="180"></canvas></div>
     <h2>What if…</h2>
     <div class="grid2">
       <button class="soft" onclick="runScenario('MARKET_CRASH','a market crash')">📉 Market crash</button>
@@ -190,6 +196,10 @@
       <button class="soft" onclick="runScenario('FX_SHOCK','a currency shock')">💱 Currency</button>
     </div>
     <div class="card hide" id="scn_out" style="margin-top:10px"></div>
+    <h2>What's moving</h2>
+    <div class="card" id="news"><div class="muted">Loading market intelligence…</div></div>
+    <h2>Glossary</h2>
+    <div class="card" id="glossary"></div>
   </section>
 </div>
 
@@ -202,49 +212,51 @@ const ils=n=>"₪"+Math.round(Number(n)).toLocaleString();
 const pct=n=>(Number(n)*100).toFixed(0)+"%";
 const $=id=>document.getElementById(id);
 const snoozed=JSON.parse(localStorage.getItem("iw_snoozed")||"[]");
+let charts={};
 
 function show(v){
   for(const s of ["setup","today","hold","plan","agents","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
   document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
   $("tabs").style.visibility = v==="setup" ? "hidden" : "visible";
+  $("wrap").classList.toggle("wide", v==="agents");
   if(v==="today") loadToday();
   if(v==="hold") loadHoldings();
   if(v==="plan") loadPlan();
   if(v==="agents") loadWar();
+  if(v==="explore") loadExplore();
 }
 async function boot(){
-  try{ const p=await(await fetch("/api/v1/portfolio")).json();
-    if(!p.count){ show("setup"); } else show("today");
-  }catch(e){ show("setup"); }
+  try{const p=await(await fetch("/api/v1/portfolio")).json(); p.count?show("today"):show("setup");}
+  catch(e){show("setup");}
 }
 
-// ---- modal explainers ----
 const EXPLAIN={
-  health:["Your wealth health","One number from 0–100 that blends five things: <b>25% Risk + 25% Tax + 20% Spread + 15% Cash + 15% themes</b>. 80+ Strong, 60+ Healthy, 40+ needs attention."],
-  risk:["Risk score","How <b>calm</b> your money is. We look at how much each holding bounces around (its volatility) and blend it by size — calmer means a higher score. Roughly: 100 − volatility × 2."],
-  tax:["Tax score","How <b>tax-efficient</b> you are. Sitting on unrealized losses you haven't used to offset gains lowers this. Starts at 85 and drops with unharvested losses."],
-  spread:["Spread (diversification)","Whether your money is <b>spread out</b>. If one holding is a big slice of everything, this drops. The limit flexes with your risk tolerance (Low 15% · Medium 25% · High 40%)."],
-  cash:["Cash (liquidity)","How <b>easily you could sell</b> if you needed cash quickly. Higher means more of your money is in liquid, easy-to-trade assets."],
+  health:["Your wealth health","0–100 blending five things: <b>25% Risk + 25% Tax + 20% Spread + 15% Cash + 15% themes</b>. 80+ Strong, 60+ Healthy."],
+  risk:["Risk score","How <b>calm</b> your money is — from each holding's volatility, blended by size. Calmer = higher (≈100 − volatility × 2)."],
+  tax:["Tax score","How <b>tax-efficient</b> you are. Unrealized losses you haven't used to offset gains lower it."],
+  spread:["Spread","Diversification. If one holding is a big slice, this drops. The limit flexes with your risk tolerance."],
+  cash:["Cash","Liquidity — how <b>easily you could sell</b> if you needed money."],
+  roiyield:["ROI vs Yield","<b>ROI</b> is your <i>total</i> return — price gains plus income — as a %. <b>Yield</b> is just the <i>income</i> you actually receive (dividends/interest), like rent from property. A growth stock can have high ROI but low yield; a bond can have steady yield but low ROI."],
+  flavor:["Investment flavor (depth)","<b>Depth 1 — hype:</b> hot, headline names (a momentum/AI darling). <b>Depth 2 — mid:</b> solid, established companies. <b>Depth 3 — backbone:</b> the structural foundations others depend on (infrastructure, key suppliers, broad indices). Pick one and the agents <b>favor</b> ideas of that flavor."],
 };
-function explain(k){ const e=EXPLAIN[k]; $("m_t").textContent=e[0]; $("m_b").innerHTML=e[1]; $("ov").classList.add("show"); }
-function closeModal(){ $("ov").classList.remove("show"); }
+function explain(k){const e=EXPLAIN[k];$("m_t").textContent=e[0];$("m_b").innerHTML=e[1];$("ov").classList.add("show");}
+function closeModal(){$("ov").classList.remove("show");}
 
-// ---- setup ----
-function showAdd(){ $("addbox").classList.remove("hide"); }
+function showAdd(){$("addbox").classList.remove("hide");}
 async function loadSample(){
   const sample={entity_name:"Personal",positions:[
-    {ticker:"TEVA",market:"NYSE",depth:3,spot_price:100,listing_price:108,quantity:300,cost_basis:75,expected_return_pct:9,volatility_pct:14},
-    {ticker:"GOLD",market:"SPOT",depth:1,spot_price:100,listing_price:103,quantity:60,cost_basis:96,expected_return_pct:5,volatility_pct:8,action_type:"Rebalance"},
-    {ticker:"BOND",market:"TASE",depth:1,spot_price:100,listing_price:99,quantity:200,cost_basis:101,expected_return_pct:3,volatility_pct:5}]};
+    {ticker:"TEVA",market:"NYSE",asset_class:"Equities",depth:3,spot_price:100,listing_price:108,quantity:300,cost_basis:75,expected_return_pct:9,volatility_pct:14},
+    {ticker:"GOLD",market:"SPOT",asset_class:"Commodities",depth:1,spot_price:100,listing_price:103,quantity:60,cost_basis:96,expected_return_pct:5,volatility_pct:8,action_type:"Rebalance"},
+    {ticker:"BOND",market:"TASE",asset_class:"Fixed Income",depth:1,spot_price:100,listing_price:99,quantity:200,cost_basis:101,expected_return_pct:3,volatility_pct:5}]};
   await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sample)});
   show("today");
 }
 async function addOne(){
   const price=+$("a_p").value;
-  const body={entity_name:"Personal",positions:[{ticker:$("a_t").value||"NEW",market:$("a_m").value,depth:1,
+  const body={entity_name:"Personal",positions:[{ticker:$("a_t").value||"NEW",market:$("a_m").value,asset_class:$("a_cls").value,depth:1,
     spot_price:price,listing_price:price,quantity:+$("a_q").value,cost_basis:+$("a_c").value}]};
   $("add_out").textContent="Saving…";
-  try{const r=await(await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  try{await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     $("add_out").innerHTML=`<span class="ok">Saved.</span>`; setTimeout(()=>show("today"),600);
   }catch(e){$("add_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
@@ -255,35 +267,29 @@ async function uploadCsv(){
   }catch(e){$("add_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 
-// ---- today ----
 function rWord(s){return s>=80?"Strong":s>=60?"Healthy":s>=40?"Needs attention":"At risk";}
 function rCol(s){return s>=80?"#34d399":s>=60?"#3b82f6":s>=40?"#fbbf24":"#f87171";}
-const SEV={CRITICAL:["important","Important"],HIGH:["worth","Worth doing"],MEDIUM:["nice","Nice to have"],LOW:["minor","Minor"]};
-const TITLE={tax:"Lower your tax bill",diversification:"Spread your money out",liquidity:"Keep enough cash",risk:"Reduce your risk"};
-const WHYTXT={tax:"Selling something that's down can offset gains and cut the tax you owe this year.",
-  diversification:"Too much in one place means one bad move hits you hard. Spreading out lowers that risk.",
-  liquidity:"If too little is easy to sell, you could be stuck when you need cash.",
-  risk:"Your mix swings a lot. Trimming the riskiest parts steadies your returns."};
 async function loadToday(){
-  try{
-    const h=await(await fetch("/api/v1/health-check")).json();
-    if(h.wealth_health_score==null){ show("setup"); return; }
+  try{const h=await(await fetch("/api/v1/health-check")).json();
+    if(h.wealth_health_score==null){show("setup");return;}
     const s=h.wealth_health_score;
-    $("rating").textContent=rWord(s); $("rating").style.color=rCol(s);
-    $("score").textContent=s; $("barfill").style.width=s+"%"; $("barfill").style.background=rCol(s);
+    $("rating").textContent=rWord(s);$("rating").style.color=rCol(s);
+    $("score").textContent=s;$("barfill").style.width=s+"%";$("barfill").style.background=rCol(s);
     $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
       .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
-    const opps=(h.top_improvement_opportunities||[]).filter(o=>!snoozed.includes(o.id));
-    $("improve").innerHTML=opps.length? opps.map(impCard).join("")
-      : `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to improve right now.</b><div class="muted">You're in good shape.</div></div>`;
-  }catch(e){$("improve").innerHTML=`<div class="card bad">${e}</div>`;}
-  try{ const p=await(await fetch("/api/v1/plan")).json();
-    $("goal").innerHTML = p.goal_progress!=null ? `🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there` : "";
   }catch(e){}
-  try{ const r=await(await fetch("/api/v1/risk/alerts")).json(); const a=(r.alerts||[])[0];
-    $("risk").innerHTML=a? `<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <a href="#" onclick="show('explore');return false">see what a crash would do →</a></div></div>`
-      : `<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Your money looks well balanced.</div></div>`;
-  }catch(e){$("risk").innerHTML=`<div class="muted">Couldn't load risk.</div>`;}
+  try{const r=await(await fetch("/api/v1/recommendations")).json();
+    const recs=(r.recommendations||[]).filter(o=>!snoozed.includes(o.id));
+    $("recs").innerHTML=recs.length? recs.map(recCard).join("")
+      : `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b><div class="muted">You're tracking your plan.</div></div>`;
+  }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
+  try{const p=await(await fetch("/api/v1/plan")).json();
+    $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
+  }catch(e){}
+  try{const r=await(await fetch("/api/v1/risk/alerts")).json();const a=(r.alerts||[])[0];
+    $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
+      :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
+  }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
 }
 function plainRisk(a){
   if(a.vector==="single_position")return a.detail.replace(/\(.*\)/,"— too much in one holding.");
@@ -292,117 +298,121 @@ function plainRisk(a){
   if(a.vector==="liquidity")return "A lot of your money may be hard to sell quickly.";
   return a.detail;
 }
-function impCard(o){const sev=SEV[o.severity]||["minor","Minor"];
-  return `<div class="row"><div class="h"><span class="t">${TITLE[o.dimension]||"Improve"}</span><span class="pill ${sev[0]}">${sev[1]}</span></div>
-    <div class="desc">${o.description}</div><div class="why" id="why_${o.id}">${WHYTXT[o.dimension]||""}</div>
-    <div class="acts"><button onclick="toggleWhy('${o.id}')">Why this matters</button><button class="ghost" onclick="snooze('${o.id}')">Snooze</button></div></div>`;}
-function toggleWhy(id){const e=$("why_"+id);e.style.display=e.style.display==="block"?"none":"block";}
+function recCard(o){
+  const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
+  return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
+    <div class="act">${o.action}</div>
+    <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
+    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="ghost" onclick="snooze('${o.id}')">Snooze</button></div></div>`;
+}
+function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
 
-// ---- holdings ----
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares</div></div>
         <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div></div>`;}).join("")
-      || `<div class="card muted">No holdings yet.</div>`;
+      ||`<div class="card muted">No holdings yet.</div>`;
   }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
 }
 
-// ---- plan ----
 async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
-    $("p_obj").value=p.objective; $("p_risk").value=p.risk_tolerance; $("p_hor").value=p.horizon_years;
-    if(p.target_amount) $("p_amt").value=p.target_amount; if(p.target_date) $("p_date").value=p.target_date;
-    if(p.target_roi_pct!=null) $("p_roi").value=p.target_roi_pct; if(p.target_roi_period) $("p_roi_p").value=p.target_roi_period;
-    if(p.target_yield_pct!=null) $("p_yld").value=p.target_yield_pct; if(p.target_yield_period) $("p_yld_p").value=p.target_yield_period;
-    renderGoal(p); renderPlanNote(p); renderRoi(p);
+    $("p_obj").value=p.objective;$("p_risk").value=p.risk_tolerance;$("p_hor").value=p.horizon_years;
+    $("p_depth").value=p.preferred_depth?String(p.preferred_depth):"";
+    if(p.target_amount)$("p_amt").value=p.target_amount; if(p.target_date)$("p_date").value=p.target_date;
+    if(p.target_roi_pct!=null)$("p_roi").value=p.target_roi_pct; if(p.target_roi_period)$("p_roi_p").value=p.target_roi_period;
+    if(p.target_yield_pct!=null)$("p_yld").value=p.target_yield_pct; if(p.target_yield_period)$("p_yld_p").value=p.target_yield_period;
+    renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){}
 }
 function renderGoal(p){
-  if(p.goal_progress!=null){ $("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${p.target_date||'—'} (${pct(p.goal_progress)})`;
-    $("goalfill").style.width=Math.round(p.goal_progress*100)+"%"; }
-  else { $("goalbig").innerHTML=`<span class="muted">Set a target amount to track progress.</span>`; $("goalfill").style.width="0%"; }
+  if(p.goal_progress!=null){$("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${p.target_date||'—'} (${pct(p.goal_progress)})`;$("goalfill").style.width=Math.round(p.goal_progress*100)+"%";}
+  else{$("goalbig").innerHTML=`<span class="muted">Set a target amount to track progress.</span>`;$("goalfill").style.width="0%";}
 }
-function renderPlanNote(p){
-  const cap=p.caps?p.caps.concentration_cap:0.25;
-  $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance we let any single holding be up to <b>${pct(cap)}</b> of your money before flagging it, and we judge your "spread" score against that. Change it and your health & advice adjust.`;
-}
-function renderRoi(p){
-  const e=$("roi_note");
-  if(p.portfolio_expected_roi_pct!=null && p.roi_annual_target_pct){
-    e.style.display="block";
-    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`;
-  } else { e.style.display="none"; }
-}
+function renderPlanNote(p){const cap=p.caps?p.caps.concentration_cap:0.25;
+  $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance the agents allow up to <b>${pct(cap)}</b> in any single holding before flagging it — and they veto trades that breach your limits. Change anything here and your health, recommendations and the agents all adjust.`;}
+function renderRoi(p){const e=$("roi_note");
+  if(p.portfolio_expected_roi_pct!=null&&p.roi_annual_target_pct){e.style.display="block";
+    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`;}
+  else e.style.display="none";}
 async function savePlan(){
   const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
+    preferred_depth:$("p_depth").value?+$("p_depth").value:null,
     target_amount:$("p_amt").value?+$("p_amt").value:null,target_date:$("p_date").value||null,
     target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
     target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
   $("plan_out").textContent="Saving…";
   try{const p=await(await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
-    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view now reflects this.</span>`; renderGoal(p); renderPlanNote(p); renderRoi(p);
+    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 
-// ---- war room ----
 const AV={Research:"🔎",Alpha:"🎯",Risk:"🛡️",Tax:"🧾",Decision:"🧮",Adversary:"⚔️",UX:"📣",Allocation:"📊",Safety:"🚧"};
 async function loadWar(){
-  $("war").innerHTML=`<div class="card muted">Loading the war room…</div>`;
+  $("war").innerHTML=`<div class="card muted">Loading…</div>`;
   try{const w=await(await fetch("/api/v1/war-room")).json();
-    const port=w.sessions.filter(s=>s.source==="portfolio"), mkt=w.sessions.filter(s=>s.source!=="portfolio");
-    let html="";
-    if(port.length) html+=`<h2 style="margin-top:4px">Your holdings</h2>`+port.map(sessCard).join("");
-    html+=`<h2>Market ideas (incl. rejected)</h2>`+(mkt.map(sessCard).join("")||`<div class="card muted">None right now.</div>`);
-    $("war").innerHTML=html||`<div class="card muted">Nothing to discuss.</div>`;
+    const port=w.sessions.filter(s=>s.source==="portfolio"),mkt=w.sessions.filter(s=>s.source!=="portfolio");
+    let h="";
+    if(port.length)h+=`<div style="grid-column:1/-1"><h2 style="margin:4px 4px 0">Your holdings</h2></div>`+port.map(sessCard).join("");
+    h+=`<div style="grid-column:1/-1"><h2 style="margin:8px 4px 0">Market ideas (incl. rejected)</h2></div>`+(mkt.map(sessCard).join("")||`<div class="card muted">None right now.</div>`);
+    $("war").innerHTML=h;
   }catch(e){$("war").innerHTML=`<div class="card bad">${e}</div>`;}
 }
 function sessCard(s){
   const cls=s.outcome==="DISPLAYED"?"disp":s.outcome==="VETOED"?"veto":"none";
-  const lines=s.transcript.map((l,i)=>{
-    const id=`${s.ticker}_${i}`;
-    const hasDetail=l.detail&&Object.keys(l.detail).length;
-    return `<div class="line" onclick="${hasDetail?`tgl('${id}')`:''}">
-      <div class="av">${AV[l.agent]||"•"}</div>
-      <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div>
-        <div class="sy">${l.says}</div>
-        ${hasDetail?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;
-  }).join("");
+  const lines=s.transcript.map((l,i)=>{const id=`${s.ticker}_${i}`;const hd=l.detail&&Object.keys(l.detail).length;
+    return `<div class="line" onclick="${hd?`tgl('${id}')`:''}"><div class="av">${AV[l.agent]||"•"}</div>
+      <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div><div class="sy">${l.says}</div>
+      ${hd?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;}).join("");
   return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${lines}</div>`;
 }
 function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
-// ---- explore ----
-async function runProjection(){const o=$("proj_out");o.textContent="Projecting…";
+async function loadExplore(){
+  // projection chart
   try{const r=await(await fetch("/api/v1/plan/projection")).json();
-    if(r.message){o.textContent=r.message;return;}
-    o.innerHTML=`In <b>${r.years} years</b> your wealth could be about <b>${ils(r.projected_median)}</b> (range ${ils(r.projected_low)}–${ils(r.projected_high)}).`+
-      (r.target_amount?` Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>.`:"");
-  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
-async function runTax(){const o=$("tax_out");o.textContent="Checking…";
-  try{const r=await(await fetch("/api/v1/tax/review")).json();
-    if(!r.opportunities||!r.opportunities.length){o.textContent=r.message||"No tax-saving moves found.";return;}
-    o.innerHTML=`<div>Potential savings: <b>${ils(r.total_estimated_annual_savings_currency)}</b>/yr</div>`+
-      r.opportunities.map(op=>`<div class="why" style="display:block">${op.description} <b>(${ils(op.estimated_annual_tax_savings_currency)})</b></div>`).join("");
-  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
-async function runMix(){const o=$("mix_out");o.textContent="Checking…";
-  try{const r=await(await fetch("/api/v1/mix")).json();
-    if(r.message){o.textContent=r.message;return;}
-    const cur=Object.entries(r.current_allocation).map(([k,v])=>`${k} ${pct(v)}`).join(" · ");
-    o.innerHTML=`<div class="mk">Your mix vs ${r.objective} target: ${cur}</div>`+
-      (r.rebalance_required? r.rebalance_actions.map(a=>`<div class="why" style="display:block"><b>${a.action_type} ${a.asset_class}</b> — about ${ils(a.estimated_trade_value_currency)} (net ${ils(a.net_trade_value_currency)} after tax & costs)</div>`).join("") : `<div class="ok">Your mix is on target. ✅</div>`);
-  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
+    if(!r.message){
+      const labels=[],med=[],tgt=[];
+      const start=r.starting_value, end=r.projected_median, yrs=r.years;
+      for(let y=0;y<=yrs;y++){labels.push(y===0?"now":("yr "+y));med.push(Math.round(start*Math.pow(end/start,y/yrs)));tgt.push(r.target_amount||null);}
+      drawChart("ch_proj","line",{labels,datasets:[{label:"Projected wealth",data:med,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.15)",fill:true,tension:.3},
+        ...(r.target_amount?[{label:"Goal",data:tgt,borderColor:"#34d399",borderDash:[6,6],pointRadius:0}]:[])]});
+      $("proj_cap").innerHTML=r.target_amount?`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`:"Set a goal in Plan to see your target line.";
+    }
+  }catch(e){}
+  // mix donut
+  try{const m=await(await fetch("/api/v1/mix")).json();
+    if(!m.message){const ks=Object.keys(m.current_allocation);
+      drawChart("ch_mix","doughnut",{labels:ks,datasets:[{data:ks.map(k=>Math.round(m.current_allocation[k]*100)),
+        backgroundColor:["#3b82f6","#34d399","#fbbf24","#f87171","#a78bfa","#22d3ee","#94a3b8"]}]},{plugins:{title:{display:true,text:"Your asset mix (%)",color:"#8b97a8"}}});
+    }
+  }catch(e){}
+  // news
+  try{const n=await(await fetch("/api/v1/research/events")).json();
+    $("news").innerHTML=n.events.map(e=>`<div class="ev"><b>${e.event_type.replace(/_/g,' ').toLowerCase()}</b> — affects ${e.affected_assets.join(", ")} <span class="mk">· ${e.expected_time_horizon.toLowerCase()} · relevance ${e.relevance_score}</span></div>`).join("");
+  }catch(e){$("news").innerHTML=`<div class="muted">—</div>`;}
+  // glossary
+  const G=[["Depth 1/2/3","How 'structural' a signal is — Depth 1 is surface hype, Depth 3 is the backbone."],
+    ["Drawdown","How far your money could fall from its peak."],["Yield","The income (dividends/interest) you receive, as a %."],
+    ["ROI","Total return — price gains plus income — as a %."],["Volatility","How much a holding bounces around."],
+    ["Tax-loss harvesting","Selling a loser to offset gains and cut your tax."],["Rebalance","Trimming/adding to get back to your target mix."]];
+  $("glossary").innerHTML=G.map(([t,d])=>`<div class="gl"><b>${t}</b> — <span class="muted">${d}</span></div>`).join("");
+}
+function drawChart(id,type,data,extra){
+  if(charts[id])charts[id].destroy();
+  charts[id]=new Chart($(id),{type,data,options:Object.assign({responsive:true,plugins:{legend:{labels:{color:"#8b97a8"}}},
+    scales:type==="line"?{x:{ticks:{color:"#8b97a8"},grid:{color:"#1f2a3a"}},y:{ticks:{color:"#8b97a8"},grid:{color:"#1f2a3a"}}}:{}},extra||{})});
+}
 async function runScenario(code,label){
   const o=$("scn_out");o.classList.remove("hide");o.textContent="Running a stress test…";
   try{const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:code})})).json();
     const months=Math.round(r.estimated_recovery_timeline_days/30);
-    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>,
-      and history suggests ~<b>${months} month${months===1?'':'s'}</b> to recover.<div class="muted" style="margin-top:6px">Chance of a rough patch: ${pct(r.drawdown_probability)}.</div>`;
+    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>, ~<b>${months} month${months===1?'':'s'}</b> to recover.`;
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
-
 boot();
 </script>
 </body>
