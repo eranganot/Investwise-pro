@@ -15,6 +15,7 @@ from app.engines.xai_engine import XaiEngine
 from app.models.tables import User
 from app.services.demo_data import DEFAULT_OBSERVATIONS
 from app.services.intake_service import list_positions as orm_list_positions, position_to_observation
+from app.services.plan_service import effective_caps, get_plan
 from app.services.portfolio_analytics import (
     compute_snapshot, health_opportunities, health_scores, load_positions,
     risk_alerts, tax_opportunities,
@@ -36,7 +37,8 @@ async def portfolio_health_check(entity: str | None = None,
     if not snap["nav"]:
         return {"wealth_health_score": None,
                 "message": "No portfolio value. POST /api/v1/intake/portfolio first."}
-    sc = health_scores(snap)
+    cap = effective_caps(await get_plan(session, user))["concentration_cap"]
+    sc = health_scores(snap, cap)
     return {
         "wealth_health_score": sc["wealth_health_score"],
         "risk_score": sc["risk_score"],
@@ -65,7 +67,8 @@ async def risk_alert_center(entity: str | None = None,
                             session: AsyncSession = Depends(get_session),
                             user: User = Depends(acting_user)) -> dict:
     snap = compute_snapshot(await load_positions(session, user, entity))
-    return risk_alerts(snap)
+    cap = effective_caps(await get_plan(session, user))["concentration_cap"]
+    return risk_alerts(snap, cap)
 
 
 # --- X.5 Scenario Planning ---

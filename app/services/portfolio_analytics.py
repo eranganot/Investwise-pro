@@ -64,11 +64,11 @@ def compute_snapshot(positions: list[dict]) -> dict:
     }
 
 
-def health_scores(snap: dict) -> dict:
+def health_scores(snap: dict, cap: float | None = None) -> dict:
     st = get_settings()
-    cap = st.concentration_cap
+    cap = st.concentration_cap if cap is None else cap
     risk_score = clamp_score(100.0 - snap["avg_volatility_pct"] * st.analytics_vol_risk_factor)
-    div = clamp_score(100.0 - max(0.0, snap["max_weight"] - 0.20) * 250.0)
+    div = clamp_score(100.0 - max(0.0, snap["max_weight"] - cap) * 250.0)
     liquidity = clamp_score(snap["liquidity_avg"])
     loss_ratio = (snap["unrealized_losses"] / snap["nav"]) if snap["nav"] else 0.0
     tax_eff = clamp_score(st.analytics_tax_efficiency_base - loss_ratio * 200.0)  # unharvested losses dent efficiency
@@ -163,10 +163,10 @@ def tax_opportunities(positions: list[dict]) -> dict:
             "opportunities": opps}
 
 
-def risk_alerts(snap: dict) -> dict:
+def risk_alerts(snap: dict, cap: float | None = None) -> dict:
     """Section X.4 - concentration vectors monitor."""
     st = get_settings()
-    cap = st.concentration_cap
+    cap = st.concentration_cap if cap is None else cap
     vectors = ["single_position", "sector", "geographic", "currency", "liquidity"]
     alerts = []
 

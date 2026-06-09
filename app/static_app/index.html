@@ -6,98 +6,106 @@
 <title>InvestWise</title>
 <style>
   *{box-sizing:border-box}
-  :root{--bg:#f6f8fb;--card:#fff;--ink:#16202e;--mut:#6b7888;--line:#e7ecf3;
-        --blue:#2f6df6;--green:#16a34a;--amber:#d97706;--red:#dc2626;--soft:#eef3fb;}
+  :root{--bg:#0b0f17;--card:#111824;--card2:#0f1622;--ink:#e8eef6;--mut:#8b97a8;--line:#1f2a3a;
+        --blue:#3b82f6;--green:#34d399;--amber:#fbbf24;--red:#f87171;--soft:#16202e;}
   body{margin:0;background:var(--bg);color:var(--ink);
        font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:560px;margin:0 auto;padding:18px 16px 96px}
-  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-  .top h1{font-size:18px;margin:0;letter-spacing:.2px}
-  .top .sub{color:var(--mut);font-size:12px}
-  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:24px 4px 10px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;
-        box-shadow:0 1px 2px rgba(16,32,64,.04)}
-  .hero{padding:20px 18px}
+  a{color:#6ea8fe}
+  .head{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .head .bar{max-width:600px;margin:0 auto;padding:12px 16px 0;display:flex;align-items:center;justify-content:space-between}
+  .head h1{font-size:17px;margin:0}.head .sub{color:var(--mut);font-size:11px}
+  .tabs{max-width:600px;margin:0 auto;display:flex;gap:4px;padding:8px 12px 0;overflow-x:auto}
+  .tabs button{flex:0 0 auto;background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);
+               font-size:13px;font-weight:600;padding:8px 12px 10px;cursor:pointer;white-space:nowrap}
+  .tabs button.active{color:var(--ink);border-bottom-color:var(--blue)}
+  .wrap{max-width:600px;margin:0 auto;padding:16px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:22px 4px 10px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
   .hero .lbl{color:var(--mut);font-size:13px}
-  .hero .big{font-size:30px;font-weight:800;margin:4px 0 2px;line-height:1.1}
+  .hero .big{font-size:30px;font-weight:800;margin:4px 0 2px;line-height:1.1;cursor:pointer}
   .bar{height:10px;border-radius:999px;background:var(--soft);overflow:hidden;margin-top:12px}
-  .bar > i{display:block;height:100%;border-radius:999px}
+  .bar>i{display:block;height:100%;border-radius:999px}
   .dims{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-  .chip{font-size:12px;color:var(--mut);background:var(--soft);border-radius:999px;padding:4px 10px}
+  .chip{font-size:12px;color:var(--ink);background:var(--soft);border:1px solid var(--line);border-radius:999px;
+        padding:5px 11px;cursor:pointer}
+  .chip:hover{border-color:var(--blue)} .chip .q{color:var(--mut)}
+  .goal{margin-top:10px;font-size:13px;color:var(--mut)}
   .imp{display:grid;gap:10px}
   .imp .row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px}
   .imp .h{display:flex;justify-content:space-between;align-items:center;gap:8px}
   .imp .t{font-weight:650}
   .pill{font-size:11px;padding:3px 9px;border-radius:999px;white-space:nowrap}
-  .pill.important{background:#fde8e8;color:var(--red)} .pill.worth{background:#fdebd6;color:var(--amber)}
-  .pill.nice{background:#e7f0fe;color:var(--blue)} .pill.minor{background:#eef1f5;color:var(--mut)}
-  .imp .desc{color:#3a4757;font-size:14px;margin-top:6px;line-height:1.45}
-  .why{display:none;margin-top:9px;padding:10px 12px;background:var(--soft);border-radius:10px;color:#41506280;color:#41526a;font-size:13px;line-height:1.5}
+  .pill.important{background:#3a1414;color:var(--red)}.pill.worth{background:#3a2a14;color:var(--amber)}
+  .pill.nice{background:#0e2238;color:#60a5fa}.pill.minor{background:#222b36;color:var(--mut)}
+  .imp .desc{color:#c9d3df;font-size:14px;margin-top:6px;line-height:1.45}
+  .why{display:none;margin-top:9px;padding:10px 12px;background:var(--soft);border-radius:10px;color:#aebacb;font-size:13px;line-height:1.5}
   .acts{margin-top:10px;display:flex;gap:8px}
-  .acts button{flex:0 0 auto;font-size:13px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);
-               background:#fff;color:var(--ink);cursor:pointer;font-weight:600}
+  .acts button{font-size:13px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card2);color:var(--ink);cursor:pointer;font-weight:600}
   .acts .ghost{color:var(--mut)}
-  .risk{display:flex;gap:12px;align-items:flex-start}
-  .risk .ico{font-size:20px}
+  .risk{display:flex;gap:12px;align-items:flex-start}.risk .ico{font-size:20px}
   .hold{display:grid;gap:10px}
-  .hold .row{display:flex;justify-content:space-between;align-items:center;background:var(--card);
-             border:1px solid var(--line);border-radius:14px;padding:13px 14px}
-  .hold .nm{font-weight:650}.hold .mk{color:var(--mut);font-size:12px}
-  .hold .val{text-align:right}.up{color:var(--green)}.down{color:var(--red)}
-  button.primary{width:100%;background:var(--blue);color:#fff;border:0;border-radius:12px;padding:13px;
-                 font-size:15px;font-weight:700;cursor:pointer;margin-top:8px}
-  button.primary:hover{filter:brightness(1.05)}
-  button.soft{width:100%;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:12px;
-              padding:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
-  label{display:block;font-size:12px;color:var(--mut);margin:10px 0 4px}
-  input,select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px;background:#fff;color:var(--ink)}
-  .muted{color:var(--mut);font-size:13px}
-  .ok{color:var(--green)} .warn{color:var(--amber)} .bad{color:var(--red)}
-  .center{text-align:center}
-  .tabbar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);
-          display:flex;justify-content:space-around;padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
-  .tabbar button{background:none;border:0;color:var(--mut);font-size:12px;font-weight:600;cursor:pointer;
-                 display:flex;flex-direction:column;align-items:center;gap:3px;padding:4px 16px;border-radius:10px}
-  .tabbar button.active{color:var(--blue)}
-  .tabbar .ic{font-size:18px}
+  .hold .row{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px}
+  .nm{font-weight:650}.mk{color:var(--mut);font-size:12px}.val{text-align:right}.up{color:var(--green)}.down{color:var(--red)}
+  button.primary{width:100%;background:var(--blue);color:#fff;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px}
+  button.soft{width:100%;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
+  label{display:block;font-size:12px;color:var(--mut);margin:12px 0 4px}
+  input,select{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:15px;background:var(--card2);color:var(--ink)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .out{margin-top:10px;font-size:14px;line-height:1.5}
-  .hide{display:none}
-  .empty{padding:30px 18px;text-align:center}
-  .empty .ico{font-size:34px} .empty h3{margin:10px 0 4px}
+  .muted{color:var(--mut);font-size:13px}.ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.center{text-align:center}.hide{display:none}
+  .empty{padding:30px 18px;text-align:center}.empty .ico{font-size:34px}
+  /* war room */
+  .sess{margin-bottom:14px}
+  .sess .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .sess .tk{font-weight:700}
+  .badge{font-size:11px;padding:3px 10px;border-radius:999px}
+  .badge.disp{background:#0f2619;color:var(--green)}.badge.veto{background:#3a1414;color:var(--red)}.badge.none{background:#222b36;color:var(--mut)}
+  .line{display:flex;gap:10px;padding:9px 0;border-top:1px dashed #20303f;cursor:pointer}
+  .line:first-child{border-top:0}
+  .av{font-size:18px;flex:0 0 24px;text-align:center}
+  .line .who{font-weight:650;font-size:13px}.line .ro{color:var(--mut);font-size:11px}
+  .line .sy{color:#c9d3df;font-size:13.5px;margin-top:2px;line-height:1.45}
+  .line .dt{display:none;margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:#8fa0b3;background:var(--soft);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-word}
+  /* modal */
+  .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;z-index:50}
+  .ov.show{display:flex}
+  .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
+  .modal h3{margin:0 0 8px}.modal p{color:#c9d3df;line-height:1.55;font-size:14px}
+  .modal .x{float:right;color:var(--mut);cursor:pointer;font-size:20px;line-height:1}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="top">
-    <div><h1>InvestWise</h1><div class="sub" id="sub">your wealth, in plain language</div></div>
-    <a href="/dashboard/" class="muted" style="text-decoration:none">advanced ↗</a>
+<div class="head">
+  <div class="bar">
+    <div><h1>InvestWise</h1><div class="sub">your wealth, in plain language</div></div>
+    <a href="/dashboard/" class="muted" style="text-decoration:none;font-size:12px">advanced ↗</a>
   </div>
+  <div class="tabs" id="tabs">
+    <button data-t="today" onclick="show('today')">Today</button>
+    <button data-t="hold" onclick="show('hold')">Holdings</button>
+    <button data-t="plan" onclick="show('plan')">Plan</button>
+    <button data-t="agents" onclick="show('agents')">Agents</button>
+    <button data-t="explore" onclick="show('explore')">Explore</button>
+  </div>
+</div>
 
-  <!-- SETUP / EMPTY STATE -->
+<div class="wrap">
+  <!-- SETUP -->
   <section id="view-setup" class="hide">
     <div class="card empty">
-      <div class="ico">👋</div>
-      <h3>Let's see how your wealth is doing</h3>
-      <p class="muted">Add what you own and InvestWise will tell you, in plain words,
-        how healthy it is and what you could improve.</p>
+      <div class="ico">👋</div><h3>Let's see how your wealth is doing</h3>
+      <p class="muted">Add what you own and InvestWise will tell you, plainly, how healthy it is and what to improve.</p>
       <button class="primary" onclick="loadSample()">Try it with a sample portfolio</button>
       <button class="soft" onclick="showAdd()">Add my holdings manually</button>
       <div id="addbox" class="hide" style="text-align:left;margin-top:14px">
-        <div class="grid2">
-          <div><label>Name / ticker</label><input id="a_t" placeholder="e.g. TEVA"/></div>
-          <div><label>Where</label><select id="a_m"><option>NYSE</option><option>TASE</option><option>SPOT</option></select></div>
-        </div>
-        <div class="grid2">
-          <div><label>How many shares</label><input id="a_q" type="number" value="100"/></div>
-          <div><label>Price you paid (each)</label><input id="a_c" type="number" value="90"/></div>
-        </div>
-        <label>Price today (each)</label><input id="a_p" type="number" value="100"/>
+        <div class="grid2"><div><label>Name / ticker</label><input id="a_t" placeholder="TEVA"/></div>
+          <div><label>Where</label><select id="a_m"><option>NYSE</option><option>TASE</option><option>SPOT</option></select></div></div>
+        <div class="grid2"><div><label>Shares</label><input id="a_q" type="number" value="100"/></div>
+          <div><label>Price you paid</label><input id="a_c" type="number" value="90"/></div></div>
+        <label>Price today</label><input id="a_p" type="number" value="100"/>
         <button class="primary" onclick="addOne()">Add holding</button>
         <div class="muted" id="add_out" style="margin-top:8px"></div>
-        <p class="muted" style="margin-top:12px">Have a spreadsheet?
-          <a href="/api/v1/intake/template.csv">Download a template</a> and
-          <label style="display:inline">upload it<input id="csv" type="file" accept=".csv" style="display:none" onchange="uploadCsv()"/></label>.</p>
+        <p class="muted" style="margin-top:12px">Spreadsheet? <a href="/api/v1/intake/template.csv">Template</a> ·
+          <label style="display:inline">upload<input id="csv" type="file" accept=".csv" style="display:none" onchange="uploadCsv()"/></label></p>
       </div>
     </div>
   </section>
@@ -106,69 +114,103 @@
   <section id="view-today" class="hide">
     <div class="card hero">
       <div class="lbl">Your wealth is</div>
-      <div class="big" id="rating">…</div>
-      <div class="muted"><span id="score">–</span>/100 health</div>
+      <div class="big" id="rating" onclick="explain('health')">…</div>
+      <div class="muted"><span id="score">–</span>/100 health · <span class="q" style="cursor:pointer" onclick="explain('health')">what's this?</span></div>
       <div class="bar"><i id="barfill" style="width:0%"></i></div>
       <div class="dims" id="dims"></div>
+      <div class="goal" id="goal"></div>
     </div>
-
     <h2>Things you could improve</h2>
     <div class="imp" id="improve"><div class="card muted">Checking…</div></div>
-
     <h2>Your biggest risk</h2>
     <div class="card risk" id="risk"><div class="muted">Checking…</div></div>
   </section>
 
   <!-- HOLDINGS -->
   <section id="view-hold" class="hide">
-    <h2 style="margin-top:8px">What you own</h2>
+    <h2>What you own</h2>
     <div class="hold" id="holds"><div class="card muted">Loading…</div></div>
     <button class="soft" onclick="showAdd(); show('setup')">＋ Add another holding</button>
   </section>
 
+  <!-- PLAN -->
+  <section id="view-plan" class="hide">
+    <h2>Your plan & goals</h2>
+    <div class="card">
+      <div class="goal" id="goalbig"></div>
+      <div class="bar" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
+      <div class="grid2">
+        <div><label>What are you aiming for?</label>
+          <select id="p_obj"><option>Grow</option><option selected>Balanced</option><option>Preserve</option><option>Income</option></select></div>
+        <div><label>Risk tolerance</label>
+          <select id="p_risk"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
+      </div>
+      <div class="grid2">
+        <div><label>Years until you need it</label><input id="p_hor" type="number" value="10"/></div>
+        <div><label>Target amount (₪)</label><input id="p_amt" type="number" placeholder="e.g. 2000000"/></div>
+      </div>
+      <label>By when (year)</label><input id="p_date" placeholder="2035"/>
+      <button class="primary" onclick="savePlan()">Save my plan</button>
+      <div class="muted" id="plan_out" style="margin-top:10px"></div>
+      <div class="why" id="plan_note" style="display:block;margin-top:12px"></div>
+    </div>
+  </section>
+
+  <!-- AGENTS / WAR ROOM -->
+  <section id="view-agents" class="hide">
+    <h2>How the decision was made</h2>
+    <p class="muted" style="margin:-4px 4px 12px">Each specialist agent weighs in, in order. Tap any line to see the numbers behind it.</p>
+    <div id="war"><div class="card muted">Loading the war room…</div></div>
+  </section>
+
   <!-- EXPLORE -->
   <section id="view-explore" class="hide">
-    <h2 style="margin-top:8px">What if…</h2>
+    <h2>What if…</h2>
     <div class="grid2">
       <button class="soft" onclick="runScenario('MARKET_CRASH','a market crash')">📉 Market crash</button>
       <button class="soft" onclick="runScenario('INFLATION_SHOCK','high inflation')">🔥 Inflation</button>
       <button class="soft" onclick="runScenario('INTEREST_RATE_INCREASE','rates rising')">📈 Rates up</button>
       <button class="soft" onclick="runScenario('FX_SHOCK','a currency shock')">💱 Currency</button>
     </div>
-    <div class="card out hide" id="scn_out"></div>
-    <h2>Ideas from the markets</h2>
-    <div class="imp" id="ideas"><div class="muted" style="padding:4px">Tap to load…</div></div>
-    <button class="soft" onclick="loadIdeas()">Show market ideas</button>
+    <div class="card hide" id="scn_out" style="margin-top:10px"></div>
   </section>
 </div>
 
-<div class="tabbar" id="tabs">
-  <button data-t="today" onclick="show('today')"><span class="ic">🏠</span>Today</button>
-  <button data-t="hold" onclick="show('hold')"><span class="ic">💼</span>Holdings</button>
-  <button data-t="explore" onclick="show('explore')"><span class="ic">🔭</span>Explore</button>
+<div class="ov" id="ov" onclick="if(event.target.id==='ov')closeModal()">
+  <div class="modal"><span class="x" onclick="closeModal()">×</span><h3 id="m_t"></h3><p id="m_b"></p></div>
 </div>
 
 <script>
-const ils = n => "₪" + Math.round(Number(n)).toLocaleString();
-const pct = n => (Number(n)*100).toFixed(0) + "%";
-const $ = id => document.getElementById(id);
-const snoozed = JSON.parse(localStorage.getItem("iw_snoozed") || "[]");
+const ils=n=>"₪"+Math.round(Number(n)).toLocaleString();
+const pct=n=>(Number(n)*100).toFixed(0)+"%";
+const $=id=>document.getElementById(id);
+const snoozed=JSON.parse(localStorage.getItem("iw_snoozed")||"[]");
 
 function show(v){
-  for(const s of ["setup","today","hold","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
-  document.querySelectorAll(".tabbar button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
-  $("tabs").style.display = v==="setup" ? "none" : "flex";
+  for(const s of ["setup","today","hold","plan","agents","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
+  document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
+  $("tabs").style.visibility = v==="setup" ? "hidden" : "visible";
   if(v==="today") loadToday();
   if(v==="hold") loadHoldings();
+  if(v==="plan") loadPlan();
+  if(v==="agents") loadWar();
 }
-
 async function boot(){
-  try{
-    const p = await (await fetch("/api/v1/portfolio")).json();
-    if(!p.count){ show("setup"); $("tabs").style.display="none"; }
-    else show("today");
+  try{ const p=await(await fetch("/api/v1/portfolio")).json();
+    if(!p.count){ show("setup"); } else show("today");
   }catch(e){ show("setup"); }
 }
+
+// ---- modal explainers ----
+const EXPLAIN={
+  health:["Your wealth health","One number from 0–100 that blends five things: <b>25% Risk + 25% Tax + 20% Spread + 15% Cash + 15% themes</b>. 80+ Strong, 60+ Healthy, 40+ needs attention."],
+  risk:["Risk score","How <b>calm</b> your money is. We look at how much each holding bounces around (its volatility) and blend it by size — calmer means a higher score. Roughly: 100 − volatility × 2."],
+  tax:["Tax score","How <b>tax-efficient</b> you are. Sitting on unrealized losses you haven't used to offset gains lowers this. Starts at 85 and drops with unharvested losses."],
+  spread:["Spread (diversification)","Whether your money is <b>spread out</b>. If one holding is a big slice of everything, this drops. The limit flexes with your risk tolerance (Low 15% · Medium 25% · High 40%)."],
+  cash:["Cash (liquidity)","How <b>easily you could sell</b> if you needed cash quickly. Higher means more of your money is in liquid, easy-to-trade assets."],
+};
+function explain(k){ const e=EXPLAIN[k]; $("m_t").textContent=e[0]; $("m_b").innerHTML=e[1]; $("ov").classList.add("show"); }
+function closeModal(){ $("ov").classList.remove("show"); }
 
 // ---- setup ----
 function showAdd(){ $("addbox").classList.remove("hide"); }
@@ -182,111 +224,132 @@ async function loadSample(){
 }
 async function addOne(){
   const price=+$("a_p").value;
-  const body={entity_name:"Personal",positions:[{
-    ticker:$("a_t").value||"NEW", market:$("a_m").value, depth:1,
-    spot_price:price, listing_price:price, quantity:+$("a_q").value, cost_basis:+$("a_c").value}]};
+  const body={entity_name:"Personal",positions:[{ticker:$("a_t").value||"NEW",market:$("a_m").value,depth:1,
+    spot_price:price,listing_price:price,quantity:+$("a_q").value,cost_basis:+$("a_c").value}]};
   $("add_out").textContent="Saving…";
-  try{ const r=await(await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
-    $("add_out").innerHTML=`<span class="ok">Saved ${r.positions_saved} holding.</span>`; setTimeout(()=>show("today"),700);
-  }catch(e){ $("add_out").innerHTML=`<span class="bad">${e}</span>`; }
+  try{const r=await(await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    $("add_out").innerHTML=`<span class="ok">Saved.</span>`; setTimeout(()=>show("today"),600);
+  }catch(e){$("add_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 async function uploadCsv(){
-  const f=$("csv").files[0]; if(!f) return;
-  const fd=new FormData(); fd.append("file",f);
-  $("add_out").textContent="Uploading…";
-  try{ const r=await(await fetch("/api/v1/intake/portfolio/csv?entity_name=Personal",{method:"POST",body:fd})).json();
-    $("add_out").innerHTML=`<span class="ok">Added ${r.positions_saved} holdings.</span>`; setTimeout(()=>show("today"),700);
-  }catch(e){ $("add_out").innerHTML=`<span class="bad">${e}</span>`; }
+  const f=$("csv").files[0]; if(!f)return; const fd=new FormData(); fd.append("file",f); $("add_out").textContent="Uploading…";
+  try{const r=await(await fetch("/api/v1/intake/portfolio/csv?entity_name=Personal",{method:"POST",body:fd})).json();
+    $("add_out").innerHTML=`<span class="ok">Added ${r.positions_saved}.</span>`; setTimeout(()=>show("today"),600);
+  }catch(e){$("add_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 
 // ---- today ----
-function ratingWord(s){ return s>=80?"Strong":s>=60?"Healthy":s>=40?"Needs attention":"At risk"; }
-function ratingColor(s){ return s>=80?"#16a34a":s>=60?"#2f6df6":s>=40?"#d97706":"#dc2626"; }
+function rWord(s){return s>=80?"Strong":s>=60?"Healthy":s>=40?"Needs attention":"At risk";}
+function rCol(s){return s>=80?"#34d399":s>=60?"#3b82f6":s>=40?"#fbbf24":"#f87171";}
 const SEV={CRITICAL:["important","Important"],HIGH:["worth","Worth doing"],MEDIUM:["nice","Nice to have"],LOW:["minor","Minor"]};
 const TITLE={tax:"Lower your tax bill",diversification:"Spread your money out",liquidity:"Keep enough cash",risk:"Reduce your risk"};
-const WHYTXT={
-  tax:"Selling something that's down can offset gains and cut the tax you owe this year.",
-  diversification:"Too much in one stock or place means one bad move hits you hard. Spreading out lowers that risk.",
+const WHYTXT={tax:"Selling something that's down can offset gains and cut the tax you owe this year.",
+  diversification:"Too much in one place means one bad move hits you hard. Spreading out lowers that risk.",
   liquidity:"If too little is easy to sell, you could be stuck when you need cash.",
   risk:"Your mix swings a lot. Trimming the riskiest parts steadies your returns."};
-
 async function loadToday(){
   try{
-    const h = await (await fetch("/api/v1/health-check")).json();
+    const h=await(await fetch("/api/v1/health-check")).json();
     if(h.wealth_health_score==null){ show("setup"); return; }
     const s=h.wealth_health_score;
-    $("rating").textContent=ratingWord(s); $("rating").style.color=ratingColor(s);
-    $("score").textContent=s; $("barfill").style.width=s+"%"; $("barfill").style.background=ratingColor(s);
-    $("dims").innerHTML=[["Risk",h.risk_score],["Tax",h.tax_efficiency_score],["Spread",h.diversification_score],["Cash",h.liquidity_score]]
-      .map(([k,v])=>`<span class="chip">${k} ${v}</span>`).join("");
+    $("rating").textContent=rWord(s); $("rating").style.color=rCol(s);
+    $("score").textContent=s; $("barfill").style.width=s+"%"; $("barfill").style.background=rCol(s);
+    $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
+      .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
     const opps=(h.top_improvement_opportunities||[]).filter(o=>!snoozed.includes(o.id));
-    $("improve").innerHTML = opps.length ? opps.map(impCard).join("")
+    $("improve").innerHTML=opps.length? opps.map(impCard).join("")
       : `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to improve right now.</b><div class="muted">You're in good shape.</div></div>`;
-  }catch(e){ $("improve").innerHTML=`<div class="card bad">${e}</div>`; }
-  try{
-    const r = await (await fetch("/api/v1/risk/alerts")).json();
-    const a=(r.alerts||[])[0];
-    $("risk").innerHTML = a
-      ? `<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <a href="#" onclick="show('explore');return false">see what a crash would do →</a></div></div>`
+  }catch(e){$("improve").innerHTML=`<div class="card bad">${e}</div>`;}
+  try{ const p=await(await fetch("/api/v1/plan")).json();
+    $("goal").innerHTML = p.goal_progress!=null ? `🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there` : "";
+  }catch(e){}
+  try{ const r=await(await fetch("/api/v1/risk/alerts")).json(); const a=(r.alerts||[])[0];
+    $("risk").innerHTML=a? `<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <a href="#" onclick="show('explore');return false">see what a crash would do →</a></div></div>`
       : `<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Your money looks well balanced.</div></div>`;
-  }catch(e){ $("risk").innerHTML=`<div class="muted">Couldn't load risk.</div>`; }
+  }catch(e){$("risk").innerHTML=`<div class="muted">Couldn't load risk.</div>`;}
 }
 function plainRisk(a){
-  if(a.vector==="single_position") return a.detail.replace(/\(.*\)/,"— too much in one holding.");
-  if(a.vector==="geographic") return "Most of your money is in one region.";
-  if(a.vector==="currency") return "Most of your money is in one currency.";
-  if(a.vector==="liquidity") return "A lot of your money may be hard to sell quickly.";
+  if(a.vector==="single_position")return a.detail.replace(/\(.*\)/,"— too much in one holding.");
+  if(a.vector==="geographic")return "Most of your money is in one region.";
+  if(a.vector==="currency")return "Most of your money is in one currency.";
+  if(a.vector==="liquidity")return "A lot of your money may be hard to sell quickly.";
   return a.detail;
 }
-function impCard(o){
-  const sev=SEV[o.severity]||["minor","Minor"];
-  return `<div class="row"><div class="h"><span class="t">${TITLE[o.dimension]||"Improve"}</span>
-    <span class="pill ${sev[0]}">${sev[1]}</span></div>
-    <div class="desc">${o.description}</div>
-    <div class="why" id="why_${o.id}">${WHYTXT[o.dimension]||""}</div>
-    <div class="acts"><button onclick="toggleWhy('${o.id}')">Why this matters</button>
-      <button class="ghost" onclick="snooze('${o.id}')">Snooze</button></div></div>`;
-}
-function toggleWhy(id){ const e=$("why_"+id); e.style.display = e.style.display==="block"?"none":"block"; }
-function snooze(id){ snoozed.push(id); localStorage.setItem("iw_snoozed",JSON.stringify(snoozed)); loadToday(); }
+function impCard(o){const sev=SEV[o.severity]||["minor","Minor"];
+  return `<div class="row"><div class="h"><span class="t">${TITLE[o.dimension]||"Improve"}</span><span class="pill ${sev[0]}">${sev[1]}</span></div>
+    <div class="desc">${o.description}</div><div class="why" id="why_${o.id}">${WHYTXT[o.dimension]||""}</div>
+    <div class="acts"><button onclick="toggleWhy('${o.id}')">Why this matters</button><button class="ghost" onclick="snooze('${o.id}')">Snooze</button></div></div>`;}
+function toggleWhy(id){const e=$("why_"+id);e.style.display=e.style.display==="block"?"none":"block";}
+function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
 
 // ---- holdings ----
 async function loadHoldings(){
-  try{
-    const p=await(await fetch("/api/v1/portfolio")).json();
-    $("holds").innerHTML = p.positions.map(h=>{
-      const val=h.quantity*(h.current_price||0);
-      const up=(h.current_price||0)>=h.cost_basis;
-      const chg=h.cost_basis? ((h.current_price-h.cost_basis)/h.cost_basis*100):0;
+  try{const p=await(await fetch("/api/v1/portfolio")).json();
+    $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
+      const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares</div></div>
-        <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div></div></div>`;
-    }).join("") || `<div class="card muted">No holdings yet.</div>`;
-  }catch(e){ $("holds").innerHTML=`<div class="card bad">${e}</div>`; }
+        <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div></div></div>`;}).join("")
+      || `<div class="card muted">No holdings yet.</div>`;
+  }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
 }
+
+// ---- plan ----
+async function loadPlan(){
+  try{const p=await(await fetch("/api/v1/plan")).json();
+    $("p_obj").value=p.objective; $("p_risk").value=p.risk_tolerance; $("p_hor").value=p.horizon_years;
+    if(p.target_amount) $("p_amt").value=p.target_amount; if(p.target_date) $("p_date").value=p.target_date;
+    renderGoal(p); renderPlanNote(p);
+  }catch(e){}
+}
+function renderGoal(p){
+  if(p.goal_progress!=null){ $("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${p.target_date||'—'} (${pct(p.goal_progress)})`;
+    $("goalfill").style.width=Math.round(p.goal_progress*100)+"%"; }
+  else { $("goalbig").innerHTML=`<span class="muted">Set a target amount to track progress.</span>`; $("goalfill").style.width="0%"; }
+}
+function renderPlanNote(p){
+  const cap=p.caps?p.caps.concentration_cap:0.25;
+  $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance we let any single holding be up to <b>${pct(cap)}</b> of your money before flagging it, and we judge your "spread" score against that. Change it and your health & advice adjust.`;
+}
+async function savePlan(){
+  const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
+    target_amount:$("p_amt").value?+$("p_amt").value:null,target_date:$("p_date").value||null};
+  $("plan_out").textContent="Saving…";
+  try{const p=await(await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view now reflects this.</span>`; renderGoal(p); renderPlanNote(p);
+  }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
+}
+
+// ---- war room ----
+const AV={Research:"🔎",Alpha:"🎯",Risk:"🛡️",Tax:"🧾",Decision:"🧮",Adversary:"⚔️",UX:"📣",Allocation:"📊",Safety:"🚧"};
+async function loadWar(){
+  $("war").innerHTML=`<div class="card muted">Loading the war room…</div>`;
+  try{const w=await(await fetch("/api/v1/war-room")).json();
+    $("war").innerHTML=w.sessions.map(sessCard).join("") || `<div class="card muted">No signals to discuss right now.</div>`;
+  }catch(e){$("war").innerHTML=`<div class="card bad">${e}</div>`;}
+}
+function sessCard(s){
+  const cls=s.outcome==="DISPLAYED"?"disp":s.outcome==="VETOED"?"veto":"none";
+  const lines=s.transcript.map((l,i)=>{
+    const id=`${s.ticker}_${i}`;
+    const hasDetail=l.detail&&Object.keys(l.detail).length;
+    return `<div class="line" onclick="${hasDetail?`tgl('${id}')`:''}">
+      <div class="av">${AV[l.agent]||"•"}</div>
+      <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div>
+        <div class="sy">${l.says}</div>
+        ${hasDetail?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;
+  }).join("");
+  return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${lines}</div>`;
+}
+function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
 // ---- explore ----
 async function runScenario(code,label){
-  const o=$("scn_out"); o.classList.remove("hide"); o.textContent="Running a stress test…";
-  try{
-    const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:code})})).json();
-    const drop=Math.abs(r.expected_portfolio_value_delta_pct);
+  const o=$("scn_out");o.classList.remove("hide");o.textContent="Running a stress test…";
+  try{const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:code})})).json();
     const months=Math.round(r.estimated_recovery_timeline_days/30);
-    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about
-      <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>,
-      and history suggests it'd take roughly <b>${months} month${months===1?'':'s'}</b> to recover.
-      <div class="muted" style="margin-top:6px">Chance of a rough patch: ${pct(r.drawdown_probability)}.</div>`;
-  }catch(e){ o.innerHTML=`<span class="bad">${e}</span>`; }
-}
-async function loadIdeas(){
-  $("ideas").innerHTML=`<div class="muted" style="padding:4px">Loading…</div>`;
-  try{
-    const d=await(await fetch("/api/v1/decision-feed/demo")).json();
-    const shown=d.items.filter(i=>i.path);
-    $("ideas").innerHTML = shown.length? shown.map(i=>`<div class="row"><div class="h"><span class="t">${i.title}</span>
-      <span class="pill ${i.path==='Growth'?'nice':'minor'}">${i.path==='Growth'?'Growth':'Steady'}</span></div>
-      <div class="desc">${(i.adversary_critique||'').split('.')[0]}.</div></div>`).join("")
-      : `<div class="muted" style="padding:4px">No standout ideas right now.</div>`;
-  }catch(e){ $("ideas").innerHTML=`<div class="bad">${e}</div>`; }
+    o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>,
+      and history suggests ~<b>${months} month${months===1?'':'s'}</b> to recover.<div class="muted" style="margin-top:6px">Chance of a rough patch: ${pct(r.drawdown_probability)}.</div>`;
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 
 boot();

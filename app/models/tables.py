@@ -238,3 +238,14 @@ class AuditLog(Base, PKMixin, TimestampMixin):
     origin_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     role: Mapped[str] = mapped_column(String(32), default="open")
     payload_sha256: Mapped[str] = mapped_column(String(64))
+
+
+class Plan(Base, PKMixin, TimestampMixin):
+    __tablename__ = "plans"
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    objective: Mapped[str] = mapped_column(String(16), default="Balanced")        # Grow|Balanced|Preserve|Income
+    risk_tolerance: Mapped[str] = mapped_column(String(8), default="Medium")      # Low|Medium|High
+    horizon_years: Mapped[int] = mapped_column(Integer, default=10)
+    target_amount: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    target_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="ILS")

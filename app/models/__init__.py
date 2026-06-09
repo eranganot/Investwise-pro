@@ -14,19 +14,11 @@ from app.models.tables import (
     WhsSnapshot,
     RevokedToken,
     AuditLog,
+    Plan,
 )
 
 __all__ = [
-    "Base",
-    "User",
-    "Entity",
-    "Account",
-    "Bucket",
-    "Position",
-    "Transaction",
-    "TaxProfile",
-    "DecisionFeed",
-    "DecisionItem",
-    "WhsSnapshot",
-    "UserAction",
+    "Base", "User", "Entity", "Account", "Bucket", "Position", "Transaction",
+    "TaxProfile", "DecisionFeed", "DecisionItem", "WhsSnapshot", "UserAction",
+    "Credential", "RevokedToken", "AuditLog", "Plan",
 ]

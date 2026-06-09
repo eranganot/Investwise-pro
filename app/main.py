@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     allocation, auth, decision_feed, entities, health, intake, jobs, lag, learning, market,
-    observability, risk, safety, simulation, tax, whs, workflows,
+    observability, plan, risk, safety, simulation, tax, war_room, whs, workflows,
 )
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal, engine
@@ -119,6 +119,8 @@ def create_app() -> FastAPI:
         return await call_next(request)
     app.include_router(health.router)
     app.include_router(observability.router)
+    app.include_router(plan.router)
+    app.include_router(war_room.router)
     app.include_router(auth.router)
     app.include_router(decision_feed.router)
     app.include_router(tax.router)

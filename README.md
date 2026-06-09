@@ -116,6 +116,8 @@ alembic upgrade head
 | POST   | `/api/v1/intake/portfolio/csv`| Ingest positions (CSV upload)        |
 | GET    | `/api/v1/portfolio`           | List persisted positions             |
 | GET    | `/api/v1/entities`            | List entities (Personal/Spouse/Corp) |
+| GET/PUT| `/api/v1/plan`                | Goals/plan (tailors health & advice) |
+| GET    | `/api/v1/war-room`            | Per-recommendation agent reasoning   |
 | GET    | `/api/v1/auth/status`         | Whether API-key auth is enabled      |
 | POST   | `/api/v1/allocation/analyze`  | SAA/TAA drift + cost-adjusted rebalance |
 | GET    | `/api/v1/health-check`        | Portfolio Health Check (≤5 opps)       |

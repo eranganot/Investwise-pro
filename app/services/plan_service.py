@@ -1,0 +1,41 @@
+"""Planning / goals (tailors advice + health to the user's plan)."""
+from __future__ import annotations
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import get_settings
+from app.models.tables import Plan, User
+
+# Risk tolerance flexes the guardrails used by the health + advice layer.
+RISK_CAPS = {
+    "Low": {"concentration_cap": 0.15, "volatility_cap": 0.10, "ruin_probability_cap": 0.10},
+    "Medium": {"concentration_cap": 0.25, "volatility_cap": 0.15, "ruin_probability_cap": 0.20},
+    "High": {"concentration_cap": 0.40, "volatility_cap": 0.25, "ruin_probability_cap": 0.35},
+}
+
+
+async def get_plan(session: AsyncSession, user: User) -> Plan | None:
+    return (await session.execute(select(Plan).where(Plan.user_id == user.id))).scalar_one_or_none()
+
+
+async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
+    plan = await get_plan(session, user)
+    allowed = {"objective", "risk_tolerance", "horizon_years", "target_amount", "target_date", "currency"}
+    data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if plan is None:
+        plan = Plan(user_id=user.id, **data)
+        session.add(plan)
+    else:
+        for k, v in data.items():
+            setattr(plan, k, v)
+    await session.flush()
+    return plan
+
+
+def effective_caps(plan: Plan | None) -> dict:
+    if plan is None:
+        s = get_settings()
+        return {"concentration_cap": s.concentration_cap, "volatility_cap": s.volatility_cap,
+                "ruin_probability_cap": s.ruin_probability_cap}
+    return RISK_CAPS.get(plan.risk_tolerance, RISK_CAPS["Medium"])
