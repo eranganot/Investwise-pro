@@ -22,7 +22,7 @@ async def get_plan(session: AsyncSession, user: User) -> Plan | None:
 async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
     plan = await get_plan(session, user)
     allowed = {"objective", "risk_tolerance", "horizon_years", "target_amount", "target_date", "currency",
-               "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period"}
+               "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period", "preferred_depth"}
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if plan is None:
         plan = Plan(user_id=user.id, **data)
@@ -40,3 +40,15 @@ def effective_caps(plan: Plan | None) -> dict:
         return {"concentration_cap": s.concentration_cap, "volatility_cap": s.volatility_cap,
                 "ruin_probability_cap": s.ruin_probability_cap}
     return RISK_CAPS.get(plan.risk_tolerance, RISK_CAPS["Medium"])
+
+
+def plan_settings(plan):
+    """Settings flexed by the plan, so every engine/agent optimizes the goals."""
+    base = get_settings()
+    caps = effective_caps(plan)
+    update = {"concentration_cap": caps["concentration_cap"],
+              "volatility_cap": caps["volatility_cap"],
+              "ruin_probability_cap": caps["ruin_probability_cap"]}
+    if plan is not None and getattr(plan, "preferred_depth", None):
+        update["preferred_depth"] = plan.preferred_depth
+    return base.model_copy(update=update)

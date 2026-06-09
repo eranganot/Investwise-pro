@@ -19,6 +19,7 @@ class IntakePosition(BaseModel):
     expected_return_pct: Optional[float] = None
     volatility_pct: Optional[float] = None
     action_type: ActionType = ActionType.BUY
+    asset_class: Optional[str] = None  # Equities|Fixed Income|Cash|Commodities|Alternatives|Real Estate|Private Investments
 
 
 class PortfolioIntakeRequest(BaseModel):

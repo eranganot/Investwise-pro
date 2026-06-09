@@ -9,6 +9,7 @@ from app.core.database import get_session
 from app.engines.allocation_engine import AllocationEngine
 from app.engines.simulation_engine import SimulationEngine
 from app.models.tables import User
+from app.services.allocation_mix import OBJ_TARGET as _OBJ, current_mix
 from app.services.intake_service import list_positions
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 
@@ -60,6 +61,7 @@ class PlanRequest(BaseModel):
     target_roi_period: str | None = None
     target_yield_pct: float | None = None
     target_yield_period: str | None = None
+    preferred_depth: int | None = None
 
 
 def _plan_dict(plan, stats: dict) -> dict:
@@ -68,7 +70,7 @@ def _plan_dict(plan, stats: dict) -> dict:
         base = {"configured": False, "objective": "Balanced", "risk_tolerance": "Medium",
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
                 "target_roi_pct": None, "target_roi_period": "yearly",
-                "target_yield_pct": None, "target_yield_period": "yearly",
+                "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = float(plan.target_amount) if plan.target_amount is not None else None
@@ -77,6 +79,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_date": plan.target_date, "currency": plan.currency,
                 "target_roi_pct": plan.target_roi_pct, "target_roi_period": plan.target_roi_period or "yearly",
                 "target_yield_pct": plan.target_yield_pct, "target_yield_period": plan.target_yield_period or "yearly",
+                "preferred_depth": plan.preferred_depth,
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]
@@ -127,16 +130,11 @@ async def goal_projection(session: AsyncSession = Depends(get_session), user: Us
 @router.get("/mix")
 async def mix_check(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)
-    nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows)
+    current, nav = current_mix(rows)
     if not nav:
         return {"message": "Add holdings to check your mix."}
-    current: dict[str, float] = {}
-    for p in rows:
-        val = float(p.quantity) * float(p.current_price or 0)
-        cls = _classify(p.ticker, p.market)
-        current[cls] = round(current.get(cls, 0.0) + val / nav, 4)
     plan = await get_plan(session, user)
-    target = OBJ_TARGET.get(plan.objective if plan else "Balanced", OBJ_TARGET["Balanced"])
+    target = _OBJ.get(plan.objective if plan else "Balanced", _OBJ["Balanced"])
     report = AllocationEngine().compute(target_allocation=target, current_allocation=current, nav=nav)
     return {"note": "Holdings are classified roughly by ticker/venue.",
             "objective": plan.objective if plan else "Balanced", **report.model_dump()}

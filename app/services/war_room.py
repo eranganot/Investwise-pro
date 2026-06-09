@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from app.agents import adversary
 from app.agents.research_agent import ResearchAgent
+from app.engines.decision_engine import DecisionEngine
 from app.engines.lag_engine import LagEngine
 from app.engines.risk_engine import RiskEngine
 from app.engines.state_machine import StateMachine
+from app.engines.tax_engine import TaxEngine
 
 AGENTS = ["Research", "Alpha", "Risk", "Tax", "Decision", "Adversary", "UX"]
 
@@ -27,10 +29,11 @@ def _tax_say(opt) -> str:
     return "Net-after-tax computed" + (": " + ", ".join(bits) + "." if bits else ".")
 
 
-def build_war_room(observations, portfolio_tickers=None) -> dict:
+def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
     portfolio_tickers = portfolio_tickers or set()
-    lag = LagEngine()
-    sm = StateMachine(risk=RiskEngine(seed=7))
+    lag = LagEngine(settings)
+    sm = StateMachine(risk=RiskEngine(settings, seed=7), tax=TaxEngine(settings),
+                      decision=DecisionEngine(settings), settings=settings)
     research = ResearchAgent().scan()
     sessions = []
 

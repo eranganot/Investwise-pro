@@ -14,17 +14,20 @@ from app.agents import adversary
 from app.agents.allocation_agent import AllocationAgent, VetoException
 from app.core.config import get_settings
 from app.engines.allocation_engine import AllocationEngine
+from app.engines.decision_engine import DecisionEngine
 from app.engines.lag_engine import LagEngine
 from app.engines.learning_engine import compute_profile, impact_boost
 from app.engines.risk_engine import RiskEngine
 from app.engines.safety_engine import SafetyEngine
 from app.engines.state_machine import StateMachine
+from app.engines.tax_engine import TaxEngine
 from app.engines.xai_engine import XaiEngine
 from app.models.tables import DecisionFeed, DecisionItem, User
 from app.schemas.feed import GenerateRequest
 from app.schemas.state_machine import ActionType, DisplayedItem, VetoedSignal
 from app.services.demo_data import DEFAULT_OBSERVATIONS
 from app.services.feed_service import build_recommendation
+from app.services.plan_service import get_plan, plan_settings
 from app.services.intake_service import list_positions, position_to_observation
 
 _TTL = {"Now": "rec_ttl_now_days", "This Week": "rec_ttl_week_days", "Monitor": "rec_ttl_monitor_days"}
@@ -64,6 +67,11 @@ class PipelineOrchestrator:
 
     async def generate(self, session: AsyncSession, user: User, req: GenerateRequest) -> dict:
         observations = await self._resolve_observations(session, user, req)
+        ps = plan_settings(await get_plan(session, user))
+        self.lag = LagEngine(ps)
+        self.sm = StateMachine(risk=RiskEngine(ps, seed=7), tax=TaxEngine(ps),
+                               decision=DecisionEngine(ps), settings=ps)
+        self.safety = SafetyEngine(ps)
         profile = await compute_profile(session, user.id)
         feed = DecisionFeed(user_id=user.id, horizon="month", status="OPEN")
         session.add(feed)

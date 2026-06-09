@@ -39,6 +39,8 @@ class DecisionEngine:
                 if vetted.probability_of_ruin is not None else unknown)
         liquidity = clamp_score(detected.liquidity_score) if detected.liquidity_score is not None else unknown
         conviction = clamp_score(detected.depth / 3.0 * 100.0)
+        if self.settings.preferred_depth and detected.depth == self.settings.preferred_depth:
+            conviction = clamp_score(conviction + 25.0)  # plan 'flavor' favors this depth
         scores = ImpactScores(ret=ret, tax=tax, risk=risk, liquidity=liquidity, conviction=conviction)
 
         label = COMPLEXITY_BY_ACTION.get(detected.action_type, Complexity.MODERATE)

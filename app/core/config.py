@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     min_confidence: float = 60.0
     score_unknown_default: float = 25.0  # sub-score for unassessed dimensions (penalizes incomplete data)
     decision_return_scale: float = 5.0          # maps return/divergence % to the 0-100 return sub-score
+    preferred_depth: int | None = None          # plan 'flavor': favor this Lag depth (1/2/3)
     confidence_dq_base: float = 60.0            # base data-quality score
     confidence_dq_bonus: float = 20.0           # +per available data dimension (risk, tax)
     confidence_model_agreement: float = 80.0    # baseline model agreement

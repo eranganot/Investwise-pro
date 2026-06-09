@@ -57,6 +57,7 @@ async def upsert_positions(
             "expected_return_pct": ip.expected_return_pct,
             "volatility_pct": ip.volatility_pct,
             "action_type": ip.action_type.value,
+            "asset_class": ip.asset_class,
         }
         row = existing.get(ip.ticker)
         if row is None:

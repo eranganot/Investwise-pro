@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
     allocation, auth, decision_feed, entities, health, intake, jobs, lag, learning, market,
-    observability, plan, risk, safety, simulation, tax, war_room, whs, workflows,
+    observability, plan, recommendations, risk, safety, simulation, tax, war_room, whs, workflows,
 )
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal, engine
@@ -52,6 +52,7 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_roi_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
                 ):
                     try:
                         await conn.execute(text(ddl))
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(observability.router)
     app.include_router(plan.router)
+    app.include_router(recommendations.router)
     app.include_router(war_room.router)
     app.include_router(auth.router)
     app.include_router(decision_feed.router)
