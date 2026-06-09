@@ -31,6 +31,7 @@ class SimulationEngine:
         expected_return_pct: float,
         volatility_pct: float,
         horizon: str = "year",
+        horizon_years: float | None = None,
         cpi_pct: float | None = None,
         fx_change_pct: float | None = None,
         runs: int | None = None,
@@ -38,9 +39,12 @@ class SimulationEngine:
         distribution: str | None = None,
     ) -> SimulationResult:
         s = self.settings
-        if horizon not in HORIZONS:
+        if horizon_years is not None:
+            T = float(horizon_years)
+        elif horizon in HORIZONS:
+            T = HORIZONS[horizon]
+        else:
             raise ValueError(f"horizon must be one of {tuple(HORIZONS)}")
-        T = HORIZONS[horizon]
         runs = runs or s.monte_carlo_runs
         cpi = (s.sim_cpi_pct if cpi_pct is None else cpi_pct) / 100.0
         fx = (s.sim_fx_change_pct if fx_change_pct is None else fx_change_pct) / 100.0

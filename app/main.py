@@ -45,6 +45,18 @@ async def lifespan(app: FastAPI):
         logger.info("Ensuring database schema (auto_create_tables=True)...")
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            if engine.dialect.name == "postgresql":
+                from sqlalchemy import text
+                for ddl in (
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_roi_pct DOUBLE PRECISION",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_roi_period VARCHAR(12) DEFAULT 'yearly'",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_pct DOUBLE PRECISION",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
+                ):
+                    try:
+                        await conn.execute(text(ddl))
+                    except Exception:  # noqa: BLE001
+                        pass
     if settings.environment == "production":
         if settings.auto_create_tables:
             logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")

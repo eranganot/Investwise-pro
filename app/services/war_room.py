@@ -27,7 +27,8 @@ def _tax_say(opt) -> str:
     return "Net-after-tax computed" + (": " + ", ".join(bits) + "." if bits else ".")
 
 
-def build_war_room(observations) -> dict:
+def build_war_room(observations, portfolio_tickers=None) -> dict:
+    portfolio_tickers = portfolio_tickers or set()
     lag = LagEngine()
     sm = StateMachine(risk=RiskEngine(seed=7))
     research = ResearchAgent().scan()
@@ -54,7 +55,7 @@ def build_war_room(observations) -> dict:
             t.append({"agent": "Risk", "role": "Red-Team · stress test",
                       "says": f"I'm vetoing this. {vetted.risk_critique}",
                       "detail": {"veto": True, "critique": vetted.risk_critique}})
-            sessions.append({"ticker": det.ticker, "outcome": "VETOED",
+            sessions.append({"ticker": det.ticker, "outcome": "VETOED", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
                              "outcome_label": "Skipped — too risky", "transcript": t})
             continue
         t.append({"agent": "Risk", "role": "Red-Team · stress test",
@@ -84,7 +85,7 @@ def build_war_room(observations) -> dict:
                       "says": "Below the quality bar (Impact < 20 or Confidence < 60) — no action.",
                       "detail": {"impact": round(ranked.impact_score, 1),
                                  "confidence": round(ranked.confidence, 1)}})
-            sessions.append({"ticker": det.ticker, "outcome": "NO_ACTION",
+            sessions.append({"ticker": det.ticker, "outcome": "NO_ACTION", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
                              "outcome_label": "No action — not strong enough", "transcript": t})
             continue
 
@@ -94,7 +95,7 @@ def build_war_room(observations) -> dict:
         t.append({"agent": "UX", "role": "Decision Feed",
                   "says": f"Approved on the {display.path} path: {display.title}.",
                   "detail": {"path": display.path, "title": display.title}})
-        sessions.append({"ticker": det.ticker, "outcome": "DISPLAYED",
+        sessions.append({"ticker": det.ticker, "outcome": "DISPLAYED", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
                          "outcome_label": display.path, "title": display.title, "transcript": t})
 
     return {"agents": AGENTS, "count": len(sessions), "sessions": sessions}

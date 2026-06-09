@@ -249,3 +249,7 @@ class Plan(Base, PKMixin, TimestampMixin):
     target_amount: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     target_date: Mapped[str | None] = mapped_column(String(16), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default="ILS")
+    target_roi_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_roi_period: Mapped[str] = mapped_column(String(12), default="yearly")
+    target_yield_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_yield_period: Mapped[str] = mapped_column(String(12), default="yearly")

@@ -80,11 +80,11 @@
     <a href="/dashboard/" class="muted" style="text-decoration:none;font-size:12px">advanced ↗</a>
   </div>
   <div class="tabs" id="tabs">
-    <button data-t="today" onclick="show('today')">Today</button>
-    <button data-t="hold" onclick="show('hold')">Holdings</button>
-    <button data-t="plan" onclick="show('plan')">Plan</button>
-    <button data-t="agents" onclick="show('agents')">Agents</button>
-    <button data-t="explore" onclick="show('explore')">Explore</button>
+    <button data-t="today" onclick="show('today')">🏠 Today</button>
+    <button data-t="hold" onclick="show('hold')">💼 Holdings</button>
+    <button data-t="plan" onclick="show('plan')">🎯 Plan</button>
+    <button data-t="agents" onclick="show('agents')">⚔️ Agents</button>
+    <button data-t="explore" onclick="show('explore')">🔭 Explore</button>
   </div>
 </div>
 
@@ -146,10 +146,21 @@
           <select id="p_risk"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
       </div>
       <div class="grid2">
-        <div><label>Years until you need it</label><input id="p_hor" type="number" value="10"/></div>
+        <div><label>Years invested (horizon)</label><input id="p_hor" type="number" value="10"/>
+          <div class="mk">how long your money stays invested — sets how much risk fits</div></div>
         <div><label>Target amount (₪)</label><input id="p_amt" type="number" placeholder="e.g. 2000000"/></div>
       </div>
-      <label>By when (year)</label><input id="p_date" placeholder="2035"/>
+      <label>Goal deadline (year)</label><input id="p_date" placeholder="2035"/>
+      <div class="mk">the year you want to hit your target amount</div>
+      <div class="grid2" style="margin-top:8px">
+        <div><label>Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8"/></div>
+        <div><label>per</label><select id="p_roi_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
+      </div>
+      <div class="grid2">
+        <div><label>Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
+        <div><label>per</label><select id="p_yld_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
+      </div>
+      <div class="why" id="roi_note" style="display:none"></div>
       <button class="primary" onclick="savePlan()">Save my plan</button>
       <div class="muted" id="plan_out" style="margin-top:10px"></div>
       <div class="why" id="plan_note" style="display:block;margin-top:12px"></div>
@@ -165,6 +176,12 @@
 
   <!-- EXPLORE -->
   <section id="view-explore" class="hide">
+    <h2>Will I hit my goal?</h2>
+    <div class="card"><button class="soft" onclick="runProjection()">Project my goal</button><div class="out" id="proj_out"></div></div>
+    <h2>Could I save on tax?</h2>
+    <div class="card"><button class="soft" onclick="runTax()">Find tax savings</button><div class="out" id="tax_out"></div></div>
+    <h2>Is my mix off?</h2>
+    <div class="card"><button class="soft" onclick="runMix()">Check my mix</button><div class="out" id="mix_out"></div></div>
     <h2>What if…</h2>
     <div class="grid2">
       <button class="soft" onclick="runScenario('MARKET_CRASH','a market crash')">📉 Market crash</button>
@@ -288,7 +305,7 @@ async function loadHoldings(){
     $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares</div></div>
-        <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div></div></div>`;}).join("")
+        <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div></div>`;}).join("")
       || `<div class="card muted">No holdings yet.</div>`;
   }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
 }
@@ -298,7 +315,9 @@ async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("p_obj").value=p.objective; $("p_risk").value=p.risk_tolerance; $("p_hor").value=p.horizon_years;
     if(p.target_amount) $("p_amt").value=p.target_amount; if(p.target_date) $("p_date").value=p.target_date;
-    renderGoal(p); renderPlanNote(p);
+    if(p.target_roi_pct!=null) $("p_roi").value=p.target_roi_pct; if(p.target_roi_period) $("p_roi_p").value=p.target_roi_period;
+    if(p.target_yield_pct!=null) $("p_yld").value=p.target_yield_pct; if(p.target_yield_period) $("p_yld_p").value=p.target_yield_period;
+    renderGoal(p); renderPlanNote(p); renderRoi(p);
   }catch(e){}
 }
 function renderGoal(p){
@@ -310,12 +329,21 @@ function renderPlanNote(p){
   const cap=p.caps?p.caps.concentration_cap:0.25;
   $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance we let any single holding be up to <b>${pct(cap)}</b> of your money before flagging it, and we judge your "spread" score against that. Change it and your health & advice adjust.`;
 }
+function renderRoi(p){
+  const e=$("roi_note");
+  if(p.portfolio_expected_roi_pct!=null && p.roi_annual_target_pct){
+    e.style.display="block";
+    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`;
+  } else { e.style.display="none"; }
+}
 async function savePlan(){
   const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
-    target_amount:$("p_amt").value?+$("p_amt").value:null,target_date:$("p_date").value||null};
+    target_amount:$("p_amt").value?+$("p_amt").value:null,target_date:$("p_date").value||null,
+    target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
+    target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
   $("plan_out").textContent="Saving…";
   try{const p=await(await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
-    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view now reflects this.</span>`; renderGoal(p); renderPlanNote(p);
+    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view now reflects this.</span>`; renderGoal(p); renderPlanNote(p); renderRoi(p);
   }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 
@@ -324,7 +352,11 @@ const AV={Research:"🔎",Alpha:"🎯",Risk:"🛡️",Tax:"🧾",Decision:"🧮"
 async function loadWar(){
   $("war").innerHTML=`<div class="card muted">Loading the war room…</div>`;
   try{const w=await(await fetch("/api/v1/war-room")).json();
-    $("war").innerHTML=w.sessions.map(sessCard).join("") || `<div class="card muted">No signals to discuss right now.</div>`;
+    const port=w.sessions.filter(s=>s.source==="portfolio"), mkt=w.sessions.filter(s=>s.source!=="portfolio");
+    let html="";
+    if(port.length) html+=`<h2 style="margin-top:4px">Your holdings</h2>`+port.map(sessCard).join("");
+    html+=`<h2>Market ideas (incl. rejected)</h2>`+(mkt.map(sessCard).join("")||`<div class="card muted">None right now.</div>`);
+    $("war").innerHTML=html||`<div class="card muted">Nothing to discuss.</div>`;
   }catch(e){$("war").innerHTML=`<div class="card bad">${e}</div>`;}
 }
 function sessCard(s){
@@ -343,6 +375,25 @@ function sessCard(s){
 function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
 // ---- explore ----
+async function runProjection(){const o=$("proj_out");o.textContent="Projecting…";
+  try{const r=await(await fetch("/api/v1/plan/projection")).json();
+    if(r.message){o.textContent=r.message;return;}
+    o.innerHTML=`In <b>${r.years} years</b> your wealth could be about <b>${ils(r.projected_median)}</b> (range ${ils(r.projected_low)}–${ils(r.projected_high)}).`+
+      (r.target_amount?` Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>.`:"");
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
+async function runTax(){const o=$("tax_out");o.textContent="Checking…";
+  try{const r=await(await fetch("/api/v1/tax/review")).json();
+    if(!r.opportunities||!r.opportunities.length){o.textContent=r.message||"No tax-saving moves found.";return;}
+    o.innerHTML=`<div>Potential savings: <b>${ils(r.total_estimated_annual_savings_currency)}</b>/yr</div>`+
+      r.opportunities.map(op=>`<div class="why" style="display:block">${op.description} <b>(${ils(op.estimated_annual_tax_savings_currency)})</b></div>`).join("");
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
+async function runMix(){const o=$("mix_out");o.textContent="Checking…";
+  try{const r=await(await fetch("/api/v1/mix")).json();
+    if(r.message){o.textContent=r.message;return;}
+    const cur=Object.entries(r.current_allocation).map(([k,v])=>`${k} ${pct(v)}`).join(" · ");
+    o.innerHTML=`<div class="mk">Your mix vs ${r.objective} target: ${cur}</div>`+
+      (r.rebalance_required? r.rebalance_actions.map(a=>`<div class="why" style="display:block"><b>${a.action_type} ${a.asset_class}</b> — about ${ils(a.estimated_trade_value_currency)} (net ${ils(a.net_trade_value_currency)} after tax & costs)</div>`).join("") : `<div class="ok">Your mix is on target. ✅</div>`);
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}}
 async function runScenario(code,label){
   const o=$("scn_out");o.classList.remove("hide");o.textContent="Running a stress test…";
   try{const r=await(await fetch("/api/v1/scenario",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({scenario:code})})).json();
