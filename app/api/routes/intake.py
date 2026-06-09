@@ -12,6 +12,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.services.intake_service import (
+    delete_position,
     ensure_account, ensure_entity, list_positions, upsert_positions,
 )
 
@@ -100,10 +101,21 @@ async def get_portfolio(entity: str | None = None,
     return {
         "count": len(positions),
         "positions": [{
-            "ticker": p.ticker, "market": p.market,
+            "id": str(p.id), "ticker": p.ticker, "market": p.market,
             "quantity": float(p.quantity), "cost_basis": float(p.cost_basis),
             "current_price": float(p.current_price) if p.current_price is not None else None,
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
         } for p in positions],
     }
+
+
+@router.delete("/portfolio/position")
+async def remove_position(ticker: str, market: str | None = None,
+                          session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """Remove a holding from the acting user's portfolio (by ticker, optionally market)."""
+    removed = await delete_position(session, user, ticker, market)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No holding '{ticker}' found.")
+    return {"deleted": removed, "ticker": ticker}

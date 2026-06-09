@@ -88,6 +88,22 @@ async def list_positions(
     return (await session.execute(q)).scalars().all()
 
 
+async def delete_position(
+    session: AsyncSession, user: User, ticker: str, market: str | None = None
+) -> int:
+    """Delete the acting user's holding(s) by ticker (optionally market). Returns count removed."""
+    q = (select(Position).join(Account, Position.account_id == Account.id)
+         .join(Entity, Account.entity_id == Entity.id)
+         .where(Entity.user_id == user.id, Position.ticker == ticker))
+    if market:
+        q = q.where(Position.market == market)
+    rows = (await session.execute(q)).scalars().all()
+    for p in rows:
+        await session.delete(p)
+    await session.commit()
+    return len(rows)
+
+
 async def get_entities(session: AsyncSession, user: User) -> list[dict]:
     rows = (await session.execute(
         select(Entity).where(Entity.user_id == user.id)

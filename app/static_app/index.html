@@ -49,6 +49,8 @@
   .hold{display:grid;gap:10px}
   .hold .row{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px}
   .nm{font-weight:650}.mk{color:var(--mut);font-size:12px}.val{text-align:right}.up{color:var(--green)}.down{color:var(--red)}
+  .del{background:var(--soft);border:1px solid var(--line);color:var(--mut);border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;flex:0 0 auto}
+  .del:hover{border-color:var(--red);color:var(--red)}
   button.primary{width:100%;background:var(--blue);color:#fff;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px}
   button.soft{width:100%;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
   label{display:block;font-size:12px;color:var(--mut);margin:12px 0 4px}
@@ -338,11 +340,19 @@ async function loadHoldings(){
     $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares</div></div>
-        <div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div></div>`;}).join("")
+        <div style="display:flex;align-items:center;gap:10px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
+        <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
       ||`<div class="card muted">No holdings yet.</div>`;
   }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
 }
 
+async function delHolding(ticker,market){
+  if(!confirm(`Remove ${ticker} from your portfolio? This can't be undone.`))return;
+  try{const r=await fetch(`/api/v1/portfolio/position?ticker=${encodeURIComponent(ticker)}&market=${encodeURIComponent(market||'')}`,{method:"DELETE"});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Delete failed");}
+    loadHoldings();
+  }catch(e){alert(e.message||e);}
+}
 async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("p_obj").value=p.objective;$("p_risk").value=p.risk_tolerance;$("p_hor").value=p.horizon_years;
