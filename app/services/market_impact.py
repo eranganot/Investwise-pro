@@ -11,19 +11,37 @@ from app.services.allocation_mix import classify
 from app.schemas.state_machine import MARKET_CURRENCY
 
 
+_CURRENCIES = set(MARKET_CURRENCY.values()) | {
+    "USD", "EUR", "ILS", "GBP", "JPY", "CHF", "CNY", "HKD", "AUD", "CAD", "BRL", "INR"
+}
+
+
 def _tokens(affected: list[str]) -> tuple[set[str], set[str], set[str]]:
-    """Split affected_assets into (tickers, markets, currencies)."""
+    """Split affected_assets into (tickers, markets, currencies).
+
+    Handles both separators the providers use: ``ILS/USD`` and ``ILS:USD`` are
+    FX pairs (both sides are currency codes); ``TASE:TA35`` / ``NYSE:SPY`` are
+    venue:ticker.
+    """
     tickers: set[str] = set()
     markets: set[str] = set()
     currencies: set[str] = set()
     for a in affected or []:
         a = (a or "").upper().strip()
-        if "/" in a:                       # FX pair e.g. ILS/USD
-            currencies.update(p.strip() for p in a.split("/") if p.strip())
-        elif ":" in a:                     # VENUE:TICKER e.g. TASE:TA35
-            mk, tk = a.split(":", 1)
-            markets.add(mk.strip())
-            tickers.add(tk.strip())
+        if not a:
+            continue
+        parts = None
+        for sep in ("/", ":"):
+            if sep in a:
+                parts = [p.strip() for p in a.split(sep) if p.strip()]
+                break
+        if parts and len(parts) == 2 and parts[0] in _CURRENCIES and parts[1] in _CURRENCIES:
+            currencies.update(parts)            # FX pair
+        elif parts and ":" in a:
+            markets.add(parts[0])               # VENUE:TICKER
+            tickers.add(parts[1])
+        elif parts:
+            tickers.update(parts)               # slash, non-currency -> tickers
         else:
             tickers.add(a)
     return tickers, markets, currencies
@@ -87,8 +105,7 @@ def annotate(events, rows) -> list[dict]:
         hit = []
         for h in holdings:
             if (h["ticker"] in tickers or h["market"] in markets
-                    or (h["cur"] in currencies and h["cur"] != "ILS")
-                    or (currencies and h["cur"] != "ILS" and "USD" in currencies)):
+                    or (h["cur"] in currencies and h["cur"] != "ILS")):
                 hit.append(h)
         exposure = sum(h["val"] for h in hit)
         exposure_pct = round(exposure / nav * 100) if nav else 0

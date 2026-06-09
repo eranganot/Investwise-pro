@@ -36,8 +36,9 @@ def test_event_annotation_finds_affected_holdings_and_actions():
 
 def test_fx_event_flags_foreign_currency_exposure():
     ev = ResearchEvent(event_id="evt_2", event_type="FX_MOVE", relevance_score=65,
-                       affected_assets=["ILS/USD"], expected_time_horizon="MEDIUM", confidence=60)
-    rows = [_pos("AAPL", "NASDAQ", qty=10, price=100.0)]   # USD-denominated
+                       affected_assets=["ILS:USD"], expected_time_horizon="MEDIUM", confidence=60)
+    rows = [_pos("AAPL", "NASDAQ", qty=10, price=100.0),    # USD-denominated -> flagged
+            _pos("BOND", "TASE", qty=10, price=100.0)]      # ILS-denominated -> not flagged
     out = annotate([ev], rows)[0]
     assert out["affected_holdings"] == ["AAPL"]
     assert out["actions"]
