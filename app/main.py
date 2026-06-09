@@ -138,6 +138,9 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/dashboard", StaticFiles(directory=str(static_dir), html=True), name="dashboard")
+    app_dir = Path(__file__).parent / "static_app"
+    if app_dir.exists():
+        app.mount("/app", StaticFiles(directory=str(app_dir), html=True), name="app")
 
     @app.get("/")
     async def root() -> dict:

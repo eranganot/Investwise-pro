@@ -127,5 +127,6 @@ alembic upgrade head
 Every Decision Feed item also carries an XAI **explanation** (why_now, supporting/contradicting factors, assumptions, confidence breakdown, expected outcomes, failure conditions).
 | POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
 | GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
-| GET    | `/dashboard/`                 | Self-contained web dashboard         |
+| GET    | `/app/`                       | Simplified guided UI (non-expert)    |
+| GET    | `/dashboard/`                 | Advanced web dashboard (power user)  |
 | GET    | `/docs`                       | OpenAPI / Swagger UI                 |
