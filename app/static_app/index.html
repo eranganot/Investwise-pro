@@ -87,6 +87,26 @@
   .ov.show{display:flex}
   .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
   .modal h3{margin:0 0 8px}.modal p{color:#c9d3df;line-height:1.55;font-size:14px}.modal .x{float:right;color:var(--mut);cursor:pointer;font-size:20px}
+  /* Phase 2.1 - Source Code & Data accordion */
+  details.audit{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--card2)}
+  details.audit>summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:12px;font-weight:700;color:var(--mut);display:flex;align-items:center;gap:7px}
+  details.audit>summary::-webkit-details-marker{display:none}
+  details.audit>summary::before{content:"▸";color:var(--blue);transition:transform .15s}
+  details.audit[open]>summary::before{transform:rotate(90deg)}
+  details.audit[open]>summary{color:var(--ink);border-bottom:1px solid var(--line)}
+  .audit-body{padding:10px 12px;font-size:12px}
+  .audit-sec{margin-bottom:12px}
+  .audit-sec:last-child{margin-bottom:0}
+  .audit-sec h4{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+  .audit-kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px}
+  .audit-kv .k{color:var(--mut)}
+  .audit-kv .v{color:var(--ink);font-variant-numeric:tabular-nums}
+  .fml{margin:6px 0;padding:7px 9px;background:var(--bg);border:1px solid var(--line);border-radius:8px}
+  .fml .fn{color:var(--ink);font-weight:600}
+  .fml code{display:block;color:#9fd0ff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin-top:3px;white-space:pre-wrap}
+  .fml .res{color:var(--green);font-weight:700}
+  .adv-find{margin:4px 0 0;padding-left:16px}
+  .adv-find li{margin:3px 0;color:var(--amber)}
 </style>
 </head>
 <body>
@@ -350,11 +370,27 @@ function plainRisk(a){
   if(a.vector==="liquidity")return "A lot of your money may be hard to sell quickly.";
   return a.detail;
 }
+function esc(x){return String(x).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function auditAccordion(o){
+  const a=o.audit_trail; if(!a) return "";
+  const kv=Object.entries(a.raw_data||{}).map(([k,v])=>
+    `<div class="k">${esc(k)}</div><div class="v">${esc(Array.isArray(v)?v.join(", "):v)}</div>`).join("");
+  const fml=(a.formulas||[]).map(x=>
+    `<div class="fml"><span class="fn">${esc(x.name)}</span><code>${esc(x.expr)}${x.substituted?"  =  "+esc(x.substituted):""}</code>`
+    +(x.result?`<div>= <span class="res">${esc(x.result)}</span></div>`:"")+`</div>`).join("");
+  const adv=((a.adversary&&a.adversary.findings)||[]).map(x=>`<li>${esc(x)}</li>`).join("");
+  return `<details class="audit"><summary>Source Code &amp; Data</summary><div class="audit-body">
+    <div class="audit-sec"><h4>Raw portfolio data evaluated</h4><div class="audit-kv">${kv||'<div class="v">—</div>'}</div></div>
+    <div class="audit-sec"><h4>Deterministic formulas applied</h4>${fml||'<div class="v">—</div>'}</div>
+    <div class="audit-sec"><h4>Adversary critique</h4>${adv?`<ul class="adv-find">${adv}</ul>`:'<div class="v">No unstated assumptions flagged.</div>'}</div>
+  </div></details>`;
+}
 function recCard(o){
   const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
   return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
     <div class="act">${o.action}</div>
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
+    ${auditAccordion(o)}
     <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="acc" onclick="acceptRec('${o.id}')">✓ Accept</button><button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
