@@ -45,6 +45,8 @@
   .acts{margin-top:10px;display:flex;gap:8px}
   .acts button{font-size:13px;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card2);color:var(--ink);cursor:pointer;font-weight:600}
   .acts .ghost{color:var(--mut)}
+  .acts .acc{border-color:#1f6f4a;color:var(--green)}
+  .acts .acc:hover{background:#0f2619}
   .risk{display:flex;gap:12px;align-items:flex-start}.risk .ico{font-size:20px}
   .hold{display:grid;gap:10px}
   .hold .row{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:13px 14px}
@@ -353,9 +355,16 @@ function recCard(o){
   return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
     <div class="act">${o.action}</div>
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
-    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="ghost" onclick="snooze('${o.id}')">Snooze</button></div></div>`;
+    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="acc" onclick="acceptRec('${o.id}')">✓ Accept</button><button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
+async function acceptRec(id){
+  if(!confirm("Apply this recommendation now? It will update your holdings/plan."))return;
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,{method:"POST"});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed to apply");}
+    snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();
+  }catch(e){alert(e.message||e);}
+}
 function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
 
 let HMAP={};

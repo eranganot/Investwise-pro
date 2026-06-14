@@ -51,4 +51,6 @@ def plan_settings(plan):
               "ruin_probability_cap": caps["ruin_probability_cap"]}
     if plan is not None and getattr(plan, "preferred_depth", None):
         update["preferred_depth"] = plan.preferred_depth
+    if plan is not None and getattr(plan, "objective", None):
+        update["objective"] = plan.objective
     return base.model_copy(update=update)
