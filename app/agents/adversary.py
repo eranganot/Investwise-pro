@@ -139,8 +139,8 @@ class Adversary:
         Off unless ``adversary_llm_enabled`` and a ``GOOGLE_API_KEY`` (or
         ``GEMINI_API_KEY``) is set. Never invents numbers and never raises - a
         narrative failure must not affect the deterministic scoring path.
-        Works with either the ``google-generativeai`` or the newer ``google-genai``
-        SDK (whichever is installed).
+        Prefers the supported ``google-genai`` SDK; falls back to the deprecated
+        ``google-generativeai`` if that's what's installed.
         """
         if not getattr(self.settings, "adversary_llm_enabled", False):
             return None
@@ -157,13 +157,13 @@ class Adversary:
         )
         try:  # defensive: a narrative failure must never break the pipeline
             try:
-                import google.generativeai as genai  # type: ignore
-                genai.configure(api_key=key)
-                resp = genai.GenerativeModel(model_name).generate_content(prompt)
-            except ImportError:
-                from google import genai  # type: ignore  # newer google-genai SDK
+                from google import genai  # google-genai (current, supported SDK)
                 resp = genai.Client(api_key=key).models.generate_content(
                     model=model_name, contents=prompt)
+            except ImportError:
+                import google.generativeai as genai_legacy  # deprecated fallback
+                genai_legacy.configure(api_key=key)
+                resp = genai_legacy.GenerativeModel(model_name).generate_content(prompt)
             return (getattr(resp, "text", "") or "").strip() or None
         except Exception:
             return None

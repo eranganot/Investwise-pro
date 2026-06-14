@@ -43,6 +43,6 @@ uvicorn app.main:app --reload     # API + /app dashboard
 
 ## Open follow-ups (your call)
 - Pick the live brokerage direction (Plaid vs Yodlee vs the existing Israeli-broker order path) and provide sandbox keys to activate beyond mock.
-- Provide a `GOOGLE_API_KEY` (and `pip install google-generativeai`) if/when you want to switch the LLM Adversary narrative on.
+- Provide a `GOOGLE_API_KEY` (and `google-genai` is in requirements) if/when you want to switch the LLM Adversary narrative on.
 - Optionally replace the bundled backtest series with a real market-data vendor feed.
 - Merge `feat/audit-phase1` to `main` once reviewed; **rotate the GitHub token shared in chat.**
