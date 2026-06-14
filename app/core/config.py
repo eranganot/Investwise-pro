@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000
 
+    # Adversary agent (Section 6 / Phase 1.3) - per-stage cross-examination
+    adversary_enabled: bool = True          # route every stage through the Adversary examiners
+    adversary_enforce_veto: bool = True     # a BLOCK-severity finding becomes a hard veto
+    adversary_llm_enabled: bool = False     # optional LLM narrative on top of deterministic checks (needs ANTHROPIC_API_KEY)
+    adversary_llm_model: str = "claude-sonnet-4-6"
+
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0
     min_confidence: float = 60.0

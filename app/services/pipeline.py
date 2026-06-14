@@ -87,7 +87,9 @@ class PipelineOrchestrator:
 
         out: list[dict] = []
         for s in self.lag.scan(observations):
-            result = self.sm.run(s)
+            exam = self.sm.cross_examine(s)
+            result = exam.outcome
+            adversary_notes = [n.model_dump() for n in exam.notes]
 
             if isinstance(result, DisplayedItem):
                 ranked = result.source
@@ -127,6 +129,7 @@ class PipelineOrchestrator:
                 payload = rec.model_dump()
                 payload["adversary_critique"] = crit
                 payload["explanation"] = XaiEngine().build(result).model_dump()
+                payload["adversary_examination"] = adversary_notes
                 payload["expires_at"] = expiry_for(rec.time_sensitivity)
                 if safety:
                     payload["safety_flags"] = [f.model_dump() for f in safety.flags]

@@ -78,10 +78,17 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
                   "detail": {"probability_of_ruin": vetted.probability_of_ruin,
                              "median_max_drawdown": vetted.max_drawdown, "volatility": vetted.volatility}})
 
+        for _an in (sm.adversary.examine_detected(det), sm.adversary.examine_vetted(vetted)):
+            t.append({"agent": "Adversary", "role": "Red-Team · cross-examination",
+                      "says": _an.critique, "detail": {"severity": _an.severity.value, "findings": _an.findings}})
+
         optimized = sm.optimize(vetted)
         t.append({"agent": "Tax", "role": "Tax optimizer", "says": _tax_say(optimized),
                   "detail": {"net_gain_delta": optimized.net_gain_delta,
                              "tax_saved": optimized.tax_saved, "tax_deferred": optimized.tax_deferred}})
+        _ao = sm.adversary.examine_optimized(optimized)
+        t.append({"agent": "Adversary", "role": "Red-Team · cross-examination",
+                  "says": _ao.critique, "detail": {"severity": _ao.severity.value, "findings": _ao.findings}})
 
         ranked = sm.rank(optimized)
         t.append({"agent": "Decision", "role": "Scorer",
@@ -91,6 +98,9 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
                   "detail": {"impact": round(ranked.impact_score, 1), "confidence": round(ranked.confidence, 1),
                              "scores": ranked.scores.as_contract(),
                              "confidence_breakdown": ranked.confidence_breakdown.model_dump()}})
+        _ar = sm.adversary.examine_ranked(ranked)
+        t.append({"agent": "Adversary", "role": "Red-Team · cross-examination",
+                  "says": _ar.critique, "detail": {"severity": _ar.severity.value, "findings": _ar.findings}})
 
         display = sm.display(ranked)
         if display is None:
