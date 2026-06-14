@@ -70,6 +70,23 @@ class Settings(BaseSettings):
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000
 
+    # Historical backtesting (Phase 3.3) - validate the Risk Agent's beta
+    backtest_beta_tolerance: float = 0.25   # flag if vol-implied beta diverges from structural beta by more
+    backtest_market_vol_pct: float = 16.0   # broad-market annual volatility used for the implied-beta calc
+
+    # Fee optimizer (Phase 3.2)
+    fee_high_threshold_pct: float = 0.50    # flag holdings whose expense ratio exceeds this %
+
+    # Brokerage / aggregation (Phase 3.1) - holdings sync
+    broker_enabled: bool = False            # gate real providers (plaid/yodlee); mock always works
+    aggregator_provider: str = "mock"       # mock | plaid | yodlee
+
+    # Adversary agent (Section 6 / Phase 1.3) - per-stage cross-examination
+    adversary_enabled: bool = True          # route every stage through the Adversary examiners
+    adversary_enforce_veto: bool = True     # a BLOCK-severity finding becomes a hard veto
+    adversary_llm_enabled: bool = False     # optional LLM narrative on top of deterministic checks (needs ANTHROPIC_API_KEY)
+    adversary_llm_model: str = "claude-sonnet-4-6"
+
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0
     min_confidence: float = 60.0

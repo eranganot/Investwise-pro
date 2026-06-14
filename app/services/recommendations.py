@@ -8,6 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
+from app.services.audit_trail import audit_for, f
+from app.agents.fee_agent import FeeAgent
+from app.engines.backtest_engine import BacktestEngine
 from app.services.intake_service import delete_position, list_positions, update_position
 from app.services.plan_service import effective_caps, get_plan, plan_settings, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
@@ -30,7 +33,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
                "volatility_pct": (p.meta or {}).get("volatility_pct"),
-               "liquidity_score": (p.meta or {}).get("liquidity_score")} for p in rows]
+               "liquidity_score": (p.meta or {}).get("liquidity_score"),
+               "asset_class": (p.meta or {}).get("asset_class"),
+               "expense_ratio_pct": (p.meta or {}).get("expense_ratio_pct")} for p in rows]
     snap = compute_snapshot(pdicts)
     nav = snap["nav"]
     plan = await get_plan(session, user)
@@ -54,6 +59,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                              "Reinvest the proceeds across your other holdings or your plan's target mix"],
                      "est_amount": round(trim, 2),
                      "apply": {"kind": "trim", "ticker": tk, "shares": shares}})
+        recs[-1]["audit_trail"] = audit_for("diversification",
+            raw_data={"ticker": tk, "weight": round(w, 4), "concentration_cap": round(cap, 4),
+                      "nav": round(nav, 2), "price": round(price, 2)},
+            formulas=[
+                f("Position weight", "weight = position_value / NAV", result=f"{w:.0%}"),
+                f("Trim amount", "trim = (weight - cap) * NAV",
+                  substituted=f"({w:.4f} - {cap:.4f}) x {nav:,.0f}", result=f"₪{trim:,.0f}"),
+                f("Shares to sell", "shares = trim / price",
+                  substituted=f"{trim:,.0f} / {price:,.2f}", result=str(shares))])
 
     # 2) Tax-loss harvesting
     tx = tax_opportunities(pdicts)
@@ -72,6 +86,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                              "If you still believe in them, re-buy after the wash-sale window"],
                      "est_amount": save,
                      "apply": {"kind": "sell_losers", "tickers": losers}})
+        recs[-1]["audit_trail"] = audit_for("tax",
+            raw_data={"losing_tickers": losers, "estimated_annual_tax_savings": round(save, 2)},
+            formulas=[
+                f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"₪{save:,.0f}")])
 
     # 3) Rebalance toward the plan's objective
     mix, _ = current_mix(rows)
@@ -88,12 +106,33 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                              "This nudges your mix back in line with your plan"],
                      "est_amount": a.net_trade_value_currency,
                      "apply": {"kind": "rebalance_to_objective"}})
+        recs[-1]["audit_trail"] = audit_for("allocation",
+            raw_data={"asset_class": a.asset_class, "current_weight": round(mix.get(a.asset_class, 0.0), 4),
+                      "target_weight": round(target.get(a.asset_class, 0.0), 4), "nav": round(nav, 2)},
+            formulas=[
+                f("Drift", "drift = current_weight - target_weight",
+                  substituted=f"{mix.get(a.asset_class,0.0):.4f} - {target.get(a.asset_class,0.0):.4f}",
+                  result=f"{mix.get(a.asset_class,0.0)-target.get(a.asset_class,0.0):+.1%}"),
+                f("Gross trade", "trade = |drift| x NAV", result=f"₪{a.estimated_trade_value_currency:,.0f}"),
+                f("Net of frictions", "net = gross - tax_drag - cost - slippage",
+                  result=f"₪{a.net_trade_value_currency:,.0f}")])
 
     # 4) Behind your goal? Optimize across every lever to close the gap.
     recs += _behind_goal_recs(plan, snap, objective)
+    recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
-    return {"count": len(recs), "objective": objective, "recommendations": recs[:8]}
+    # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
+    bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
+                    "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
+    bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
+    return {"count": len(recs), "objective": objective, "recommendations": recs[:8],
+            "risk_validation": {"beta_validated": bt.beta_validated,
+                                "structural_beta": bt.structural_beta,
+                                "risk_implied_beta": bt.risk_implied_beta,
+                                "worst_event": bt.worst_event,
+                                "worst_portfolio_drawdown_pct": bt.worst_portfolio_drawdown_pct,
+                                "critique": bt.critique}}
 
 
 # expected annual return by objective (rough asset-class blend; used to size the gap)
@@ -138,6 +177,14 @@ def _behind_goal_recs(plan, snap, objective) -> list[dict]:
                         "Re-check here as your balance grows"],
                 "est_amount": round(pmt, 2),
                 "apply": {"kind": "none"}})
+    out[-1]["audit_trail"] = audit_for("goal",
+        raw_data={"nav": round(nav, 2), "target": round(target, 2), "projected": round(projected, 2),
+                  "behind_pct": behind_pct, "annual_return_pct": round(r * 100, 2), "years": years},
+        formulas=[
+            f("Projection", "projected = NAV x (1+r)^years",
+              substituted=f"{nav:,.0f} x (1+{r:.3f})^{years}", result=f"₪{projected:,.0f}"),
+            f("Monthly contribution", "pmt = gap x (r/12) / ((1+r/12)^(12*years) - 1)",
+              result=f"₪{pmt:,.0f}/mo")])
 
     # Lever B — shift to a higher-growth mix (only if not already Grow)
     if objective != "Grow":

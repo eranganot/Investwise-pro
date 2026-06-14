@@ -5,15 +5,27 @@ first) embeds the *typed* previous stage as ``source``. Because the type of
 ``source`` is fixed, a stage physically cannot be constructed out of order:
 e.g. building an ``OptimizedSignal`` from a ``DetectedSignal`` raises a
 ``ValidationError``. This enforces the spec rule "No stage can be skipped".
+
+Phase 1.2 hardening: every stage uses ``STRICT_FROZEN`` (strict + extra=forbid +
+frozen) and constrained numeric types so a NaN/Inf, an out-of-range probability,
+or an unexpected field can never silently cross an agent boundary.
 """
 from __future__ import annotations
 
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.scoring import ConfidenceBreakdown, ImpactScores
+from app.schemas.validation import (
+    ComplexityFactor,
+    FiniteFloat,
+    NonNegFloat,
+    STRICT_FROZEN,
+    Score,
+    UnitFraction,
+)
 
 
 class Stage(str, Enum):
@@ -70,8 +82,9 @@ class ActionType(str, Enum):
 
 
 class _StageBase(BaseModel):
-    # Stages are immutable once created -> safe to pass through the pipeline.
-    model_config = ConfigDict(frozen=True)
+    # Strict (no loose coercion), closed (extra=forbid), immutable (frozen):
+    # a stage object can't drift, grow stray fields, or mutate mid-pipeline.
+    model_config = STRICT_FROZEN
 
 
 class DetectedSignal(_StageBase):
@@ -82,49 +95,57 @@ class DetectedSignal(_StageBase):
     action_type: ActionType
     trigger: str  # "Why now"
     depth: int = Field(ge=1, le=3)  # Lag depth 1-3
-    divergence_pct: float
+    divergence_pct: FiniteFloat
     notes: str = "Awaiting Data"
     # Economic context for the Tax Engine (optional; None => Awaiting Data).
-    gross_gain_ils: Optional[float] = None
-    prior_taxable_income_ils: float = 0.0
-    loss_carry_forward_ils: float = 0.0
+    gross_gain_ils: Optional[FiniteFloat] = None  # may be negative (realized loss)
+    prior_taxable_income_ils: NonNegFloat = 0.0
+    loss_carry_forward_ils: NonNegFloat = 0.0
     # Risk context for the Risk Engine (annual %, optional; None => Awaiting Data).
-    expected_return_pct: Optional[float] = None
-    volatility_pct: Optional[float] = None
-    liquidity_score: Optional[float] = None  # 0-100 liquidity health, optional
+    expected_return_pct: Optional[FiniteFloat] = None  # may be negative
+    volatility_pct: Optional[NonNegFloat] = None
+    liquidity_score: Optional[Score] = None  # 0-100 liquidity health, optional
 
 
 class VettedSignal(_StageBase):
     """Stage 2 - Risk Engine attaches stress metrics + veto."""
     stage: Literal[Stage.VETTED] = Stage.VETTED
     source: DetectedSignal
-    probability_of_ruin: Optional[float] = None
-    max_drawdown: Optional[float] = None
-    volatility: Optional[float] = None
+    probability_of_ruin: Optional[UnitFraction] = None
+    max_drawdown: Optional[UnitFraction] = None
+    volatility: Optional[NonNegFloat] = None
     veto_flag: bool = False
     risk_critique: str = "Awaiting Data"
+
+    @model_validator(mode="after")
+    def _veto_needs_reason(self) -> "VettedSignal":
+        # A veto with no explanation is a context-drift bug: the Adversary and
+        # the UX both rely on a non-empty critique to tell the user "why not".
+        if self.veto_flag and not (self.risk_critique or "").strip():
+            raise ValueError("veto_flag set but risk_critique is empty")
+        return self
 
 
 class OptimizedSignal(_StageBase):
     """Stage 3 - Tax Engine attaches net-after-tax economics."""
     stage: Literal[Stage.OPTIMIZED] = Stage.OPTIMIZED
     source: VettedSignal
-    net_gain_delta: Optional[float] = None
-    actual_tax_cost: Optional[float] = None
-    tax_saved: Optional[float] = None
-    tax_deferred: Optional[float] = None
+    net_gain_delta: Optional[FiniteFloat] = None  # may be negative
+    actual_tax_cost: Optional[NonNegFloat] = None
+    tax_saved: Optional[FiniteFloat] = None
+    tax_deferred: Optional[NonNegFloat] = None
 
 
 class RankedSignal(_StageBase):
     """Stage 4 - Decision Engine scores impact + confidence (Section Z)."""
     stage: Literal[Stage.RANKED] = Stage.RANKED
     source: OptimizedSignal
-    impact_score: float = 0.0
-    confidence: float = 0.0
+    impact_score: Score = 0.0
+    confidence: Score = 0.0
     scores: ImpactScores
     confidence_breakdown: ConfidenceBreakdown
     complexity_label: str = "Moderate"
-    complexity_factor: float = 1.5
+    complexity_factor: ComplexityFactor = 1.5
     urgency: int = Field(default=1, ge=1, le=100)
 
 
