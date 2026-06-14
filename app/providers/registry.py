@@ -13,10 +13,11 @@ from app.providers.builtin import (
     BuiltinBrokerProvider, BuiltinEconomicDataProvider, BuiltinFXProvider,
     BuiltinMarketDataProvider,
 )
+from app.providers.live import FrankfurterFXProvider, YahooMarketDataProvider
 from app.providers.resilience import CircuitBreaker, ResilienceTier, TokenBucket, TTLCache
 
-_MARKET = {"builtin": BuiltinMarketDataProvider}
-_FX = {"builtin": BuiltinFXProvider}
+_MARKET = {"builtin": BuiltinMarketDataProvider, "yahoo": YahooMarketDataProvider}
+_FX = {"builtin": BuiltinFXProvider, "frankfurter": FrankfurterFXProvider}
 
 
 def _tier() -> ResilienceTier:
