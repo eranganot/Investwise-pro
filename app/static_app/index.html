@@ -107,6 +107,21 @@
   .fml .res{color:var(--green);font-weight:700}
   .adv-find{margin:4px 0 0;padding-left:16px}
   .adv-find li{margin:3px 0;color:var(--amber)}
+  /* Phase 2.2 - What-If sliders */
+  .wi-row{margin:0 0 14px}
+  .wi-row label{display:flex;justify-content:space-between;font-size:13px;color:var(--mut);margin-bottom:6px}
+  .wi-row label b{color:var(--ink)}
+  .wi-row input[type=range]{width:100%;accent-color:var(--blue);cursor:pointer}
+  .wi-out{margin-top:6px;border-top:1px solid var(--line);padding-top:12px}
+  .wi-stat{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .wi-stat .b{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+  .wi-stat .b .n{font-size:18px;font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums}
+  .wi-stat .b .l{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+  .wi-stat .b.warn .n{color:var(--amber)} .wi-stat .b.good .n{color:var(--green)}
+  .wi-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .wi-chip{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mut)}
+  .wi-chip.veto{color:var(--red);border-color:#5b2230}
+  .wi-chip.ok{color:var(--green);border-color:#1f4d3a}
 </style>
 </head>
 <body>
@@ -229,6 +244,17 @@
       <button class="soft" onclick="runScenario('FX_SHOCK','a currency shock')">💱 Currency</button>
     </div>
     <div class="card hide" id="scn_out" style="margin-top:10px"></div>
+
+    <h2>Adjust your assumptions</h2>
+    <div class="card" id="wi_panel">
+      <div class="wi-row"><label>Risk tolerance <b id="wi_rt_v">Medium</b></label>
+        <input type="range" id="wi_rt" min="0" max="2" step="1" value="1" oninput="runWhatIf()"></div>
+      <div class="wi-row"><label>Tax-loss harvesting target <b id="wi_tlh_v">₪0</b></label>
+        <input type="range" id="wi_tlh" min="0" max="100000" step="1000" value="0" oninput="runWhatIf()"></div>
+      <div class="wi-row"><label>Expected market drawdown <b id="wi_dd_v">20%</b></label>
+        <input type="range" id="wi_dd" min="5" max="80" step="5" value="20" oninput="runWhatIf()"></div>
+      <div id="wi_out" class="wi-out"><div class="muted">Drag a slider to re-run the agents…</div></div>
+    </div>
     <h2>What's moving</h2>
     <div class="card" id="news"><div class="muted">Loading market intelligence…</div></div>
     <h2>Glossary</h2>
@@ -496,12 +522,38 @@ function sessCard(s){
 }
 function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
+let _wiT=null;
+const _RT=["Low","Medium","High"];
+function runWhatIf(){
+  const rt=_RT[+($("wi_rt").value)], tlh=+($("wi_tlh").value), dd=+($("wi_dd").value);
+  $("wi_rt_v").textContent=rt; $("wi_tlh_v").textContent="₪"+tlh.toLocaleString(); $("wi_dd_v").textContent=dd+"%";
+  clearTimeout(_wiT);
+  _wiT=setTimeout(async()=>{
+    try{
+      const r=await(await fetch("/api/v1/whatif",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({risk_tolerance:rt,tlh_target_ils:tlh,expected_drawdown_pct:dd})})).json();
+      const rp=r.risk_profile, sc=r.scenario, th=r.tax_loss_harvesting;
+      const recChips=(rp.recommended_titles||[]).map(t=>`<span class="wi-chip ok">${esc(t)}</span>`).join("");
+      const vetoChips=(rp.vetoed_tickers||[]).map(t=>`<span class="wi-chip veto">⊘ ${esc(t)}</span>`).join("");
+      $("wi_out").innerHTML=`
+        <div class="wi-stat">
+          <div class="b good"><div class="n">${rp.recommended}</div><div class="l">Recommended</div></div>
+          <div class="b warn"><div class="n">${rp.vetoed}</div><div class="l">Vetoed by risk</div></div>
+          <div class="b"><div class="n">${rp.volatility_cap_pct}%</div><div class="l">Volatility cap</div></div>
+          <div class="b warn"><div class="n">₪${Math.round(sc.projected_loss_ils).toLocaleString()}</div><div class="l">Loss at −${sc.drawdown_pct}%</div></div>
+        </div>
+        <div class="muted" style="font-size:12px">Tax-loss harvesting: <b style="color:var(--ink)">${th.qualifying_count}</b> opportunity(ies) meeting your ₪${th.target_savings_ils.toLocaleString()} target (~₪${Math.round(th.qualifying_savings_ils).toLocaleString()} saved).</div>
+        <div class="wi-chips">${recChips}${vetoChips||'<span class="wi-chip">no vetoes</span>'}</div>`;
+    }catch(e){$("wi_out").innerHTML=`<div class="bad">${e}</div>`;}
+  },180);
+}
 async function loadExplore(){
   // projection chart (granularity from the Quarterly/Yearly toggle)
   try{const r=await(await fetch("/api/v1/plan/projection")).json();
     if(!r.message){lastProj=r;setGran(gran);}
     else{$("proj_cap").textContent="Add holdings & a goal in Plan to project your wealth.";}
   }catch(e){}
+  runWhatIf();
   // mix donut
   try{const m=await(await fetch("/api/v1/mix")).json();
     if(!m.message){const ks=Object.keys(m.current_allocation);
