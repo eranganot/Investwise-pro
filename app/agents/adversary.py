@@ -68,26 +68,41 @@ def _note(stage: str, findings: list[str], block: bool = False) -> AdversaryNote
 
 
 def _gemini_generate(key: str, model: str, prompt: str, timeout: float = 20.0) -> str:
-    """Run the (synchronous) Gemini call in a worker thread that has no event
-    loop. Calling the google-genai sync client directly from FastAPI's async
-    loop raises 'Cannot send a request, as the client has been closed'; a fresh
-    thread sidesteps the loop-detection that closes the underlying httpx client.
-    Prefers the supported google-genai SDK; falls back to the deprecated one.
+    """Call the Gemini REST API directly (no SDK).
+
+    The google-genai / google-generativeai SDKs manage an httpx client whose
+    lifecycle conflicts with FastAPI's event loop ("Cannot send a request, as the
+    client has been closed"). Hitting the REST endpoint with the stdlib avoids
+    that whole class of problems. The call runs in a worker thread so it never
+    blocks the event loop; the key travels as the ``x-goog-api-key`` header (not
+    in the URL/logs).
     """
     import concurrent.futures
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
 
     def _call() -> str:
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key})
         try:
-            from google import genai  # google-genai (current, supported SDK)
-            resp = genai.Client(api_key=key).models.generate_content(model=model, contents=prompt)
-        except ImportError:
-            import google.generativeai as genai_legacy  # deprecated fallback
-            genai_legacy.configure(api_key=key)
-            resp = genai_legacy.GenerativeModel(model).generate_content(prompt)
-        return (getattr(resp, "text", "") or "").strip()
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:  # surface the API's real reason
+            detail = e.read().decode("utf-8", "ignore")[:240]
+            raise RuntimeError(f"HTTP {e.code}: {detail}")
+        candidates = payload.get("candidates") or []
+        if not candidates:
+            return ""
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        return "".join(p.get("text", "") for p in parts).strip()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(_call).result(timeout=timeout)
+        return ex.submit(_call).result(timeout=timeout + 5)
 
 
 class Adversary:
@@ -162,8 +177,7 @@ class Adversary:
         Off unless ``adversary_llm_enabled`` and a ``GOOGLE_API_KEY`` (or
         ``GEMINI_API_KEY``) is set. Never invents numbers and never raises - a
         narrative failure must not affect the deterministic scoring path.
-        Prefers the supported ``google-genai`` SDK; falls back to the deprecated
-        ``google-generativeai`` if that's what's installed.
+        Calls the Gemini REST API directly (see ``_gemini_generate``).
         """
         if not getattr(self.settings, "adversary_llm_enabled", False):
             return None
