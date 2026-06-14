@@ -32,6 +32,10 @@ _ADVERSARY = {
         "Assumes the target weights are still your policy and haven't drifted intentionally.",
         "Tax drag and slippage (already netted) can outweigh the benefit when drift is small.",
     ],
+    "fees": [
+        "Switching can realize a taxable capital gain on the sold fund - weigh it against the fee saving.",
+        "Assumes the index alternative tracks your holding's exposure; check tracking error and currency hedging.",
+    ],
     "goal": [
         "Projection assumes a fixed annual return with no volatility - a poor sequence of returns widens the gap.",
         "Contribution math assumes you sustain the monthly amount for the full horizon.",

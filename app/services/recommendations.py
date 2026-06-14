@@ -9,6 +9,7 @@ from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
 from app.services.audit_trail import audit_for, f
+from app.agents.fee_agent import FeeAgent
 from app.services.intake_service import delete_position, list_positions, update_position
 from app.services.plan_service import effective_caps, get_plan, plan_settings, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
@@ -31,7 +32,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
                "volatility_pct": (p.meta or {}).get("volatility_pct"),
-               "liquidity_score": (p.meta or {}).get("liquidity_score")} for p in rows]
+               "liquidity_score": (p.meta or {}).get("liquidity_score"),
+               "asset_class": (p.meta or {}).get("asset_class"),
+               "expense_ratio_pct": (p.meta or {}).get("expense_ratio_pct")} for p in rows]
     snap = compute_snapshot(pdicts)
     nav = snap["nav"]
     plan = await get_plan(session, user)
@@ -115,6 +118,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # 4) Behind your goal? Optimize across every lever to close the gap.
     recs += _behind_goal_recs(plan, snap, objective)
+    recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     return {"count": len(recs), "objective": objective, "recommendations": recs[:8]}

@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000
 
+    # Fee optimizer (Phase 3.2)
+    fee_high_threshold_pct: float = 0.50    # flag holdings whose expense ratio exceeds this %
+
     # Brokerage / aggregation (Phase 3.1) - holdings sync
     broker_enabled: bool = False            # gate real providers (plaid/yodlee); mock always works
     aggregator_provider: str = "mock"       # mock | plaid | yodlee
