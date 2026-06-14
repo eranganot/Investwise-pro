@@ -17,9 +17,10 @@ app/
   models/      11 SQLAlchemy tables (Section 4)
   schemas/     Pydantic state machine (5 stages) + output contract (Section 7)
   engines/     Tax · Lag · Risk · Decision · WHS · Simulation + orchestrator
-  api/routes/  health + demo decision feed
+  api/routes/  all REST endpoints
+  static_app/  the simplified /app UI (single file)
+  static/      the advanced /dashboard UI (single file)
   main.py      FastAPI app factory
-frontend/      React + Vite dashboard shell
 tests/         state machine tests
 ```
 
@@ -55,13 +56,12 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend
+### Frontends
 
-```bash
-cd frontend
-npm install
-npm run dev        # http://localhost:5173  (proxies /api and /health to :8000)
-```
+Both UIs are self-contained single HTML files served by FastAPI — no build step:
+
+- **/app** — simplified, non-expert view (`app/static_app/index.html`)
+- **/dashboard** — advanced view (`app/static/index.html`)
 
 ## Tests
 
@@ -84,7 +84,6 @@ alembic upgrade head
 1. Push this repo to GitHub.
 2. Railway → New Project → Deploy from GitHub repo (uses `railway.json` + `Dockerfile`).
 3. Add the **Postgres** plugin — Railway injects `DATABASE_URL` (auto-normalized to asyncpg).
-4. Set `FRONTEND_ORIGIN` to your deployed frontend URL.
 
 ## Endpoints (Phase 0)
 

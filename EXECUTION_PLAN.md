@@ -3,7 +3,7 @@
 **Project:** InvestWise Pro — Multi-Agent Wealth Operating System (v22.1)
 **SuperAdmin:** Eran Ganot
 **Location:** `Investments/investwise-pro/`
-**Status:** ⏸ Awaiting your confirmation — nothing has been built yet.
+**Status:** ✅ Built & live. (Superseded: the React/Vite scaffold was dropped in favor of two self-contained single-file UIs — /app and /dashboard — served directly by FastAPI.)
 
 > This document is the plan only. Once you confirm (or adjust) it, I start with Phase 0.
 

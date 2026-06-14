@@ -214,6 +214,29 @@
   </section>
 </div>
 
+<div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
+  <div class="modal"><span class="x" onclick="closeEdit()">×</span><h3>Edit holding</h3>
+    <input type="hidden" id="e_id"/>
+    <div class="grid2"><div><label>Name / ticker</label><input id="e_t"/></div>
+      <div><label>Market</label><select id="e_m">
+        <option value="NYSE">New York (NYSE)</option><option value="NASDAQ">NASDAQ (US)</option>
+        <option value="TASE">Tel Aviv (TASE)</option><option value="LSE">London (LSE)</option>
+        <option value="XETRA">Frankfurt (XETRA)</option><option value="EURONEXT">Euronext (EU)</option>
+        <option value="SIX">Zurich (SIX)</option><option value="TSX">Toronto (TSX)</option>
+        <option value="JPX">Tokyo (JPX)</option><option value="HKEX">Hong Kong (HKEX)</option>
+        <option value="SSE">Shanghai (SSE)</option><option value="NSE">India (NSE)</option>
+        <option value="ASX">Australia (ASX)</option><option value="B3">Brazil (B3)</option>
+        <option value="SPOT">Commodity / Crypto (Spot)</option><option value="OTHER">Other</option>
+      </select></div></div>
+    <label>Asset class</label>
+    <select id="e_cls"><option>Equities</option><option>Fixed Income</option><option>Cash</option><option>Commodities</option><option>Alternatives</option><option>Real Estate</option><option>Private Investments</option></select>
+    <div class="grid2"><div><label>Shares</label><input id="e_q" type="number"/></div>
+      <div><label>Price you paid</label><input id="e_c" type="number"/></div></div>
+    <label>Price today</label><input id="e_p" type="number"/>
+    <button class="primary" onclick="saveEdit()">Save changes</button>
+    <div class="muted" id="e_out" style="margin-top:8px"></div>
+  </div>
+</div>
 <div class="ov" id="ov" onclick="if(event.target.id==='ov')closeModal()">
   <div class="modal"><span class="x" onclick="closeModal()">×</span><h3 id="m_t"></h3><p id="m_b"></p></div>
 </div>
@@ -335,15 +358,34 @@ function recCard(o){
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
 
+let HMAP={};
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
+    HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);
     $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
-      return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares</div></div>
-        <div style="display:flex;align-items:center;gap:10px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
+      return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
+        <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
       ||`<div class="card muted">No holdings yet.</div>`;
   }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
+}
+function editHolding(id){const h=HMAP[id];if(!h)return;
+  $("e_id").value=id;$("e_t").value=h.ticker;$("e_m").value=h.market;
+  $("e_cls").value=h.asset_class||"Equities";$("e_q").value=h.quantity;
+  $("e_c").value=h.cost_basis;$("e_p").value=h.current_price;
+  $("e_out").textContent="";$("editov").classList.add("show");}
+function closeEdit(){$("editov").classList.remove("show");}
+async function saveEdit(){
+  const id=$("e_id").value;
+  const body={ticker:$("e_t").value,market:$("e_m").value,asset_class:$("e_cls").value,
+    quantity:+$("e_q").value,cost_basis:+$("e_c").value,current_price:+$("e_p").value};
+  $("e_out").textContent="Saving…";
+  try{const r=await fetch(`/api/v1/portfolio/position/${id}`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Save failed");}
+    closeEdit();loadHoldings();
+  }catch(e){$("e_out").innerHTML=`<span class="bad">${e.message||e}</span>`;}
 }
 
 async function delHolding(ticker,market){

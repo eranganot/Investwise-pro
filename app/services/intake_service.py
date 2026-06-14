@@ -7,6 +7,7 @@ position's JSON `meta`.
 """
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -102,6 +103,41 @@ async def delete_position(
         await session.delete(p)
     await session.commit()
     return len(rows)
+
+
+async def update_position(
+    session: AsyncSession, user: User, position_id: str, *,
+    ticker: str | None = None, market: str | None = None, asset_class: str | None = None,
+    quantity: float | None = None, cost_basis: float | None = None,
+    current_price: float | None = None,
+) -> Position | None:
+    """Edit a single holding the acting user owns (by id). Returns the row, or None if not found."""
+    try:
+        pid = uuid.UUID(str(position_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    q = (select(Position).join(Account, Position.account_id == Account.id)
+         .join(Entity, Account.entity_id == Entity.id)
+         .where(Entity.user_id == user.id, Position.id == pid))
+    row = (await session.execute(q)).scalars().first()
+    if row is None:
+        return None
+    if ticker:
+        row.ticker = ticker
+    if market:
+        row.market = market
+    if quantity is not None:
+        row.quantity = Decimal(str(quantity))
+    if cost_basis is not None:
+        row.cost_basis = Decimal(str(cost_basis))
+    if current_price is not None:
+        row.current_price = Decimal(str(current_price))
+    if asset_class is not None:
+        meta = dict(row.meta or {})
+        meta["asset_class"] = asset_class
+        row.meta = meta
+    await session.commit()
+    return row
 
 
 async def get_entities(session: AsyncSession, user: User) -> list[dict]:

@@ -3,6 +3,7 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.services.intake_service import (
     delete_position,
+    update_position,
     ensure_account, ensure_entity, list_positions, upsert_positions,
 )
 
@@ -106,6 +108,7 @@ async def get_portfolio(entity: str | None = None,
             "current_price": float(p.current_price) if p.current_price is not None else None,
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
+            "asset_class": (p.meta or {}).get("asset_class"),
         } for p in positions],
     }
 
@@ -119,3 +122,29 @@ async def remove_position(ticker: str, market: str | None = None,
     if not removed:
         raise HTTPException(status_code=404, detail=f"No holding '{ticker}' found.")
     return {"deleted": removed, "ticker": ticker}
+
+
+class EditPositionRequest(BaseModel):
+    ticker: str | None = None
+    market: str | None = None
+    asset_class: str | None = None
+    quantity: float | None = None
+    cost_basis: float | None = None
+    current_price: float | None = None
+
+
+@router.put("/portfolio/position/{position_id}")
+async def edit_position(position_id: str, body: EditPositionRequest,
+                        session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
+    """Edit one holding (ticker / market / asset class / shares / prices)."""
+    row = await update_position(
+        session, user, position_id,
+        ticker=body.ticker, market=body.market, asset_class=body.asset_class,
+        quantity=body.quantity, cost_basis=body.cost_basis, current_price=body.current_price)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Holding not found.")
+    return {"id": str(row.id), "ticker": row.ticker, "market": row.market,
+            "quantity": float(row.quantity), "cost_basis": float(row.cost_basis),
+            "current_price": float(row.current_price) if row.current_price is not None else None,
+            "asset_class": (row.meta or {}).get("asset_class")}
