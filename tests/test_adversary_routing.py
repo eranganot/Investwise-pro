@@ -102,3 +102,23 @@ def test_llm_narrative_uses_google_key_gate(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-be-ignored")
     assert adv.narrate(notes) is None
+
+
+def test_war_room_omits_ai_narrative_when_disabled():
+    from app.services.demo_data import DEFAULT_OBSERVATIONS
+    from app.services.war_room import build_war_room
+    wr = build_war_room(DEFAULT_OBSERVATIONS)  # LLM off by default -> narrate() returns None
+    for sess in wr["sessions"]:
+        assert not any("AI narrative" in l["role"] for l in sess["transcript"])
+
+
+def test_war_room_includes_ai_narrative_when_enabled(monkeypatch):
+    from app.agents.adversary import Adversary
+    from app.services.demo_data import DEFAULT_OBSERVATIONS
+    from app.services.war_room import build_war_room
+    # simulate Gemini returning a narrative, without any network call
+    monkeypatch.setattr(Adversary, "narrate", lambda self, notes, context="": "AI: I challenge this thesis.")
+    wr = build_war_room(DEFAULT_OBSERVATIONS)
+    teva = [s for s in wr["sessions"] if s["ticker"] == "TEVA"][0]
+    ai = [l for l in teva["transcript"] if l["role"].endswith("AI narrative")]
+    assert ai and ai[0]["says"].startswith("AI:") and ai[0]["detail"]["source"] == "gemini"
