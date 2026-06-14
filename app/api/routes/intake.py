@@ -7,11 +7,14 @@ from pydantic import BaseModel
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from decimal import Decimal
+
 from app.api.deps import acting_user
 from app.core.auth import Role, require_role
 from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
+from app.providers.registry import guarded_quote, market_provider
 from app.services.intake_service import (
     delete_position,
     update_position,
@@ -111,6 +114,27 @@ async def get_portfolio(entity: str | None = None,
             "asset_class": (p.meta or {}).get("asset_class"),
         } for p in positions],
     }
+
+
+@router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])
+async def refresh_prices(session: AsyncSession = Depends(get_session),
+                         user: User = Depends(acting_user)) -> dict:
+    """Update each holding's current_price from the live market provider."""
+    rows = await list_positions(session, user)
+    prices, errors = [], []
+    src = market_provider().name
+    for p in rows:
+        try:
+            q = guarded_quote(p.ticker)
+            p.current_price = Decimal(str(q.price))
+            p.meta = {**(p.meta or {}), "price_as_of": q.as_of, "price_source": src,
+                      "price_currency": q.currency}
+            prices.append({"ticker": p.ticker, "price": q.price, "currency": q.currency, "as_of": q.as_of})
+        except Exception as e:  # noqa: BLE001
+            errors.append({"ticker": p.ticker, "error": str(e)[:120]})
+    await session.commit()
+    return {"source": src, "updated": len(prices), "failed": len(errors),
+            "prices": prices, "errors": errors}
 
 
 @router.delete("/portfolio/position")

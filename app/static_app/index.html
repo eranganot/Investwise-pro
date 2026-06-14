@@ -172,6 +172,10 @@
       <div class="bar2"><i id="barfill" style="width:0%"></i></div>
       <div class="dims" id="dims"></div>
       <div class="goal" id="goal"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+        <button id="refreshBtn" class="adv" style="cursor:pointer" onclick="refreshPricesUI()">↻ Refresh prices</button>
+        <span class="muted" id="priceNote" style="font-size:12px"></span>
+      </div>
     </div>
     <div class="card hide" id="outcomes"></div>
     <h2>What to do now</h2>
@@ -328,12 +332,27 @@ function closeModal(){$("ov").classList.remove("show");}
 
 function showAdd(){$("addbox").classList.remove("hide");}
 async function loadSample(){
+  // Real, liquid US tickers so live prices populate (Stooq resolves these).
   const sample={entity_name:"Personal",positions:[
-    {ticker:"TEVA",market:"NYSE",asset_class:"Equities",depth:3,spot_price:100,listing_price:108,quantity:300,cost_basis:75,expected_return_pct:9,volatility_pct:14},
-    {ticker:"GOLD",market:"SPOT",asset_class:"Commodities",depth:1,spot_price:100,listing_price:103,quantity:60,cost_basis:96,expected_return_pct:5,volatility_pct:8,action_type:"Rebalance"},
-    {ticker:"BOND",market:"TASE",asset_class:"Fixed Income",depth:1,spot_price:100,listing_price:99,quantity:200,cost_basis:101,expected_return_pct:3,volatility_pct:5}]};
+    {ticker:"AAPL",market:"NASDAQ",asset_class:"Equities",depth:3,spot_price:1,listing_price:1,quantity:50,cost_basis:150,expected_return_pct:9,volatility_pct:24},
+    {ticker:"MSFT",market:"NASDAQ",asset_class:"Equities",depth:3,spot_price:1,listing_price:1,quantity:30,cost_basis:300,expected_return_pct:9,volatility_pct:22},
+    {ticker:"VOO",market:"NYSE",asset_class:"Equities",depth:2,spot_price:1,listing_price:1,quantity:40,cost_basis:380,expected_return_pct:7,volatility_pct:16,expense_ratio_pct:0.03},
+    {ticker:"BND",market:"NASDAQ",asset_class:"Fixed Income",depth:1,spot_price:1,listing_price:1,quantity:100,cost_basis:74,expected_return_pct:3,volatility_pct:6,expense_ratio_pct:0.03}]};
   await fetch("/api/v1/intake/portfolio",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sample)});
+  await refreshPrices();   // pull live prices right away
   show("today");
+}
+async function refreshPrices(){
+  try{const r=await(await fetch("/api/v1/portfolio/refresh-prices",{method:"POST"})).json();
+    return r;}catch(e){return null;}
+}
+async function refreshPricesUI(){
+  const b=$("refreshBtn"); if(b){b.textContent="Refreshing…";b.disabled=true;}
+  const r=await refreshPrices();
+  if(b){b.textContent="↻ Refresh prices";b.disabled=false;}
+  if(r){const msg=`Updated ${r.updated} from ${r.source}`+(r.failed?` · ${r.failed} not found`:"");
+    const n=$("priceNote"); if(n)n.textContent=msg;}
+  loadToday();
 }
 async function addOne(){
   const price=+$("a_p").value;
