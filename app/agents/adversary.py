@@ -67,6 +67,29 @@ def _note(stage: str, findings: list[str], block: bool = False) -> AdversaryNote
                          critique=f"{stage}: " + "; ".join(findings) + ".")
 
 
+def _gemini_generate(key: str, model: str, prompt: str, timeout: float = 20.0) -> str:
+    """Run the (synchronous) Gemini call in a worker thread that has no event
+    loop. Calling the google-genai sync client directly from FastAPI's async
+    loop raises 'Cannot send a request, as the client has been closed'; a fresh
+    thread sidesteps the loop-detection that closes the underlying httpx client.
+    Prefers the supported google-genai SDK; falls back to the deprecated one.
+    """
+    import concurrent.futures
+
+    def _call() -> str:
+        try:
+            from google import genai  # google-genai (current, supported SDK)
+            resp = genai.Client(api_key=key).models.generate_content(model=model, contents=prompt)
+        except ImportError:
+            import google.generativeai as genai_legacy  # deprecated fallback
+            genai_legacy.configure(api_key=key)
+            resp = genai_legacy.GenerativeModel(model).generate_content(prompt)
+        return (getattr(resp, "text", "") or "").strip()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(_call).result(timeout=timeout)
+
+
 class Adversary:
     """Deterministic red-team examiner with an optional LLM narrative layer."""
 
@@ -156,15 +179,7 @@ class Adversary:
             f"reference what is given.\nContext: {context}\nFindings:\n{bullet}"
         )
         try:  # defensive: a narrative failure must never break the pipeline
-            try:
-                from google import genai  # google-genai (current, supported SDK)
-                resp = genai.Client(api_key=key).models.generate_content(
-                    model=model_name, contents=prompt)
-            except ImportError:
-                import google.generativeai as genai_legacy  # deprecated fallback
-                genai_legacy.configure(api_key=key)
-                resp = genai_legacy.GenerativeModel(model_name).generate_content(prompt)
-            return (getattr(resp, "text", "") or "").strip() or None
+            return _gemini_generate(key, model_name, prompt) or None
         except Exception:
             return None
 
@@ -192,10 +207,7 @@ class Adversary:
             info["error"] = "no GOOGLE_API_KEY / GEMINI_API_KEY in the environment"
             return info
         try:
-            from google import genai
-            resp = genai.Client(api_key=key).models.generate_content(
-                model=self.settings.adversary_llm_model, contents="Reply with the single word OK.")
-            sample = (getattr(resp, "text", "") or "").strip()
+            sample = _gemini_generate(key, self.settings.adversary_llm_model, "Reply with the single word OK.")
             info["ok"] = bool(sample)
             info["sample"] = sample[:80]
             if not sample:
