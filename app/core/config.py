@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000
 
+    # Brokerage / aggregation (Phase 3.1) - holdings sync
+    broker_enabled: bool = False            # gate real providers (plaid/yodlee); mock always works
+    aggregator_provider: str = "mock"       # mock | plaid | yodlee
+
     # Adversary agent (Section 6 / Phase 1.3) - per-stage cross-examination
     adversary_enabled: bool = True          # route every stage through the Adversary examiners
     adversary_enforce_veto: bool = True     # a BLOCK-severity finding becomes a hard veto

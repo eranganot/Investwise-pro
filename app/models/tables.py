@@ -254,3 +254,21 @@ class Plan(Base, PKMixin, TimestampMixin):
     target_yield_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_yield_period: Mapped[str] = mapped_column(String(12), default="yearly")
     preferred_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+# --- Brokerage / aggregation (Phase 3.1 scaffold) ---------------------------
+class BrokerConnection(Base, PKMixin, TimestampMixin):
+    """A user's link to an external brokerage/aggregator. Credentials are never
+    stored here - only an encrypted ``credential_ref`` pointing at a secret."""
+    __tablename__ = "broker_connections"
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    provider: Mapped[str] = mapped_column(String(32))          # mock|plaid|yodlee
+    external_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    institution: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="CONNECTED")  # CONNECTED|ERROR|DISCONNECTED
+    credential_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
