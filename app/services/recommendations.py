@@ -10,6 +10,7 @@ from app.models.tables import User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
 from app.services.audit_trail import audit_for, f
 from app.agents.fee_agent import FeeAgent
+from app.engines.backtest_engine import BacktestEngine
 from app.services.intake_service import delete_position, list_positions, update_position
 from app.services.plan_service import effective_caps, get_plan, plan_settings, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
@@ -121,7 +122,17 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
-    return {"count": len(recs), "objective": objective, "recommendations": recs[:8]}
+    # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
+    bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
+                    "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
+    bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
+    return {"count": len(recs), "objective": objective, "recommendations": recs[:8],
+            "risk_validation": {"beta_validated": bt.beta_validated,
+                                "structural_beta": bt.structural_beta,
+                                "risk_implied_beta": bt.risk_implied_beta,
+                                "worst_event": bt.worst_event,
+                                "worst_portfolio_drawdown_pct": bt.worst_portfolio_drawdown_pct,
+                                "critique": bt.critique}}
 
 
 # expected annual return by objective (rough asset-class blend; used to size the gap)

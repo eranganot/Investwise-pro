@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000
 
+    # Historical backtesting (Phase 3.3) - validate the Risk Agent's beta
+    backtest_beta_tolerance: float = 0.25   # flag if vol-implied beta diverges from structural beta by more
+    backtest_market_vol_pct: float = 16.0   # broad-market annual volatility used for the implied-beta calc
+
     # Fee optimizer (Phase 3.2)
     fee_high_threshold_pct: float = 0.50    # flag holdings whose expense ratio exceeds this %
 
