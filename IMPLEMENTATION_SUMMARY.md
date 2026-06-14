@@ -23,8 +23,8 @@
 |---|---|---|
 | `adversary_enabled` | `True` | route every stage through the Adversary |
 | `adversary_enforce_veto` | `True` | a BLOCK finding becomes a hard veto |
-| `adversary_llm_enabled` | `False` | optional LLM narrative (needs `ANTHROPIC_API_KEY`) |
-| `adversary_llm_model` | `claude-sonnet-4-6` | model for the narrative |
+| `adversary_llm_enabled` | `False` | optional LLM narrative (Google Gemini, needs `GOOGLE_API_KEY`) |
+| `adversary_llm_model` | `gemini-2.0-flash` | Gemini model for the narrative |
 | `broker_enabled` | `False` | gate real aggregators (mock always works) |
 | `aggregator_provider` | `mock` | `mock` / `plaid` / `yodlee` |
 | `fee_high_threshold_pct` | `0.50` | flag holdings above this expense ratio |
@@ -43,6 +43,6 @@ uvicorn app.main:app --reload     # API + /app dashboard
 
 ## Open follow-ups (your call)
 - Pick the live brokerage direction (Plaid vs Yodlee vs the existing Israeli-broker order path) and provide sandbox keys to activate beyond mock.
-- Provide an `ANTHROPIC_API_KEY` if/when you want to switch the LLM Adversary narrative on.
+- Provide a `GOOGLE_API_KEY` (and `pip install google-generativeai`) if/when you want to switch the LLM Adversary narrative on.
 - Optionally replace the bundled backtest series with a real market-data vendor feed.
 - Merge `feat/audit-phase1` to `main` once reviewed; **rotate the GitHub token shared in chat.**

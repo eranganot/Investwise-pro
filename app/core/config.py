@@ -84,8 +84,8 @@ class Settings(BaseSettings):
     # Adversary agent (Section 6 / Phase 1.3) - per-stage cross-examination
     adversary_enabled: bool = True          # route every stage through the Adversary examiners
     adversary_enforce_veto: bool = True     # a BLOCK-severity finding becomes a hard veto
-    adversary_llm_enabled: bool = False     # optional LLM narrative on top of deterministic checks (needs ANTHROPIC_API_KEY)
-    adversary_llm_model: str = "claude-sonnet-4-6"
+    adversary_llm_enabled: bool = False     # optional LLM narrative on top of deterministic checks (needs GOOGLE_API_KEY)
+    adversary_llm_model: str = "gemini-2.0-flash"  # any Gemini model you have access to
 
     # Decision engine (Section 4.5) display gates
     min_impact_score: float = 20.0

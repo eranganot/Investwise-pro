@@ -89,3 +89,16 @@ def test_war_room_includes_cross_examination_lines():
              if l["agent"] == "Adversary" and "cross-examination" in l["role"]]
     assert xexam, "expected Adversary cross-examination lines in the transcript"
     assert all("severity" in l["detail"] for l in xexam)
+
+
+def test_llm_narrative_uses_google_key_gate(monkeypatch):
+    from app.agents.adversary import Adversary
+    from app.core.config import get_settings
+    s = get_settings().model_copy(update={"adversary_llm_enabled": True})
+    adv = Adversary(s)
+    notes = [adv.examine_detected(_strong_buy())]
+    # enabled but no Google key -> still None (no call attempted)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "should-be-ignored")
+    assert adv.narrate(notes) is None
