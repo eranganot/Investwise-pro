@@ -128,7 +128,7 @@
 <div class="head">
   <div class="bar">
     <div class="brand"><span class="logo">◆</span> InvestWise</div>
-    <a class="adv" href="/dashboard/">Advanced ↗</a>
+    <span><a class="adv" href="/dashboard/">Advanced ↗</a> <a class="adv" href="/auth/logout">Sign out</a></span>
   </div>
   <div class="tabs" id="tabs">
     <button data-t="today" onclick="show('today')">🏠 Today</button>
@@ -309,6 +309,7 @@ function show(v){
   if(v==="explore") loadExplore();
 }
 async function boot(){
+  try{const me=await fetch("/api/v1/auth/me"); if(me.status===401){location.href="/login";return;}}catch(e){}
   try{const p=await(await fetch("/api/v1/portfolio")).json(); p.count?show("today"):show("setup");}
   catch(e){show("setup");}
 }
