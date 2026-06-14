@@ -14,7 +14,7 @@ from functools import lru_cache
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from pydantic import BaseModel
 
 from app.core.config import get_settings
@@ -82,12 +82,35 @@ def _principal_from_header(authorization: str | None) -> Principal:
                      token_type=payload.get("type", "access"))
 
 
+def _principal_from_token(token: str) -> Principal:
+    try:
+        payload = decode_token(token)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(401, "invalid or expired token")
+    if payload.get("type") == "refresh":
+        raise HTTPException(401, "refresh token cannot access resources")
+    return Principal(sub=payload["sub"], role=Role(payload.get("role", "READ_ONLY")),
+                     token_type=payload.get("type", "access"))
+
+
 def require_role(min_role: Role):
-    async def _dep(authorization: str | None = Header(default=None)) -> Principal:
+    async def _dep(request: Request = None, authorization: str | None = Header(default=None)) -> Principal:
         s = get_settings()
         if not s.require_auth:
             return Principal(sub=s.superadmin_name, role=Role.SUPERADMIN)
-        principal = _principal_from_header(authorization)
+        # token from Authorization header (API clients) or the session cookie (browser).
+        token = None
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ", 1)[1]
+        elif request is not None:
+            token = request.cookies.get(s.session_cookie_name)
+        if not token:
+            raise HTTPException(401, "not authenticated")
+        principal = _principal_from_token(token)
+        # Email allowlist: user tokens must be allow-listed (m2m tokens exempt).
+        allowed = s.allowed_email_list
+        if allowed and "@" in principal.sub and principal.sub.lower() not in allowed:
+            raise HTTPException(403, "this account is not allowed")
         if ORDER[principal.role] < ORDER[min_role]:
             raise HTTPException(403, f"requires role {min_role.value} or higher")
         return principal
