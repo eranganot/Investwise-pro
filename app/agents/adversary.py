@@ -134,28 +134,37 @@ class Adversary:
 
     # --- optional LLM narrative (off by default; never on the scoring path) ---
     def narrate(self, notes: list[AdversaryNote], *, context: str = "") -> str | None:
+        """Optional Google Gemini narrative over the deterministic findings.
+
+        Off unless ``adversary_llm_enabled`` and a ``GOOGLE_API_KEY`` (or
+        ``GEMINI_API_KEY``) is set. Never invents numbers and never raises - a
+        narrative failure must not affect the deterministic scoring path.
+        Works with either the ``google-generativeai`` or the newer ``google-genai``
+        SDK (whichever is installed).
+        """
         if not getattr(self.settings, "adversary_llm_enabled", False):
             return None
-        key = os.getenv("ANTHROPIC_API_KEY")
+        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not key:
             return None
+        model_name = getattr(self.settings, "adversary_llm_model", "gemini-2.0-flash")
+        bullet = "\n".join(f"- [{n.severity.value}] {n.critique}" for n in notes)
+        prompt = (
+            "You are a skeptical investment risk red-teamer. Given these "
+            "deterministic findings from a wealth pipeline, write 2-3 sentences "
+            "challenging the logic and assumptions. Do NOT invent numbers; only "
+            f"reference what is given.\nContext: {context}\nFindings:\n{bullet}"
+        )
         try:  # defensive: a narrative failure must never break the pipeline
-            import anthropic  # type: ignore
-
-            client = anthropic.Anthropic(api_key=key)
-            bullet = "\n".join(f"- [{n.severity.value}] {n.critique}" for n in notes)
-            prompt = (
-                "You are a skeptical investment risk red-teamer. Given these "
-                "deterministic findings from a wealth pipeline, write 2-3 sentences "
-                "challenging the logic and assumptions. Do NOT invent numbers; only "
-                f"reference what is given.\nContext: {context}\nFindings:\n{bullet}"
-            )
-            msg = client.messages.create(
-                model=getattr(self.settings, "adversary_llm_model", "claude-sonnet-4-6"),
-                max_tokens=300,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            return "".join(getattr(b, "text", "") for b in msg.content).strip() or None
+            try:
+                import google.generativeai as genai  # type: ignore
+                genai.configure(api_key=key)
+                resp = genai.GenerativeModel(model_name).generate_content(prompt)
+            except ImportError:
+                from google import genai  # type: ignore  # newer google-genai SDK
+                resp = genai.Client(api_key=key).models.generate_content(
+                    model=model_name, contents=prompt)
+            return (getattr(resp, "text", "") or "").strip() or None
         except Exception:
             return None
 
