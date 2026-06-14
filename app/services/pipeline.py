@@ -130,6 +130,7 @@ class PipelineOrchestrator:
                 payload["adversary_critique"] = crit
                 payload["explanation"] = XaiEngine().build(result).model_dump()
                 payload["adversary_examination"] = adversary_notes
+                payload["adversary_narrative"] = self.sm.adversary.narrate(exam.notes, context=rec.title)
                 payload["expires_at"] = expiry_for(rec.time_sensitivity)
                 if safety:
                     payload["safety_flags"] = [f.model_dump() for f in safety.flags]

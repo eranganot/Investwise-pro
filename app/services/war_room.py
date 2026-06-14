@@ -115,6 +115,13 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
         crit = adversary.critique(path=display.path, risk_critique=vetted.risk_critique,
                                   confidence=ranked.confidence, impact=ranked.impact_score)
         t.append({"agent": "Adversary", "role": "Red-Team · final word", "says": crit, "detail": {}})
+        _nar = sm.adversary.narrate(
+            [sm.adversary.examine_detected(det), sm.adversary.examine_vetted(vetted),
+             sm.adversary.examine_optimized(optimized), sm.adversary.examine_ranked(ranked)],
+            context=display.title)
+        if _nar:
+            t.append({"agent": "Adversary", "role": "Red-Team · AI narrative",
+                      "says": _nar, "detail": {"source": "gemini"}})
         t.append({"agent": "UX", "role": "Decision Feed",
                   "says": f"Approved on the {display.path} path: {display.title}.",
                   "detail": {"path": display.path, "title": display.title}})
