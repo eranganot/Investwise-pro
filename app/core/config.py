@@ -1,7 +1,7 @@
 """Application configuration (12-factor, env-driven)."""
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,15 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_env_whitespace(cls, data):
+        # Railway/.env values often carry a stray trailing space (e.g. "true ").
+        # Strip every string input before type coercion so a typo can't crash boot.
+        if isinstance(data, dict):
+            return {k: (v.strip() if isinstance(v, str) else v) for k, v in data.items()}
+        return data
 
     # Runtime
     app_name: str = "InvestWise Pro"
