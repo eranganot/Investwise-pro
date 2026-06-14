@@ -5,6 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel
 
+from app.schemas.validation import STRICT, Score
+
 
 class Complexity(str, Enum):
     TRIVIAL = "Trivial"
@@ -29,11 +31,12 @@ CONFIDENCE_WEIGHTS = {"data_quality": 0.40, "model_agreement": 0.30,
 
 class ImpactScores(BaseModel):
     """Five normalized (0-100) Impact sub-scores."""
-    ret: float        # S_return  (serialized as "return")
-    tax: float        # S_tax
-    risk: float       # S_risk
-    liquidity: float  # S_liquidity
-    conviction: float # S_conviction
+    model_config = STRICT
+    ret: Score        # S_return  (serialized as "return")
+    tax: Score        # S_tax
+    risk: Score       # S_risk
+    liquidity: Score  # S_liquidity
+    conviction: Score # S_conviction
 
     def as_contract(self) -> dict:
         return {"return": self.ret, "tax": self.tax, "risk": self.risk,
@@ -42,7 +45,8 @@ class ImpactScores(BaseModel):
 
 class ConfidenceBreakdown(BaseModel):
     """Four normalized (0-100) confidence components."""
-    data_quality: float
-    model_agreement: float
-    historical_accuracy: float
-    market_stability: float
+    model_config = STRICT
+    data_quality: Score
+    model_agreement: Score
+    historical_accuracy: Score
+    market_stability: Score

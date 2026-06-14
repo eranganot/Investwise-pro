@@ -22,6 +22,7 @@ from app.schemas.state_machine import (
     VetoedSignal,
     VettedSignal,
 )
+from app.schemas.validation import assert_handoff
 
 
 class _Risk(Protocol):
@@ -50,16 +51,23 @@ class StateMachine:
         self.decision = decision or DecisionEngine(self.settings)
 
     # --- individual transitions (each requires the prior stage's type) ---
+    # Every transition asserts that the producer handed the consumer exactly the
+    # stage type it expects (Phase 1.2 cross-agent contract guard). Combined with
+    # the typed ``source`` chain, this makes context drift between agents
+    # impossible to pass silently.
     def vet(self, signal: DetectedSignal) -> VettedSignal:
-        return self.risk.vet(signal)
+        assert_handoff(signal, DetectedSignal)
+        return assert_handoff(self.risk.vet(signal), VettedSignal)
 
     def optimize(self, signal: VettedSignal) -> OptimizedSignal:
+        assert_handoff(signal, VettedSignal)
         if signal.veto_flag:
             raise ValueError("Cannot optimize a vetoed signal (risk override).")
-        return self.tax.optimize(signal)
+        return assert_handoff(self.tax.optimize(signal), OptimizedSignal)
 
     def rank(self, signal: OptimizedSignal) -> RankedSignal:
-        return self.decision.rank(signal)
+        assert_handoff(signal, OptimizedSignal)
+        return assert_handoff(self.decision.rank(signal), RankedSignal)
 
     def display(self, signal: RankedSignal) -> Optional[DisplayedItem]:
         s = self.settings
