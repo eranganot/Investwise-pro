@@ -169,6 +169,42 @@ class Adversary:
             return None
 
 
+    def diagnostics(self) -> dict:
+        """Live status of the optional LLM narrative - safe to expose (no secrets).
+
+        Reports whether it's enabled, the configured model, whether a key is
+        present, and the result of one tiny Gemini call (with the real error
+        message if it fails) so misconfig (wrong model / bad key / missing SDK)
+        is obvious instead of being silently swallowed.
+        """
+        key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        info: dict = {
+            "adversary_enabled": bool(self.settings.adversary_enabled),
+            "adversary_llm_enabled": bool(self.settings.adversary_llm_enabled),
+            "adversary_llm_model": self.settings.adversary_llm_model,
+            "google_key_present": bool(key),
+            "ok": False, "error": None, "sample": None,
+        }
+        if not info["adversary_llm_enabled"]:
+            info["error"] = "adversary_llm_enabled is false (set ADVERSARY_LLM_ENABLED=true)"
+            return info
+        if not key:
+            info["error"] = "no GOOGLE_API_KEY / GEMINI_API_KEY in the environment"
+            return info
+        try:
+            from google import genai
+            resp = genai.Client(api_key=key).models.generate_content(
+                model=self.settings.adversary_llm_model, contents="Reply with the single word OK.")
+            sample = (getattr(resp, "text", "") or "").strip()
+            info["ok"] = bool(sample)
+            info["sample"] = sample[:80]
+            if not sample:
+                info["error"] = "model returned empty text"
+        except Exception as e:  # surface the real reason (model not found / auth / quota)
+            info["error"] = f"{type(e).__name__}: {str(e)[:240]}"
+        return info
+
+
 # --- legacy final-word helpers (unchanged API, used by the feed/war-room) ---
 def critique(*, path: str, risk_critique: str, confidence: float,
              impact: float, safety: SafetyReport | None = None) -> str:
