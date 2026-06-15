@@ -96,6 +96,12 @@ def _principal_from_token(token: str) -> Principal:
 def require_role(min_role: Role):
     async def _dep(request: Request = None, authorization: str | None = Header(default=None)) -> Principal:
         s = get_settings()
+        # Agent override: a request carrying the secret X-Agent-Key acts as SUPERADMIN
+        # (attributed to the owner) even when auth is enforced - lets the agent apply
+        # holdings overrides without disabling auth.
+        if s.agent_api_key and request is not None:
+            if request.headers.get("x-agent-key") == s.agent_api_key:
+                return Principal(sub=s.superadmin_email, role=Role.SUPERADMIN)
         if not s.require_auth:
             return Principal(sub=s.superadmin_name, role=Role.SUPERADMIN)
         # token from Authorization header (API clients) or the session cookie (browser).

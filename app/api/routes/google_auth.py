@@ -130,9 +130,9 @@ async def google_callback(request: Request, code: str = "", state: str = "",
     await ensure_user(session, email, name=info.get("name") or email, role="SuperAdmin")
     await session.commit()
 
-    jwt_token = create_token(email, Role.SUPERADMIN, "access")
+    jwt_token = create_token(email, Role.SUPERADMIN, "access", ttl=s.session_ttl_sec)
     resp = RedirectResponse(s.post_login_redirect)
-    resp.set_cookie(s.session_cookie_name, jwt_token, max_age=s.access_token_ttl_sec,
+    resp.set_cookie(s.session_cookie_name, jwt_token, max_age=s.session_ttl_sec,
                     httponly=True, secure=_is_https(request), samesite="lax")
     resp.delete_cookie(_STATE_COOKIE)
     return resp
