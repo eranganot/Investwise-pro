@@ -136,6 +136,14 @@
   .stcard .acts{display:flex;gap:8px;margin-top:8px}
   .stcard .acts button{font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:var(--card2);color:var(--ink);cursor:pointer;font-weight:600}
   .stcard .acts button.load{border-color:var(--green);color:var(--green)}
+  .ccat{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .ccat button{background:var(--card2);color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer}
+  .ccat button.on{color:var(--ink);border-color:var(--blue);background:var(--soft)}
+  .crow{display:flex;align-items:center;gap:8px;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
+  .crow:last-child{border-bottom:0}
+  .crow .nm{font-weight:600} .crow .tk{color:var(--mut);font-size:11px}
+  .crow input{width:90px;padding:6px;font-size:13px}
+  .crow button{font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid var(--green);background:var(--card2);color:var(--green);cursor:pointer;font-weight:600;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -215,6 +223,9 @@
     <h2>What you own</h2>
     <div class="hold" id="holds"><div class="card muted">Loading…</div></div>
     <button class="soft" onclick="showAdd(); show('setup')">＋ Add another holding</button>
+    <h2>Add commodities &amp; real assets</h2>
+    <div class="card" id="commBox"><div class="muted">Loading commodities…</div></div>
+    <div class="muted" id="commOut" style="margin-top:8px"></div>
   </section>
 
   <!-- PLAN -->
@@ -343,7 +354,7 @@ function show(v){
   $("tabs").style.visibility = v==="setup" ? "hidden" : "visible";
   $("wrap").classList.toggle("wide", v==="agents");
   if(v==="today") loadToday();
-  if(v==="hold") loadHoldings();
+  if(v==="hold"){loadHoldings();loadCommodities();}
   if(v==="plan"){loadStrategies();loadPlan();}
   if(v==="agents") loadWar();
   if(v==="explore") loadExplore();
@@ -499,6 +510,31 @@ async function acceptRec(id){
 function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
 
 let HMAP={};
+let COMM=null, CCAT=null;
+async function loadCommodities(){
+  if(!COMM){try{COMM=await(await fetch("/api/v1/commodities")).json();}catch(e){$("commBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
+  CCAT=CCAT||COMM.categories[0];
+  const tabs=COMM.categories.map(c=>`<button class="${c===CCAT?'on':''}" onclick="CCAT='${c}';loadCommodities()">${c}</button>`).join("");
+  const rows=(COMM.by_category[CCAT]||[]).map(x=>`
+    <div class="crow"><div><div class="nm">${x.name} <span class="tk">${x.ticker} · ${x.expense_ratio_pct}% fee</span></div></div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input id="amt_${x.ticker}" type="number" placeholder="$ amount"/>
+        <button onclick="addCommodity('${x.ticker}')">＋ Add</button></div></div>`).join("");
+  const note=`<div class="muted" style="font-size:12px;margin-bottom:8px">Salt &amp; potatoes aren't tradable markets — for those, use the Agriculture basket (DBA). All prices are live.</div>`;
+  $("commBox").innerHTML=`<div class="ccat">${tabs}</div>${note}${rows}`;
+}
+async function addCommodity(ticker){
+  const amt=+($("amt_"+ticker).value||0); const o=$("commOut");
+  if(!amt||amt<=0){o.textContent="Enter an amount first.";return;}
+  o.textContent=`Pricing & adding ${ticker}…`;
+  try{const resp=await fetch("/api/v1/portfolio/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,amount:amt,asset_class:"Commodities",market:"NYSE"})});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!r.ok){o.innerHTML=`<span class="bad">${r.error||resp.status}</span>`;return;}
+    o.innerHTML=`<span class="ok">Added ${r.quantity} ${r.ticker} @ $${r.price} (~$${Math.round(r.value).toLocaleString()}).</span>`;
+    loadHoldings();
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);

@@ -48,6 +48,12 @@ CATALOG: list[dict] = [
      "description": "Diversified across stocks, bonds, gold and commodities to weather many regimes.",
      "target_allocation": {"Equities": 0.35, "Fixed Income": 0.40, "Commodities": 0.25},
      "basket": [["VTI", 0.35], ["BND", 0.40], ["IAU", 0.15], ["DBC", 0.10]]},
+    {"id": "bal_commodities", "goal": "Balanced", "name": "Stocks, Bonds & Commodities",
+     "risk_tolerance": "Medium", "objective": "Balanced", "preferred_depth": 2,
+     "description": "A real-asset balance: equities, bonds and a 20% commodities sleeve (broad basket + gold) "
+                    "as an inflation hedge and diversifier.",
+     "target_allocation": {"Equities": 0.50, "Fixed Income": 0.30, "Commodities": 0.20},
+     "basket": [["VTI", 0.50], ["BND", 0.30], ["DBC", 0.12], ["IAU", 0.08]]},
     {"id": "bal_7030", "goal": "Balanced", "name": "Growth-Tilted 70/30",
      "risk_tolerance": "Medium", "objective": "Balanced", "preferred_depth": 2,
      "description": "A more aggressive balance: 70% equities (with a tech tilt) / 30% bonds.",
@@ -93,7 +99,8 @@ _BY_ID = {s["id"]: s for s in CATALOG}
 # infer an asset class for each basket ticker so loaded baskets carry it
 _TICKER_CLASS = {
     "BND": "Fixed Income", "BIL": "Cash", "SHY": "Fixed Income", "TIP": "Fixed Income",
-    "HYG": "Fixed Income", "IAU": "Commodities", "DBC": "Commodities",
+    "HYG": "Fixed Income", "IAU": "Commodities", "DBC": "Commodities", "GLD": "Commodities",
+    "SLV": "Commodities", "DBA": "Commodities", "PDBC": "Commodities", "USO": "Commodities",
 }
 
 
