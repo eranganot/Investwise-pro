@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
+from app.services import strategies as _strat
 from app.services.audit_trail import audit_for, f
 from app.agents.fee_agent import FeeAgent
 from app.engines.backtest_engine import BacktestEngine
@@ -93,7 +94,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # 3) Rebalance toward the plan's objective
     mix, _ = current_mix(rows)
-    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+    _sid = getattr(plan, "strategy", None)
+    _s = _strat.get(_sid) if _sid else None
+    target = (_s["target_allocation"] if _s else OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"]))
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
     for a in report.rebalance_actions[:2]:
         recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
@@ -229,7 +232,10 @@ def _behind_goal_recs(plan, snap, objective) -> list[dict]:
 async def _rebalance_to(session, user, rows, objective: str) -> None:
     """Scale holdings so each asset class hits its objective target weight (NAV held constant)."""
     from collections import defaultdict
-    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+    plan = await get_plan(session, user)
+    _sid = getattr(plan, "strategy", None)
+    _s = _strat.get(_sid) if _sid else None
+    target = (_s["target_allocation"] if _s else OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"]))
     nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows)
     if not nav:
         return

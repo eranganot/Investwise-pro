@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    adversary as adversary_routes, allocation, assistant, auth, backtest, broker, decision_feed, entities, fees, google_auth, health, intake, jobs, lag, learning, market,
+    adversary as adversary_routes, allocation, assistant, auth, backtest, broker, decision_feed, entities, fees, google_auth, health, intake, jobs, lag, learning, market, strategy,
     observability, plan, recommendations, risk, safety, simulation, tax, war_room, whatif, whs, workflows,
 )
 from app.core.config import get_settings
@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS strategy VARCHAR(40)",
                 ):
                     try:
                         await conn.execute(text(ddl))
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(adversary_routes.router)
     app.include_router(google_auth.router)
     app.include_router(assistant.router)
+    app.include_router(strategy.router)
 
     # Legacy /dashboard consolidated into /app (Phase G): keep a redirect for old links.
     from fastapi.responses import RedirectResponse
