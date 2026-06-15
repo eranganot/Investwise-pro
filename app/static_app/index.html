@@ -327,6 +327,9 @@
 </div>
 
 <script>
+// Session expiry / invalid cookie -> send to login instead of breaking the UI.
+const _origFetch=window.fetch;
+window.fetch=async(...a)=>{const r=await _origFetch(...a);if(r.status===401 && !location.pathname.endsWith('/login')){location.href='/login';}return r;};
 const ils=n=>"₪"+Math.round(Number(n)).toLocaleString();
 const pct=n=>(Number(n)*100).toFixed(0)+"%";
 const $=id=>document.getElementById(id);

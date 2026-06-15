@@ -37,3 +37,18 @@ def test_wrong_agent_key_is_rejected(monkeypatch):
 
 def test_remember_me_default_is_30_days():
     assert get_settings().session_ttl_sec == 2592000
+
+
+def test_jwt_secret_makes_sessions_survive_restart(monkeypatch):
+    import app.core.auth as A
+    from app.core.auth import Role, create_token, decode_token
+    monkeypatch.setenv("JWT_SECRET", "stable-secret-123")
+    from app.core.config import get_settings
+    get_settings.cache_clear()
+    try:
+        tok = create_token("eran.ganot@gmail.com", Role.SUPERADMIN, "access")
+        A._keys.cache_clear()  # simulate a redeploy rotating the ephemeral RSA key
+        payload = decode_token(tok)  # must still verify (HS256 stable secret)
+        assert payload["sub"] == "eran.ganot@gmail.com" and payload["role"] == "SUPERADMIN"
+    finally:
+        get_settings.cache_clear()

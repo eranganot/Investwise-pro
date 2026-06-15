@@ -49,6 +49,17 @@ def _keys() -> tuple[bytes, bytes]:
     return priv, pub
 
 
+def _alg() -> tuple[str, object, object]:
+    """Return (algorithm, sign_key, verify_key). A configured ``jwt_secret`` gives
+    HS256 with a stable key (sessions survive redeploys); otherwise an ephemeral
+    RS256 keypair is used (sessions reset on restart)."""
+    s = get_settings()
+    if s.jwt_secret:
+        return "HS256", s.jwt_secret, s.jwt_secret
+    priv, pub = _keys()
+    return "RS256", priv, pub
+
+
 def create_token(sub: str, role: Role, token_type: str = "access", ttl: int | None = None) -> str:
     s = get_settings()
     default_ttl = {"access": s.access_token_ttl_sec, "refresh": s.refresh_token_ttl_sec,
@@ -56,11 +67,13 @@ def create_token(sub: str, role: Role, token_type: str = "access", ttl: int | No
     now = int(time.time())
     payload = {"sub": sub, "role": role.value, "type": token_type,
                "iat": now, "exp": now + (ttl or default_ttl), "jti": uuid.uuid4().hex}
-    return jwt.encode(payload, _keys()[0], algorithm="RS256")
+    alg, sign_key, _ = _alg()
+    return jwt.encode(payload, sign_key, algorithm=alg)
 
 
 def decode_token(token: str) -> dict:
-    return jwt.decode(token, _keys()[1], algorithms=["RS256"])
+    alg, _, verify_key = _alg()
+    return jwt.decode(token, verify_key, algorithms=[alg])
 
 
 def issue_pair(sub: str, role: Role) -> dict:
