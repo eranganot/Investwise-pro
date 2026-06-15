@@ -11,6 +11,8 @@ from app.services.performance_service import performance
 from app.services.plan_service import get_plan
 from app.services.portfolio_analytics import compute_snapshot
 from app.services.portfolio_risk_service import portfolio_risk
+from app.services import commodities as _comm
+from app.services import strategies as _strat
 from app.services.recommendations import build_recommendations
 
 
@@ -27,6 +29,18 @@ async def gather(session: AsyncSession, user: User) -> dict:
                       "value_ils": round(d["quantity"] * d["current_price"], 2),
                       "asset_class": d["asset_class"]} for d in pdicts],
     }
+    # asset-class concentration (so the assistant can reason about diversification)
+    from collections import defaultdict
+    byc: dict[str, float] = defaultdict(float)
+    for d in pdicts:
+        byc[d.get("asset_class") or "Equities"] += d["quantity"] * d["current_price"]
+    _tot = sum(byc.values()) or 1.0
+    ctx["asset_class_breakdown"] = {k: round(v / _tot, 3) for k, v in byc.items()}
+    # what the user could add / switch to (grounding for "should I..." questions)
+    ctx["available_commodity_options"] = [
+        {"ticker": c["ticker"], "name": c["name"], "category": c["category"]} for c in _comm.CATALOG]
+    ctx["available_strategies"] = [
+        {"id": s["id"], "name": s["name"], "goal": s["goal"]} for s in _strat.CATALOG]
     try:
         recs = await build_recommendations(session, user)
         ctx["recommendations"] = [{"title": r["title"], "action": r.get("action")}
