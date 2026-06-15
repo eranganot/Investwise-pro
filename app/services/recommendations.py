@@ -16,6 +16,9 @@ from app.services.intake_service import delete_position, list_positions, update_
 from app.services.plan_service import effective_caps, get_plan, plan_settings, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
 
+CLASS_ETF = {"Equities": "VTI", "Fixed Income": "BND", "Cash": "BIL",
+             "Commodities": "DBC", "Real Estate": "VNQ", "Alternatives": "BTAL"}
+
 _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
@@ -104,7 +107,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                      "action": f"{a.action_type.title()} about {_ils(a.estimated_trade_value_currency)} of "
                                f"{a.asset_class} to move toward your {objective} target "
                                f"({target.get(a.asset_class, 0):.0%}).",
-                     "how": [f"{a.action_type.title()} {a.asset_class} by ~{_ils(a.estimated_trade_value_currency)}",
+                     "how": [f"{a.action_type.title()} {a.asset_class} by ~{_ils(a.estimated_trade_value_currency)}"
+                             + (f" — e.g. {CLASS_ETF[a.asset_class]}" if a.asset_class in CLASS_ETF else ""),
                              f"After tax & costs that's about {_ils(a.net_trade_value_currency)} moved",
                              "This nudges your mix back in line with your plan"],
                      "est_amount": a.net_trade_value_currency,

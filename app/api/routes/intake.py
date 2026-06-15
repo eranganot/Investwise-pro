@@ -3,7 +3,7 @@ import csv
 import io
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,6 +116,42 @@ async def get_portfolio(entity: str | None = None,
             "asset_class": (p.meta or {}).get("asset_class"),
         } for p in positions],
     }
+
+
+class AddHoldingRequest(BaseModel):
+    ticker: str
+    amount: float = Field(gt=0)            # budget in the instrument's price currency
+    asset_class: str | None = None
+    market: str = "NYSE"
+
+
+@router.post("/portfolio/add", dependencies=[Depends(require_role(Role.ANALYST))])
+async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
+    """Add (or top up) a single holding sized by a money amount, priced live."""
+    from app.schemas.intake import IntakePosition
+    from app.schemas.state_machine import Market
+    from app.services.commodities import get as commodity, is_commodity
+    from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
+    try:
+        price = float(guarded_quote(req.ticker).price)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"couldn't price {req.ticker}: {str(e)[:80]}"}
+    if price <= 0:
+        return {"ok": False, "error": f"no live price for {req.ticker}"}
+    qty = req.amount / price
+    ac = req.asset_class or ("Commodities" if is_commodity(req.ticker) else "Equities")
+    mk = req.market if req.market in {m.value for m in Market} else "NYSE"
+    er = (commodity(req.ticker) or {}).get("expense_ratio_pct")
+    ip = IntakePosition(ticker=req.ticker.upper(), market=Market(mk), depth=1,
+                        spot_price=price, listing_price=price, quantity=qty,
+                        cost_basis=price, asset_class=ac, expense_ratio_pct=er)
+    entity = await ensure_entity(session, user, "Personal", "Personal")
+    account = await ensure_account(session, entity, "Main")
+    await upsert_positions(session, account, [ip])
+    await session.commit()
+    return {"ok": True, "ticker": req.ticker.upper(), "price": round(price, 2),
+            "quantity": round(qty, 4), "value": round(qty * price, 2), "asset_class": ac}
 
 
 @router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])
