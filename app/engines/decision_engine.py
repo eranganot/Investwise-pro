@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from app.core.config import Settings, get_settings
 from app.engines.scoring import clamp_score, compute_confidence, compute_impact
-from app.schemas.scoring import COMPLEXITY_FACTOR, Complexity, ConfidenceBreakdown, ImpactScores
+from app.schemas.scoring import COMPLEXITY_FACTOR, IMPACT_WEIGHTS, Complexity, ConfidenceBreakdown, ImpactScores
 from app.schemas.state_machine import ActionType, OptimizedSignal, RankedSignal
 
 COMPLEXITY_BY_ACTION = {
@@ -31,17 +31,29 @@ class DecisionEngine:
         detected = vetted.source
 
         # --- Impact sub-scores (0-100) ---
-        unknown = self.settings.score_unknown_default
+        # Honesty rule (Phase C): only score dimensions we actually have data for.
+        # An unknown dimension is treated as NEUTRAL (the weighted average of what we
+        # DO know), never a fabricated 25-point penalty - so missing data lowers
+        # confidence (via data_quality below), not the impact itself.
         ret = clamp_score(max(detected.expected_return_pct or 0.0, abs(detected.divergence_pct)) * self.settings.decision_return_scale)
-        tax = (clamp_score(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
-               if signal.net_gain_delta is not None and detected.gross_gain_ils else unknown)
-        risk = (clamp_score((1.0 - vetted.probability_of_ruin) * 100.0)
-                if vetted.probability_of_ruin is not None else unknown)
-        liquidity = clamp_score(detected.liquidity_score) if detected.liquidity_score is not None else unknown
         conviction = clamp_score(detected.depth / 3.0 * 100.0)
         if self.settings.preferred_depth and detected.depth == self.settings.preferred_depth:
             conviction = clamp_score(conviction + 25.0)  # plan 'flavor' favors this depth
-        scores = ImpactScores(ret=ret, tax=tax, risk=risk, liquidity=liquidity, conviction=conviction)
+        known: dict[str, float] = {"return": ret, "conviction": conviction}
+        if signal.net_gain_delta is not None and detected.gross_gain_ils:
+            known["tax"] = clamp_score(signal.net_gain_delta / detected.gross_gain_ils * 100.0)
+        if vetted.probability_of_ruin is not None:
+            known["risk"] = clamp_score((1.0 - vetted.probability_of_ruin) * 100.0)
+        if detected.liquidity_score is not None:
+            known["liquidity"] = clamp_score(detected.liquidity_score)
+        _wsum = sum(IMPACT_WEIGHTS[k] for k in known) or 1.0
+        neutral = sum(IMPACT_WEIGHTS[k] * v for k, v in known.items()) / _wsum
+        scores = ImpactScores(ret=ret, conviction=conviction,
+                              tax=known.get("tax", neutral),
+                              risk=known.get("risk", neutral),
+                              liquidity=known.get("liquidity", neutral))
+        unknown_dims = [d for d in ("tax", "risk", "liquidity") if d not in known]
+        risk = scores.risk  # for the model-agreement heuristic below
 
         label = COMPLEXITY_BY_ACTION.get(detected.action_type, Complexity.MODERATE)
         factor = COMPLEXITY_FACTOR[label]

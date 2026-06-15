@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research_agent import ResearchAgent
 from app.api.deps import acting_user
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.models.tables import User
 from app.providers.registry import guarded_fx, guarded_quote, provider_health
@@ -48,3 +49,14 @@ async def research_events(
 @router.get("/providers/health")
 async def providers_health() -> dict:
     return provider_health()
+
+
+@router.get("/data-status")
+async def data_status() -> dict:
+    """Whether the app is on live market data or illustrative (builtin) data."""
+    s = get_settings()
+    live = s.market_data_provider != "builtin"
+    return {"live": live, "market_data_provider": s.market_data_provider,
+            "fx_provider": s.fx_provider,
+            "label": (f"Live market data ({s.market_data_provider})" if live
+                      else "Illustrative data - not live market prices")}

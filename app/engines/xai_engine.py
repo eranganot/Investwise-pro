@@ -33,7 +33,7 @@ class XaiEngine:
 
         supporting: list[str] = []
         if detected.depth == 3:
-            supporting.append("Structural Depth-3 backbone signal — high conviction, not surface hype.")
+            supporting.append("Depth-3 (structural) lag signal — weighted as higher conviction. Note: the lag-divergence score is a heuristic prioritization, not a proven market edge.")
         if vetted.probability_of_ruin is not None and vetted.probability_of_ruin < 0.10:
             supporting.append(f"Low probability of ruin ({vetted.probability_of_ruin:.0%}) in Monte Carlo stress.")
         if optimized.tax_saved:
@@ -52,8 +52,9 @@ class XaiEngine:
             contradicting.append("Short-term transaction costs may be slightly elevated this session.")
 
         assumptions = [
-            "Underlying liquidity remains below the 48-hour liquidation threshold.",
-            "Quoted spot and listing prices are current as of this pipeline run.",
+            "The lag-divergence signal is a heuristic prioritization, not a validated alpha source.",
+            "Quoted prices are current as of this pipeline run (see each holding's 'as of').",
+            "Sub-scores with no input were treated as neutral, not penalized; confidence reflects the gap.",
         ]
 
         net = optimized.net_gain_delta
