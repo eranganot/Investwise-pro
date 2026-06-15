@@ -90,3 +90,33 @@ Auth is **off by default** (open demo). To enforce it:
 - Every mutation is persisted to the append-only **`audit_log`** table; view recent
   entries at **`GET /api/v1/audit`** (SUPERADMIN).
 - **Sentry**: set `SENTRY_DSN` and add `sentry-sdk` to enable error tracking (optional).
+
+---
+
+## Operational hardening (Phase G)
+
+**Test isolation.** `tests/conftest.py` now wipes the database before every test
+(an autouse fixture), so tests are order-independent and never leak state. No
+per-test cleanup hacks are needed.
+
+**Migrations in production (recommended).** The app currently boots with
+`AUTO_CREATE_TABLES=true`, which calls `Base.metadata.create_all` on startup -
+convenient, but it can mask schema drift. For a stricter production posture:
+
+1. Set `AUTO_CREATE_TABLES=false`.
+2. Run `alembic upgrade head` on deploy (Railway: add a release/pre-deploy
+   command, or run it from the start command: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`).
+
+Keep `AUTO_CREATE_TABLES=true` only if you accept create-all-on-boot.
+
+**Async jobs (optional, uses the `redis-volume`).** Heavy Monte Carlo / feed
+generation run inline today (fine for a single user). To offload them:
+
+1. Add a **Redis service** in Railway and mount `redis-volume` to it at `/data`.
+2. Set `REDIS_URL` on the app to `${{Redis.REDIS_URL}}` (Celery then uses Redis
+   instead of running eagerly - see `app/worker/celery_app.py`).
+3. Optionally add a worker service running
+   `celery -A app.worker.celery_app worker`.
+
+**Dashboards consolidated.** The legacy `/dashboard` UI was removed; `/dashboard`
+now redirects to `/app`.

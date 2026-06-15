@@ -157,9 +157,14 @@ def create_app() -> FastAPI:
     app.include_router(adversary_routes.router)
     app.include_router(google_auth.router)
 
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.exists():
-        app.mount("/dashboard", StaticFiles(directory=str(static_dir), html=True), name="dashboard")
+    # Legacy /dashboard consolidated into /app (Phase G): keep a redirect for old links.
+    from fastapi.responses import RedirectResponse
+
+    @app.get("/dashboard")
+    @app.get("/dashboard/")
+    async def _legacy_dashboard():
+        return RedirectResponse("/app")
+
     app_dir = Path(__file__).parent / "static_app"
     if app_dir.exists():
         app.mount("/app", StaticFiles(directory=str(app_dir), html=True), name="app")
