@@ -15,6 +15,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
+from app.services.performance_service import performance
 from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
     delete_position,
@@ -143,6 +144,13 @@ async def portfolio_risk_report(session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
     """Portfolio-level risk: volatility, VaR/CVaR, beta, and goal probability."""
     return await portfolio_risk(session, user)
+
+
+@router.post("/portfolio/performance", dependencies=[Depends(require_role(Role.ANALYST))])
+async def portfolio_performance(session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """Backfilled portfolio performance vs benchmark from real price history."""
+    return await performance(session, user)
 
 
 @router.delete("/portfolio/position")
