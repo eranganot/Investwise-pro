@@ -13,11 +13,11 @@ from app.core.config import get_settings
 from app.engines.scoring import clamp_score
 from app.engines.whs_engine import WhsEngine
 from app.models.tables import User
+from app.schemas.state_machine import MARKET_CURRENCY as CUR, MARKET_REGION as GEO
 from app.services.intake_service import list_positions
 
 SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 # geography/currency proxy from listing venue (shared with the state machine)
-from app.schemas.state_machine import MARKET_CURRENCY as CUR, MARKET_REGION as GEO
 
 
 def _opp_id(*parts) -> str:

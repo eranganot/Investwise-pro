@@ -1,7 +1,6 @@
 """Apply a strategy (preset + rebalance trades) and load its model basket."""
 from __future__ import annotations
 
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +13,7 @@ from app.services import strategies as cat
 from app.services.allocation_mix import current_mix
 from app.services.intake_service import (
     ensure_account, ensure_entity, list_positions, upsert_positions)
-from app.services.plan_service import get_plan, upsert_plan
+from app.services.plan_service import upsert_plan
 from app.services.portfolio_analytics import compute_snapshot
 
 

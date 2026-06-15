@@ -92,9 +92,11 @@ class BacktestEngine:
         validated = True
         source = None
         if realized_beta is not None:                       # Phase D: real, returns-based beta
-            implied = round(realized_beta, 4); source = "historical returns"
+            implied = round(realized_beta, 4)
+            source = "historical returns"
         elif portfolio_vol_pct is not None and s.backtest_market_vol_pct > 0:
-            implied = round(portfolio_vol_pct / s.backtest_market_vol_pct, 4); source = "volatility-implied"
+            implied = round(portfolio_vol_pct / s.backtest_market_vol_pct, 4)
+            source = "volatility-implied"
         if implied is not None:
             divergence = round(abs(implied - beta), 4)
             validated = divergence <= s.backtest_beta_tolerance

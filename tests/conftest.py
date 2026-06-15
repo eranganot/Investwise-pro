@@ -9,15 +9,22 @@ import pytest_asyncio
 
 @pytest_asyncio.fixture(autouse=True)
 async def _isolate_db():
-    """Give every test a clean database: ensure the schema exists, then wipe all
-    rows before the test runs. Eliminates cross-test state leakage (no more
-    per-test cleanup hacks)."""
+    """Clean DB before each test. Uses a throwaway NullPool engine created in the
+    current event loop so it never reuses the app engine's pooled connection
+    across loops (which asyncpg rejects with 'attached to a different loop')."""
     import app.models  # noqa: F401  register all tables on Base.metadata
-    from app.core.database import engine
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
     from app.models.base import Base
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(table.delete())
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            for table in reversed(Base.metadata.sorted_tables):
+                await conn.execute(table.delete())
+    finally:
+        await eng.dispose()
     yield

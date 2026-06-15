@@ -52,7 +52,6 @@ class DecisionEngine:
                               tax=known.get("tax", neutral),
                               risk=known.get("risk", neutral),
                               liquidity=known.get("liquidity", neutral))
-        unknown_dims = [d for d in ("tax", "risk", "liquidity") if d not in known]
         risk = scores.risk  # for the model-agreement heuristic below
 
         label = COMPLEXITY_BY_ACTION.get(detected.action_type, Complexity.MODERATE)

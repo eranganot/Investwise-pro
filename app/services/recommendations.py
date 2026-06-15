@@ -13,7 +13,7 @@ from app.services.audit_trail import audit_for, f
 from app.agents.fee_agent import FeeAgent
 from app.engines.backtest_engine import BacktestEngine
 from app.services.intake_service import delete_position, list_positions, update_position
-from app.services.plan_service import effective_caps, get_plan, plan_settings, upsert_plan
+from app.services.plan_service import effective_caps, get_plan, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
 
 CLASS_ETF = {"Equities": "VTI", "Fixed Income": "BND", "Cash": "BIL",
