@@ -186,6 +186,17 @@
     <div class="recs" id="recs"><div class="card muted">Checking…</div></div>
     <h2>Your biggest risk</h2>
     <div class="card risk" id="risk"><div class="muted">Checking…</div></div>
+
+    <h2>Ask InvestWise</h2>
+    <div class="card">
+      <div style="display:flex;gap:8px">
+        <input id="askq" placeholder="e.g. What's my biggest risk right now?" onkeydown="if(event.key==='Enter')doAsk()"/>
+        <button class="primary" style="width:auto;white-space:nowrap" onclick="doAsk()">Ask</button>
+      </div>
+      <div id="askOut" class="how" style="display:none;background:var(--soft);border-radius:10px;padding:11px;margin-top:10px"></div>
+      <div style="margin-top:8px"><a class="link" onclick="getDigest()">📋 Weekly digest</a></div>
+      <div id="digestOut" class="how" style="display:none;background:var(--soft);border-radius:10px;padding:11px;margin-top:8px"></div>
+    </div>
   </section>
 
   <!-- HOLDINGS -->
@@ -319,6 +330,17 @@ function show(v){
   if(v==="plan") loadPlan();
   if(v==="agents") loadWar();
   if(v==="explore") loadExplore();
+}
+async function doAsk(){
+  const q=$("askq").value.trim(); if(!q)return; const o=$("askOut");
+  o.style.display="block"; o.textContent="Thinking…";
+  try{const r=await(await fetch("/api/v1/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})})).json();
+    o.textContent=r.answer; if(!r.llm&&r.grounded_on)o.textContent+=" (grounded on: "+r.grounded_on.join(", ")+")";
+  }catch(e){o.textContent=String(e);}
+}
+async function getDigest(){
+  const o=$("digestOut"); o.style.display="block"; o.textContent="Generating…";
+  try{const r=await(await fetch("/api/v1/digest")).json(); o.textContent=r.digest;}catch(e){o.textContent=String(e);}
 }
 async function boot(){
   try{const me=await fetch("/api/v1/auth/me"); if(me.status===401){location.href="/login";return;}}catch(e){}
