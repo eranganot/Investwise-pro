@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     session_cookie_name: str = "iw_session"
     post_login_redirect: str = "/app"
     require_auth: bool = False        # if True, JWT + RBAC enforced on protected routes
+    session_ttl_sec: int = 2592000    # "remember me": Google session lasts 30 days
+    agent_api_key: str = ""           # if set, X-Agent-Key header grants SUPERADMIN write access (for the agent)
+    superadmin_email: str = "eran.ganot@gmail.com"
     auth_password: str = "changeme-dev"  # SuperAdmin login password (set in prod)
     jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank
     jwt_public_key: str = ""
