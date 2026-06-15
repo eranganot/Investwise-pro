@@ -22,7 +22,7 @@ async def get_plan(session: AsyncSession, user: User) -> Plan | None:
 async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
     plan = await get_plan(session, user)
     allowed = {"objective", "risk_tolerance", "horizon_years", "target_amount", "target_date", "currency",
-               "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period", "preferred_depth"}
+               "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period", "preferred_depth", "strategy"}
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if plan is None:
         plan = Plan(user_id=user.id, **data)

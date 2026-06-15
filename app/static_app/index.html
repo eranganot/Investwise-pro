@@ -125,6 +125,17 @@
   .databanner{border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px}
   .databanner.live{background:rgba(52,211,153,.12);border:1px solid #1f4d3a;color:#34d399}
   .databanner.illustrative{background:rgba(251,191,36,.12);border:1px solid #5b4a1f;color:#fbbf24}
+  .stgoal{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .stgoal button{background:var(--card2);color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:12px;font-weight:600;cursor:pointer}
+  .stgoal button.on{color:var(--ink);border-color:var(--blue);background:var(--soft)}
+  .stcard{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px;background:var(--bg)}
+  .stcard.sel{border-color:var(--blue)}
+  .stcard .nm{font-weight:700} .stcard .rk{font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:.04em}
+  .stcard .ds{color:var(--mut);font-size:12.5px;margin:4px 0 8px}
+  .stcard .bk{font-size:11px;color:var(--mut)}
+  .stcard .acts{display:flex;gap:8px;margin-top:8px}
+  .stcard .acts button{font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:var(--card2);color:var(--ink);cursor:pointer;font-weight:600}
+  .stcard .acts button.load{border-color:var(--green);color:var(--green)}
 </style>
 </head>
 <body>
@@ -209,6 +220,9 @@
   <!-- PLAN -->
   <section id="view-plan" class="hide">
     <h2>Your plan & goals</h2>
+    <h2 style="margin-top:0">Choose a strategy</h2>
+    <div class="card" id="stratBox"><div class="muted">Loading strategies…</div></div>
+    <div class="card hide" id="stratOut" style="margin-top:8px"></div>
     <div class="card">
       <div class="goal" id="goalbig"></div>
       <div class="bar2" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
@@ -327,7 +341,7 @@ function show(v){
   $("wrap").classList.toggle("wide", v==="agents");
   if(v==="today") loadToday();
   if(v==="hold") loadHoldings();
-  if(v==="plan") loadPlan();
+  if(v==="plan"){loadStrategies();loadPlan();}
   if(v==="agents") loadWar();
   if(v==="explore") loadExplore();
 }
@@ -517,6 +531,41 @@ async function delHolding(ticker,market){
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Delete failed");}
     loadHoldings();
   }catch(e){alert(e.message||e);}
+}
+let STRAT=null, STGOAL=null;
+async function loadStrategies(){
+  if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
+  STGOAL=STGOAL||STRAT.goals[0];
+  const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${g}</button>`).join("");
+  const list=(STRAT.by_goal[STGOAL]||[]).map(s=>`
+    <div class="stcard">
+      <div style="display:flex;justify-content:space-between"><span class="nm">${s.name}</span><span class="rk">${s.risk_tolerance} risk</span></div>
+      <div class="ds">${s.description}</div>
+      <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}</div>
+      <div class="acts">
+        <button onclick="applyStrat('${s.id}')">Apply strategy</button>
+        <button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Load this basket</button>
+      </div>
+    </div>`).join("");
+  $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>${list}`;
+}
+async function applyStrat(id){
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Applying…";
+  try{const r=await(await fetch(`/api/v1/strategies/${id}/apply`,{method:"POST"})).json();
+    if(!r.ok){o.innerHTML=r.error;return;}
+    const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()} (net ₪${Math.round(a.net_trade_value_currency).toLocaleString()})</li>`).join("");
+    o.innerHTML=`<b>${r.strategy.name}</b> applied — objective <b>${r.strategy.objective}</b>, ${r.strategy.risk_tolerance} risk.`+
+      (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">No rebalancing needed (or no holdings yet).</div>`);
+    loadPlan();
+  }catch(e){o.innerHTML=String(e);}
+}
+async function loadStratBasket(id,name){
+  if(!confirm(`Replace your current holdings with the "${name}" model basket?`))return;
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Loading basket & pricing…";
+  try{const r=await(await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
+    if(!r.ok){o.innerHTML=r.error;return;}
+    o.innerHTML=`Loaded <b>${r.count}</b> holdings (~₪${Math.round(r.budget).toLocaleString()}): `+r.loaded.map(x=>x.ticker).join(", ")+". Go to Today to see it.";
+  }catch(e){o.innerHTML=String(e);}
 }
 async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
