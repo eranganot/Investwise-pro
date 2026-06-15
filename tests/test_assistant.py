@@ -52,3 +52,14 @@ def test_digest_uses_llm_when_available(monkeypatch):
         c.post("/api/v1/intake/portfolio", json=PORT)
         r = c.get("/api/v1/digest").json()
         assert r["llm"] is True and "on track" in r["digest"]
+
+
+def test_context_includes_options_for_should_i_questions():
+    with TestClient(app) as c:
+        c.post("/api/v1/intake/portfolio", json=PORT)
+        c.post("/api/v1/portfolio/refresh-prices")
+        r = c.post("/api/v1/ask", json={"question": "should I add commodities?"}).json()
+        ctx = r["context"]   # LLM off in tests -> context returned
+        assert "asset_class_breakdown" in ctx and "available_commodity_options" in ctx
+        assert any(o["ticker"] == "DBC" for o in ctx["available_commodity_options"])
+        assert "available_strategies" in ctx and ctx["available_strategies"]
