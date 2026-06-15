@@ -122,6 +122,9 @@
   .wi-chip{font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mut)}
   .wi-chip.veto{color:var(--red);border-color:#5b2230}
   .wi-chip.ok{color:var(--green);border-color:#1f4d3a}
+  .databanner{border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px}
+  .databanner.live{background:rgba(52,211,153,.12);border:1px solid #1f4d3a;color:#34d399}
+  .databanner.illustrative{background:rgba(251,191,36,.12);border:1px solid #5b4a1f;color:#fbbf24}
 </style>
 </head>
 <body>
@@ -140,6 +143,7 @@
 </div>
 
 <div class="wrap" id="wrap">
+  <div id="dataBanner" class="databanner hide"></div>
   <!-- SETUP -->
   <section id="view-setup" class="hide">
     <div class="card empty">
@@ -314,6 +318,8 @@ function show(v){
 }
 async function boot(){
   try{const me=await fetch("/api/v1/auth/me"); if(me.status===401){location.href="/login";return;}}catch(e){}
+  try{const ds=await(await fetch("/api/v1/data-status")).json(); const b=$("dataBanner");
+    if(b){b.textContent=(ds.live?"\u25cf ":"\u26a0 ")+ds.label; b.className="databanner "+(ds.live?"live":"illustrative");}}catch(e){}
   try{const p=await(await fetch("/api/v1/portfolio")).json(); p.count?show("today"):show("setup");}
   catch(e){show("setup");}
 }

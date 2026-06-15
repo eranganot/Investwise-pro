@@ -63,3 +63,22 @@ def test_refresh_prices_updates_holdings():
         aapl = next(x for x in c.get("/api/v1/portfolio").json()["positions"] if x["ticker"] == "AAPL")
         assert aapl["current_price"] and aapl["current_price"] > 0
         c.delete("/api/v1/portfolio/position", params={"ticker": "AAPL", "market": "NASDAQ"})
+
+
+def test_data_status_reports_builtin_as_illustrative():
+    with TestClient(app) as c:
+        ds = c.get("/api/v1/data-status").json()
+        assert ds["live"] is False and ds["market_data_provider"] == "builtin"
+        assert "Illustrative" in ds["label"]
+
+
+def test_data_status_reports_live_when_provider_set(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setenv("MARKET_DATA_PROVIDER", "yahoo")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as c:
+            ds = c.get("/api/v1/data-status").json()
+            assert ds["live"] is True and "Live" in ds["label"]
+    finally:
+        get_settings.cache_clear()

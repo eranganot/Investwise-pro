@@ -32,19 +32,21 @@ def test_impact_formula_matches_spec():
     assert r.scores.ret == A(50)        # max(10,0)*5
     assert r.scores.tax == A(75)        # 75000/100000*100
     assert r.scores.risk == A(90)       # (1-0.10)*100
-    assert r.scores.liquidity == A(25)  # unknown -> penalized
     assert r.scores.conviction == A(100)  # depth 3
+    # liquidity is unknown -> NEUTRAL (weighted avg of known dims), not a fake 25
+    assert r.scores.liquidity == A(73.6111, abs=0.01)
     assert r.complexity_label == "Easy" and r.complexity_factor == A(1.25)
-    # (0.30*50 + 0.25*75 + 0.25*90 + 0.10*25 + 0.10*100) / 1.25 = 55.0
-    assert r.impact_score == A(55.0)
+    # impact = (weighted over known, renormalized) / 1.25
+    assert r.impact_score == A(58.8889, abs=0.01)
 
 
-def test_tax_unknown_is_penalized_not_neutral():
-    assert DecisionEngine().rank(optimized(gross=None, net=None)).scores.tax == A(25)
+def test_tax_unknown_is_neutral_not_penalized():
+    # known dims = return(50) + conviction(100); neutral = (.30*50+.10*100)/.40 = 62.5
+    assert DecisionEngine().rank(optimized(gross=None, net=None)).scores.tax == A(62.5)
 
 
-def test_risk_unknown_is_penalized_not_neutral():
-    assert DecisionEngine().rank(optimized(prob_ruin=None)).scores.risk == A(25)
+def test_risk_unknown_is_neutral_not_penalized():
+    assert DecisionEngine().rank(optimized(prob_ruin=None)).scores.risk == A(62.5)
 
 
 def test_divergence_drives_return_when_no_expected_return():
