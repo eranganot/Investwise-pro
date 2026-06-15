@@ -33,6 +33,21 @@ class BuiltinMarketDataProvider(MarketDataProvider):
         return Quote(ticker=ticker, market=market, price=round(price, 2),
                      currency=MARKET_CURRENCY.get(market, "USD"), as_of=_now())
 
+    def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
+        """Deterministic synthetic (date, close) walk on a shared calendar."""
+        import numpy as np
+        from datetime import date, timedelta
+        n = max(days, 2)
+        rng = np.random.default_rng(_seed(ticker) % (2 ** 32))
+        rets = rng.normal(0.0003, 0.012, n)
+        today = date(2026, 6, 12)
+        out, price = [], 100.0
+        for i, r in enumerate(rets):
+            price *= (1.0 + float(r))
+            d = (today - timedelta(days=(n - 1 - i))).isoformat()
+            out.append((d, round(price, 4)))
+        return out
+
 
 class BuiltinFXProvider(FXProvider):
     name = "builtin"

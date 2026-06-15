@@ -15,6 +15,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
+from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
     delete_position,
     update_position,
@@ -135,6 +136,13 @@ async def refresh_prices(session: AsyncSession = Depends(get_session),
     await session.commit()
     return {"source": src, "updated": len(prices), "failed": len(errors),
             "prices": prices, "errors": errors}
+
+
+@router.post("/portfolio/risk", dependencies=[Depends(require_role(Role.ANALYST))])
+async def portfolio_risk_report(session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """Portfolio-level risk: volatility, VaR/CVaR, beta, and goal probability."""
+    return await portfolio_risk(session, user)
 
 
 @router.delete("/portfolio/position")

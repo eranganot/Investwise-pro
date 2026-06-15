@@ -244,6 +244,8 @@
     <h2>Performance & projections</h2>
     <div class="card"><div class="seg"><button id="seg_q" onclick="setGran('quarterly')">Quarterly</button><button id="seg_y" class="on" onclick="setGran('yearly')">Yearly</button></div><canvas id="ch_proj" height="170"></canvas><div class="muted" id="proj_cap" style="margin-top:8px"></div></div>
     <div class="card" style="margin-top:10px"><canvas id="ch_mix" height="180"></canvas></div>
+    <h2>Portfolio risk</h2>
+    <div class="card" id="riskBox"><div class="muted">Loading…</div></div>
     <h2>What if…</h2>
     <div class="grid2">
       <button class="soft" onclick="runScenario('MARKET_CRASH','a market crash')">📉 Market crash</button>
@@ -573,7 +575,22 @@ function runWhatIf(){
     }catch(e){$("wi_out").innerHTML=`<div class="bad">${e}</div>`;}
   },180);
 }
+function riskRow(k,v){return `<div style="display:flex;justify-content:space-between;padding:4px 0"><span class="muted">${k}</span><b>${v}</b></div>`;}
+async function loadRisk(){
+  try{const r=await(await fetch("/api/v1/portfolio/risk",{method:"POST"})).json();const b=$("riskBox");
+    if(!r.ok){b.innerHTML=`<div class="muted">${r.reason||"Add holdings with real tickers, then Refresh prices."}</div>`;return;}
+    const g=r.goal;
+    b.innerHTML=riskRow("Annualized volatility",r.annualized_volatility_pct+"%")
+      +riskRow("1-day VaR (95%)",r.var_95_1d_pct+"%"+(r.var_95_1d_ils?` · ₪${Math.round(r.var_95_1d_ils).toLocaleString()}`:""))
+      +riskRow("1-day CVaR (95%)",r.cvar_95_1d_pct+"%")
+      +riskRow("Beta vs "+r.benchmark,(r.beta==null?"—":r.beta))
+      +riskRow("Avg. correlation",r.avg_correlation)
+      +(g?riskRow(`Reach ₪${Math.round(g.target).toLocaleString()} in ${g.years}y`,Math.round(g.prob_reach*100)+"%"):"")
+      +`<div class="muted" style="margin-top:8px;font-size:11px">${r.holdings_analyzed.length} holdings · ${r.observations} days · source ${r.source}</div>`;
+  }catch(e){const b=$("riskBox");if(b)b.innerHTML=`<div class="muted">—</div>`;}
+}
 async function loadExplore(){
+  loadRisk();
   // projection chart (granularity from the Quarterly/Yearly toggle)
   try{const r=await(await fetch("/api/v1/plan/projection")).json();
     if(!r.message){lastProj=r;setGran(gran);}

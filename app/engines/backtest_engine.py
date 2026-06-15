@@ -68,7 +68,8 @@ class BacktestEngine:
                    for h in holdings)
         return round(beta, 4)
 
-    def run(self, holdings: list[dict], *, portfolio_vol_pct: float | None = None) -> BacktestReport:
+    def run(self, holdings: list[dict], *, portfolio_vol_pct: float | None = None,
+            realized_beta: float | None = None) -> BacktestReport:
         s = self.settings
         beta = self.structural_beta(holdings)
 
@@ -89,21 +90,24 @@ class BacktestEngine:
         implied = None
         divergence = None
         validated = True
-        if portfolio_vol_pct is not None and s.backtest_market_vol_pct > 0:
-            implied = round(portfolio_vol_pct / s.backtest_market_vol_pct, 4)
+        source = None
+        if realized_beta is not None:                       # Phase D: real, returns-based beta
+            implied = round(realized_beta, 4); source = "historical returns"
+        elif portfolio_vol_pct is not None and s.backtest_market_vol_pct > 0:
+            implied = round(portfolio_vol_pct / s.backtest_market_vol_pct, 4); source = "volatility-implied"
+        if implied is not None:
             divergence = round(abs(implied - beta), 4)
             validated = divergence <= s.backtest_beta_tolerance
 
-        if not validated:
-            critique = (f"BETA DIVERGENCE: the Risk Agent's volatility-implied beta {implied} differs from the "
-                        f"portfolio's structural/historical beta {beta} by {divergence} "
-                        f"(> {s.backtest_beta_tolerance} tolerance). Recalibrate the risk model before approval.")
+        if implied is not None and not validated:
+            critique = (f"BETA DIVERGENCE: the {source} beta {implied} differs from the portfolio's structural "
+                        f"beta {beta} by {divergence} (> {s.backtest_beta_tolerance} tolerance). "
+                        f"Recalibrate the risk model before approval.")
         elif implied is not None:
-            critique = (f"Beta validated: volatility-implied beta {implied} is within "
+            critique = (f"Beta validated: {source} beta {implied} is within "
                         f"{s.backtest_beta_tolerance} of the structural beta {beta}.")
         else:
-            critique = (f"Structural beta {beta}; supply a portfolio volatility to validate the Risk Agent's "
-                        f"implied beta against history.")
+            critique = (f"Structural beta {beta}; supply a portfolio volatility or realized beta to validate.")
 
         return BacktestReport(
             structural_beta=beta, risk_implied_beta=implied, beta_divergence=divergence,

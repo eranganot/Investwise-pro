@@ -58,6 +58,26 @@ class YahooMarketDataProvider(MarketDataProvider):
         return Quote(ticker=sym, market=str(meta.get("fullExchangeName") or meta.get("exchangeName") or "US"),
                      price=round(float(price), 4), currency=str(meta.get("currency") or "USD"), as_of=as_of)
 
+    def get_history(self, ticker: str, days: int = 252) -> list[float]:
+        sym = self.to_symbol(ticker)
+        rng = "1y" if days <= 260 else ("2y" if days <= 520 else "5y")
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+               f"?interval=1d&range={rng}")
+        data = json.loads(_http_text(url))
+        result = ((data.get("chart") or {}).get("result") or [])
+        if not result:
+            raise ValueError(f"no history for '{ticker}'")
+        ts = result[0].get("timestamp") or []
+        closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+        out: list[tuple[str, float]] = []
+        for t, c in zip(ts, closes):
+            if c is None:
+                continue
+            out.append((datetime.fromtimestamp(t, timezone.utc).date().isoformat(), float(c)))
+        if len(out) < 2:
+            raise ValueError(f"insufficient history for '{ticker}'")
+        return out[-days:]
+
 
 class FrankfurterFXProvider(FXProvider):
     """ECB reference FX rates from Frankfurter (no key)."""

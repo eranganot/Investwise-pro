@@ -58,6 +58,10 @@ def guarded_quote(ticker: str):
     return _tiers()["market"].call(f"quote:{ticker}", lambda: market_provider().get_quote(ticker))
 
 
+def guarded_history(ticker: str, days: int = 252):
+    return _tiers()["market"].call(f"hist:{ticker}:{days}", lambda: market_provider().get_history(ticker, days))
+
+
 def guarded_fx(base: str, quote: str):
     return _tiers()["fx"].call(f"fx:{base}/{quote}", lambda: fx_provider().get_rate(base, quote))
 
