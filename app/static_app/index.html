@@ -235,16 +235,16 @@
       <label>Investment flavor <span class="link" onclick="explain('flavor')">examples?</span></label>
       <select id="p_depth"><option value="">No preference</option><option value="1">Depth 1 — hot / hype names</option><option value="2">Depth 2 — mid</option><option value="3">Depth 3 — structural backbone</option></select>
       <div class="grid2">
-        <div><label>Years invested (horizon)</label><input id="p_hor" type="number" value="10"/>
+        <div><label>Years invested (horizon)</label><input id="p_hor" type="number" value="10" oninput="recalcTarget()"/>
           <div class="mk">how long your money stays invested — sets how much risk fits</div></div>
-        <div><label>Target amount (₪)</label><input id="p_amt" type="number" placeholder="2000000"/></div>
+        <div><label>Target amount (₪) <span class="mk">· auto from ROI</span></label><input id="p_amt" type="number" readonly style="opacity:.85;cursor:not-allowed"/><div class="mk" id="amt_note"></div></div>
       </div>
       <label>Goal deadline (year)</label><input id="p_date" placeholder="2035"/>
       <div class="mk">the year you want to hit your target amount</div>
       <label>Targets <span class="link" onclick="explain('roiyield')">ROI vs Yield?</span></label>
       <div class="grid2">
-        <div><label class="mk">Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8"/></div>
-        <div><label class="mk">per</label><select id="p_roi_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
+        <div><label class="mk">Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8" oninput="recalcTarget()"/></div>
+        <div><label class="mk">per</label><select id="p_roi_p" onchange="recalcTarget()"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
       </div>
       <div class="grid2">
         <div><label class="mk">Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
@@ -553,22 +553,37 @@ async function loadStrategies(){
   $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>${list}`;
 }
 async function applyStrat(id){
-  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Applying…";
-  try{const r=await(await fetch(`/api/v1/strategies/${id}/apply`,{method:"POST"})).json();
-    if(!r.ok){o.innerHTML=r.error;return;}
-    const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()} (net ₪${Math.round(a.net_trade_value_currency).toLocaleString()})</li>`).join("");
-    o.innerHTML=`<b>${r.strategy.name}</b> applied — objective <b>${r.strategy.objective}</b>, ${r.strategy.risk_tolerance} risk.`+
-      (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">No rebalancing needed (or no holdings yet).</div>`);
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Applying…"; o.scrollIntoView({behavior:"smooth",block:"center"});
+  try{const resp=await fetch(`/api/v1/strategies/${id}/apply`,{method:"POST"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.error||resp.status}</span>`;return;}
+    const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()}</li>`).join("");
+    o.innerHTML=`<span class="ok">✓ Applied <b>${r.strategy.name}</b></span> — your plan is now objective <b>${r.strategy.objective}</b>, <b>${r.strategy.risk_tolerance}</b> risk.`+
+      (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Already aligned with this strategy \u2014 no trades needed.</div>`);
     loadPlan();
-  }catch(e){o.innerHTML=String(e);}
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 async function loadStratBasket(id,name){
   if(!confirm(`Replace your current holdings with the "${name}" model basket?`))return;
-  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Loading basket & pricing…";
-  try{const r=await(await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
-    if(!r.ok){o.innerHTML=r.error;return;}
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Loading basket & pricing…"; o.scrollIntoView({behavior:"smooth",block:"center"});
+  try{const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't load: ${r.error||resp.status}</span>`;return;}
     o.innerHTML=`Loaded <b>${r.count}</b> holdings (~₪${Math.round(r.budget).toLocaleString()}): `+r.loaded.map(x=>x.ticker).join(", ")+". Go to Today to see it.";
   }catch(e){o.innerHTML=String(e);}
+}
+let PLAN_NAV=0;
+function recalcTarget(){
+  const roi=+($("p_roi").value||0), years=+($("p_hor").value||0), per=$("p_roi_p").value;
+  const note=$("amt_note");
+  if(PLAN_NAV<=0){ if(note)note.textContent="Add holdings to auto-calculate your target."; return; }
+  if(!roi||!years){ if(note)note.textContent="Enter a target ROI % and horizon to set the target."; return; }
+  const n = per==="monthly"?years*12 : per==="quarterly"?years*4 : years;
+  const tgt=Math.round(PLAN_NAV*Math.pow(1+roi/100, n));
+  $("p_amt").value=tgt;
+  if(note)note.innerHTML=`= ₪${Math.round(PLAN_NAV).toLocaleString()} compounding ${roi}%/${per} for ${years}y \u2192 <b>₪${tgt.toLocaleString()}</b>`;
 }
 async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
@@ -576,6 +591,7 @@ async function loadPlan(){
     $("p_depth").value=p.preferred_depth?String(p.preferred_depth):"";
     if(p.target_amount)$("p_amt").value=p.target_amount; if(p.target_date)$("p_date").value=p.target_date;
     if(p.target_roi_pct!=null)$("p_roi").value=p.target_roi_pct; if(p.target_roi_period)$("p_roi_p").value=p.target_roi_period;
+    PLAN_NAV=p.current_value||0; recalcTarget();
     if(p.target_yield_pct!=null)$("p_yld").value=p.target_yield_pct; if(p.target_yield_period)$("p_yld_p").value=p.target_yield_period;
     renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){}
@@ -597,7 +613,10 @@ async function savePlan(){
     target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
     target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
   $("plan_out").textContent="Saving…";
-  try{const p=await(await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  try{const resp=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(resp.status===401){location.href="/login";return;}
+    const p=await resp.json();
+    if(!resp.ok){$("plan_out").innerHTML=`<span class="bad">Save failed (${resp.status})</span>`;return;}
     $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
