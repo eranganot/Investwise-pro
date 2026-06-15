@@ -16,6 +16,10 @@ class MarketDataProvider(ABC):
     @abstractmethod
     def get_quote(self, ticker: str) -> Quote: ...
 
+    def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
+        """Daily (date, close) history, oldest..newest. Default: none."""
+        return []
+
 
 class FXProvider(ABC):
     name: str = "abstract"
