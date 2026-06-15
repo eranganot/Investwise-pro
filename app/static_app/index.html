@@ -244,6 +244,8 @@
     <h2>Performance & projections</h2>
     <div class="card"><div class="seg"><button id="seg_q" onclick="setGran('quarterly')">Quarterly</button><button id="seg_y" class="on" onclick="setGran('yearly')">Yearly</button></div><canvas id="ch_proj" height="170"></canvas><div class="muted" id="proj_cap" style="margin-top:8px"></div></div>
     <div class="card" style="margin-top:10px"><canvas id="ch_mix" height="180"></canvas></div>
+    <h2>Performance vs benchmark</h2>
+    <div class="card"><canvas id="ch_perf" height="180"></canvas><div class="muted" id="perfCap" style="margin-top:8px">Loading…</div></div>
     <h2>Portfolio risk</h2>
     <div class="card" id="riskBox"><div class="muted">Loading…</div></div>
     <h2>What if…</h2>
@@ -589,7 +591,20 @@ async function loadRisk(){
       +`<div class="muted" style="margin-top:8px;font-size:11px">${r.holdings_analyzed.length} holdings · ${r.observations} days · source ${r.source}</div>`;
   }catch(e){const b=$("riskBox");if(b)b.innerHTML=`<div class="muted">—</div>`;}
 }
+async function loadPerf(){
+  try{const r=await(await fetch("/api/v1/portfolio/performance",{method:"POST"})).json();const cap=$("perfCap");
+    if(!r.ok){cap.textContent=r.reason||"Add holdings with real tickers, then Refresh prices.";return;}
+    const ds=[{label:"Your portfolio",data:r.portfolio_index,borderColor:"#3b82f6",fill:false,pointRadius:0,tension:.12,borderWidth:2}];
+    if(r.benchmark_index)ds.push({label:r.benchmark,data:r.benchmark_index,borderColor:"#8b97a8",borderDash:[5,4],fill:false,pointRadius:0,tension:.12,borderWidth:1.5});
+    drawChart("ch_perf","line",{labels:r.dates,datasets:ds},{plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}}},scales:{x:{ticks:{display:false},grid:{display:false}}}});
+    const ex=r.excess_return_pct;
+    cap.innerHTML=`Total <b>${r.total_return_pct}%</b> · CAGR ${r.cagr_pct}% · Max drawdown ${r.max_drawdown_pct}%`+
+      (r.benchmark_return_pct!=null?` · vs ${r.benchmark} <b class="${ex>=0?'ok':'bad'}">${ex>=0?'+':''}${ex}%</b>`:"")+
+      `<div style="font-size:11px;margin-top:4px">Backfill of your current holdings over ${r.observations} days · source ${r.source}</div>`;
+  }catch(e){}
+}
 async function loadExplore(){
+  loadPerf();
   loadRisk();
   // projection chart (granularity from the Quarterly/Yearly toggle)
   try{const r=await(await fetch("/api/v1/plan/projection")).json();
