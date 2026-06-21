@@ -2,8 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>InvestWise</title>
+<!-- PWA -->
+<link rel="manifest" href="/app/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0f17" />
+<meta name="color-scheme" content="dark" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="InvestWise" />
+<link rel="apple-touch-icon" href="/app/apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="/app/favicon-32.png" />
+<link rel="icon" type="image/png" sizes="192x192" href="/app/icon-192.png" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   *{box-sizing:border-box}
@@ -144,13 +155,45 @@
   .crow .nm{font-weight:600} .crow .tk{color:var(--mut);font-size:11px}
   .crow input{width:90px;padding:6px;font-size:13px}
   .crow button{font-size:12px;padding:6px 11px;border-radius:8px;border:1px solid var(--green);background:var(--card2);color:var(--green);cursor:pointer;font-weight:600;white-space:nowrap}
+  /* --- PWA / mobile native feel --- */
+  .head .bar{padding-top:calc(14px + env(safe-area-inset-top))}
+  /* Bottom tab bar (mobile). Hidden by default; shown on narrow screens. */
+  .bnav{display:none}
+  #installBtn{display:none}
+  @media (max-width:720px){
+    /* On phones the bottom bar replaces the scrolling top tabs */
+    .tabs{display:none}
+    .bnav{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:40;
+      background:rgba(11,15,23,.96);backdrop-filter:blur(12px);
+      border-top:1px solid var(--line);
+      padding:6px 6px calc(6px + env(safe-area-inset-bottom));
+      justify-content:space-around}
+    .bnav button{flex:1 1 0;background:none;border:0;color:var(--mut);
+      display:flex;flex-direction:column;align-items:center;gap:3px;
+      font-size:10.5px;font-weight:600;letter-spacing:.01em;
+      padding:7px 2px 4px;min-height:48px;cursor:pointer;border-radius:12px;
+      -webkit-tap-highlight-color:transparent;transition:color .12s}
+    .bnav button .ic{font-size:21px;line-height:1}
+    .bnav button.active{color:var(--ink)}
+    .bnav button.active .ic{filter:drop-shadow(0 0 8px rgba(59,130,246,.55))}
+    .bnav button.active::after{content:"";position:absolute;top:4px;width:26px;height:3px;
+      border-radius:999px;background:var(--blue)}
+    .bnav button{position:relative}
+    /* keep content clear of the fixed bottom bar */
+    .wrap{padding-bottom:calc(78px + env(safe-area-inset-bottom))}
+    .ov{align-items:flex-end}
+    .modal{padding-bottom:calc(28px + env(safe-area-inset-bottom))}
+  }
 </style>
 </head>
 <body>
 <div class="head">
   <div class="bar">
     <div class="brand"><span class="logo">◆</span> InvestWise</div>
-    <a class="adv" href="/auth/logout">Sign out</a>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button id="installBtn" class="adv" style="cursor:pointer" onclick="installApp()">⤓ Install</button>
+      <a class="adv" href="/auth/logout">Sign out</a>
+    </div>
   </div>
   <div class="tabs" id="tabs">
     <button data-t="today" onclick="show('today')">🏠 Today</button>
@@ -337,6 +380,15 @@
   <div class="modal"><span class="x" onclick="closeModal()">×</span><h3 id="m_t"></h3><p id="m_b"></p></div>
 </div>
 
+<!-- Mobile bottom navigation -->
+<nav class="bnav" id="bnav">
+  <button data-t="today" onclick="show('today')"><span class="ic">🏠</span>Today</button>
+  <button data-t="hold" onclick="show('hold')"><span class="ic">💼</span>Holdings</button>
+  <button data-t="plan" onclick="show('plan')"><span class="ic">🎯</span>Plan</button>
+  <button data-t="agents" onclick="show('agents')"><span class="ic">⚔️</span>Agents</button>
+  <button data-t="explore" onclick="show('explore')"><span class="ic">🔭</span>Explore</button>
+</nav>
+
 <script>
 // Session expiry / invalid cookie -> send to login instead of breaking the UI.
 const _origFetch=window.fetch;
@@ -350,9 +402,11 @@ let charts={};
 
 function show(v){
   for(const s of ["setup","today","hold","plan","agents","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
-  document.querySelectorAll(".tabs button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
+  document.querySelectorAll(".tabs button, #bnav button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
   $("tabs").style.visibility = v==="setup" ? "hidden" : "visible";
+  const bn=$("bnav"); if(bn) bn.style.display = v==="setup" ? "none" : "";
   $("wrap").classList.toggle("wide", v==="agents");
+  window.scrollTo(0,0);
   if(v==="today") loadToday();
   if(v==="hold"){loadHoldings();loadCommodities();}
   if(v==="plan"){loadStrategies();loadPlan();}
@@ -806,6 +860,26 @@ async function runScenario(code,label){
     o.innerHTML=`<b>If ${label} happened…</b><br>your wealth could move about <b class="${r.expected_portfolio_value_delta_pct<0?'bad':'ok'}">${r.expected_portfolio_value_delta_pct}%</b>, ~<b>${months} month${months===1?'':'s'}</b> to recover.${dip}<div class="mk" style="margin-top:6px">${FREQ[code]||"Illustrative macro shock."}</div>`;
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
+// --- PWA: service worker + install prompt ---
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/app/sw.js',{scope:'/app/'}).catch(()=>{});
+  });
+}
+let _deferredPrompt=null;
+window.addEventListener('beforeinstallprompt',(e)=>{
+  e.preventDefault(); _deferredPrompt=e;
+  const b=$("installBtn"); if(b) b.style.display='inline-block';
+});
+async function installApp(){
+  const b=$("installBtn");
+  if(!_deferredPrompt){ if(b) b.style.display='none'; return; }
+  _deferredPrompt.prompt();
+  try{ await _deferredPrompt.userChoice; }catch(e){}
+  _deferredPrompt=null; if(b) b.style.display='none';
+}
+window.addEventListener('appinstalled',()=>{ const b=$("installBtn"); if(b) b.style.display='none'; });
+
 boot();
 </script>
 </body>
