@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     rebalance_txn_cost_bps: float = 10.0       # transaction cost in basis points
     rebalance_slippage_bps: float = 5.0        # slippage in basis points
     rebalance_assumed_gain_ratio: float = 0.30 # fraction of a SELL assumed to be taxable gain
-    market_data_provider: str = "builtin"      # builtin | polygon | alphavantage (DIP-selected)
+    market_data_provider: str = "builtin"      # builtin | yahoo | fmp (DIP-selected)
+    fmp_api_key: str = ""                       # Financial Modeling Prep key; set + MARKET_DATA_PROVIDER=fmp for real fundamentals
+    base_currency: str = "ILS"                  # portfolio reporting currency; holdings are FX-converted to this
     fx_provider: str = "builtin"
     provider_rate_limit_per_sec: float = 20.0
     provider_cb_failure_threshold: int = 5

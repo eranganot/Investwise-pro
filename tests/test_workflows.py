@@ -34,11 +34,13 @@ def test_scenario_custom_and_invalid():
 
 
 def test_snapshot_weights_and_unrealized():
+    from app.services.fx import fx_rate
+    usd = fx_rate("USD")  # TEVA is NYSE/USD; LOSS is TASE/ILS (rate 1.0) -> base-currency normalized
     snap = compute_snapshot(POS)
-    assert snap["nav"] == A(500 * 108 + 100 * 90)            # 63,000
+    assert snap["nav"] == A(500 * 108 * usd + 100 * 90)
     assert sum(snap["exposure_ticker"].values()) == A(1.0)
-    assert snap["unrealized_gains"] == A((108 - 90) * 500)   # 9,000
-    assert snap["unrealized_losses"] == A((120 - 90) * 100)  # 3,000
+    assert snap["unrealized_gains"] == A((108 - 90) * 500 * usd)
+    assert snap["unrealized_losses"] == A((120 - 90) * 100)
 
 
 def test_health_check_caps_opportunities_at_five():

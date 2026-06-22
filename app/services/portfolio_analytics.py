@@ -25,11 +25,14 @@ def _opp_id(*parts) -> str:
 
 
 def compute_snapshot(positions: list[dict]) -> dict:
+    from app.services.fx import price_currency, fx_rate
     rows = []
     for p in positions:
         qty = float(p.get("quantity") or 0.0)
-        price = float(p.get("current_price") or 0.0)
-        cost = float(p.get("cost_basis") or 0.0)
+        _ccy = price_currency(p.get("market"), p.get("meta") if isinstance(p.get("meta"), dict) else None)
+        _rate = fx_rate(_ccy)  # convert the holding's trading currency into the base currency
+        price = float(p.get("current_price") or 0.0) * _rate
+        cost = float(p.get("cost_basis") or 0.0) * _rate
         value = qty * price
         rows.append({
             "ticker": p["ticker"], "market": p.get("market", "NYSE"),

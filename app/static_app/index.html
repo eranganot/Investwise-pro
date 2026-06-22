@@ -593,7 +593,8 @@ async function addCommodity(ticker){
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);
-    $("holds").innerHTML=p.positions.map(h=>{const val=h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
+    const _navTot=p.positions.length?`<div class="card" style="text-align:center"><div class="mk">Total portfolio value (${p.base_currency||"₪"})</div><div class="nm" style="font-size:24px">${ils(p.nav_ils||0)}</div></div>`:"";
+    $("holds").innerHTML=_navTot+p.positions.map(h=>{const val=(h.value_ils!=null)?h.value_ils:h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>

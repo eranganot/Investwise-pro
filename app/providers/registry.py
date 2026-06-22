@@ -13,10 +13,11 @@ from app.providers.builtin import (
     BuiltinBrokerProvider, BuiltinEconomicDataProvider, BuiltinFXProvider,
     BuiltinMarketDataProvider,
 )
-from app.providers.live import FrankfurterFXProvider, YahooMarketDataProvider
+from app.providers.live import FMPMarketDataProvider, FrankfurterFXProvider, YahooMarketDataProvider
 from app.providers.resilience import CircuitBreaker, ResilienceTier, TokenBucket, TTLCache
 
-_MARKET = {"builtin": BuiltinMarketDataProvider, "yahoo": YahooMarketDataProvider}
+_MARKET = {"builtin": BuiltinMarketDataProvider, "yahoo": YahooMarketDataProvider,
+           "fmp": FMPMarketDataProvider}
 _FX = {"builtin": BuiltinFXProvider, "frankfurter": FrankfurterFXProvider}
 
 

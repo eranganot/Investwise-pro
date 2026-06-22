@@ -104,17 +104,37 @@ async def intake_portfolio_csv(
 async def get_portfolio(entity: str | None = None,
                         session: AsyncSession = Depends(get_session),
                         user: User = Depends(acting_user)) -> dict:
+    from app.services.fx import price_currency, fx_rate
+    from app.core.config import get_settings as _gs
+    base = _gs().base_currency
     positions = await list_positions(session, user, entity)
-    return {
-        "count": len(positions),
-        "positions": [{
+    out, nav_ils, nav_native = [], 0.0, 0.0
+    for p in positions:
+        price = float(p.current_price) if p.current_price is not None else None
+        qty = float(p.quantity)
+        ccy = price_currency(p.market, p.meta if isinstance(p.meta, dict) else None)
+        rate = fx_rate(ccy)
+        val_native = (qty * price) if price is not None else 0.0
+        val_ils = val_native * rate
+        nav_native += val_native
+        nav_ils += val_ils
+        out.append({
             "id": str(p.id), "ticker": p.ticker, "market": p.market,
-            "quantity": float(p.quantity), "cost_basis": float(p.cost_basis),
-            "current_price": float(p.current_price) if p.current_price is not None else None,
+            "quantity": qty, "cost_basis": float(p.cost_basis),
+            "current_price": price,
+            "currency": ccy,
+            "current_price_ils": (round(price * rate, 4) if price is not None else None),
+            "value_ils": round(val_ils, 2),
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
             "asset_class": (p.meta or {}).get("asset_class"),
-        } for p in positions],
+        })
+    return {
+        "count": len(positions),
+        "base_currency": base,
+        "nav_ils": round(nav_ils, 2),
+        "nav_native": round(nav_native, 2),
+        "positions": out,
     }
 
 

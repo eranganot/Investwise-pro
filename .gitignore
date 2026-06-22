@@ -1,13 +1,5 @@
-__pycache__/
-*.py[cod]
+﻿__pycache__/
+*.pyc
+*.db
 .venv/
-venv/
 .env
-.pytest_cache/
-*.egg-info/
-dist/
-build/
-.DS_Store
-node_modules/
-frontend/node_modules/
-frontend/dist/

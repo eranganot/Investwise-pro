@@ -140,3 +140,96 @@ class FrankfurterFXProvider(FXProvider):
         if rate is None:
             raise ValueError(f"no FX rate {base}->{quote}")
         return FXRate(base=base, quote=quote, rate=float(rate), as_of=data.get("date") or _now())
+
+
+class FMPMarketDataProvider(MarketDataProvider):
+    """Financial Modeling Prep (KEYED): real quotes, history AND fundamentals.
+
+    This is the provider that lights up the screener with real P/E, growth,
+    margins, ROE, debt and dividend yield. To enable it set an API key and
+    select it:
+
+        FMP_API_KEY=your_key   (or the ``fmp_api_key`` setting)
+        MARKET_DATA_PROVIDER=fmp
+
+    The free tier is rate-limited, so the registry's cache/breaker tier in front
+    of every call matters. Fundamentals degrade gracefully (return None) so a
+    quota hit or missing field just drops that name from the screen.
+    """
+    name = "fmp"
+    BASE = "https://financialmodelingprep.com/api/v3"
+
+    @staticmethod
+    def to_symbol(ticker: str) -> str:
+        return ticker.strip().upper()
+
+    def _key(self) -> str:
+        import os
+        from app.core.config import get_settings
+        return get_settings().fmp_api_key or os.getenv("FMP_API_KEY", "")
+
+    def _get(self, path: str):
+        key = self._key()
+        if not key:
+            raise ValueError("FMP_API_KEY not set (set fmp_api_key or the env var)")
+        sep = "&" if "?" in path else "?"
+        return json.loads(_http_text(f"{self.BASE}/{path}{sep}apikey={key}"))
+
+    def get_quote(self, ticker: str) -> Quote:
+        sym = self.to_symbol(ticker)
+        data = self._get(f"quote/{sym}")
+        if not data:
+            raise ValueError(f"no quote for '{ticker}' on FMP")
+        q = data[0]
+        price = q.get("price")
+        if price is None:
+            raise ValueError(f"no price for '{ticker}'")
+        return Quote(ticker=sym, market=str(q.get("exchange") or "US"),
+                     price=round(float(price), 4), currency="USD", as_of=_now())
+
+    def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
+        sym = self.to_symbol(ticker)
+        data = self._get(f"historical-price-full/{sym}?serietype=line&timeseries={max(days, 2)}")
+        hist = (data or {}).get("historical") or []
+        out = [(h["date"], float(h["close"])) for h in hist if h.get("close") is not None]
+        if len(out) < 2:
+            raise ValueError(f"insufficient history for '{ticker}'")
+        out.sort(key=lambda x: x[0])  # FMP returns newest-first; we want oldest..newest
+        return out[-days:]
+
+    def get_fundamentals(self, ticker: str):
+        """Real fundamentals via FMP ratios-ttm + financial-growth + profile.
+
+        Returns None on any failure so the screener simply skips the name.
+        """
+        from app.schemas.screener import Fundamentals
+        sym = self.to_symbol(ticker)
+        try:
+            ratios = (self._get(f"ratios-ttm/{sym}") or [{}])[0]
+            growth = (self._get(f"financial-growth/{sym}?limit=1") or [{}])
+            growth = growth[0] if growth else {}
+            profile = (self._get(f"profile/{sym}") or [{}])[0]
+        except Exception:
+            return None
+
+        def pct(v):
+            return round(v * 100.0, 2) if isinstance(v, (int, float)) else None
+
+        def num(v):
+            return round(float(v), 2) if isinstance(v, (int, float)) else None
+
+        de = ratios.get("debtEquityRatioTTM")
+        return Fundamentals(
+            ticker=sym,
+            name=str(profile.get("companyName") or sym),
+            sector=str(profile.get("sector") or "Unknown"),
+            pe=num(ratios.get("peRatioTTM")),
+            pb=num(ratios.get("priceToBookRatioTTM")),
+            earnings_growth_pct=pct(growth.get("netIncomeGrowth")),
+            revenue_growth_pct=pct(growth.get("revenueGrowth")),
+            profit_margin_pct=pct(ratios.get("netProfitMarginTTM")),
+            roe_pct=pct(ratios.get("returnOnEquityTTM")),
+            debt_to_equity=(round(de * 100.0, 1) if isinstance(de, (int, float)) else None),
+            dividend_yield_pct=pct(ratios.get("dividendYieldTTM")),
+            as_of=_now(),
+        )
