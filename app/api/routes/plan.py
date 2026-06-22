@@ -38,11 +38,13 @@ async def _orm(session, user):
 
 
 def _portfolio_stats(rows) -> dict:
+    from app.services.fx import price_currency, fx_rate
     nav = ret = vol = 0.0
     for p in rows:
-        val = float(p.quantity) * float(p.current_price or 0)
-        nav += val
         m = p.meta or {}
+        rate = fx_rate(price_currency(p.market, m if isinstance(m, dict) else None))
+        val = float(p.quantity) * float(p.current_price or 0) * rate  # base-currency value
+        nav += val
         ret += val * (m.get("expected_return_pct") or 0.0)
         vol += val * (m.get("volatility_pct") or 12.0)
     if not nav:

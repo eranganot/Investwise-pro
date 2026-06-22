@@ -21,13 +21,19 @@ def classify(ticker: str, market: str, asset_class: str | None = None) -> str:
 
 
 def current_mix(rows) -> tuple[dict, float]:
-    """rows: ORM Position objects -> (allocation dict by class, nav)."""
-    nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows)
+    """rows: ORM Position objects -> (allocation dict by class, nav). FX-normalized to base ccy."""
+    from app.services.fx import price_currency, fx_rate
+
+    def _val(p):
+        meta = p.meta if isinstance(p.meta, dict) else None
+        rate = fx_rate(price_currency(p.market, meta))
+        return float(p.quantity) * float(p.current_price or 0) * rate
+
+    nav = sum(_val(p) for p in rows)
     mix: dict[str, float] = {}
     if not nav:
         return mix, 0.0
     for p in rows:
-        val = float(p.quantity) * float(p.current_price or 0)
         cls = classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))
-        mix[cls] = round(mix.get(cls, 0.0) + val / nav, 4)
+        mix[cls] = round(mix.get(cls, 0.0) + _val(p) / nav, 4)
     return mix, nav
