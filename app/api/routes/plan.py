@@ -52,6 +52,23 @@ def _portfolio_stats(rows) -> dict:
     return {"nav": nav, "expected_roi": round(ret / nav, 2), "volatility": round(vol / nav, 2)}
 
 
+_TARGET_PERIODS = {"monthly": 12, "quarterly": 4, "yearly": 1}
+
+
+def _auto_target(nav: float, plan) -> float | None:
+    """Goal target. In 'auto from ROI' mode (target_roi_pct set) it is derived
+    live from the current NAV so it stays aligned with the holdings total and the
+    projection: target = NAV x (1 + roi)^periods. Otherwise the saved amount."""
+    if plan is None:
+        return None
+    if plan.target_roi_pct is not None and nav:
+        roi = float(plan.target_roi_pct)
+        years = max(1, plan.horizon_years or 10)
+        n = years * _TARGET_PERIODS.get(plan.target_roi_period or "yearly", 1)
+        return round(nav * (1 + roi / 100.0) ** n, 2)
+    return float(plan.target_amount) if plan.target_amount is not None else None
+
+
 class PlanRequest(BaseModel):
     objective: str | None = None
     risk_tolerance: str | None = None
@@ -75,7 +92,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
-        target = float(plan.target_amount) if plan.target_amount is not None else None
+        target = _auto_target(nav, plan)
         base = {"configured": True, "objective": plan.objective, "risk_tolerance": plan.risk_tolerance,
                 "horizon_years": plan.horizon_years, "target_amount": target,
                 "target_date": plan.target_date, "currency": plan.currency,
@@ -115,7 +132,7 @@ async def goal_projection(session: AsyncSession = Depends(get_session), user: Us
     if not stats["nav"]:
         return {"message": "Add holdings to project your goal."}
     years = max(1, plan.horizon_years if plan else 10)
-    target = float(plan.target_amount) if (plan and plan.target_amount) else None
+    target = _auto_target(stats["nav"], plan)
     sim = SimulationEngine(seed=7).run(
         initial_value=stats["nav"], expected_return_pct=stats["expected_roi"] or 6.0,
         volatility_pct=stats["volatility"] or 12.0, horizon_years=years, target_value=target)
