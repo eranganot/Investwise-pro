@@ -1,5 +1,5 @@
 /* InvestWise PWA service worker */
-const VERSION = 'iw-v1';
+const VERSION = 'iw-v2';
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 
@@ -82,6 +82,36 @@ self.addEventListener('fetch', (event) => {
         return res;
       }).catch(() => cached);
       return cached || network;
+    })
+  );
+});
+
+// --- Push notifications ---
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; }
+  catch (e) { payload = { title: 'InvestWise', body: event.data ? event.data.text() : '' }; }
+  const title = payload.title || 'InvestWise';
+  const options = {
+    body: payload.body || '',
+    icon: '/app/icon-192.png',
+    badge: '/app/icon-192.png',
+    tag: payload.tag || 'investwise',
+    renotify: true,
+    data: { url: payload.url || '/app/', ...(payload.data || {}) },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/app/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if (c.url.includes('/app') && 'focus' in c) return c.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
     })
   );
 });

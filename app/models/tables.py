@@ -273,3 +273,32 @@ class BrokerConnection(Base, PKMixin, TimestampMixin):
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+# --- Web Push (notifications) ----------------------------------------------
+class PushSubscription(Base, PKMixin, TimestampMixin):
+    """A browser Web Push subscription. Keyed by the acting principal's subject
+    (email in auth mode, SuperAdmin name in open mode) so we can fan out to all
+    of a user's installed devices."""
+    __tablename__ = "push_subscriptions"
+    subject: Mapped[str] = mapped_column(String(255), index=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text)
+    auth: Mapped[str] = mapped_column(Text)
+    ua: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class NotifiedEvent(Base, PKMixin, TimestampMixin):
+    """Dedupe ledger so a trigger fires a given notification at most once per
+    window (keyed by subject + a stable signature of the event)."""
+    __tablename__ = "notified_events"
+    subject: Mapped[str] = mapped_column(String(255), index=True)
+    signature: Mapped[str] = mapped_column(String(160), index=True)
+
+
+class KVSetting(Base, TimestampMixin):
+    """Tiny key/value store for runtime secrets generated lazily (e.g. the VAPID
+    keypair) so push works after deploy without manual env setup."""
+    __tablename__ = "kv_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)

@@ -78,6 +78,54 @@ class YahooMarketDataProvider(MarketDataProvider):
             raise ValueError(f"insufficient history for '{ticker}'")
         return out[-days:]
 
+    def get_fundamentals(self, ticker: str):
+        """Valuation/growth/quality/income via Yahoo quoteSummary (no key).
+
+        Returns None (rather than raising) when the data is unavailable or the
+        endpoint is gated, so the screener can simply skip the name.
+        """
+        from app.schemas.screener import Fundamentals
+        sym = self.to_symbol(ticker)
+        url = (f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
+               "?modules=summaryDetail,defaultKeyStatistics,financialData,summaryProfile")
+        try:
+            data = json.loads(_http_text(url))
+        except Exception:
+            return None
+        result = ((data.get("quoteSummary") or {}).get("result") or [])
+        if not result:
+            return None
+        node = result[0]
+        sd = node.get("summaryDetail") or {}
+        ks = node.get("defaultKeyStatistics") or {}
+        fd = node.get("financialData") or {}
+        sp = node.get("summaryProfile") or {}
+
+        def raw(d: dict, key: str):
+            v = d.get(key)
+            if isinstance(v, dict):
+                v = v.get("raw")
+            return v if isinstance(v, (int, float)) else None
+
+        def pct(d: dict, key: str):
+            v = raw(d, key)
+            return round(v * 100.0, 2) if v is not None else None
+
+        return Fundamentals(
+            ticker=sym,
+            name=str(sp.get("longName") or sym),
+            sector=str(sp.get("sector") or "Unknown"),
+            pe=raw(sd, "trailingPE"),
+            pb=raw(ks, "priceToBook"),
+            earnings_growth_pct=pct(fd, "earningsGrowth"),
+            revenue_growth_pct=pct(fd, "revenueGrowth"),
+            profit_margin_pct=pct(fd, "profitMargins"),
+            roe_pct=pct(fd, "returnOnEquity"),
+            debt_to_equity=raw(fd, "debtToEquity"),
+            dividend_yield_pct=pct(sd, "dividendYield"),
+            as_of=_now(),
+        )
+
 
 class FrankfurterFXProvider(FXProvider):
     """ECB reference FX rates from Frankfurter (no key)."""

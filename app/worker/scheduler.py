@@ -19,6 +19,18 @@ def start_scheduler() -> None:
     refresh_market_data()  # warm once at startup
     _scheduler.add_job(refresh_market_data, "interval",
                        minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh")
+
+    # Push notifications: scan portfolios for important changes, and a daily digest.
+    try:
+        from app.services.push_service import run_digests_blocking, run_evaluations_blocking
+        _scheduler.add_job(run_evaluations_blocking, "interval", minutes=60,
+                           id="push_evaluate", max_instances=1, coalesce=True)
+        _scheduler.add_job(run_digests_blocking, "cron", hour=7, minute=0,
+                           id="push_digest", max_instances=1, coalesce=True)
+        logger.info("Push notification jobs scheduled (evaluate hourly, digest 07:00).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Push notification jobs not scheduled.", exc_info=False)
+
     _scheduler.start()
     logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
 

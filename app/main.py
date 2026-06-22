@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    adversary as adversary_routes, allocation, assistant, auth, backtest, broker, commodities, decision_feed, entities, fees, google_auth, health, intake, jobs, lag, learning, market, strategy,
+    adversary as adversary_routes, allocation, assistant, auth, backtest, broker, commodities, decision_feed, entities, fees, google_auth, health, intake, jobs, lag, learning, market, push, screener, strategy,
     observability, plan, recommendations, risk, safety, simulation, tax, war_room, whatif, whs, workflows,
 )
 from app.core.config import get_settings
@@ -160,6 +160,8 @@ def create_app() -> FastAPI:
     app.include_router(assistant.router)
     app.include_router(strategy.router)
     app.include_router(commodities.router)
+    app.include_router(screener.router)
+    app.include_router(push.router)
 
     # Legacy /dashboard consolidated into /app (Phase G): keep a redirect for old links.
     from fastapi.responses import RedirectResponse

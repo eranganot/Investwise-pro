@@ -40,6 +40,22 @@ _ADVERSARY = {
         "Projection assumes a fixed annual return with no volatility - a poor sequence of returns widens the gap.",
         "Contribution math assumes you sustain the monthly amount for the full horizon.",
     ],
+    "holding": [
+        "The fundamental score is a point-in-time snapshot; one earnings miss can change the picture.",
+        "A 'Buy more' verdict ignores your overall concentration - size any add against your limits.",
+    ],
+    "risk": [
+        "Sector tags are best-effort; a mislabeled holding can over- or under-state the concentration.",
+        "Diversifiers reduce single-sector risk but can drag returns in a strong bull market.",
+    ],
+    "momentum": [
+        "Trend signals are price-only and say nothing about value - they can whipsaw.",
+        "Acting on momentum can mean buying high or selling low; pair it with a fundamental view.",
+    ],
+    "income": [
+        "Chasing yield can mean buying lower-quality payers - check dividend coverage.",
+        "Cash isn't dead money if you genuinely need the liquidity soon.",
+    ],
 }
 
 

@@ -15,10 +15,14 @@ from app.models.tables import (
     RevokedToken,
     AuditLog,
     Plan,
+    PushSubscription,
+    NotifiedEvent,
+    KVSetting,
 )
 
 __all__ = [
     "Base", "User", "Entity", "Account", "Bucket", "Position", "Transaction",
     "TaxProfile", "DecisionFeed", "DecisionItem", "WhsSnapshot", "UserAction",
     "Credential", "RevokedToken", "AuditLog", "Plan",
+    "PushSubscription", "NotifiedEvent", "KVSetting",
 ]

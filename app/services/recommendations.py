@@ -10,6 +10,7 @@ from app.models.tables import User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
 from app.services import strategies as _strat
 from app.services.audit_trail import audit_for, f
+from app.services.audit_trail import f as _fml  # alias: 'f' is shadowed by Fundamentals locals below
 from app.agents.fee_agent import FeeAgent
 from app.engines.backtest_engine import BacktestEngine
 from app.services.intake_service import delete_position, list_positions, update_position
@@ -128,12 +129,23 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _behind_goal_recs(plan, snap, objective)
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
+    # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,
+    #    sector hedging, momentum/trend and income/cost. Each is defensive - a
+    #    data hiccup never breaks the Today view.
+    trimmed = {(r.get("apply") or {}).get("ticker") for r in recs
+               if (r.get("apply") or {}).get("kind") == "trim"}
+    recs += _holding_verdict_recs(rows, snap, cap, trimmed)
+    recs += _hedge_recs(rows, snap)
+    recs += _momentum_recs(rows)
+    recs += _income_cost_recs(pdicts, snap, objective)
+
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
     bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
-    return {"count": len(recs), "objective": objective, "recommendations": recs[:8],
+    return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
+            "buy_ideas": _buy_ideas(snap),
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,
                                 "risk_implied_beta": bt.risk_implied_beta,
@@ -231,6 +243,226 @@ def _behind_goal_recs(plan, snap, objective) -> list[dict]:
                 "est_amount": round(projected, 2),
                 "apply": {"kind": "set_plan", "fields": {"target_amount": round(projected, 2)}}})
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 - "manage my holdings" agents
+# ---------------------------------------------------------------------------
+
+def _fundamentals(ticker: str):
+    """Best-effort fundamentals; None on any provider issue (never raises)."""
+    try:
+        from app.providers.registry import guarded_fundamentals
+        return guarded_fundamentals(ticker)
+    except Exception:
+        return None
+
+
+def _fund_score(f) -> float | None:
+    """A compact 0-100 quality-of-fundamentals score for a single name."""
+    if f is None:
+        return None
+    s, n = 0.0, 0
+    if f.pe is not None:
+        s += 100.0 if 0 < f.pe <= 15 else (60.0 if 0 < f.pe <= 30 else (20.0 if f.pe > 0 else 0.0)); n += 1
+    if f.earnings_growth_pct is not None:
+        s += max(0.0, min(100.0, 50.0 + f.earnings_growth_pct * 2.0)); n += 1
+    if f.roe_pct is not None:
+        s += max(0.0, min(100.0, f.roe_pct * 2.5)); n += 1
+    if f.profit_margin_pct is not None:
+        s += max(0.0, min(100.0, 50.0 + f.profit_margin_pct * 1.5)); n += 1
+    if f.debt_to_equity is not None:
+        s += max(0.0, min(100.0, 100.0 - f.debt_to_equity / 2.5)); n += 1
+    return round(s / n, 1) if n else None
+
+
+def _holding_verdict_recs(rows, snap, cap: float, trimmed: set) -> list[dict]:
+    """A Buy-more / Hold / Trim verdict on each position you already own."""
+    out: list[dict] = []
+    nav = snap["nav"]
+    if not nav:
+        return out
+    weights = snap["exposure_ticker"]
+    for p in rows:
+        tk = p.ticker
+        f = _fundamentals(tk)
+        score = _fund_score(f)
+        if score is None:
+            continue
+        w = weights.get(tk, 0.0)
+        price = float(p.current_price or 0)
+        cost = float(p.cost_basis or 0)
+        gain = price > cost
+        if score >= 65 and w < cap * 0.6:
+            verdict, sev = "Buy more", "LOW"
+            action = (f"{tk} screens well (fundamentals {score:.0f}/100) and is only {w:.0%} of your book "
+                      f"— adding on weakness is reasonable if it fits your plan.")
+            how = [f"Consider topping up {tk} toward your target weight",
+                   "Use limit orders and average in rather than buying all at once",
+                   "Keep it under your concentration limit"]
+        elif score < 40 and tk not in trimmed:
+            verdict, sev = "Trim", "MEDIUM"
+            action = (f"{tk} screens poorly on fundamentals ({score:.0f}/100)"
+                      f"{' and you are sitting on a gain' if gain else ''} "
+                      f"— consider trimming and redeploying into stronger names.")
+            how = [f"Sell part of {tk} (start with ~25-50% of the position)",
+                   "Redeploy into higher-scoring holdings or your target mix",
+                   "Mind the tax on any realized gain"]
+        else:
+            verdict, sev = "Hold", "LOW"
+            action = (f"{tk} looks fairly valued on fundamentals ({score:.0f}/100) at {w:.0%} of your book "
+                      f"— no action needed; keep holding.")
+            how = [f"Keep {tk} as-is",
+                   "Re-check if the thesis or fundamentals change",
+                   "Rebalance only if it drifts past your limit"]
+        out.append({"id": _rid("verdict", tk), "dimension": "holding", "severity": sev,
+                    "title": f"{verdict}: {tk}", "action": action, "how": how,
+                    "est_amount": None, "apply": {"kind": "none"},
+                    "meta": {"verdict": verdict, "fundamental_score": score,
+                             "metrics": (f.model_dump() if f else None)}})
+        out[-1]["audit_trail"] = audit_for("holding",
+            raw_data={"ticker": tk, "weight": round(w, 4), "fundamental_score": score},
+            formulas=[_fml("Fundamental score",
+                        "score = mean(value, growth, quality, leverage)",
+                        result=f"{score:.0f}/100")])
+    return out
+
+
+def _hedge_recs(rows, snap) -> list[dict]:
+    """Flag sector/factor concentration and suggest a diversifier or hedge."""
+    out: list[dict] = []
+    nav = snap["nav"]
+    if not nav or len(rows) < 2:
+        return out
+    sector_w: dict[str, float] = {}
+    for p in rows:
+        f = _fundamentals(p.ticker)
+        sector = (f.sector if f and f.sector else "Unknown")
+        val = float(p.quantity) * float(p.current_price or 0)
+        sector_w[sector] = sector_w.get(sector, 0.0) + val / nav
+    sector_w.pop("Unknown", None)
+    if not sector_w:
+        return out
+    top_sector = max(sector_w, key=sector_w.get)
+    w = sector_w[top_sector]
+    if w >= 0.40:
+        out.append({"id": _rid("hedge", top_sector), "dimension": "risk", "severity": "MEDIUM",
+                    "title": f"Reduce {top_sector} concentration",
+                    "action": (f"About {w:.0%} of your equity sits in {top_sector}. A shock to that one "
+                               f"sector would hit you hard — diversify or add a hedge."),
+                    "how": [f"Trim your most expensive {top_sector} names",
+                            "Rotate the proceeds into under-represented sectors (e.g. an XLV/XLE/XLF sleeve)",
+                            "Or add a low-correlation diversifier (bonds/BND, gold/GLD, or BTAL)"],
+                    "est_amount": None, "apply": {"kind": "none"},
+                    "meta": {"sector": top_sector, "weight": round(w, 4)}})
+        out[-1]["audit_trail"] = audit_for("risk",
+            raw_data={"sector": top_sector, "weight": round(w, 4)},
+            formulas=[_fml("Sector weight", "w = sector_value / NAV", result=f"{w:.0%}")])
+    return out
+
+
+def _momentum_recs(rows) -> list[dict]:
+    """Surface holdings in a strong down- or up-trend (price trend only, no fundamentals)."""
+    out: list[dict] = []
+    for p in rows:
+        try:
+            from app.providers.registry import guarded_history
+            hist = guarded_history(p.ticker, days=200)
+        except Exception:
+            hist = None
+        closes = [c for _d, c in hist] if hist else []
+        if len(closes) < 60:
+            continue
+        long_ma = sum(closes[-150:]) / len(closes[-150:]) if len(closes) >= 150 else sum(closes) / len(closes)
+        short_ma = sum(closes[-30:]) / 30.0
+        last = closes[-1]
+        ret = (last / closes[-min(120, len(closes))] - 1.0) * 100.0
+        if short_ma < long_ma * 0.95 and ret < -10:
+            out.append({"id": _rid("mom_dn", p.ticker), "dimension": "momentum", "severity": "MEDIUM",
+                        "title": f"{p.ticker} is in a downtrend",
+                        "action": (f"{p.ticker} is down ~{abs(ret):.0f}% and trading below its trend. "
+                                   f"Re-check the thesis — cut it or add deliberately, don't drift."),
+                        "how": [f"Review why you hold {p.ticker}",
+                                "If the thesis is intact, this may be an entry; if not, trim",
+                                "Set a price level that would change your mind"],
+                        "est_amount": None, "apply": {"kind": "none"},
+                        "meta": {"return_pct": round(ret, 1), "trend": "down"}})
+            out[-1]["audit_trail"] = audit_for("momentum",
+                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "down"},
+                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%")])
+        elif short_ma > long_ma * 1.05 and ret > 12:
+            out.append({"id": _rid("mom_up", p.ticker), "dimension": "momentum", "severity": "LOW",
+                        "title": f"{p.ticker} is in an uptrend",
+                        "action": (f"{p.ticker} is up ~{ret:.0f}% and trending higher. Let winners run, "
+                                   f"but watch that it doesn't grow past your concentration limit."),
+                        "how": [f"Hold {p.ticker} while the trend holds",
+                                "Trim only if it breaches your single-name cap",
+                                "Consider a trailing stop to protect gains"],
+                        "est_amount": None, "apply": {"kind": "none"},
+                        "meta": {"return_pct": round(ret, 1), "trend": "up"}})
+            out[-1]["audit_trail"] = audit_for("momentum",
+                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "up"},
+                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%")])
+    return out[:3]
+
+
+def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
+    """Cash drag and dividend-income opportunities (fees handled by the FeeAgent)."""
+    out: list[dict] = []
+    nav = snap["nav"]
+    if not nav:
+        return out
+    cash_w = 0.0
+    for d in pdicts:
+        cls = (d.get("asset_class") or "").lower()
+        if cls == "cash" or d["ticker"].upper() in {"BIL", "SHV", "SGOV", "CASH"}:
+            cash_w += (d["quantity"] * d["current_price"]) / nav
+    if cash_w >= 0.15:
+        out.append({"id": _rid("cashdrag"), "dimension": "income", "severity": "MEDIUM",
+                    "title": "Put idle cash to work",
+                    "action": (f"About {cash_w:.0%} of your portfolio is in cash. Even a short-term bond or "
+                               f"money-market ETF would earn yield on it instead of drifting."),
+                    "how": ["Keep only your real emergency buffer in cash",
+                            "Move the rest into a T-bill/money-market ETF (e.g. SGOV/BIL) or your target mix",
+                            "Re-check after the next contribution"],
+                    "est_amount": round(cash_w * nav, 2), "apply": {"kind": "none"},
+                    "meta": {"cash_weight": round(cash_w, 4)}})
+        out[-1]["audit_trail"] = audit_for("income",
+            raw_data={"cash_weight": round(cash_w, 4), "nav": round(nav, 2)},
+            formulas=[_fml("Cash weight", "cash_weight = cash_value / NAV", result=f"{cash_w:.0%}")])
+    if (objective or "") == "Income":
+        yields = []
+        for d in pdicts:
+            f = _fundamentals(d["ticker"])
+            if f and f.dividend_yield_pct is not None:
+                yields.append(f.dividend_yield_pct)
+        if yields and (sum(yields) / len(yields)) < 2.0:
+            avg = sum(yields) / len(yields)
+            out.append({"id": _rid("income_yield"), "dimension": "income", "severity": "LOW",
+                        "title": "Lift your portfolio yield",
+                        "action": (f"Your objective is Income but your holdings average only {avg:.1f}% yield. "
+                                   f"Tilting toward dividend payers would raise your cash income."),
+                        "how": ["Add a dividend-focused sleeve (e.g. SCHD/VYM)",
+                                "Favor profitable, low-payout-risk dividend names",
+                                "Keep total-return in mind — don't chase the highest yield"],
+                        "est_amount": None, "apply": {"kind": "none"},
+                        "meta": {"avg_yield_pct": round(avg, 2)}})
+            out[-1]["audit_trail"] = audit_for("income",
+                raw_data={"avg_yield_pct": round(avg, 2)},
+                formulas=[_fml("Average yield", "avg = mean(dividend_yield_pct)", result=f"{avg:.1f}%")])
+    return out
+
+
+def _buy_ideas(snap) -> list[dict]:
+    """Top fundamentals-ranked buy ideas from the Opportunity Agent (informational)."""
+    try:
+        from app.agents.screener_agent import OpportunityAgent
+        picks = OpportunityAgent().screen_equities(top_n=5)
+        return [{"ticker": p.ticker, "name": p.name, "score": p.score,
+                 "sector": p.sector, "reasons": p.reasons, "flags": p.flags,
+                 "metrics": p.metrics} for p in picks]
+    except Exception:
+        return []
 
 
 async def _rebalance_to(session, user, rows, objective: str) -> None:

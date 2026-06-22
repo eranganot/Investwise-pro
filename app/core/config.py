@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     rec_ttl_week_days: int = 7
     rec_ttl_monitor_days: int = 30
 
+    # Web Push notifications (PWA push)
+    # Leave blank to auto-generate + persist a VAPID keypair in the DB on first
+    # use. Set these env vars to pin a stable keypair across environments.
+    vapid_public_key: str = ""      # base64url raw (applicationServerKey)
+    vapid_private_key: str = ""     # base64url raw private key
+    vapid_subject: str = "mailto:eran.ganot@gmail.com"  # VAPID 'sub' claim
+    push_price_move_pct: float = 5.0           # notify when a holding moves >= this % since last alert
+    push_notify_severities: str = "CRITICAL,HIGH"  # rec/alert severities worth a push
+    push_dedupe_days: int = 7                  # don't repeat the same notification within N days
+
     @property
     def allowed_email_list(self) -> list[str]:
         return [e.strip().lower() for e in (self.allowed_emails or "").split(",") if e.strip()]

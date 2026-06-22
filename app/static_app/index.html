@@ -191,6 +191,7 @@
   <div class="bar">
     <div class="brand"><span class="logo">◆</span> InvestWise</div>
     <div style="display:flex;align-items:center;gap:8px">
+      <button id="notifyBtn" class="adv" style="cursor:pointer" onclick="enableNotifications()">🔔 Notifications</button>
       <button id="installBtn" class="adv" style="cursor:pointer" onclick="installApp()">⤓ Install</button>
       <a class="adv" href="/auth/logout">Sign out</a>
     </div>
@@ -879,6 +880,57 @@ async function installApp(){
   _deferredPrompt=null; if(b) b.style.display='none';
 }
 window.addEventListener('appinstalled',()=>{ const b=$("installBtn"); if(b) b.style.display='none'; });
+
+// --- Push notifications ---
+function _urlB64ToUint8(base64){
+  const pad="=".repeat((4-base64.length%4)%4);
+  const b=(base64+pad).replace(/-/g,"+").replace(/_/g,"/");
+  const raw=atob(b); const arr=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++) arr[i]=raw.charCodeAt(i);
+  return arr;
+}
+function _pushSupported(){ return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+function _setNotifyState(state){
+  const b=$("notifyBtn"); if(!b) return;
+  if(state==="on"){ b.textContent="🔔 On"; b.style.borderColor="var(--green)"; b.style.color="var(--green)"; }
+  else if(state==="blocked"){ b.textContent="🔕 Blocked"; b.style.color="var(--mut)"; }
+  else if(state==="unsupported"){ b.style.display="none"; }
+  else { b.textContent="🔔 Notifications"; b.style.color=""; b.style.borderColor=""; }
+}
+async function enableNotifications(){
+  if(!_pushSupported()){ _setNotifyState("unsupported"); return; }
+  const b=$("notifyBtn");
+  try{
+    const perm=await Notification.requestPermission();
+    if(perm!=="granted"){ _setNotifyState(perm==="denied"?"blocked":"off"); return; }
+    if(b){ b.textContent="…"; b.disabled=true; }
+    const reg=await navigator.serviceWorker.ready;
+    const {public_key}=await (await fetch("/api/v1/push/public-key")).json();
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub){
+      sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_urlB64ToUint8(public_key)});
+    }
+    await fetch("/api/v1/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)});
+    if(b) b.disabled=false;
+    _setNotifyState("on");
+    fetch("/api/v1/push/test",{method:"POST"}).catch(()=>{});  // confirmation ping
+  }catch(e){ if(b){b.disabled=false;} _setNotifyState("off"); console.warn("notify enable failed",e); }
+}
+async function initNotifyState(){
+  if(!_pushSupported()){ _setNotifyState("unsupported"); return; }
+  if(Notification.permission==="denied"){ _setNotifyState("blocked"); return; }
+  try{
+    const reg=await navigator.serviceWorker.ready;
+    const sub=await reg.pushManager.getSubscription();
+    if(sub && Notification.permission==="granted"){
+      _setNotifyState("on");
+      // re-register (idempotent) and catch up on anything important since last open
+      fetch("/api/v1/push/subscribe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sub)}).catch(()=>{});
+      fetch("/api/v1/push/check",{method:"POST"}).catch(()=>{});
+    } else { _setNotifyState("off"); }
+  }catch(e){ _setNotifyState("off"); }
+}
+setTimeout(initNotifyState, 1500);
 
 boot();
 </script>

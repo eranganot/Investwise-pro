@@ -14,10 +14,15 @@ from app.providers.base import (
     BrokerProvider, EconomicDataProvider, FXProvider, MarketDataProvider,
 )
 from app.schemas.market import EconomicEvent, FXRate, Quote
+from app.schemas.screener import Fundamentals
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_SECTORS = ["Technology", "Healthcare", "Financials", "Consumer", "Industrials",
+            "Energy", "Communication", "Utilities", "Materials"]
 
 
 def _seed(*parts: str) -> int:
@@ -47,6 +52,33 @@ class BuiltinMarketDataProvider(MarketDataProvider):
             d = (today - timedelta(days=(n - 1 - i))).isoformat()
             out.append((d, round(price, 4)))
         return out
+
+    def get_fundamentals(self, ticker: str) -> Fundamentals:
+        """Deterministic, plausible fundamentals seeded off the ticker.
+
+        Spread across the realistic range so the screener has real dispersion to
+        rank against (some cheap, some expensive; some growers, some value).
+        """
+        s = _seed("fund", ticker)
+
+        def pick(salt: str, lo: float, hi: float, dp: int = 2) -> float:
+            frac = (_seed(salt, ticker) % 10_000) / 10_000.0
+            return round(lo + frac * (hi - lo), dp)
+
+        return Fundamentals(
+            ticker=ticker.upper(),
+            name=ticker.upper(),
+            sector=_SECTORS[s % len(_SECTORS)],
+            pe=pick("pe", 7.0, 48.0, 1),
+            pb=pick("pb", 0.8, 12.0, 1),
+            earnings_growth_pct=pick("eg", -12.0, 42.0, 1),
+            revenue_growth_pct=pick("rg", -6.0, 34.0, 1),
+            profit_margin_pct=pick("pm", -4.0, 38.0, 1),
+            roe_pct=pick("roe", 1.0, 46.0, 1),
+            debt_to_equity=pick("de", 0.0, 240.0, 0),
+            dividend_yield_pct=pick("dy", 0.0, 5.6, 2),
+            as_of=_now(),
+        )
 
 
 class BuiltinFXProvider(FXProvider):

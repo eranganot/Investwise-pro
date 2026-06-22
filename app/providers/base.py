@@ -8,6 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from app.schemas.market import EconomicEvent, FXRate, Quote
+from app.schemas.screener import Fundamentals
 
 
 class MarketDataProvider(ABC):
@@ -19,6 +20,10 @@ class MarketDataProvider(ABC):
     def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
         """Daily (date, close) history, oldest..newest. Default: none."""
         return []
+
+    def get_fundamentals(self, ticker: str) -> Fundamentals | None:
+        """Valuation / growth / quality / income snapshot. Default: unsupported."""
+        return None
 
 
 class FXProvider(ABC):
