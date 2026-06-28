@@ -563,7 +563,9 @@ async function acceptRec(id){
     snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();
   }catch(e){alert(e.message||e);}
 }
-function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();}
+function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));
+  fetch(`/api/v1/recommendations/${id}/dismiss`,{method:"POST"}).catch(()=>{});  // also stop notifications
+  loadToday();}
 
 let HMAP={};
 let COMM=null, CCAT=null;
@@ -933,6 +935,15 @@ async function initNotifyState(){
   }catch(e){ _setNotifyState("off"); }
 }
 setTimeout(initNotifyState, 1500);
+
+// One-time: migrate browser-only "ignored" recs to the server so push respects them too.
+(function syncSnoozes(){
+  try{
+    if(localStorage.getItem("iw_snooze_synced")) return;
+    (snoozed||[]).forEach(id=>fetch(`/api/v1/recommendations/${id}/dismiss`,{method:"POST"}).catch(()=>{}));
+    localStorage.setItem("iw_snooze_synced","1");
+  }catch(e){}
+})();
 
 boot();
 </script>

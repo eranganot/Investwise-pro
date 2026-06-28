@@ -5,7 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import acting_user
 from app.core.database import get_session
 from app.models.tables import User
-from app.services.recommendations import apply_recommendation, build_recommendations
+from app.services.recommendations import (
+    apply_recommendation, build_recommendations, dismiss_recommendation,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
 
@@ -23,4 +25,13 @@ async def accept_recommendation(rec_id: str, session: AsyncSession = Depends(get
     result = await apply_recommendation(session, user, rec_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Recommendation not found (it may have changed).")
+    await dismiss_recommendation(session, user, rec_id)  # also suppress from push
     return {"ok": True, **result}
+
+
+@router.post("/recommendations/{rec_id}/dismiss")
+async def dismiss_recommendation_route(rec_id: str, session: AsyncSession = Depends(get_session),
+                                       user: User = Depends(acting_user)) -> dict:
+    """Mark a recommendation as ignored so it stops showing AND stops notifying."""
+    await dismiss_recommendation(session, user, rec_id)
+    return {"ok": True}

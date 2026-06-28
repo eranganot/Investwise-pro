@@ -270,7 +270,8 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
                 arrow = "📈" if chg > 0 else "📉"
                 sent += await send_to_subject(
                     session, subject, f"{arrow} {tk} moved {chg:+.1f}%",
-                    f"{tk} is now {cur:,.2f} (was {base:,.2f}).", url="/app/", tag=f"px:{tk}")
+                    f"{tk} is now {cur:,.2f} (was {base:,.2f}). No action needed — just keeping you posted.",
+                    url="/app/", tag=f"px:{tk}")
                 await _kv_set(session, kvk, str(cur))
 
     await session.commit()

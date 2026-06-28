@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.allocation_engine import AllocationEngine
-from app.models.tables import User
+from app.models.tables import KVSetting, User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
 from app.services import strategies as _strat
 from app.services.audit_trail import audit_for, f
@@ -29,6 +31,65 @@ def _rid(*parts) -> str:
 
 def _ils(x) -> str:
     return f"₪{round(x):,}"
+
+
+# --- Server-side dismissals (so the Today list and push notifications agree) ---
+# An "Ignore" lasts up to this many days; if the recommendation is still relevant
+# after that, it resurfaces (and can notify again).
+_DISMISS_TTL_DAYS = 7
+
+
+def _dismiss_key(user: User) -> str:
+    return f"dismissed_recs:{user.email}"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_dt(ts: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(ts)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return datetime.now(timezone.utc)  # unparseable -> treat as fresh
+
+
+async def _load_dismiss_map(session: AsyncSession, user: User) -> dict[str, str]:
+    """Return {rec_id: dismissed_at_iso}. Tolerates the legacy list-of-ids shape."""
+    row = await session.get(KVSetting, _dismiss_key(user))
+    if not row:
+        return {}
+    try:
+        data = json.loads(row.value)
+    except Exception:  # noqa: BLE001
+        return {}
+    if isinstance(data, list):  # legacy: ids only -> give each a fresh window
+        return {i: _now_iso() for i in data}
+    return data if isinstance(data, dict) else {}
+
+
+async def load_dismissed(session: AsyncSession, user: User) -> set[str]:
+    """Currently-active dismissals (within the TTL window)."""
+    m = await _load_dismiss_map(session, user)
+    if not m:
+        return set()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+    return {rid for rid, ts in m.items() if _parse_dt(ts) >= cutoff}
+
+
+async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
+    m = await _load_dismiss_map(session, user)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+    m = {k: v for k, v in m.items() if _parse_dt(v) >= cutoff}  # prune expired
+    m[rec_id] = _now_iso()
+    payload = json.dumps(m)
+    row = await session.get(KVSetting, _dismiss_key(user))
+    if row:
+        row.value = payload
+    else:
+        session.add(KVSetting(key=_dismiss_key(user), value=payload))
+    await session.commit()
 
 
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
@@ -138,6 +199,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _hedge_recs(rows, snap)
     recs += _momentum_recs(rows)
     recs += _income_cost_recs(pdicts, snap, objective)
+
+    # Drop anything the user dismissed (server-side, so push + Today stay in sync).
+    dismissed = await load_dismissed(session, user)
+    if dismissed:
+        recs = [r for r in recs if r.get("id") not in dismissed]
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
