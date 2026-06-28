@@ -15,6 +15,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
+from app.providers.live import YahooMarketDataProvider
 from app.services.performance_service import performance
 from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
@@ -180,19 +181,38 @@ async def refresh_prices(session: AsyncSession = Depends(get_session),
     """Update each holding's current_price from the live market provider."""
     rows = await list_positions(session, user)
     prices, errors = [], []
-    src = market_provider().name
+    primary = market_provider()
+    # Keyless fallback: if the configured provider can't price a ticker (e.g. FMP
+    # key missing/expired/over-quota, or a deprecated endpoint), use Yahoo so a
+    # manual refresh never silently leaves every price stale.
+    yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
+    by_source: dict[str, int] = {}
     for p in rows:
+        q, used, last_err = None, None, None
         try:
             q = guarded_quote(p.ticker)
-            p.current_price = Decimal(str(q.price))
-            p.meta = {**(p.meta or {}), "price_as_of": q.as_of, "price_source": src,
-                      "price_currency": q.currency}
-            prices.append({"ticker": p.ticker, "price": q.price, "currency": q.currency, "as_of": q.as_of})
+            used = primary.name
         except Exception as e:  # noqa: BLE001
-            errors.append({"ticker": p.ticker, "error": str(e)[:120]})
+            last_err = e
+        if q is None and yahoo is not None:
+            try:
+                q = yahoo.get_quote(p.ticker)
+                used = yahoo.name
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+        if q is None:
+            errors.append({"ticker": p.ticker, "error": str(last_err)[:160]})
+            continue
+        p.current_price = Decimal(str(q.price))
+        p.meta = {**(p.meta or {}), "price_as_of": q.as_of, "price_source": used,
+                  "price_currency": q.currency}
+        by_source[used] = by_source.get(used, 0) + 1
+        prices.append({"ticker": p.ticker, "price": q.price, "currency": q.currency,
+                       "as_of": q.as_of, "source": used})
     await session.commit()
+    src = "+".join(sorted(by_source)) if by_source else primary.name
     return {"source": src, "updated": len(prices), "failed": len(errors),
-            "prices": prices, "errors": errors}
+            "by_source": by_source, "prices": prices, "errors": errors}
 
 
 @router.post("/portfolio/risk", dependencies=[Depends(require_role(Role.ANALYST))])

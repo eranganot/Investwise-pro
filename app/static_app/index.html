@@ -465,7 +465,8 @@ async function refreshPricesUI(){
   const b=$("refreshBtn"); if(b){b.textContent="Refreshing…";b.disabled=true;}
   const r=await refreshPrices();
   if(b){b.textContent="↻ Refresh prices";b.disabled=false;}
-  if(r){const msg=`Updated ${r.updated} from ${r.source}`+(r.failed?` · ${r.failed} not found`:"");
+  if(r){let msg=`Updated ${r.updated} from ${r.source}`+(r.failed?` · ${r.failed} not found`:"");
+    if(r.updated===0 && r.errors && r.errors[0]) msg+=` — ${r.errors[0].error}`;
     const n=$("priceNote"); if(n)n.textContent=msg;}
   loadToday();
 }

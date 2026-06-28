@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -157,7 +158,9 @@ class FMPMarketDataProvider(MarketDataProvider):
     quota hit or missing field just drops that name from the screen.
     """
     name = "fmp"
-    BASE = "https://financialmodelingprep.com/api/v3"
+    # The legacy /api/v3 endpoints were retired for new/free keys; FMP now serves
+    # the "stable" API (query-param symbols). https://site.financialmodelingprep.com/developer/docs
+    BASE = "https://financialmodelingprep.com/stable"
 
     @staticmethod
     def to_symbol(ticker: str) -> str:
@@ -168,20 +171,30 @@ class FMPMarketDataProvider(MarketDataProvider):
         from app.core.config import get_settings
         return get_settings().fmp_api_key or os.getenv("FMP_API_KEY", "")
 
-    def _get(self, path: str):
+    def _get(self, path: str, **params):
         key = self._key()
         if not key:
             raise ValueError("FMP_API_KEY not set (set fmp_api_key or the env var)")
-        sep = "&" if "?" in path else "?"
-        return json.loads(_http_text(f"{self.BASE}/{path}{sep}apikey={key}"))
+        params["apikey"] = key
+        qs = urllib.parse.urlencode(params)
+        data = json.loads(_http_text(f"{self.BASE}/{path}?{qs}"))
+        # FMP signals problems with an object (not a list): invalid/expired key,
+        # exhausted quota, or a paid-only endpoint. Surface the real message
+        # instead of crashing later on data[0].
+        if isinstance(data, dict):
+            msg = data.get("Error Message") or data.get("error") or data.get("message")
+            if msg:
+                raise ValueError(f"FMP: {msg}")
+        return data
 
     def get_quote(self, ticker: str) -> Quote:
         sym = self.to_symbol(ticker)
-        data = self._get(f"quote/{sym}")
-        if not data:
+        data = self._get("quote", symbol=sym)
+        rows = data if isinstance(data, list) else [data]
+        if not rows or not isinstance(rows[0], dict):
             raise ValueError(f"no quote for '{ticker}' on FMP")
-        q = data[0]
-        price = q.get("price")
+        q = rows[0]
+        price = q.get("price", q.get("previousClose"))
         if price is None:
             raise ValueError(f"no price for '{ticker}'")
         return Quote(ticker=sym, market=str(q.get("exchange") or "US"),
@@ -189,27 +202,38 @@ class FMPMarketDataProvider(MarketDataProvider):
 
     def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
         sym = self.to_symbol(ticker)
-        data = self._get(f"historical-price-full/{sym}?serietype=line&timeseries={max(days, 2)}")
-        hist = (data or {}).get("historical") or []
-        out = [(h["date"], float(h["close"])) for h in hist if h.get("close") is not None]
+        data = self._get("historical-price-eod/full", symbol=sym)
+        # stable returns a flat list of {date, close, ...}; tolerate the older
+        # {"historical": [...]} shape too.
+        hist = data.get("historical") if isinstance(data, dict) else data
+        out = [(h["date"], float(h["close"])) for h in (hist or [])
+               if isinstance(h, dict) and h.get("close") is not None]
         if len(out) < 2:
             raise ValueError(f"insufficient history for '{ticker}'")
         out.sort(key=lambda x: x[0])  # FMP returns newest-first; we want oldest..newest
         return out[-days:]
 
     def get_fundamentals(self, ticker: str):
-        """Real fundamentals via FMP ratios-ttm + financial-growth + profile.
+        """Real fundamentals via FMP stable ratios-ttm + financial-growth + profile.
 
-        Returns None on any failure so the screener simply skips the name.
+        Returns None on any failure so the screener simply skips the name. Field
+        names are looked up with fallbacks to tolerate stable/legacy differences.
         """
         from app.schemas.screener import Fundamentals
         sym = self.to_symbol(ticker)
         try:
-            ratios = (self._get(f"ratios-ttm/{sym}") or [{}])[0]
-            growth = (self._get(f"financial-growth/{sym}?limit=1") or [{}])
+            ratios = (self._get("ratios-ttm", symbol=sym) or [{}])[0]
+            growth = (self._get("financial-growth", symbol=sym, limit=1) or [{}])
             growth = growth[0] if growth else {}
-            profile = (self._get(f"profile/{sym}") or [{}])[0]
+            profile = (self._get("profile", symbol=sym) or [{}])[0]
         except Exception:
+            return None
+
+        def first(d: dict, *keys):
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, (int, float)):
+                    return v
             return None
 
         def pct(v):
@@ -218,18 +242,18 @@ class FMPMarketDataProvider(MarketDataProvider):
         def num(v):
             return round(float(v), 2) if isinstance(v, (int, float)) else None
 
-        de = ratios.get("debtEquityRatioTTM")
+        de = first(ratios, "debtToEquityRatioTTM", "debtEquityRatioTTM", "debtToEquityTTM")
         return Fundamentals(
             ticker=sym,
             name=str(profile.get("companyName") or sym),
             sector=str(profile.get("sector") or "Unknown"),
-            pe=num(ratios.get("peRatioTTM")),
-            pb=num(ratios.get("priceToBookRatioTTM")),
-            earnings_growth_pct=pct(growth.get("netIncomeGrowth")),
-            revenue_growth_pct=pct(growth.get("revenueGrowth")),
-            profit_margin_pct=pct(ratios.get("netProfitMarginTTM")),
-            roe_pct=pct(ratios.get("returnOnEquityTTM")),
+            pe=num(first(ratios, "priceToEarningsRatioTTM", "peRatioTTM")),
+            pb=num(first(ratios, "priceToBookRatioTTM", "pbRatioTTM")),
+            earnings_growth_pct=pct(first(growth, "netIncomeGrowth", "epsgrowth", "epsGrowth")),
+            revenue_growth_pct=pct(first(growth, "revenueGrowth")),
+            profit_margin_pct=pct(first(ratios, "netProfitMarginTTM", "netIncomeMarginTTM")),
+            roe_pct=pct(first(ratios, "returnOnEquityTTM")),
             debt_to_equity=(round(de * 100.0, 1) if isinstance(de, (int, float)) else None),
-            dividend_yield_pct=pct(ratios.get("dividendYieldTTM")),
+            dividend_yield_pct=pct(first(ratios, "dividendYieldTTM", "dividendYieldPercentageTTM")),
             as_of=_now(),
         )
