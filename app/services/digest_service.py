@@ -17,7 +17,11 @@ def _fallback(ctx: dict) -> str:
     perf = ctx.get("performance") or {}
     risk = ctx.get("risk") or {}
     recs = ctx.get("recommendations") or []
+    rules = ctx.get("triggered_rules") or []
     lines = [f"Net worth tracked: ₪{nav:,.0f}."]
+    if rules:
+        lines.append(f"⚠️ {len(rules)} trading rule(s) triggered: "
+                     + "; ".join(r["title"] for r in rules[:3]) + ".")
     if perf.get("total_return_pct") is not None:
         lines.append(f"Performance: {perf['total_return_pct']}% total"
                      + (f", {perf.get('excess_return_pct')}% vs {perf.get('benchmark')}."
@@ -33,13 +37,21 @@ def _fallback(ctx: dict) -> str:
 
 async def build(session: AsyncSession, user: User) -> dict:
     ctx = await gather(session, user)
+    # Surface any triggered trading rules so the digest leads with them.
+    try:
+        from app.services.rules_service import triggered_rule_recs
+        ctx["triggered_rules"] = [{"title": r["title"], "action": r["action"]}
+                                  for r in await triggered_rule_recs(session, user)]
+    except Exception:  # noqa: BLE001
+        ctx["triggered_rules"] = []
     fallback = _fallback(ctx)
     now = datetime.now(timezone.utc).isoformat()
     if not gemini_enabled():
         return {"llm": False, "digest": fallback, "generated_at": now}
     prompt = (
         "Write a short, friendly weekly wealth digest (4-6 sentences) for the account owner, using "
-        "ONLY this JSON. Lead with how they're doing, then the top 1-3 actions, then one risk note. "
+        "ONLY this JSON. If any 'triggered_rules' are present, lead with them (the user's own stop-loss/"
+        "take-profit rules fired). Then how they're doing, the top 1-3 actions, and one risk note. "
         "Plain language, ₪ where relevant. Never invent numbers. End with 'Not financial advice.'\n\n"
         + json.dumps(ctx, default=str)[:12000])
     out = gemini_generate(prompt)

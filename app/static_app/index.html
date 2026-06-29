@@ -233,6 +233,7 @@
 
   <!-- TODAY -->
   <section id="view-today" class="hide">
+    <div id="rulesAlert" class="databanner illustrative hide" style="cursor:pointer" onclick="show('hold')"></div>
     <div class="card hero">
       <div class="lbl">Your wealth is</div>
       <div class="big" id="rating" onclick="explain('health')">…</div>
@@ -577,6 +578,15 @@ async function uploadCsv(){
 function rWord(s){return s>=80?"Strong":s>=60?"Healthy":s>=40?"Needs attention":"At risk";}
 function rCol(s){return s>=80?"#34d399":s>=60?"#3b82f6":s>=40?"#fbbf24":"#f87171";}
 async function loadToday(){
+  // Trading-rule alerts banner (top of Today)
+  try{const rr=await(await fetch("/api/v1/rules")).json();
+    const trig=(rr.rules||[]).filter(x=>x.active&&x.triggered); const b=$("rulesAlert");
+    if(b){ if(trig.length){
+        b.textContent=`🔴 ${trig.length} trading rule${trig.length>1?'s':''} triggered: ${trig.map(x=>x.ticker).join(', ')} — tap to review`;
+        b.style.background="rgba(248,113,113,.12)"; b.style.border="1px solid #5b2230"; b.style.color="#f87171";
+        b.classList.remove("hide");
+      } else { b.classList.add("hide"); } }
+  }catch(e){}
   try{const h=await(await fetch("/api/v1/health-check")).json();
     if(h.wealth_health_score==null){show("setup");return;}
     const s=h.wealth_health_score;
