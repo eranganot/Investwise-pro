@@ -20,6 +20,20 @@ def start_scheduler() -> None:
     _scheduler.add_job(refresh_market_data, "interval",
                        minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh")
 
+    # Warm the futures/regime cache so the macro signal is live for the agents.
+    try:
+        from app.services.markets_service import futures_snapshot
+        def _warm_futures():
+            try:
+                futures_snapshot(force=True)
+            except Exception:  # noqa: BLE001
+                pass
+        _warm_futures()
+        _scheduler.add_job(_warm_futures, "interval", minutes=5,
+                           id="futures_warm", max_instances=1, coalesce=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("Futures warm job not scheduled.", exc_info=False)
+
     # Push notifications: scan portfolios for important changes, and a daily digest.
     try:
         from app.services.push_service import run_digests_blocking, run_evaluations_blocking

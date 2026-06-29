@@ -200,6 +200,24 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _momentum_recs(rows)
     recs += _income_cost_recs(pdicts, snap, objective)
 
+    # Macro signal: factor the futures-derived market regime into the agents. A
+    # risk-off backdrop surfaces a defensive action. Defensive - never break Today.
+    market = {}
+    try:
+        from app.services.markets_service import cached_regime
+        market = cached_regime()  # cache-only: never blocks Today on a network call
+        if market.get("regime") == "risk-off":
+            recs.append({"id": _rid("macro", "riskoff"), "dimension": "macro", "severity": "MEDIUM",
+                         "title": "Markets look risk-off",
+                         "action": (f"The market backdrop is risk-off ({market.get('rationale','')}). "
+                                    "Consider keeping more cash on hand and trimming your most volatile "
+                                    "positions until conditions calm."),
+                         "how": ["Review your highest-volatility holdings",
+                                 "Consider raising cash by ~5-10%",
+                                 "Hold off on adding leverage or speculative names"]})
+    except Exception:  # noqa: BLE001
+        market = {}
+
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
     if dismissed:
@@ -211,6 +229,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
+            "market": market,
             "buy_ideas": _buy_ideas(snap),
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,

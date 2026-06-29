@@ -200,6 +200,7 @@
     <button data-t="today" onclick="show('today')">🏠 Today</button>
     <button data-t="hold" onclick="show('hold')">💼 Holdings</button>
     <button data-t="plan" onclick="show('plan')">🎯 Plan</button>
+    <button data-t="markets" onclick="show('markets')">📊 Markets</button>
     <button data-t="agents" onclick="show('agents')">⚔️ Agents</button>
     <button data-t="explore" onclick="show('explore')">🔭 Explore</button>
   </div>
@@ -243,6 +244,13 @@
         <button id="refreshBtn" class="adv" style="cursor:pointer" onclick="refreshPricesUI()">↻ Refresh prices</button>
         <span class="muted" id="priceNote" style="font-size:12px"></span>
       </div>
+    </div>
+    <div class="card" id="aiSummaryCard">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <b>✨ AI summary</b>
+        <button class="adv" style="cursor:pointer" onclick="aiPortfolioSummary()">Generate</button>
+      </div>
+      <div id="aiSummaryOut" class="muted" style="margin-top:8px;line-height:1.5">A plain-language read on your wealth and the market backdrop — tap Generate.</div>
     </div>
     <div class="card hide" id="outcomes"></div>
     <h2>What to do now</h2>
@@ -352,6 +360,16 @@
     <h2>Glossary</h2>
     <div class="card" id="glossary"></div>
   </section>
+
+  <!-- MARKETS -->
+  <section id="view-markets" class="hide">
+    <div class="card hero" id="regimeCard"><div class="muted">Loading market regime…</div></div>
+    <h2>Futures &amp; key markets</h2>
+    <div class="hold" id="futGrid"><div class="card muted">Loading futures…</div></div>
+    <h2>What's moving <span class="link" onclick="loadMacroSummary()">· AI summary</span></h2>
+    <div class="card" id="macroOut"><div class="muted">Tap "AI summary" for a plain-language read on the markets.</div></div>
+    <p class="muted" style="font-size:12px;margin-top:10px">Prices via Yahoo, ~15-min delayed. AI by Google Gemini. Not financial advice.</p>
+  </section>
 </div>
 
 <div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
@@ -386,6 +404,7 @@
   <button data-t="today" onclick="show('today')"><span class="ic">🏠</span>Today</button>
   <button data-t="hold" onclick="show('hold')"><span class="ic">💼</span>Holdings</button>
   <button data-t="plan" onclick="show('plan')"><span class="ic">🎯</span>Plan</button>
+  <button data-t="markets" onclick="show('markets')"><span class="ic">📊</span>Markets</button>
   <button data-t="agents" onclick="show('agents')"><span class="ic">⚔️</span>Agents</button>
   <button data-t="explore" onclick="show('explore')"><span class="ic">🔭</span>Explore</button>
 </nav>
@@ -402,7 +421,7 @@ const snoozed=JSON.parse(localStorage.getItem("iw_snoozed")||"[]");
 let charts={};
 
 function show(v){
-  for(const s of ["setup","today","hold","plan","agents","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
+  for(const s of ["setup","today","hold","plan","markets","agents","explore"]) $("view-"+s).classList.toggle("hide", s!==v);
   document.querySelectorAll(".tabs button, #bnav button").forEach(b=>b.classList.toggle("active", b.dataset.t===v));
   $("tabs").style.visibility = v==="setup" ? "hidden" : "visible";
   const bn=$("bnav"); if(bn) bn.style.display = v==="setup" ? "none" : "";
@@ -411,6 +430,7 @@ function show(v){
   if(v==="today") loadToday();
   if(v==="hold"){loadHoldings();loadCommodities();}
   if(v==="plan"){loadStrategies();loadPlan();}
+  if(v==="markets") loadMarkets();
   if(v==="agents") loadWar();
   if(v==="explore") loadExplore();
 }
@@ -442,8 +462,49 @@ const EXPLAIN={
   roiyield:["ROI vs Yield","<b>ROI</b> is your <i>total</i> return — price gains plus income — as a %. <b>Yield</b> is just the <i>income</i> you actually receive (dividends/interest), like rent from property. A growth stock can have high ROI but low yield; a bond can have steady yield but low ROI."],
   flavor:["Investment flavor (depth)","<b>Depth 1 — hype:</b> hot, headline names (a momentum/AI darling). <b>Depth 2 — mid:</b> solid, established companies. <b>Depth 3 — backbone:</b> the structural foundations others depend on (infrastructure, key suppliers, broad indices). Pick one and the agents <b>favor</b> ideas of that flavor."],
 };
-function explain(k){const e=EXPLAIN[k];$("m_t").textContent=e[0];$("m_b").innerHTML=e[1];$("ov").classList.add("show");}
+function explain(k){const e=EXPLAIN[k];$("m_t").textContent=e[0];$("m_b").innerHTML=e[1];$("m_b").style.maxHeight="";$("m_b").style.overflowY="";$("ov").classList.add("show");}
 function closeModal(){$("ov").classList.remove("show");}
+function showInfo(title, html){$("m_t").textContent=title;$("m_b").innerHTML=html;$("m_b").style.maxHeight="62vh";$("m_b").style.overflowY="auto";$("ov").classList.add("show");}
+
+// --- Google Finance / Gemini features ---
+async function aiPortfolioSummary(){
+  const o=$("aiSummaryOut"); o.textContent="Thinking…";
+  try{const r=await(await fetch("/api/v1/ai/portfolio-summary")).json();
+    o.textContent=r.summary||"No summary available.";
+  }catch(e){o.textContent=String(e);}
+}
+async function loadMarkets(){
+  try{const r=await(await fetch("/api/v1/markets/futures")).json();
+    const m=r.market||{}; const tone=m.tone||'warn';
+    $("regimeCard").innerHTML=`<div class="lbl">Market regime</div>
+      <div class="big ${tone}" style="text-transform:capitalize">${m.regime||'—'}</div>
+      <div class="muted">${m.rationale||''}</div>`;
+    const fut=r.futures||[];
+    $("futGrid").innerHTML = fut.length ? fut.map(f=>{
+      const c=f.change_pct; const cl=(c==null)?'mk':(c>=0?'up':'down');
+      const cstr=(c==null)?'—':((c>=0?'▲':'▼')+' '+Math.abs(c).toFixed(2)+'%');
+      return `<div class="row"><div><div class="nm">${f.label}</div><div class="mk">${f.symbol}</div></div>
+        <div class="val"><div class="nm">${Number(f.price).toLocaleString()}</div><div class="${cl}">${cstr}</div></div></div>`;
+    }).join("") : `<div class="card muted">Markets unavailable right now.</div>`;
+  }catch(e){$("futGrid").innerHTML=`<div class="card bad">${e}</div>`;}
+}
+async function loadMacroSummary(){
+  const o=$("macroOut"); o.innerHTML='<span class="muted">Thinking…</span>';
+  try{const r=await(await fetch("/api/v1/markets/summary")).json();
+    o.textContent=r.summary||"No summary available.";
+  }catch(e){o.textContent=String(e);}
+}
+async function researchHolding(tk){
+  showInfo(`Researching ${tk}…`, '<span class="muted">Searching the web and analyzing your position — this can take ~20 seconds.</span>');
+  try{const r=await(await fetch(`/api/v1/ai/holding/${encodeURIComponent(tk)}/research`,{method:"POST"})).json();
+    let html=(r.research||"No research available.").replace(/\n/g,"<br>");
+    if(r.sources&&r.sources.length){
+      html+='<div class="mk" style="margin-top:12px">Sources:</div>'+
+        r.sources.map(s=>`<div class="mk">• <a href="${s.url}" target="_blank" rel="noopener">${(s.title||s.url)}</a></div>`).join("");
+    }
+    showInfo(`${tk} — research`, html);
+  }catch(e){showInfo(`${tk}`, String(e));}
+}
 
 function showAdd(){$("addbox").classList.remove("hide");}
 async function loadSample(){
@@ -601,6 +662,7 @@ async function loadHoldings(){
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
+        <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
       ||`<div class="card muted">No holdings yet.</div>`;
