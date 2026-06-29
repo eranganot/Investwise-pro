@@ -20,6 +20,17 @@ def start_scheduler() -> None:
     _scheduler.add_job(refresh_market_data, "interval",
                        minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh")
 
+    # Reprice every holding so current_price never goes stale (drives the
+    # price-based recommendations and the price-move notifications).
+    try:
+        from app.services.pricing_service import run_price_refresh_blocking
+        run_price_refresh_blocking()  # prime at startup
+        _scheduler.add_job(run_price_refresh_blocking, "interval", minutes=30,
+                           id="price_refresh", max_instances=1, coalesce=True)
+        logger.info("Position price refresh scheduled (every 30 min).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Price refresh job not scheduled.", exc_info=False)
+
     # Warm the futures/regime cache so the macro signal is live for the agents.
     try:
         from app.services.markets_service import futures_snapshot

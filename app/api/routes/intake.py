@@ -209,6 +209,14 @@ async def refresh_prices(session: AsyncSession = Depends(get_session),
         by_source[used] = by_source.get(used, 0) + 1
         prices.append({"ticker": p.ticker, "price": q.price, "currency": q.currency,
                        "as_of": q.as_of, "source": used})
+    if by_source:
+        from app.models.tables import KVSetting
+        dominant = max(by_source, key=by_source.get)
+        row = await session.get(KVSetting, "last_price_source")
+        if row:
+            row.value = dominant
+        else:
+            session.add(KVSetting(key="last_price_source", value=dominant))
     await session.commit()
     src = "+".join(sorted(by_source)) if by_source else primary.name
     return {"source": src, "updated": len(prices), "failed": len(errors),

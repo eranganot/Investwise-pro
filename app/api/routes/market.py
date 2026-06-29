@@ -52,11 +52,14 @@ async def providers_health() -> dict:
 
 
 @router.get("/data-status")
-async def data_status() -> dict:
-    """Whether the app is on live market data or illustrative (builtin) data."""
+async def data_status(session: AsyncSession = Depends(get_session)) -> dict:
+    """Whether the app is on live market data, and which source is actually
+    serving prices (the configured provider may fall back to Yahoo)."""
     s = get_settings()
-    live = s.market_data_provider != "builtin"
+    from app.services.pricing_service import last_source
+    effective = await last_source(session) or s.market_data_provider
+    live = effective != "builtin"
     return {"live": live, "market_data_provider": s.market_data_provider,
-            "fx_provider": s.fx_provider,
-            "label": (f"Live market data ({s.market_data_provider})" if live
+            "effective_source": effective, "fx_provider": s.fx_provider,
+            "label": (f"Live market data ({effective})" if live
                       else "Illustrative data - not live market prices")}
