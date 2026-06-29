@@ -302,3 +302,21 @@ class KVSetting(Base, TimestampMixin):
     __tablename__ = "kv_settings"
     key: Mapped[str] = mapped_column(String(80), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class TradingRule(Base, PKMixin, TimestampMixin):
+    """A user-defined alert/discipline rule on a holding. The app never executes
+    trades - a triggered rule notifies and surfaces a recommended action."""
+    __tablename__ = "trading_rules"
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    ticker: Mapped[str] = mapped_column(String(32), index=True)
+    # stop_loss | take_profit | trailing_stop | price_above | price_below | buy_dip | max_weight
+    rule_type: Mapped[str] = mapped_column(String(24))
+    mode: Mapped[str] = mapped_column(String(8), default="pct")     # pct | price
+    level: Mapped[float] = mapped_column(Float)
+    peak_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # trailing-stop high-water
+    note: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    triggered: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)

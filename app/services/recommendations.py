@@ -218,6 +218,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     except Exception:  # noqa: BLE001
         market = {}
 
+    # Trading rules that have fired -> top-priority, user-defined actions.
+    try:
+        from app.services.rules_service import triggered_rule_recs
+        recs += await triggered_rule_recs(session, user)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
     if dismissed:

@@ -18,11 +18,12 @@ from app.models.tables import (
     PushSubscription,
     NotifiedEvent,
     KVSetting,
+    TradingRule,
 )
 
 __all__ = [
     "Base", "User", "Entity", "Account", "Bucket", "Position", "Transaction",
     "TaxProfile", "DecisionFeed", "DecisionItem", "WhsSnapshot", "UserAction",
     "Credential", "RevokedToken", "AuditLog", "Plan",
-    "PushSubscription", "NotifiedEvent", "KVSetting",
+    "PushSubscription", "NotifiedEvent", "KVSetting", "TradingRule",
 ]

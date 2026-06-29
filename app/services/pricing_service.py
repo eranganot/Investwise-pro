@@ -83,7 +83,14 @@ async def _refresh_all() -> dict:
     Session = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with Session() as session:
-            return await refresh_all_positions(session)
+            res = await refresh_all_positions(session)
+            # With fresh prices, evaluate trading rules and fire alerts.
+            try:
+                from app.services.rules_service import evaluate_all
+                res["rules"] = await evaluate_all(session)
+            except Exception:  # noqa: BLE001
+                logger.warning("rule evaluation failed", exc_info=False)
+            return res
     finally:
         await engine.dispose()
 

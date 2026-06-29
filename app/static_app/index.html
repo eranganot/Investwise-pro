@@ -278,6 +278,33 @@
     <h2>Add commodities &amp; real assets</h2>
     <div class="card" id="commBox"><div class="muted">Loading commodities…</div></div>
     <div class="muted" id="commOut" style="margin-top:8px"></div>
+
+    <h2>Trading rules</h2>
+    <div class="card">
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Stop-loss, take-profit, trailing stops &amp; alerts. When one triggers you get a notification and a to-do — the app never places trades for you.</div>
+      <div class="grid2">
+        <div><label>Holding</label><select id="r_tk"></select></div>
+        <div><label>Rule</label><select id="r_type" onchange="ruleModeHint()">
+          <option value="stop_loss">🛑 Stop-loss</option>
+          <option value="take_profit">🎯 Take-profit</option>
+          <option value="trailing_stop">📉 Trailing stop</option>
+          <option value="buy_dip">🟢 Buy the dip</option>
+          <option value="price_above">🔔 Price above</option>
+          <option value="price_below">🔔 Price below</option>
+          <option value="max_weight">⚖️ Max % of portfolio</option>
+        </select></div>
+      </div>
+      <div class="grid2">
+        <div><label>Level <span class="mk" id="r_levelhint">(%)</span></label><input id="r_level" type="number" placeholder="10"/></div>
+        <div><label>Unit</label><select id="r_mode">
+          <option value="pct">Percent (%)</option>
+          <option value="price">Price (₪)</option>
+        </select></div>
+      </div>
+      <button class="primary" onclick="addRule()">＋ Add rule</button>
+      <div class="muted" id="r_out" style="margin-top:8px"></div>
+    </div>
+    <div id="rulesList" class="hold" style="margin-top:10px"></div>
   </section>
 
   <!-- PLAN -->
@@ -428,7 +455,7 @@ function show(v){
   $("wrap").classList.toggle("wide", v==="agents");
   window.scrollTo(0,0);
   if(v==="today") loadToday();
-  if(v==="hold"){loadHoldings();loadCommodities();}
+  if(v==="hold"){loadHoldings();loadCommodities();loadRules();}
   if(v==="plan"){loadStrategies();loadPlan();}
   if(v==="markets") loadMarkets();
   if(v==="agents") loadWar();
@@ -653,6 +680,55 @@ async function addCommodity(ticker){
     o.innerHTML=`<span class="ok">Added ${r.quantity} ${r.ticker} @ $${r.price} (~$${Math.round(r.value).toLocaleString()}).</span>`;
     loadHoldings();
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
+// --- Trading rules ---
+const RULE_LABEL={stop_loss:"🛑 Stop-loss",take_profit:"🎯 Take-profit",trailing_stop:"📉 Trailing stop",buy_dip:"🟢 Buy dip",price_above:"🔔 Price ≥",price_below:"🔔 Price ≤",max_weight:"⚖️ Max weight"};
+function ruleModeHint(){
+  const t=$("r_type").value, m=$("r_mode"), h=$("r_levelhint");
+  if(t==="trailing_stop"||t==="max_weight"){ m.value="pct"; m.disabled=true; h.textContent="(%)"; }
+  else if(t==="price_above"||t==="price_below"){ m.value="price"; m.disabled=true; h.textContent="(₪)"; }
+  else { m.disabled=false; h.textContent=m.value==="price"?"(₪)":"(%)"; }
+}
+async function loadRules(){
+  // populate the holding dropdown
+  try{const p=await(await fetch("/api/v1/portfolio")).json();
+    const sel=$("r_tk"); if(sel){const cur=sel.value;
+      sel.innerHTML=(p.positions||[]).map(h=>`<option value="${h.ticker}">${h.ticker}</option>`).join("");
+      if(cur)sel.value=cur;}
+  }catch(e){}
+  ruleModeHint();
+  try{const r=await(await fetch("/api/v1/rules")).json();
+    const rules=r.rules||[];
+    $("rulesList").innerHTML = rules.length ? rules.map(x=>{
+      const st = x.triggered?'<span class="bad">🔴 Triggered</span>':(x.active?'<span class="ok">🟢 Armed</span>':'<span class="mk">⚪ Off</span>');
+      const unit = x.mode==="price"?"₪":"%";
+      const tgt = (x.target!=null)?` · target ${Number(x.target).toFixed(2)}`:"";
+      const now = (x.current_price!=null)?` · now ${Number(x.current_price).toFixed(2)}`:"";
+      return `<div class="row"><div><div class="nm">${x.ticker} <span class="mk">${RULE_LABEL[x.rule_type]||x.rule_type} ${x.level}${unit}</span></div>
+        <div class="mk">${st}${now}${tgt}</div></div>
+        <div style="display:flex;gap:6px">
+          <button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button>
+          <button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></div></div>`;
+    }).join("") : `<div class="card muted">No rules yet. Add one above to get alerts when a holding hits your level.</div>`;
+  }catch(e){$("rulesList").innerHTML=`<div class="card bad">${e}</div>`;}
+}
+async function addRule(){
+  const ticker=$("r_tk").value, rule_type=$("r_type").value, mode=$("r_mode").value, level=parseFloat($("r_level").value);
+  const o=$("r_out");
+  if(!ticker){o.innerHTML='<span class="bad">Add a holding first.</span>';return;}
+  if(isNaN(level)){o.innerHTML='<span class="bad">Enter a level.</span>';return;}
+  o.textContent="Saving…";
+  try{const r=await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,rule_type,mode,level})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed");}
+    $("r_level").value=""; o.innerHTML='<span class="ok">Rule added.</span>'; loadRules();
+  }catch(e){o.innerHTML=`<span class="bad">${e.message||e}</span>`;}
+}
+async function deleteRule(id){
+  if(!confirm("Delete this rule?"))return;
+  try{await fetch(`/api/v1/rules/${id}`,{method:"DELETE"}); loadRules();}catch(e){}
+}
+async function toggleRule(id){
+  try{await fetch(`/api/v1/rules/${id}/toggle`,{method:"POST"}); loadRules();}catch(e){}
 }
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
