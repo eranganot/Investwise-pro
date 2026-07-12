@@ -445,7 +445,18 @@ const ils=n=>"₪"+Math.round(Number(n)).toLocaleString();
 const pct=n=>(Number(n)*100).toFixed(0)+"%";
 const $=id=>document.getElementById(id);
 const ago=iso=>{if(!iso)return"";const m=(Date.now()-new Date(iso).getTime())/60000;return m<1?"just now":m<60?Math.round(m)+"m ago":Math.round(m/60)+"h ago";};
-const snoozed=JSON.parse(localStorage.getItem("iw_snoozed")||"[]");
+// Local "Ignore" store. TTL-matched to the server dismissal (7 days) so the app
+// and push notifications can never drift apart: a card the server still considers
+// active always reappears here too. The legacy permanent "iw_snoozed" list is
+// intentionally abandoned — it hid cards forever while push kept firing.
+const SNOOZE_TTL_MS=7*24*60*60*1000;
+function _loadSnooze(){try{const m=JSON.parse(localStorage.getItem("iw_snoozed_v2")||"{}");return (m&&typeof m==="object"&&!Array.isArray(m))?m:{};}catch(e){return {};}}
+let snoozeMap=_loadSnooze();
+function _saveSnooze(){try{localStorage.setItem("iw_snoozed_v2",JSON.stringify(snoozeMap));}catch(e){}}
+function activeSnoozed(){const now=Date.now();let changed=false;
+  for(const k of Object.keys(snoozeMap)){if(now-new Date(snoozeMap[k]).getTime()>SNOOZE_TTL_MS){delete snoozeMap[k];changed=true;}}
+  if(changed)_saveSnooze();return new Set(Object.keys(snoozeMap));}
+function snoozeAdd(id){snoozeMap[id]=new Date().toISOString();_saveSnooze();}
 let charts={};
 
 function show(v){
@@ -596,7 +607,8 @@ async function loadToday(){
       .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
   }catch(e){}
   try{const r=await(await fetch("/api/v1/recommendations")).json();
-    const recs=(r.recommendations||[]).filter(o=>!snoozed.includes(o.id));
+    const _sn=activeSnoozed();
+    const recs=(r.recommendations||[]).filter(o=>!_sn.has(o.id));
     $("recs").innerHTML=recs.length? recs.map(recCard).join("")
       : `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b><div class="muted">You're tracking your plan.</div></div>`;
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
@@ -647,21 +659,38 @@ function auditAccordion(o){
 }
 function recCard(o){
   const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
+  const why=o.why?`<div class="why" style="font-size:13px;opacity:.8;margin:2px 0 6px"><b>Why:</b> ${o.why}</div>`:"";
+  const impact=o.impact?`<div class="impact" style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px"><b>Impact:</b> ${o.impact}</div>`:"";
   return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
+    ${why}
     <div class="act">${o.action}</div>
+    ${impact}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
     ${auditAccordion(o)}
     <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="acc" onclick="acceptRec('${o.id}')">✓ Accept</button><button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
+function _applyMsg(j){
+  // Turn the accept result into a one-line "here's what changed" confirmation.
+  const parts=[];
+  if(j.swapped&&j.bought){parts.push(`Swapped ${(j.sold||[]).join(", ")} \u2192 ${j.bought} (\u20aa${(j.value_ils||0).toLocaleString()})`);}
+  else if(j.sold&&j.sold.length){parts.push(`Sold ${j.sold.join(", ")}`);}
+  if(j.cash_added_ils){parts.push(`+\u20aa${(j.cash_added_ils).toLocaleString()} to Cash`);}
+  if(j.tax_ils){parts.push(`(est. tax \u20aa${(j.tax_ils).toLocaleString()})`);}
+  if(j.note){parts.push(j.note);}
+  return parts.length?("Done \u2014 "+parts.join(" \u00b7 ")):"Done \u2014 applied.";
+}
 async function acceptRec(id){
   if(!confirm("Apply this recommendation now? It will update your holdings/plan."))return;
   try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,{method:"POST"});
-    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed to apply");}
-    snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));loadToday();
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){throw new Error(j.detail||"Failed to apply");}
+    snoozeAdd(id);
+    alert(_applyMsg(j));
+    HMAP={};loadToday();  // clear cached holdings so the sale/cash shows immediately
   }catch(e){alert(e.message||e);}
 }
-function snooze(id){snoozed.push(id);localStorage.setItem("iw_snoozed",JSON.stringify(snoozed));
+function snooze(id){snoozeAdd(id);
   fetch(`/api/v1/recommendations/${id}/dismiss`,{method:"POST"}).catch(()=>{});  // also stop notifications
   loadToday();}
 

@@ -15,7 +15,9 @@ from app.services.audit_trail import audit_for, f
 from app.services.audit_trail import f as _fml  # alias: 'f' is shadowed by Fundamentals locals below
 from app.agents.fee_agent import FeeAgent
 from app.engines.backtest_engine import BacktestEngine
-from app.services.intake_service import delete_position, list_positions, update_position
+from app.services.intake_service import (
+    credit_cash, delete_position, list_positions, update_position,
+)
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
 
@@ -31,6 +33,52 @@ def _rid(*parts) -> str:
 
 def _ils(x) -> str:
     return f"₪{round(x):,}"
+
+
+# Plain-language fallbacks so every card explains *why* it fired and its *impact*,
+# even for the agent-built cards that don't set these fields explicitly. Kept
+# qualitative on purpose — the advisor never invents numbers it hasn't computed.
+_DIM_WHY = {
+    "diversification": "Too much of your portfolio rides on a single position, region or currency.",
+    "tax": "You're holding position(s) where a tax move could work in your favor.",
+    "allocation": "Your current mix has drifted from your plan's target.",
+    "goal": "On the current path your projection falls short of your goal.",
+    "fees": "You're paying more in fund fees than a comparable cheaper fund would cost.",
+    "macro": "The market backdrop has shifted, changing your near-term risk.",
+    "liquidity": "A large share of your book may be hard to sell quickly.",
+    "risk": "A risk metric is outside your comfort band.",
+}
+_DIM_IMPACT = {
+    "diversification": "Spreads your risk so no single holding can dominate your outcome.",
+    "tax": "Improves your after-tax return.",
+    "allocation": "Realigns your mix with your plan.",
+    "goal": "Moves you closer to reaching your goal on time.",
+    "fees": "Keeps more of your return instead of paying it away in fees.",
+    "macro": "Reduces your exposure to a near-term drawdown.",
+    "liquidity": "Improves how quickly you could raise cash if you need to.",
+    "risk": "Brings a risk measure back into your comfort band.",
+}
+
+
+def _ensure_why_impact(recs: list[dict]) -> list[dict]:
+    """Guarantee every recommendation carries a 'why', an 'impact', and an
+    'audit_trail' (the invariant every card must satisfy)."""
+    for r in recs:
+        dim = r.get("dimension", "")
+        if not r.get("why"):
+            r["why"] = _DIM_WHY.get(dim, "This helps your portfolio track your plan.")
+        if not r.get("impact"):
+            r["impact"] = _DIM_IMPACT.get(dim, "Moves your portfolio closer to your plan.")
+        if not r.get("audit_trail"):
+            rd: dict = {"reason": r.get("why") or r.get("action") or r.get("title") or dim,
+                        "severity": r.get("severity")}
+            if r.get("est_amount") is not None:
+                rd["est_amount"] = r["est_amount"]
+            r["audit_trail"] = audit_for(dim, raw_data=rd, formulas=[
+                f("Basis", f"surfaced when the {dim or 'portfolio'} signal crosses its threshold",
+                  substituted=(r.get("why") or "")[:160],
+                  result=r.get("impact") or r.get("severity") or "flagged")])
+    return recs
 
 
 # --- Server-side dismissals (so the Today list and push notifications agree) ---
@@ -118,8 +166,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         shares = int(trim / price) if price else 0
         recs.append({"id": _rid("trim", tk), "dimension": "diversification", "severity": "HIGH",
                      "title": f"Trim {tk}",
+                     "why": f"{tk} is {w:.0%} of your portfolio — above your {cap:.0%} single-holding limit, "
+                            f"so a bad run in one name could sink the whole book.",
                      "action": f"Sell about {_ils(trim)} of {tk} (~{shares} shares) to bring it from "
                                f"{w:.0%} down to your {cap:.0%} limit.",
+                     "impact": f"Cuts single-name risk: brings {tk} from {w:.0%} to your {cap:.0%} cap "
+                               f"and frees ~{_ils(trim)} to spread across your plan's mix.",
                      "how": ["Open your brokerage account",
                              f"Place a SELL order for ~{shares} {tk} shares (~{_ils(trim)})",
                              "Reinvest the proceeds across your other holdings or your plan's target mix"],
@@ -144,9 +196,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         recs.append({"id": _rid("tax"), "dimension": "tax",
                      "severity": "CRITICAL" if save > 0 else "MEDIUM",
                      "title": "Harvest a tax loss",
+                     "why": "You hold position(s) below what you paid — selling now realizes a loss you can "
+                            "use to offset taxable gains before year-end.",
                      "action": f"Sell your losing position(s)"
                                f"{' (' + ', '.join(losers) + ')' if losers else ''} to realize the loss "
                                f"and save about {_ils(save)} in tax this year.",
+                     "impact": f"Lowers this year's tax bill by about {_ils(save)}; you can re-buy after the "
+                               f"wash-sale window if you still want the exposure.",
                      "how": ["Sell the position(s) currently below what you paid",
                              "The realized loss offsets taxable gains, lowering your tax bill",
                              "If you still believe in them, re-buy after the wash-sale window"],
@@ -166,9 +222,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     for a in report.rebalance_actions[:2]:
         recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
                      "title": f"{a.action_type.title()} {a.asset_class}",
+                     "why": f"Your {a.asset_class} weight ({mix.get(a.asset_class, 0):.0%}) has drifted from your "
+                            f"{objective} target of {target.get(a.asset_class, 0):.0%}.",
                      "action": f"{a.action_type.title()} about {_ils(a.estimated_trade_value_currency)} of "
                                f"{a.asset_class} to move toward your {objective} target "
                                f"({target.get(a.asset_class, 0):.0%}).",
+                     "impact": f"Moves ~{_ils(a.net_trade_value_currency)} (net of tax & costs) to realign your "
+                               f"mix with your {objective} plan.",
                      "how": [f"{a.action_type.title()} {a.asset_class} by ~{_ils(a.estimated_trade_value_currency)}"
                              + (f" — e.g. {CLASS_ETF[a.asset_class]}" if a.asset_class in CLASS_ETF else ""),
                              f"After tax & costs that's about {_ils(a.net_trade_value_currency)} moved",
@@ -186,8 +246,68 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 f("Net of frictions", "net = gross - tax_drag - cost - slippage",
                   result=f"₪{a.net_trade_value_currency:,.0f}")])
 
+    # 3b) Concentration in one region / currency, or a hard-to-sell book — the same
+    #     vectors the "biggest risk" panel shows, surfaced here as actionable to-dos so
+    #     a pushed risk alert always maps to something you can do in the app.
+    try:
+        from app.services.portfolio_analytics import risk_alerts as _risk_alerts
+        for a in _risk_alerts(snap, cap).get("alerts", []):
+            vec = a.get("vector")
+            if vec == "geographic":
+                recs.append({"id": _rid("divrisk", "geo"), "dimension": "diversification",
+                             "severity": a.get("severity", "MEDIUM"), "title": "Diversify across regions",
+                             "why": a.get("detail") or "Most of your money sits in a single region.",
+                             "action": "Spread new money across more regions so one country's downturn can't "
+                                       "sink the whole portfolio.",
+                             "impact": "Lowers geographic concentration risk from over-reliance on one region.",
+                             "how": ["Favor under-represented regions for your next contributions",
+                                     "Consider a broad ex-home global ETF (e.g. VXUS) to balance exposure",
+                                     "Re-check here as the mix evens out"],
+                             "apply": {"kind": "none"}})
+            elif vec == "currency":
+                recs.append({"id": _rid("divrisk", "cur"), "dimension": "diversification",
+                             "severity": a.get("severity", "MEDIUM"), "title": "Diversify your currency exposure",
+                             "why": a.get("detail") or "Most of your money sits in a single currency.",
+                             "action": "Add holdings priced in other currencies so an FX swing doesn't move your "
+                                       "whole net worth at once.",
+                             "impact": "Reduces the FX imbalance from having most of your money in one currency.",
+                             "how": ["Add assets denominated in other major currencies",
+                                     "A globally diversified fund spreads currency exposure automatically",
+                                     "Re-check here as the balance improves"],
+                             "apply": {"kind": "none"}})
+            elif vec == "liquidity":
+                recs.append({"id": _rid("divrisk", "liq"), "dimension": "liquidity",
+                             "severity": a.get("severity", "HIGH"), "title": "Hold more liquid assets",
+                             "why": a.get("detail") or "A large share of your book may be hard to sell quickly.",
+                             "action": "Shift some of the least-tradable holdings into more liquid ones so you can "
+                                       "raise cash without a fire-sale if you need to.",
+                             "impact": "Improves how quickly you could exit without moving the price against you.",
+                             "how": ["Identify your least-liquid holdings",
+                                     "Trim a portion into broadly-traded ETFs or cash equivalents",
+                                     "Keep enough liquidity for near-term needs"],
+                             "apply": {"kind": "none"}})
+    except Exception:  # noqa: BLE001
+        pass
+
     # 4) Behind your goal? Optimize across every lever to close the gap.
-    recs += _behind_goal_recs(plan, snap, objective)
+    #    Reconcile the "current path" projection with the app's home panel — same
+    #    Monte-Carlo engine — so the card, the digest and "Where this could end up"
+    #    all cite one number instead of three.
+    projected_median = None
+    try:
+        from app.api.routes.plan import _auto_target, _portfolio_stats
+        from app.engines.simulation_engine import SimulationEngine
+        _pstats = _portfolio_stats(rows)
+        if _pstats.get("nav"):
+            _pyears = max(1, int(getattr(plan, "horizon_years", 10) or 10)) if plan else 10
+            _sim = SimulationEngine(seed=7).run(
+                initial_value=_pstats["nav"], expected_return_pct=_pstats.get("expected_roi") or 6.0,
+                volatility_pct=_pstats.get("volatility") or 12.0, horizon_years=_pyears,
+                target_value=_auto_target(_pstats["nav"], plan))
+            projected_median = float(_sim.nominal.p50)
+    except Exception:  # noqa: BLE001
+        projected_median = None
+    recs += _behind_goal_recs(plan, snap, objective, projected_median)
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,
@@ -209,9 +329,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         if market.get("regime") == "risk-off":
             recs.append({"id": _rid("macro", "riskoff"), "dimension": "macro", "severity": "MEDIUM",
                          "title": "Markets look risk-off",
+                         "why": f"The futures-derived market regime has turned risk-off ({market.get('rationale','')}).",
                          "action": (f"The market backdrop is risk-off ({market.get('rationale','')}). "
                                     "Consider keeping more cash on hand and trimming your most volatile "
                                     "positions until conditions calm."),
+                         "impact": "More cash and less volatility reduce your exposure to a near-term drawdown.",
                          "how": ["Review your highest-volatility holdings",
                                  "Consider raising cash by ~5-10%",
                                  "Hold off on adding leverage or speculative names"]})
@@ -224,6 +346,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         recs += await triggered_rule_recs(session, user)
     except Exception:  # noqa: BLE001
         pass
+
+    # Every card carries a plain-language "why" and "impact" (safety net for the
+    # holding/hedge/momentum/fee agents that don't set them explicitly).
+    _ensure_why_impact(recs)
 
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
@@ -250,9 +376,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 _OBJ_RETURN = {"Grow": 8.5, "Balanced": 6.5, "Preserve": 4.0, "Income": 5.0}
 
 
-def _behind_goal_recs(plan, snap, objective) -> list[dict]:
+def _behind_goal_recs(plan, snap, objective, projected_override=None) -> list[dict]:
     """When the plan won't reach the target on the current path, recommend the
-    concrete levers to close the gap (each with a machine-applyable spec)."""
+    concrete levers to close the gap (each with a machine-applyable spec).
+
+    projected_override: when provided (the Monte-Carlo median from the app's home
+    panel), it is used as the "current path" projection so the card, the digest and
+    "Where this could end up" all agree on one number instead of diverging."""
     out: list[dict] = []
     if plan is None or not getattr(plan, "target_amount", None):
         return out
@@ -267,7 +397,11 @@ def _behind_goal_recs(plan, snap, objective) -> list[dict]:
         years = max(1, yr - _dt.date.today().year) or years
     except (ValueError, TypeError):
         pass
-    projected = nav * (1 + r) ** years
+    deterministic = nav * (1 + r) ** years
+    if projected_override and projected_override > 0:
+        projected, proj_basis = float(projected_override), "montecarlo"
+    else:
+        projected, proj_basis = deterministic, "fixed-return"
     if projected >= target:
         return out  # on track on the current path
 
@@ -281,19 +415,28 @@ def _behind_goal_recs(plan, snap, objective) -> list[dict]:
     pmt = gap * rm / (((1 + rm) ** n) - 1) if rm else gap / n
     out.append({"id": _rid("behind", "contrib"), "dimension": "goal", "severity": sev,
                 "title": "You're behind — add a monthly contribution",
+                "why": f"On the current path you'd reach about {_ils(projected)} of your {_ils(target)} goal "
+                       f"(~{behind_pct}% short), so nothing changes unless you add to it.",
                 "action": f"On the current path you'd reach about {_ils(projected)} of your {_ils(target)} goal "
                           f"(~{behind_pct}% short). Investing about {_ils(pmt)}/month would close the gap by your deadline.",
+                "impact": f"About {_ils(pmt)}/month closes the ~{_ils(gap)} gap and puts your {_ils(target)} goal "
+                          f"back within reach by your deadline.",
                 "how": [f"Set up a standing order of ~{_ils(pmt)}/month into this portfolio",
                         "Keep the same mix — regular contributions do the heavy lifting",
                         "Re-check here as your balance grows"],
                 "est_amount": round(pmt, 2),
                 "apply": {"kind": "none"}})
+    _proj_formula = (f("Projection", "projected = Monte-Carlo median (10,000 sims)",
+                       substituted=f"NAV {nav:,.0f}, {years}y", result=f"₪{projected:,.0f}")
+                     if proj_basis == "montecarlo" else
+                     f("Projection", "projected = NAV x (1+r)^years",
+                       substituted=f"{nav:,.0f} x (1+{r:.3f})^{years}", result=f"₪{projected:,.0f}"))
     out[-1]["audit_trail"] = audit_for("goal",
         raw_data={"nav": round(nav, 2), "target": round(target, 2), "projected": round(projected, 2),
-                  "behind_pct": behind_pct, "annual_return_pct": round(r * 100, 2), "years": years},
+                  "projection_basis": proj_basis, "behind_pct": behind_pct,
+                  "annual_return_pct": round(r * 100, 2), "years": years},
         formulas=[
-            f("Projection", "projected = NAV x (1+r)^years",
-              substituted=f"{nav:,.0f} x (1+{r:.3f})^{years}", result=f"₪{projected:,.0f}"),
+            _proj_formula,
             f("Monthly contribution", "pmt = gap x (r/12) / ((1+r/12)^(12*years) - 1)",
               result=f"₪{pmt:,.0f}/mo")])
 
@@ -583,8 +726,28 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
             await update_position(session, user, str(p.id), quantity=round(desired * share / price, 4))
 
 
+def _sale_value_ils(qty: float, price: float, basis: float, market, meta) -> tuple[float, float]:
+    """Value a full sale of `qty` shares in ILS: (gross_ils, estimated_tax_ils).
+
+    Tax is Israeli CGT on the realized *gain* only (losses owe nothing — they are
+    what a harvest realizes), so proceeds land net of tax as spendable liquidity.
+    """
+    from app.core.config import get_settings
+    from app.services.fx import fx_rate, price_currency
+    rate = fx_rate(price_currency(market, meta))
+    gross = qty * price * rate
+    gain = (price - basis) * qty * rate
+    tax = max(0.0, gain) * float(get_settings().cgt_rate)
+    return gross, tax
+
+
 async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -> dict | None:
-    """Accept = apply the recommendation to holdings/plan immediately."""
+    """Accept = apply the recommendation to holdings/plan immediately.
+
+    Sales don't just delete holdings — the net-of-tax proceeds are credited to a
+    visible CASH position, so accepting a 'sell' shows up as liquidity you can see
+    and redeploy (rather than value silently vanishing).
+    """
     built = await build_recommendations(session, user)
     rec = next((r for r in built.get("recommendations", []) if r["id"] == rec_id), None)
     if rec is None:
@@ -593,17 +756,34 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     kind = spec.get("kind")
     rows = await list_positions(session, user)
     by_ticker = {p.ticker: p for p in rows}
+    detail: dict = {}
 
     if kind == "trim":
         p = by_ticker.get(spec["ticker"])
         if p:
+            shares = min(float(spec["shares"]), float(p.quantity))
+            gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
+                                         float(p.cost_basis or 0), p.market, p.meta)
             await update_position(session, user, str(p.id),
-                                  quantity=max(0.0, float(p.quantity) - float(spec["shares"])))
+                                  quantity=max(0.0, float(p.quantity) - shares))
+            credited = await credit_cash(session, user, gross - tax)
+            detail = {"sold": [spec["ticker"]], "cash_added_ils": round(credited, 2),
+                      "tax_ils": round(tax, 2)}
     elif kind == "sell_losers":
+        sold, proceeds, tax_total = [], 0.0, 0.0
         for tk in spec.get("tickers", []):
             p = by_ticker.get(tk)
             if p:
+                gross, tax = _sale_value_ils(float(p.quantity), float(p.current_price or 0),
+                                             float(p.cost_basis or 0), p.market, p.meta)
                 await delete_position(session, user, tk, p.market)
+                proceeds += (gross - tax)
+                tax_total += tax
+                sold.append(tk)
+        credited = await credit_cash(session, user, proceeds)
+        detail = {"sold": sold, "cash_added_ils": round(credited, 2), "tax_ils": round(tax_total, 2)}
+    elif kind == "fee_swap":
+        detail = await _apply_fee_swap(session, user, by_ticker, spec)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
@@ -616,4 +796,51 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         await upsert_plan(session, user, **spec.get("fields", {}))
         await session.commit()
     # kind == "none" -> acknowledged, nothing to mutate
-    return {"applied": kind, "title": rec["title"]}
+    return {"applied": kind, "title": rec["title"], **detail}
+
+
+async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, spec: dict) -> dict:
+    """Sell the high-fee fund and buy the cheaper equivalent for the same value.
+
+    The replacement is priced live so the 30-min reprice job keeps it correct; if
+    it can't be priced, we fall back to leaving the net proceeds as cash rather
+    than creating a mis-priced holding.
+    """
+    from app.providers.registry import guarded_quote
+    from app.schemas.intake import IntakePosition
+    from app.schemas.state_machine import Market
+    from app.services.fx import fx_rate
+    from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
+
+    sell_tk, buy_tk = spec.get("sell"), spec.get("buy")
+    p = by_ticker.get(sell_tk)
+    if not p or not buy_tk:
+        return {"swapped": False}
+    gross, tax = _sale_value_ils(float(p.quantity), float(p.current_price or 0),
+                                 float(p.cost_basis or 0), p.market, p.meta)
+    net_ils = max(0.0, gross - tax)
+    await delete_position(session, user, sell_tk, p.market)
+    try:
+        q = guarded_quote(buy_tk)
+        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+    except Exception:  # noqa: BLE001 — no live price -> keep proceeds as cash, don't misprice
+        credited = await credit_cash(session, user, net_ils)
+        return {"swapped": False, "sold": [sell_tk], "cash_added_ils": round(credited, 2),
+                "tax_ils": round(tax, 2), "note": f"Sold {sell_tk}; couldn't price {buy_tk} — held as cash."}
+    if price <= 0:
+        credited = await credit_cash(session, user, net_ils)
+        return {"swapped": False, "sold": [sell_tk], "cash_added_ils": round(credited, 2),
+                "tax_ils": round(tax, 2), "note": f"Sold {sell_tk}; no live price for {buy_tk} — held as cash."}
+    native = net_ils / (fx_rate(ccy) or 1.0)  # ILS proceeds -> the buy's trading currency
+    qty = native / price
+    mk = p.market if p.market in {m.value for m in Market} else "NYSE"
+    ip = IntakePosition(ticker=buy_tk.upper(), market=Market(mk), depth=1,
+                        spot_price=price, listing_price=price, quantity=qty, cost_basis=price,
+                        asset_class=spec.get("asset_class") or "Equities",
+                        expense_ratio_pct=spec.get("buy_expense_ratio_pct"))
+    entity = await ensure_entity(session, user, "Personal", "Personal")
+    account = await ensure_account(session, entity, "Main")
+    await upsert_positions(session, account, [ip])
+    await session.commit()
+    return {"swapped": True, "sold": [sell_tk], "bought": buy_tk.upper(),
+            "value_ils": round(net_ils, 2), "tax_ils": round(tax, 2)}

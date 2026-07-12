@@ -141,6 +141,38 @@ async def update_position(
     return row
 
 
+async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> float:
+    """Add ILS proceeds as visible liquidity: grow (or create) a 'CASH' holding.
+
+    Cash is stored ILS-native (current_price = 1.0, price_currency = ILS) so its
+    value flows straight through FX normalization and NAV as `quantity` shekels.
+    Returns the amount credited (0 if non-positive).
+    """
+    amount_ils = float(amount_ils or 0.0)
+    if amount_ils <= 0:
+        return 0.0
+    rows = await list_positions(session, user)
+    cash = next((p for p in rows if (p.ticker or "").upper() == "CASH"), None)
+    if cash is not None:
+        cash.quantity = Decimal(str(round(float(cash.quantity) + amount_ils, 2)))
+        cash.current_price = Decimal("1")
+        await session.commit()
+        return amount_ils
+    account_id = rows[0].account_id if rows else None
+    if account_id is None:
+        entity = await ensure_entity(session, user, "Personal", "Personal")
+        account = await ensure_account(session, entity, "Main")
+        account_id = account.id
+    session.add(Position(
+        account_id=account_id, ticker="CASH", market="TASE",
+        quantity=Decimal(str(round(amount_ils, 2))), cost_basis=Decimal(str(round(amount_ils, 2))),
+        current_price=Decimal("1"), lifecycle_stage="ACTIVE",
+        meta={"asset_class": "Cash", "price_currency": "ILS"},
+    ))
+    await session.commit()
+    return amount_ils
+
+
 async def get_entities(session: AsyncSession, user: User) -> list[dict]:
     rows = (await session.execute(
         select(Entity).where(Entity.user_id == user.id)

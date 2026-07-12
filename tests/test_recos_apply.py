@@ -51,3 +51,24 @@ def test_accept_rebalance_moves_mix_toward_objective():
         after = c.get("/api/v1/mix").json()["current_allocation"]["Equities"]
         assert after < before  # equities trimmed toward the 60% target
         assert c.post("/api/v1/recommendations/rec_zzzzzz/accept").status_code == 404
+
+
+def test_accept_sell_losers_credits_cash():
+    """Selling a loser removes it AND shows the proceeds as visible Cash liquidity."""
+    with TestClient(m.app) as c:
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "LOSER", "market": "TASE", "asset_class": "Equities", "depth": 2,
+             "spot_price": 80, "listing_price": 80, "quantity": 100, "cost_basis": 100},
+            {"ticker": "KEEP", "market": "TASE", "asset_class": "Fixed Income", "depth": 2,
+             "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 100}]})
+        recs = c.get("/api/v1/recommendations").json()["recommendations"]
+        sell = next(r for r in recs if r["apply"]["kind"] == "sell_losers")
+        res = c.post(f"/api/v1/recommendations/{sell['id']}/accept").json()
+        assert res["applied"] == "sell_losers" and "LOSER" in res["sold"]
+        # loss harvested -> no CGT owed -> full proceeds (100 x 80 ILS) become cash
+        assert res["cash_added_ils"] == 8000.0 and res["tax_ils"] == 0.0
+        port = c.get("/api/v1/portfolio").json()["positions"]
+        tickers = {p["ticker"] for p in port}
+        assert "LOSER" not in tickers and "CASH" in tickers
+        cash = next(p for p in port if p["ticker"] == "CASH")
+        assert cash["value_ils"] == 8000.0

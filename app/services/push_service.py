@@ -152,14 +152,19 @@ def _send_sync(sub_info: dict, payload: dict, private_key: str, subject: str) ->
 
 
 async def send_to_subject(session: AsyncSession, subject: str, title: str, body: str,
-                          url: str = "/app/", tag: str | None = None, data: dict | None = None) -> int:
-    """Fan a notification out to all of a subject's devices. Prunes dead subs."""
+                          url: str = "/app/", tag: str | None = None, data: dict | None = None,
+                          category: str = "action") -> int:
+    """Fan a notification out to all of a subject's devices. Prunes dead subs.
+
+    category: "action" — maps 1:1 to a card in the Today view; "info" — purely
+    informational (price moves, the weekly digest) and implies no to-do."""
     _, private, vsubject = await get_vapid(session)
     subs = (await session.scalars(
         select(PushSubscription).where(PushSubscription.subject == subject))).all()
     if not subs:
         return 0
-    payload = {"title": title, "body": body, "url": url, "tag": tag or "investwise", "data": data or {}}
+    payload = {"title": title, "body": body, "url": url, "tag": tag or "investwise",
+               "category": category, "data": {"category": category, **(data or {})}}
     sent, dead = 0, []
     for sub in subs:
         info = {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}}
@@ -269,9 +274,9 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
             if abs(chg) >= thr:
                 arrow = "📈" if chg > 0 else "📉"
                 sent += await send_to_subject(
-                    session, subject, f"{arrow} {tk} moved {chg:+.1f}%",
+                    session, subject, f"{arrow} FYI — {tk} {chg:+.1f}%",
                     f"{tk} is now {cur:,.2f} (was {base:,.2f}). No action needed — just keeping you posted.",
-                    url="/app/", tag=f"px:{tk}")
+                    url="/app/", tag=f"px:{tk}", category="info")
                 await _kv_set(session, kvk, str(cur))
 
     await session.commit()
@@ -294,7 +299,8 @@ async def send_digest(session: AsyncSession, user: User) -> dict:
         text = (d.get("digest") or "Your weekly summary is ready.").strip()
     except Exception:  # noqa: BLE001
         text = "Your weekly summary is ready."
-    n = await send_to_subject(session, subject, "📋 Your wealth digest", text[:300], url="/app/", tag="digest")
+    n = await send_to_subject(session, subject, "📋 Your wealth digest", text[:300],
+                              url="/app/", tag="digest", category="info")
     await _mark(session, subject, sig)
     await session.commit()
     return {"sent": n}
@@ -336,6 +342,7 @@ def run_evaluations_blocking() -> dict:
 
 
 def run_digests_blocking() -> dict:
+    """Sync entrypoint for APScheduler (runs in its own thread)."""
     try:
         return asyncio.run(_for_each_subscriber("digest"))
     except Exception:  # noqa: BLE001

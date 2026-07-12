@@ -1,5 +1,5 @@
 /* InvestWise PWA service worker */
-const VERSION = 'iw-v2';
+const VERSION = 'iw-v3';
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 
@@ -92,13 +92,19 @@ self.addEventListener('push', (event) => {
   try { payload = event.data ? event.data.json() : {}; }
   catch (e) { payload = { title: 'InvestWise', body: event.data ? event.data.text() : '' }; }
   const title = payload.title || 'InvestWise';
+  const category = payload.category || (payload.data && payload.data.category) || 'action';
+  const isInfo = category === 'info';
   const options = {
     body: payload.body || '',
     icon: '/app/icon-192.png',
     badge: '/app/icon-192.png',
     tag: payload.tag || 'investwise',
     renotify: true,
-    data: { url: payload.url || '/app/', ...(payload.data || {}) },
+    // "info" (price moves, weekly digest) is purely FYI — don't nag; "action" maps
+    // to a Today-view card the user can act on.
+    requireInteraction: !isInfo,
+    silent: isInfo,
+    data: { url: payload.url || '/app/', category, ...(payload.data || {}) },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
