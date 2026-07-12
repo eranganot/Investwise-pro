@@ -19,6 +19,7 @@ _Seeded from git history + prior transcripts._
 - Live-verify the trading-rules alerts + Today banner fire correctly against real triggers post-deploy.
 
 ## Pending QA / open questions
+- **Notification ↔ Today alignment (2026-07-12):** run `qa/QA-2026-07-12-notification-alignment.md` on the Pixel 9 post-deploy (PWA update path: SW `iw-v2`→`iw-v3`).
 - Confirm on live: accepting a tax-loss/sell rec removes the holding and adds a CASH position for the net proceeds; fee-swap replaces the fund; trim credits cash. (Accept-executes fix.)
 - Confirm triggered trading rules render correctly in both the daily digest and the Today-screen banner after deploy.
 - Confirm the 30-min reprice + data-source label shows fresh prices (FMP primary, Yahoo fallback) in production.
