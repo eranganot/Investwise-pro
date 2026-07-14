@@ -305,6 +305,7 @@
       <button class="primary" onclick="addRule()">＋ Add rule</button>
       <div class="muted" id="r_out" style="margin-top:8px"></div>
     </div>
+    <div id="ruleSug" style="margin-top:10px"></div>
     <div id="rulesList" class="hold" style="margin-top:10px"></div>
   </section>
 
@@ -677,6 +678,7 @@ function _applyMsg(j){
   else if(j.sold&&j.sold.length){parts.push(`Sold ${j.sold.join(", ")}`);}
   if(j.cash_added_ils){parts.push(`+\u20aa${(j.cash_added_ils).toLocaleString()} to Cash`);}
   if(j.tax_ils){parts.push(`(est. tax \u20aa${(j.tax_ils).toLocaleString()})`);}
+  if(j.rules_created&&j.rules_created.length){parts.push("Armed "+j.rules_created.map(r=>r.label).join(", "));}
   if(j.note){parts.push(j.note);}
   return parts.length?("Done \u2014 "+parts.join(" \u00b7 ")):"Done \u2014 applied.";
 }
@@ -750,6 +752,36 @@ async function loadRules(){
           <button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></div></div>`;
     }).join("") : `<div class="card muted">No rules yet. Add one above to get alerts when a holding hits your level.</div>`;
   }catch(e){$("rulesList").innerHTML=`<div class="card bad">${e}</div>`;}
+  loadRuleSuggestions();
+}
+async function loadRuleSuggestions(){
+  const box=$("ruleSug"); if(!box)return;
+  try{
+    const r=await(await fetch("/api/v1/rules/suggestions")).json();
+    const sug=r.suggestions||[];
+    if(!sug.length){box.innerHTML="";return;}
+    const holdings=sug.map(h=>{
+      const rules=h.rules.map(x=>`<div class="row"><div><div class="nm">${x.label}</div><div class="mk">${x.why}</div></div>
+        <button class="primary" onclick='quickAddRule(${JSON.stringify(x).replace(/'/g,"&#39;")})'>＋ Add</button></div>`).join("");
+      const addAll=`<button class="soft" onclick='quickAddRules(${JSON.stringify(h.rules).replace(/'/g,"&#39;")})'>＋ Arm all for ${h.ticker}</button>`;
+      return `<div class="card" style="margin-bottom:8px"><div class="nm" style="margin-bottom:4px">${h.ticker} <span class="mk">· now ${Number(h.current_price).toFixed(2)} · ${Number(h.weight_pct).toFixed(0)}% of book</span></div>${rules}<div style="margin-top:6px">${addAll}</div></div>`;
+    }).join("");
+    box.innerHTML=`<div class="muted" style="font-size:12px;margin:4px 0"><b>Suggested rules</b> — concrete levels from each holding's own volatility. One click arms an alert + a to-do; the app never trades for you.</div>${holdings}`;
+  }catch(e){box.innerHTML="";}
+}
+async function quickAddRule(x){
+  try{const r=await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ticker:x.ticker,rule_type:x.rule_type,mode:x.mode,level:x.level,note:(x.why||"").slice(0,150)})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed");}
+    loadRules();
+  }catch(e){alert(e.message||e);}
+}
+async function quickAddRules(list){
+  for(const x of (list||[])){
+    try{await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ticker:x.ticker,rule_type:x.rule_type,mode:x.mode,level:x.level,note:(x.why||"").slice(0,150)})});}catch(e){}
+  }
+  loadRules();
 }
 async function addRule(){
   const ticker=$("r_tk").value, rule_type=$("r_type").value, mode=$("r_mode").value, level=parseFloat($("r_level").value);

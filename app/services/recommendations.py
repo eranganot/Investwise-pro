@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -317,7 +318,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                if (r.get("apply") or {}).get("kind") == "trim"}
     recs += _holding_verdict_recs(rows, snap, cap, trimmed)
     recs += _hedge_recs(rows, snap)
-    recs += _momentum_recs(rows)
+    recs += _momentum_recs(rows, snap)
     recs += _income_cost_recs(pdicts, snap, objective)
 
     # Macro signal: factor the futures-derived market regime into the agents. A
@@ -596,9 +597,39 @@ def _hedge_recs(rows, snap) -> list[dict]:
     return out
 
 
-def _momentum_recs(rows) -> list[dict]:
-    """Surface holdings in a strong down- or up-trend (price trend only, no fundamentals)."""
+def _daily_vol_pct(closes: list[float], window: int = 21) -> float | None:
+    """Std-dev of daily returns over the last `window` sessions, in percent.
+
+    Returns None when there isn't enough clean history to be meaningful — callers
+    fall back to a conservative fixed buffer rather than inventing a number.
+    """
+    tail = closes[-(window + 1):]
+    rets = [tail[i] / tail[i - 1] - 1.0 for i in range(1, len(tail)) if tail[i - 1]]
+    if len(rets) < 5:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    return (var ** 0.5) * 100.0
+
+
+def stop_buffer_pct(closes: list[float], *, horizon_days: int = 10, k: float = 1.5,
+                    lo: float = 8.0, hi: float = 20.0) -> float:
+    """A volatility-scaled buffer = k std-devs of a `horizon`-day move, clamped to
+    a sane band. Grounded in the holding's own realized volatility (not a guess);
+    falls back to the low bound when volatility can't be computed."""
+    v = _daily_vol_pct(closes)
+    if v is None:
+        return lo
+    raw = k * v * math.sqrt(horizon_days)
+    return float(min(hi, max(lo, round(raw))))
+
+
+def _momentum_recs(rows, snap) -> list[dict]:
+    """Surface holdings in a strong down- or up-trend and turn each into a
+    concrete, one-click discipline rule (stop-loss / trailing stop). Accept arms
+    the rule — the app never trades; a hit raises an alert + a Today to-do."""
     out: list[dict] = []
+    weights = (snap or {}).get("exposure_ticker") or {}
     for p in rows:
         try:
             from app.providers.registry import guarded_history
@@ -612,32 +643,64 @@ def _momentum_recs(rows) -> list[dict]:
         short_ma = sum(closes[-30:]) / 30.0
         last = closes[-1]
         ret = (last / closes[-min(120, len(closes))] - 1.0) * 100.0
+        weight_pct = round((weights.get(p.ticker, 0) or 0) * 100, 1)
         if short_ma < long_ma * 0.95 and ret < -10:
+            buf = stop_buffer_pct(closes, k=1.5, lo=8.0, hi=15.0)
+            stop = round(last * (1 - buf / 100.0), 2)
+            rule = {"ticker": p.ticker, "rule_type": "stop_loss", "mode": "price", "level": stop,
+                    "note": f"From downtrend alert (~{buf:.0f}% below {last:.2f})"}
             out.append({"id": _rid("mom_dn", p.ticker), "dimension": "momentum", "severity": "MEDIUM",
                         "title": f"{p.ticker} is in a downtrend",
                         "action": (f"{p.ticker} is down ~{abs(ret):.0f}% and trading below its trend. "
-                                   f"Re-check the thesis — cut it or add deliberately, don't drift."),
-                        "how": [f"Review why you hold {p.ticker}",
-                                "If the thesis is intact, this may be an entry; if not, trim",
-                                "Set a price level that would change your mind"],
-                        "est_amount": None, "apply": {"kind": "none"},
-                        "meta": {"return_pct": round(ret, 1), "trend": "down"}})
+                                   f"Cap further downside with a concrete stop instead of drifting."),
+                        "why": (f"{p.ticker} has broken below its longer-term trend, so the odds of further "
+                                f"downside are higher — a pre-set stop makes the exit decision now, not in a panic."),
+                        "impact": (f"Accept arms a stop-loss on {p.ticker} at {stop:.2f} (~{buf:.0f}% below today's "
+                                   f"{last:.2f}). If it falls to there you get an alert + a Today to-do to sell."),
+                        "how": [f"Accept → arms a stop-loss at {stop:.2f} (~{buf:.0f}% below today)",
+                                f"You get an alert + a Today to-do if {p.ticker} reaches it",
+                                "Adjust or remove it any time under Trading rules"],
+                        "est_amount": None,
+                        "apply": {"kind": "create_rules", "rules": [rule]},
+                        "meta": {"return_pct": round(ret, 1), "trend": "down", "stop": stop, "buffer_pct": buf}})
             out[-1]["audit_trail"] = audit_for("momentum",
-                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "down"},
-                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%")])
+                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "down",
+                          "last": round(last, 2), "buffer_pct": buf},
+                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%"),
+                          _fml("Buffer", "buffer = clamp(1.5 x daily_vol x sqrt(10), 8%, 15%)", result=f"{buf:.0f}%"),
+                          _fml("Stop level", "stop = last x (1 - buffer)", result=f"{stop:.2f}")])
         elif short_ma > long_ma * 1.05 and ret > 12:
+            buf = stop_buffer_pct(closes, k=2.0, lo=10.0, hi=20.0)
+            rules = [{"ticker": p.ticker, "rule_type": "trailing_stop", "mode": "pct", "level": buf,
+                      "note": f"From uptrend alert (protect gains, {buf:.0f}% trail)"}]
+            cap_line = ""
+            if weight_pct >= 12:
+                cap = float(max(15.0, 5 * math.ceil(weight_pct / 5)))
+                rules.append({"ticker": p.ticker, "rule_type": "max_weight", "mode": "pct", "level": cap,
+                              "note": f"Keep {p.ticker} under {cap:.0f}% of the book"})
+                cap_line = f" It's already {weight_pct:.0f}% of your book, so this also caps it at {cap:.0f}%."
+            how = [f"Accept → arms a {buf:.0f}% trailing stop (protects gains, lets it run)"]
+            if len(rules) > 1:
+                how.append(f"Also caps {p.ticker} at {rules[-1]['level']:.0f}% of your portfolio")
+            how.append("You get an alert + a Today to-do if either triggers")
             out.append({"id": _rid("mom_up", p.ticker), "dimension": "momentum", "severity": "LOW",
                         "title": f"{p.ticker} is in an uptrend",
-                        "action": (f"{p.ticker} is up ~{ret:.0f}% and trending higher. Let winners run, "
-                                   f"but watch that it doesn't grow past your concentration limit."),
-                        "how": [f"Hold {p.ticker} while the trend holds",
-                                "Trim only if it breaches your single-name cap",
-                                "Consider a trailing stop to protect gains"],
-                        "est_amount": None, "apply": {"kind": "none"},
-                        "meta": {"return_pct": round(ret, 1), "trend": "up"}})
+                        "action": (f"{p.ticker} is up ~{ret:.0f}% and trending higher. Let the winner run, "
+                                   f"but lock in a floor so a reversal doesn't give it all back."),
+                        "why": (f"Trends tend to persist, so the play is to stay in {p.ticker} while protecting "
+                                f"the gain — not to sell early on strength."),
+                        "impact": (f"Accept arms a {buf:.0f}% trailing stop on {p.ticker}: it keeps running with the "
+                                   f"trend, but if it drops {buf:.0f}% from its peak you get an alert to take "
+                                   f"profit.{cap_line}"),
+                        "how": how,
+                        "est_amount": None,
+                        "apply": {"kind": "create_rules", "rules": rules},
+                        "meta": {"return_pct": round(ret, 1), "trend": "up", "trail_pct": buf,
+                                 "weight_pct": weight_pct}})
             out[-1]["audit_trail"] = audit_for("momentum",
-                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "up"},
-                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%")])
+                raw_data={"ticker": p.ticker, "return_pct": round(ret, 1), "trend": "up", "weight_pct": weight_pct},
+                formulas=[_fml("Trend", "ret = last / price_120d_ago - 1", result=f"{ret:.0f}%"),
+                          _fml("Trailing stop", "trail = clamp(2 x daily_vol x sqrt(10), 10%, 20%)", result=f"{buf:.0f}%")])
     return out[:3]
 
 
@@ -795,8 +858,32 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     elif kind == "set_plan":
         await upsert_plan(session, user, **spec.get("fields", {}))
         await session.commit()
+    elif kind in ("create_rule", "create_rules"):
+        specs = spec.get("rules") if kind == "create_rules" else [spec]
+        created = []
+        for rspec in (specs or []):
+            made = await _create_rule_from_spec(session, user, rspec)
+            if made:
+                created.append(made)
+        detail = {"rules_created": created}
     # kind == "none" -> acknowledged, nothing to mutate
     return {"applied": kind, "title": rec["title"], **detail}
+
+
+async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) -> dict | None:
+    """Arm a trading rule from an Accept spec. Returns a compact summary for the
+    'what changed' confirmation, or None if the spec was malformed."""
+    from app.services.rules_service import create_rule as _mk
+    try:
+        rule = await _mk(session, user, ticker=spec["ticker"], rule_type=spec["rule_type"],
+                         mode=spec.get("mode", "pct"), level=float(spec["level"]),
+                         note=spec.get("note"))
+    except (KeyError, ValueError, TypeError):
+        return None
+    unit = "₪" if rule.mode == "price" else "%"
+    pretty = rule.rule_type.replace("_", " ")
+    return {"ticker": rule.ticker, "rule_type": rule.rule_type, "mode": rule.mode,
+            "level": rule.level, "label": f"{rule.ticker} {pretty} {rule.level:g}{unit}"}
 
 
 async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, spec: dict) -> dict:

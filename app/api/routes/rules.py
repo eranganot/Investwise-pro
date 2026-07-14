@@ -26,6 +26,12 @@ async def list_rules(session: AsyncSession = Depends(get_session),
             "types": sorted(rules_service.RULE_TYPES)}
 
 
+@router.get("/suggestions")
+async def suggest_rules(session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
+    return {"suggestions": await rules_service.suggest_rules_for_holdings(session, user)}
+
+
 @router.post("")
 async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:

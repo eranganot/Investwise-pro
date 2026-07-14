@@ -4,6 +4,7 @@ rule notifies (push) and surfaces a recommended action in 'What to do now'.
 """
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timezone
 
@@ -181,6 +182,67 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
                     "active": r.active, "triggered": r.triggered,
                     "current_price": cur, "target": target,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
+    return out
+
+
+async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[dict]:
+    """Per-holding suggested rule *set* with concrete, volatility-derived levels.
+
+    Nothing is saved: each suggestion is a ready-to-arm rule the UI can add with
+    one click (or 'add all') via the normal create-rule endpoint. Levels are
+    grounded in the holding's own realized volatility, never invented; rule types
+    the user has already armed are omitted so suggestions stay fresh.
+    """
+    from app.providers.registry import guarded_history
+    from app.services.recommendations import stop_buffer_pct
+
+    idx = await _positions_index(session, user)
+    if not idx:
+        return []
+    existing = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.active.is_(True)))).all()
+    have = {(r.ticker.upper(), r.rule_type) for r in existing}
+
+    out: list[dict] = []
+    for tk, pos in idx.items():
+        price, cost, weight = pos["price"], pos["cost"], pos["weight_pct"]
+        if price <= 0:
+            continue
+        try:
+            hist = guarded_history(tk, days=200)
+            closes = [c for _d, c in hist] if hist else []
+        except Exception:  # noqa: BLE001 -- no history -> conservative fixed buffers
+            closes = []
+        stop_buf = stop_buffer_pct(closes, k=1.5, lo=8.0, hi=15.0)
+        trail_buf = stop_buffer_pct(closes, k=2.0, lo=10.0, hi=20.0)
+
+        cand: list[dict] = []
+        stop = round(price * (1 - stop_buf / 100.0), 2)
+        cand.append({"rule_type": "stop_loss", "mode": "price", "level": stop,
+                     "label": f"\U0001f6d1 Stop-loss {stop:g}\u20aa",
+                     "why": f"Caps downside ~{stop_buf:.0f}% below today's {price:.2f}."})
+        cand.append({"rule_type": "trailing_stop", "mode": "pct", "level": trail_buf,
+                     "label": f"\U0001f4c9 Trailing stop {trail_buf:g}%",
+                     "why": f"Locks in gains if it falls {trail_buf:.0f}% from its peak, but lets it run."})
+        if cost > 0 and price > cost:
+            tp = round(price * (1 + trail_buf / 100.0), 2)
+            cand.append({"rule_type": "take_profit", "mode": "price", "level": tp,
+                         "label": f"\U0001f3af Take-profit {tp:g}\u20aa",
+                         "why": f"Takes some off the table if it climbs ~{trail_buf:.0f}% more."})
+        if weight >= 12:
+            cap = float(max(15.0, 5 * math.ceil(weight / 5)))
+            cand.append({"rule_type": "max_weight", "mode": "pct", "level": cap,
+                         "label": f"\u2696\ufe0f Max weight {cap:g}%",
+                         "why": f"It's {weight:.0f}% of your book — trim back toward {cap:.0f}% if it grows."})
+
+        fresh = [c for c in cand if (tk, c["rule_type"]) not in have]
+        for c in fresh:
+            c["ticker"] = tk
+        if fresh:
+            out.append({"ticker": tk, "current_price": round(price, 2),
+                        "weight_pct": weight, "rules": fresh})
+    out.sort(key=lambda h: h["weight_pct"], reverse=True)
     return out
 
 
