@@ -64,6 +64,37 @@
   .nm{font-weight:650}.mk{color:var(--mut);font-size:12px}.val{text-align:right}.up{color:var(--green)}.down{color:var(--red)}
   .del{background:var(--soft);border:1px solid var(--line);color:var(--mut);border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;flex:0 0 auto}
   .del:hover{border-color:var(--red);color:var(--red)}
+  .seg{display:flex;gap:4px;background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:4px;margin:0 0 14px}
+  .seg button{flex:1;background:none;border:0;color:var(--mut);font-size:14px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer}
+  .seg button.on{background:var(--card);color:var(--ink)}
+  .segbadge{display:inline-block;min-width:16px;font-size:11px;font-weight:700;color:var(--mut);background:var(--bg);border-radius:999px;padding:1px 6px;margin-left:5px}
+  .rulesbar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{background:var(--card);border:1px solid var(--line);color:var(--mut);border-radius:999px;font-size:12px;font-weight:600;padding:5px 11px;cursor:pointer}
+  .chip.on{background:#12233a;border-color:var(--blue);color:#7fb0ff}
+  .rulesbar select{background:var(--card);border:1px solid var(--line);color:var(--ink);border-radius:9px;font-size:12px;padding:6px 8px}
+  .gcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:11px 13px;margin:0 0 10px}
+  .gcard.hastrig{border-color:var(--red)}
+  .ghead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:0 0 6px;padding:0 0 8px;border-bottom:1px solid var(--line)}
+  .ghead .gtk{font-size:15px;font-weight:800;letter-spacing:.2px}
+  .ghead .gsub{font-size:12px;color:var(--mut)}
+  .rrow{display:flex;align-items:center;gap:10px;padding:8px 0}
+  .rrow+.rrow{border-top:1px solid var(--line)}
+  .rrow.trig{background:#2a1414;margin:0 -13px;padding:8px 13px;border-radius:8px}
+  .rbadge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;flex:0 0 auto}
+  .rb-red{background:#3a1414;color:var(--red)} .rb-green{background:#123024;color:var(--green)} .rb-blue{background:#0e2238;color:#60a5fa} .rb-amber{background:#3a2a14;color:var(--amber)}
+  .rlvl{font-size:13px;font-variant-numeric:tabular-nums;min-width:64px;color:var(--ink)}
+  .rdist{flex:1;min-width:64px}
+  .dtrack{height:6px;border-radius:999px;background:var(--soft);overflow:hidden}
+  .dfill{height:100%;border-radius:999px}
+  .dtxt{font-size:11px;color:var(--mut);margin-top:3px}
+  .racts{display:flex;gap:6px;flex:0 0 auto}
+  .rdupe{font-size:11px;font-weight:600;color:var(--amber);background:#3a2a14;border-radius:6px;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;flex:1}
+  .rtrigtxt{flex:1;font-size:12px;font-weight:700;color:var(--red)}
+  details.addrule{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin:0 0 10px}
+  details.addrule summary{cursor:pointer;padding:13px 0;font-weight:700;font-size:14px;list-style:none}
+  details.addrule[open] summary{border-bottom:1px solid var(--line);margin-bottom:10px}
+  details.addrule summary::-webkit-details-marker{display:none}
   button.primary{width:100%;background:var(--blue);color:#fff;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:700;cursor:pointer;margin-top:10px}
   button.soft{width:100%;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:12px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
   label{display:block;font-size:12px;color:var(--mut);margin:12px 0 4px}
@@ -233,7 +264,7 @@
 
   <!-- TODAY -->
   <section id="view-today" class="hide">
-    <div id="rulesAlert" class="databanner illustrative hide" style="cursor:pointer" onclick="show('hold')"></div>
+    <div id="rulesAlert" class="databanner illustrative hide" style="cursor:pointer" onclick="show('hold');holdSeg('rules')"></div>
     <div class="card hero">
       <div class="lbl">Your wealth is</div>
       <div class="big" id="rating" onclick="explain('health')">…</div>
@@ -273,40 +304,62 @@
 
   <!-- HOLDINGS -->
   <section id="view-hold" class="hide">
-    <h2>What you own</h2>
-    <div class="hold" id="holds"><div class="card muted">Loading…</div></div>
-    <button class="soft" onclick="showAdd(); show('setup')">＋ Add another holding</button>
-    <h2>Add commodities &amp; real assets</h2>
-    <div class="card" id="commBox"><div class="muted">Loading commodities…</div></div>
-    <div class="muted" id="commOut" style="margin-top:8px"></div>
-
-    <h2>Trading rules</h2>
-    <div class="card">
-      <div class="muted" style="font-size:12px;margin-bottom:8px">Stop-loss, take-profit, trailing stops &amp; alerts. When one triggers you get a notification and a to-do — the app never places trades for you.</div>
-      <div class="grid2">
-        <div><label>Holding</label><select id="r_tk"></select></div>
-        <div><label>Rule</label><select id="r_type" onchange="ruleModeHint()">
-          <option value="stop_loss">🛑 Stop-loss</option>
-          <option value="take_profit">🎯 Take-profit</option>
-          <option value="trailing_stop">📉 Trailing stop</option>
-          <option value="buy_dip">🟢 Buy the dip</option>
-          <option value="price_above">🔔 Price above</option>
-          <option value="price_below">🔔 Price below</option>
-          <option value="max_weight">⚖️ Max % of portfolio</option>
-        </select></div>
-      </div>
-      <div class="grid2">
-        <div><label>Level <span class="mk" id="r_levelhint">(%)</span></label><input id="r_level" type="number" placeholder="10"/></div>
-        <div><label>Unit</label><select id="r_mode">
-          <option value="pct">Percent (%)</option>
-          <option value="price">Price (₪)</option>
-        </select></div>
-      </div>
-      <button class="primary" onclick="addRule()">＋ Add rule</button>
-      <div class="muted" id="r_out" style="margin-top:8px"></div>
+    <div class="seg" id="holdSeg">
+      <button class="on" data-seg="positions" onclick="holdSeg('positions')">Positions</button>
+      <button data-seg="rules" onclick="holdSeg('rules')">Rules<span class="segbadge" id="ruleCount"></span></button>
     </div>
-    <div id="ruleSug" style="margin-top:10px"></div>
-    <div id="rulesList" class="hold" style="margin-top:10px"></div>
+
+    <div id="hold-positions">
+      <h2>What you own</h2>
+      <div class="hold" id="holds"><div class="card muted">Loading…</div></div>
+      <button class="soft" onclick="showAdd(); show('setup')">＋ Add another holding</button>
+      <h2>Add commodities &amp; real assets</h2>
+      <div class="card" id="commBox"><div class="muted">Loading commodities…</div></div>
+      <div class="muted" id="commOut" style="margin-top:8px"></div>
+    </div>
+
+    <div id="hold-rules" class="hide">
+      <div class="rulesbar">
+        <div class="chips" id="ruleFilters">
+          <button class="chip on" data-f="all" onclick="ruleFilter('all')">All</button>
+          <button class="chip" data-f="triggered" onclick="ruleFilter('triggered')">🔴 Triggered</button>
+          <button class="chip" data-f="armed" onclick="ruleFilter('armed')">🟢 Armed</button>
+          <button class="chip" data-f="paused" onclick="ruleFilter('paused')">⚪ Paused</button>
+        </div>
+        <select id="ruleSort" onchange="renderRules()">
+          <option value="closest">Sort: closest to trigger</option>
+          <option value="holding">Sort: holding</option>
+          <option value="type">Sort: rule type</option>
+        </select>
+      </div>
+      <details class="addrule">
+        <summary>＋ Add a rule manually</summary>
+        <div class="muted" style="font-size:12px;margin-bottom:10px">Stop-loss, take-profit, trailing stops &amp; alerts. When one triggers you get a notification and a to-do — the app never places trades for you.</div>
+        <div class="grid2">
+          <div><label>Holding</label><select id="r_tk"></select></div>
+          <div><label>Rule</label><select id="r_type" onchange="ruleModeHint()">
+            <option value="stop_loss">🛑 Stop-loss</option>
+            <option value="take_profit">🎯 Take-profit</option>
+            <option value="trailing_stop">📉 Trailing stop</option>
+            <option value="buy_dip">🟢 Buy the dip</option>
+            <option value="price_above">🔔 Price above</option>
+            <option value="price_below">🔔 Price below</option>
+            <option value="max_weight">⚖️ Max % of portfolio</option>
+          </select></div>
+        </div>
+        <div class="grid2">
+          <div><label>Level <span class="mk" id="r_levelhint">(%)</span></label><input id="r_level" type="number" placeholder="10"/></div>
+          <div><label>Unit</label><select id="r_mode">
+            <option value="pct">Percent (%)</option>
+            <option value="price">Price (₪)</option>
+          </select></div>
+        </div>
+        <button class="primary" onclick="addRule()">＋ Add rule</button>
+        <div class="muted" id="r_out" style="margin-top:8px"></div>
+      </details>
+      <div id="ruleSug" style="margin-top:10px"></div>
+      <div id="rulesList" style="margin-top:10px"></div>
+    </div>
   </section>
 
   <!-- PLAN -->
@@ -739,20 +792,91 @@ async function loadRules(){
   }catch(e){}
   ruleModeHint();
   try{const r=await(await fetch("/api/v1/rules")).json();
-    const rules=r.rules||[];
-    $("rulesList").innerHTML = rules.length ? rules.map(x=>{
-      const st = x.triggered?'<span class="bad">🔴 Triggered</span>':(x.active?'<span class="ok">🟢 Armed</span>':'<span class="mk">⚪ Off</span>');
-      const unit = x.mode==="price"?"₪":"%";
-      const tgt = (x.target!=null)?` · target ${Number(x.target).toFixed(2)}`:"";
-      const now = (x.current_price!=null)?` · now ${Number(x.current_price).toFixed(2)}`:"";
-      return `<div class="row"><div><div class="nm">${x.ticker} <span class="mk">${RULE_LABEL[x.rule_type]||x.rule_type} ${x.level}${unit}</span></div>
-        <div class="mk">${st}${now}${tgt}</div></div>
-        <div style="display:flex;gap:6px">
-          <button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button>
-          <button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></div></div>`;
-    }).join("") : `<div class="card muted">No rules yet. Add one above to get alerts when a holding hits your level.</div>`;
+    RULES=r.rules||[];
+    renderRules();
   }catch(e){$("rulesList").innerHTML=`<div class="card bad">${e}</div>`;}
   loadRuleSuggestions();
+}
+let RULES=[], RULE_FILTER="all";
+const RULE_META={
+  stop_loss:{label:"Stop-loss",cls:"red",icon:"🛑"},
+  take_profit:{label:"Take-profit",cls:"green",icon:"🎯"},
+  trailing_stop:{label:"Trailing",cls:"blue",icon:"📉"},
+  buy_dip:{label:"Buy dip",cls:"green",icon:"🟢"},
+  price_above:{label:"Price ≥",cls:"amber",icon:"🔔"},
+  price_below:{label:"Price ≤",cls:"amber",icon:"🔔"},
+  max_weight:{label:"Max weight",cls:"amber",icon:"⚖️"}
+};
+const _DCOLOR={red:"var(--red)",green:"var(--green)",blue:"#60a5fa",amber:"var(--amber)"};
+function _ruleStatus(x){return x.triggered?"triggered":(x.active?"armed":"paused");}
+function _ruleDist(x){
+  if(x.current_price==null||x.target==null||!Number(x.current_price)) return null;
+  return (Number(x.target)-Number(x.current_price))/Number(x.current_price)*100;
+}
+function holdSeg(which){
+  document.querySelectorAll('#holdSeg button').forEach(b=>b.classList.toggle('on',b.dataset.seg===which));
+  $('hold-positions').classList.toggle('hide',which!=='positions');
+  $('hold-rules').classList.toggle('hide',which!=='rules');
+  if(which==='rules'&&!RULES.length) loadRules();
+}
+function ruleFilter(f){
+  RULE_FILTER=f;
+  document.querySelectorAll('#ruleFilters .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===f));
+  renderRules();
+}
+function renderRules(){
+  const box=$("rulesList"); if(!box) return;
+  const trigN=RULES.filter(r=>r.triggered).length;
+  const badge=$("ruleCount"); if(badge){badge.textContent=RULES.length; badge.style.color=trigN?"var(--red)":"";}
+  if(!RULES.length){box.innerHTML=`<div class="card muted">No rules yet. Add one above, or arm a suggested rule below, to get alerts when a holding hits your level.</div>`;return;}
+  const seen={};
+  RULES.forEach(x=>{const k=`${x.ticker}|${x.rule_type}|${x.mode}|${x.level}`; x._dupe=!!seen[k]; seen[k]=1; x._dist=_ruleDist(x); x._status=_ruleStatus(x);});
+  const sort=($("ruleSort")||{}).value||"closest";
+  let rules=RULES.filter(x=>RULE_FILTER==="all"||x._status===RULE_FILTER);
+  if(!rules.length){box.innerHTML=`<div class="card muted">No ${RULE_FILTER} rules right now.</div>`;return;}
+  const groups={};
+  rules.forEach(x=>{(groups[x.ticker]=groups[x.ticker]||[]).push(x);});
+  const absd=x=>x.triggered?-1:(x._dist==null?9999:Math.abs(x._dist));
+  const ruleSortFn=(a,b)=>{
+    if(a.triggered!==b.triggered) return a.triggered?-1:1;
+    if(sort==="type") return a.rule_type.localeCompare(b.rule_type);
+    return absd(a)-absd(b);
+  };
+  let gkeys=Object.keys(groups);
+  gkeys.forEach(k=>groups[k].sort(ruleSortFn));
+  const gHasTrig=k=>groups[k].some(x=>x.triggered);
+  const gMinDist=k=>Math.min.apply(null,groups[k].map(absd));
+  gkeys.sort((a,b)=>{
+    if(gHasTrig(a)!==gHasTrig(b)) return gHasTrig(a)?-1:1;
+    if(sort==="holding") return a.localeCompare(b);
+    if(sort==="type") return groups[a][0].rule_type.localeCompare(groups[b][0].rule_type);
+    return gMinDist(a)-gMinDist(b);
+  });
+  box.innerHTML=gkeys.map(tk=>{
+    const rs=groups[tk];
+    const now=rs.find(r=>r.current_price!=null);
+    const nowTxt=now?`now ${Number(now.current_price).toFixed(2)}`:"no live price";
+    const rows=rs.map(x=>{
+      const m=RULE_META[x.rule_type]||{label:x.rule_type,cls:"blue",icon:"•"};
+      const isPct=x.mode!=="price";
+      const blabel=(x.rule_type==="trailing_stop"||x.rule_type==="max_weight")?`${m.label} ${x.level}%`:m.label;
+      const tgt=x.target!=null?Number(x.target).toFixed(2):(isPct?`${x.level}%`:Number(x.level).toFixed(2));
+      const badge=`<span class="rbadge rb-${m.cls}">${m.icon} ${blabel}</span>`;
+      const lvl=`<span class="rlvl">→ ${tgt}</span>`;
+      let mid;
+      if(x.triggered){ mid=`<span class="rtrigtxt">🔴 Triggered${now?` · now ${Number(now.current_price).toFixed(2)}`:""}</span>`; }
+      else if(x._dupe){ mid=`<span class="rdupe">⧉ duplicate of another rule — remove</span>`; }
+      else if(x._dist!=null){
+        const p=x._dist, ap=Math.abs(p), w=Math.max(4,Math.min(100,100-ap*4));
+        mid=`<span class="rdist"><div class="dtrack"><div class="dfill" style="width:${w}%;background:${_DCOLOR[m.cls]}"></div></div><div class="dtxt">${p>0?"+":""}${p.toFixed(0)}% to trigger</div></span>`;
+      } else { mid=`<span class="rdist"><div class="dtxt">armed</div></span>`; }
+      const acts=x._dupe
+        ? `<span class="racts"><button class="del" title="Delete duplicate" onclick="deleteRule('${x.id}')">✕</button></span>`
+        : `<span class="racts"><button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
+      return `<div class="rrow${x.triggered?' trig':''}">${badge}${lvl}${mid}${acts}</div>`;
+    }).join("");
+    return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
+  }).join("");
 }
 async function loadRuleSuggestions(){
   const box=$("ruleSug"); if(!box)return;
