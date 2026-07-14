@@ -320,6 +320,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _hedge_recs(rows, snap)
     recs += _momentum_recs(rows, snap)
     recs += _income_cost_recs(pdicts, snap, objective)
+    recs += _commodity_recs(rows, snap, objective)
+    try:
+        from app.services.performance_service import performance as _perf_fn
+        recs += _benchmark_recs(await _perf_fn(session, user), objective)
+    except Exception:  # noqa: BLE001 -- performance is best-effort, never break Today
+        pass
 
     # Macro signal: factor the futures-derived market regime into the agents. A
     # risk-off backdrop surfaces a defensive action. Defensive - never break Today.
@@ -751,14 +757,94 @@ def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
     return out
 
 
-def _buy_ideas(snap) -> list[dict]:
-    """Top fundamentals-ranked buy ideas from the Opportunity Agent (informational)."""
+def _benchmark_recs(perf, objective) -> list[dict]:
+    """Turn the performance-vs-benchmark read into an improvement action when the
+    portfolio is trailing its benchmark by a meaningful margin (grounded in the
+    real excess-return number, never invented)."""
+    out: list[dict] = []
+    if not isinstance(perf, dict) or not perf.get("ok"):
+        return out
+    ex = perf.get("excess_return_pct")
+    if ex is None or ex > -3.0:
+        return out
+    bench = perf.get("benchmark", "the benchmark")
+    bret, pret = perf.get("benchmark_return_pct"), perf.get("total_return_pct")
+    sev = "HIGH" if ex <= -10.0 else "MEDIUM"
+    detail = f" ({pret:.1f}% vs {bench} {bret:.1f}%)" if (bret is not None and pret is not None) else ""
+    out.append({"id": _rid("benchmark_lag", bench), "dimension": "performance", "severity": sev,
+                "title": f"You're trailing {bench}",
+                "action": (f"Over this window your portfolio is about {abs(ex):.1f}% behind {bench}{detail}. "
+                           f"Worth checking what's dragging before the gap compounds."),
+                "why": (f"Sustained underperformance vs {bench} usually traces to one of three things: a few big "
+                        f"laggards, paying too much in fund fees, or a mix that has drifted off target."),
+                "impact": f"Closing a {abs(ex):.1f}% annual gap compounds into a large sum over your horizon.",
+                "how": ["Check your biggest laggards in Holdings — trim or re-confirm the thesis",
+                        "Review fund fees — cheaper index exposure tracks the benchmark more closely",
+                        "Rebalance toward your target mix if you have drifted"],
+                "est_amount": None, "apply": {"kind": "none"},
+                "meta": {"excess_pct": round(ex, 1), "benchmark": bench}})
+    out[-1]["audit_trail"] = audit_for("performance",
+        raw_data={"excess_pct": round(ex, 1), "benchmark": bench,
+                  "portfolio_return_pct": pret, "benchmark_return_pct": bret},
+        formulas=[_fml("Excess return", "excess = portfolio_return - benchmark_return", result=f"{ex:.1f}%")])
+    return out
+
+
+def _commodity_recs(rows, snap, objective) -> list[dict]:
+    """Flag a missing commodities sleeve and name concrete, screener-ranked picks."""
+    out: list[dict] = []
+    target = (OBJ_TARGET.get(objective or "Balanced", {}) or {}).get("Commodities", 0.0)
+    if target <= 0:
+        return out
+    mix, nav = current_mix(rows)
+    if not nav:
+        return out
+    com_w = mix.get("Commodities", 0.0)
+    if com_w >= max(0.03, target * 0.5):
+        return out  # already holds a meaningful sleeve
+    picks = []
     try:
         from app.agents.screener_agent import OpportunityAgent
-        picks = OpportunityAgent().screen_equities(top_n=5)
-        return [{"ticker": p.ticker, "name": p.name, "score": p.score,
-                 "sector": p.sector, "reasons": p.reasons, "flags": p.flags,
-                 "metrics": p.metrics} for p in picks]
+        picks = OpportunityAgent().screen_commodities(top_n=3)
+    except Exception:  # noqa: BLE001
+        picks = []
+    names = [(f"{p.ticker} ({p.name})" if getattr(p, "name", "") else p.ticker) for p in picks][:3]
+    pick_line = ", ".join(names) if names else "a broad basket (DBC), gold (GLD) or agriculture (DBA)"
+    out.append({"id": _rid("commodity_add"), "dimension": "diversification", "severity": "LOW",
+                "title": "Add a commodities sleeve",
+                "action": (f"You hold about {com_w:.0%} in commodities but your {objective or 'Balanced'} target is "
+                           f"~{target:.0%}. A small sleeve diversifies away from stocks and bonds."),
+                "why": (f"Commodities tend to move differently from equities and bonds, so a small allocation "
+                        f"cushions the portfolio when stocks and bonds fall together — your target holds ~{target:.0%}."),
+                "impact": "Adds a low-correlation diversifier, smoothing your overall swings.",
+                "how": [f"Consider {pick_line}",
+                        f"Size it toward your ~{target:.0%} target — a little goes a long way",
+                        "Add it under Holdings → Add commodities & real assets"],
+                "est_amount": None, "apply": {"kind": "none"},
+                "meta": {"commodity_weight": round(com_w, 4), "target": target,
+                         "picks": [p.ticker for p in picks]}})
+    out[-1]["audit_trail"] = audit_for("diversification",
+        raw_data={"commodity_weight": round(com_w, 4), "target": target, "picks": [p.ticker for p in picks]},
+        formulas=[_fml("Commodity gap", "gap = target - current", result=f"{(target - com_w):.0%}")])
+    return out
+
+
+def _buy_ideas(snap) -> list[dict]:
+    """Top fundamentals-ranked equity buy ideas plus screener-ranked commodity
+    picks from the Opportunity Agent (informational)."""
+    try:
+        from app.agents.screener_agent import OpportunityAgent
+        ag = OpportunityAgent()
+        out = [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
+                "sector": p.sector, "reasons": p.reasons, "flags": p.flags,
+                "metrics": p.metrics} for p in ag.screen_equities(top_n=5)]
+        try:
+            out += [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
+                     "sector": "Commodities", "reasons": p.reasons, "flags": p.flags,
+                     "metrics": p.metrics} for p in ag.screen_commodities(top_n=3)]
+        except Exception:  # noqa: BLE001
+            pass
+        return out
     except Exception:
         return []
 

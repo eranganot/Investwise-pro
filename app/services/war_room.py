@@ -5,6 +5,8 @@ chat transcript plus structured detail for each line.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.agents import adversary
 from app.agents.research_agent import ResearchAgent
 from app.engines.decision_engine import DecisionEngine
@@ -128,4 +130,8 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
         sessions.append({"ticker": det.ticker, "outcome": "DISPLAYED", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
                          "outcome_label": display.path, "title": display.title, "transcript": t})
 
-    return {"agents": AGENTS, "count": len(sessions), "sessions": sessions}
+    generated_at = datetime.now(timezone.utc).isoformat()
+    for _s in sessions:
+        _s["decided_at"] = generated_at
+    return {"agents": AGENTS, "count": len(sessions), "generated_at": generated_at,
+            "sessions": sessions}

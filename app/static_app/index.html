@@ -697,6 +697,7 @@ function plainRisk(a){
   return a.detail;
 }
 function esc(x){return String(x).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function fmtDT(iso){try{return new Date(iso).toLocaleString([], {dateStyle:"medium",timeStyle:"short"});}catch(e){return iso||"";}}
 function auditAccordion(o){
   const a=o.audit_trail; if(!a) return "";
   const kv=Object.entries(a.raw_data||{}).map(([k,v])=>
@@ -1055,6 +1056,7 @@ async function loadWar(){
   try{const w=await(await fetch("/api/v1/war-room")).json();
     const port=w.sessions.filter(s=>s.source==="portfolio"),mkt=w.sessions.filter(s=>s.source!=="portfolio");
     let h="";
+    if(w.generated_at) h+=`<div style="grid-column:1/-1;margin:0 4px 6px;color:var(--mut);font-size:12px">🕒 Analyzed at ${fmtDT(w.generated_at)} · recomputed live each visit</div>`;
     if(port.length)h+=`<div style="grid-column:1/-1"><h2 style="margin:4px 4px 0">Your holdings</h2></div>`+port.map(sessCard).join("");
     h+=`<div style="grid-column:1/-1"><h2 style="margin:8px 4px 0">Market ideas (incl. rejected)</h2></div>`+(mkt.map(sessCard).join("")||`<div class="card muted">None right now.</div>`);
     $("war").innerHTML=h;
@@ -1069,7 +1071,7 @@ function sessCard(s){
     return `<div class="line" onclick="${hd?`tgl('${id}')`:''}"><div class="av">${AV[l.agent]||"•"}</div>
       <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div><div class="sy">${l.says}</div>${risk}
       ${hd?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;}).join("");
-  return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${lines}</div>`;
+  return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${s.decided_at?`<div class="mk" style="margin:-2px 0 6px">🕒 ${fmtDT(s.decided_at)}</div>`:""}${lines}</div>`;
 }
 function tgl(id){const e=$("dt_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 
