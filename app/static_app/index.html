@@ -215,7 +215,13 @@
     .ov{align-items:flex-end}
     .modal{padding-bottom:calc(28px + env(safe-area-inset-bottom))}
   }
-</style>
+
+    .stprof{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+    .stchip{font-size:11px;background:var(--soft,#1a1f2b);border:1px solid #2a3140;border-radius:12px;padding:3px 8px;color:#9aa6b8}
+    .stchip b{color:#e6ebf2;font-weight:600}
+    .stchip.warn{border-color:#5c4a1e}.stchip.warn b{color:#fbbf24}
+    .stchip.bad{border-color:#5b2230}.stchip.bad b{color:#f87171}
+    </style>
 </head>
 <body>
 <div class="head">
@@ -1112,13 +1118,54 @@ async function loadStrategies(){
     <div class="stcard">
       <div style="display:flex;justify-content:space-between"><span class="nm">${s.name}</span><span class="rk">${s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
+      ${stratProfile(s.profile)}
       <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}</div>
       <div class="acts">
+        <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
         <button onclick="applyStrat('${s.id}')">Apply strategy</button>
         <button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Load this basket</button>
       </div>
     </div>`).join("");
-  $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>${list}`;
+  $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>`
+    + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
+    + list;
+}
+// The four Grow strategies are all 100% equities by asset class, so the numbers
+// that actually separate them -- expected return, volatility, drawdown,
+// concentration -- are shown up front instead of a bare risk chip.
+function stratProfile(pf){
+  if(!pf) return "";
+  const chip=(label,val,tone)=>`<span class="stchip ${tone||''}">${label} <b>${val}</b></span>`;
+  const dtone=pf.est_max_drawdown_pct>=40?'bad':pf.est_max_drawdown_pct>=25?'warn':'';
+  const vtone=pf.volatility_pct>=25?'bad':pf.volatility_pct>=16?'warn':'';
+  return `<div class="stprof">
+    ${chip("Est. return","~"+pf.expected_return_pct+"%/yr")}
+    ${chip("Volatility","~"+pf.volatility_pct+"%",vtone)}
+    ${chip("Rough bad-year drop","~-"+pf.est_max_drawdown_pct+"%",dtone)}
+    ${chip("Style",pf.concentration)}
+    ${chip("Horizon",pf.time_horizon)}
+    ${pf.uses_leverage?`<span class="stchip bad">⚠ Uses leverage</span>`:""}
+  </div>`;
+}
+async function previewStrat(id,name){
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Checking what would change\u2026";
+  o.scrollIntoView({behavior:"smooth",block:"center"});
+  try{const r=await(await fetch(`/api/v1/strategies/${id}/preview`)).json();
+    if(!r.ok){o.innerHTML=`<span class="bad">${r.error||"Couldn't preview"}</span>`;return;}
+    const d=r.diff, pf=r.strategy.profile;
+    if(d.is_current){o.innerHTML=`<span class="ok">This is already your active strategy.</span>`;return;}
+    const rows=[];
+    if(d.objective.changes) rows.push(`Objective: <b>${d.objective.from||"—"}</b> → <b>${d.objective.to}</b>`);
+    if(d.risk_tolerance.changes) rows.push(`Risk tolerance: <b>${d.risk_tolerance.from||"—"}</b> → <b>${d.risk_tolerance.to}</b>`);
+    const mix=(d.mix_changes||[]).map(m=>`<li>${m.asset_class}: ${m.from_pct}% → <b>${m.to_pct}%</b></li>`).join("");
+    const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~${ils(a.estimated_trade_value_currency)}</li>`).join("");
+    o.innerHTML=`<b>Applying "${name}" would change:</b>`
+      + (rows.length?`<div style="margin:6px 0">${rows.join("<br>")}</div>`:`<div class="muted" style="margin:6px 0">No change to objective or risk tolerance.</div>`)
+      + (mix?`<div style="margin:6px 0">Target mix shifts to:<ul>${mix}</ul></div>`:"")
+      + `<div class="stprof" style="margin:6px 0">${stratProfile(pf).replace('<div class="stprof">','').replace(/<\/div>$/,'')}</div>`
+      + (acts?`<div style="margin-top:6px">Rebalancing trades it would suggest:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Your current mix already matches — no trades needed.</div>`)
+      + `<div style="margin-top:8px"><button onclick="applyStrat('${id}')">Apply this strategy</button></div>`;
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 async function applyStrat(id){
   const o=$("stratOut"); o.style.display="block"; o.innerHTML="Applying…"; o.scrollIntoView({behavior:"smooth",block:"center"});

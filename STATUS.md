@@ -22,9 +22,9 @@ remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git 
 7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
 full of CRLF noise.
 
-Files changed: `app/services/recommendations.py`, `app/services/funding_service.py` (new),
-`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v8`→`iw-v9`),
-`tests/test_funding_service.py` (new), `tests/test_recs_extras.py`, `tests/test_signal_service.py`.
+Files changed: `app/services/strategy_profile.py` (new), `app/api/routes/strategy.py`,
+`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v9`→`iw-v10`),
+`tests/test_strategy_profile.py` (new).
 
 **Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
 2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
@@ -50,6 +50,21 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Phase 4: strategy differentiation.** The four Grow strategies all read as
+  `{"Equities": 1.0}` by asset class and the UI showed only a description + ticker list, so a
+  leveraged-Nasdaq basket looked identical to a diversified-index one. New `strategy_profile`
+  derives a comparable profile *from each basket*: expected return, volatility, a rough bad-year
+  drawdown, concentration (single-name weight, effective holdings), a leverage flag, and a time
+  horizon — via a transparent per-instrument-character lookup (broad index / sector / single name
+  / leveraged / bond / commodity / cash), labelled as planning assumptions, not forecasts.
+  `/api/v1/strategies` now returns a `profile` per strategy; the Plan cards show the numbers as
+  chips (leverage gets a ⚠). New `GET /strategies/{id}/preview` and a **"What changes?"** button
+  give a concrete before/after diff — objective, risk tolerance, target-mix shifts and the exact
+  rebalancing trades — instead of a bare "HIGH RISK" chip, and flag the currently-applied strategy.
+  Deliberately did **not** fabricate asset-class differences between the all-equity Grow
+  strategies (that would invent numbers); the honest separation is the computed risk/return
+  profile. +9 tests (`test_strategy_profile.py`). SW `iw-v9`→`iw-v10`. **Phases 0–4 of
+  `PLAN_2026-07-18_alignment.md` complete.**
 - 2026-07-18 — **Phase 3: funding engine — cards are now sized and executable.** Every buy card
   used to say *what* without *how much* or *how to pay for it*, so it read as advice. New
   `funding_service`: (a) **sizing** bounded by the plan's asset-class target and single-name cap;
