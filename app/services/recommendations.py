@@ -35,7 +35,8 @@ _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 # branch, report "Done -- applied." and silently dismiss the card, so guidance
 # looked like it had been carried out when nothing had happened.
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
-                     "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules"}
+                     "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
+                     "buy_funded"}
 
 
 def _is_actionable(rec: dict) -> bool:
@@ -286,15 +287,17 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
 
 
 async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
-    """Surface signals the agent pipeline actually approved as Today cards.
+    """Turn approved agent signals into sized, plan-checked, executable cards.
 
-    The war room and the Today view were two disconnected pipelines: the agents
-    could approve "Buy TEVA" and the Today list would never mention it, which is
-    what the user reported. Both now read from the same decisions, so the war
-    room is the audit trail *for* Today rather than a parallel universe.
+    Two things were missing before. The war room and Today ran as separate
+    pipelines, so the agents could approve a signal Today never mentioned. And
+    the resulting card said "review this" with no size and no funding, which is
+    advice, not an action.
 
-    Only DISPLAYED (approved) decisions become cards, and only when the
-    underlying signals are grounded in real price history.
+    Now every promoted signal is checked against the plan first -- asset-class
+    target, single-name concentration cap, available funding -- and is either
+    sized concretely or dropped with the reason. A signal the plan can't
+    accommodate is not a recommendation.
     """
     out: list[dict] = []
     try:
@@ -305,42 +308,111 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
         return out
     if not payload.get("grounded"):
         return out  # never turn sample prices into advice
-    held = {(getattr(p, "ticker", "") or "").upper() for p in (rows or [])}
+
+    from app.services import funding_service as _fund
+    from app.services.intake_service import get_cash
+
+    plan = await get_plan(session, user)
+    objective = plan.objective if plan else "Balanced"
+    cap = effective_caps(plan)["concentration_cap"]
+    pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
+               "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
+               "asset_class": (p.meta or {}).get("asset_class")} for p in (rows or [])]
+    snap = compute_snapshot(pdicts) if pdicts else {"nav": 0.0}
+    nav = snap.get("nav") or 0.0
+    mix, _ = current_mix(rows or [])
+    cash = await get_cash(session, user)
+    held = {(getattr(p, "ticker", "") or "").upper(): p for p in (rows or [])}
+    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+
     for s in payload.get("sessions", []):
-        if s.get("outcome") != "DISPLAYED":
+        if s.get("outcome") != "DISPLAYED" or len(out) >= 3:
             continue
         tk = (s.get("ticker") or "").upper()
-        title = s.get("title") or f"Act on {tk}"
-        conviction = next((ln.get("detail", {}) for ln in s.get("transcript", [])
-                           if ln.get("agent") == "Decision"), {})
-        impact_score = conviction.get("impact")
-        confidence = conviction.get("confidence")
+        det = next((ln.get("detail", {}) for ln in s.get("transcript", [])
+                    if ln.get("agent") == "Decision"), {})
+        impact, confidence = det.get("impact"), det.get("confidence")
         alpha = next((ln.get("says") for ln in s.get("transcript", [])
                       if ln.get("agent") == "Alpha"), "")
-        risk = next((ln.get("says") for ln in s.get("transcript", [])
-                     if ln.get("agent") == "Risk"), "")
-        verb = "Trim" if tk in held and s.get("outcome_label") == "Bulletproof" else "Review"
+        pos = held.get(tk)
+        cls = classify(tk, getattr(pos, "market", "NYSE") if pos else "NYSE",
+                       ((pos.meta or {}).get("asset_class") if pos is not None else None))
+        weight = snap.get("exposure_ticker", {}).get(tk, 0.0)
+
+        if s.get("action_type") == "REBALANCE" or (pos is not None and weight > cap):
+            # Already held and over the cap -> a concrete trim back to the cap.
+            if pos is None or not nav:
+                continue
+            price_ils = _sale_value_ils(1.0, float(pos.current_price or 0),
+                                        float(pos.cost_basis or 0), pos.market, pos.meta)[0]
+            excess_ils = max(0.0, (weight - cap) * nav)
+            shares = int(excess_ils / price_ils) if price_ils else 0
+            if shares <= 0:
+                continue
+            out.append({
+                "id": _rid("warroom_trim", tk), "dimension": "signal", "severity": "MEDIUM",
+                "title": f"Trim {tk} back to your cap",
+                "why": (f"The agents approved this on the {s.get('outcome_label')} path, and {tk} "
+                        f"is {weight:.0%} of your book against a {cap:.0%} single-name cap. {alpha}").strip(),
+                "action": (f"Sell {shares} {tk} (~{_ils(excess_ils)}) to bring it from {weight:.0%} "
+                           f"down to {cap:.0%}."),
+                "impact": (f"Cuts single-name risk and frees ~{_ils(excess_ils)}."
+                           + (f" Signal impact {impact:.0f}/100." if impact is not None else "")),
+                "how": [f"Sell {shares} {tk} (~{_ils(excess_ils)})",
+                        "Proceeds land in cash, visible on Holdings",
+                        "Open Agents -> war room for the full reasoning"],
+                "est_amount": round(excess_ils, 2),
+                "apply": {"kind": "trim", "ticker": tk, "shares": shares},
+                "meta": {"source": "war_room", "ticker": tk, "impact": impact,
+                         "confidence": confidence},
+            })
+            continue
+
+        # A buy candidate: size it to the plan, then say how to pay for it.
+        target_w = target.get(cls, 0.0)
+        if target_w <= 0:
+            continue  # the plan doesn't hold this asset class at all
+        room = _fund.size_purchase(nav, weight, min(target_w, cap), cap)
+        if room < _fund.MIN_TRADE_ILS:
+            continue  # no room without breaching the plan -> not a recommendation
+        fund = _fund.plan_funding(rows, snap, plan, objective, cap, room,
+                                  cash_ils=cash, exclude={tk})
+        buyable = min(room, fund.get("funded_ils") or 0.0)
+        if buyable < _fund.MIN_TRADE_ILS:
+            continue  # can't be paid for -> don't pretend it's an action
+        fund = _fund.plan_funding(rows, snap, plan, objective, cap, buyable,
+                                  cash_ils=cash, exclude={tk})
+        verb = "Add to" if pos is not None else "Buy"
         out.append({
-            "id": _rid("warroom", tk, s.get("outcome_label") or ""),
-            "dimension": "signal",
-            "severity": "MEDIUM" if (impact_score or 0) >= 50 else "LOW",
-            "title": title,
-            "why": (f"The agent pipeline approved this on the {s.get('outcome_label')} path. "
-                    f"{alpha}").strip(),
-            "action": (f"{verb} {tk}: the signal cleared risk, tax and adversary review"
-                       + (f" at {confidence:.0f}% confidence" if confidence is not None else "")
-                       + ". Open the war room for the full reasoning before acting."),
-            "impact": (f"Impact score {impact_score:.0f}/100 from the scorer."
-                       if impact_score is not None else "Scored by the decision engine."),
-            "how": ["Open Agents -> war room and read the full transcript for this ticker",
-                    "Check it against your plan's target mix before sizing",
-                    "Signals are trend-divergence based, not a price forecast"],
-            "est_amount": None,
-            "apply": {"kind": "none"},
-            "meta": {"source": "war_room", "ticker": tk, "impact": impact_score,
-                     "confidence": confidence, "risk_note": risk},
+            "id": _rid("warroom_buy", tk), "dimension": "signal", "severity": "MEDIUM",
+            "title": f"{verb} {tk} — {_ils(buyable)}",
+            "why": (f"The agents approved this on the {s.get('outcome_label')} path"
+                    + (f" at {confidence:.0f}% confidence" if confidence is not None else "")
+                    + f". {alpha} It fits your {objective} plan: {cls} is {mix.get(cls, 0.0):.0%} "
+                      f"against a {target_w:.0%} target.").strip(),
+            "action": (f"{verb} {_ils(buyable)} of {tk}. That takes {cls} from "
+                       f"{mix.get(cls, 0.0):.0%} toward your {target_w:.0%} target and keeps {tk} "
+                       f"under your {cap:.0%} single-name cap. "
+                       + _fund.describe_funding(fund)),
+            "impact": (f"Moves {cls} ~{(buyable / nav):.0%} closer to target."
+                       + (f" Signal impact {impact:.0f}/100." if impact is not None else "")),
+            "how": ([f"{verb} {_ils(buyable)} of {tk}"]
+                    + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
+                       for x in fund.get("sells", [])]
+                    + ([f"Use {_ils(fund['from_cash_ils'])} of cash (floor of "
+                        f"{_ils(fund['cash_floor_ils'])} stays untouched)"]
+                       if fund.get("from_cash_ils") else [])
+                    + ["Signals are trend-divergence based, not a price forecast"]),
+            "est_amount": round(buyable, 2),
+            "apply": {"kind": "buy_funded", "ticker": tk,
+                      "market": getattr(pos, "market", None) or "NYSE",
+                      "asset_class": cls, "amount_ils": round(buyable, 2),
+                      "from_cash_ils": fund.get("from_cash_ils", 0.0),
+                      "sells": fund.get("sells", [])},
+            "meta": {"source": "war_room", "ticker": tk, "impact": impact,
+                     "confidence": confidence, "funding": fund},
         })
-    return out[:3]
+    return out
 
 
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
@@ -359,6 +431,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     cap = effective_caps(plan)["concentration_cap"]
     objective = plan.objective if plan else "Balanced"
     recs: list[dict] = []
+    try:
+        from app.services.intake_service import get_cash as _get_cash
+        _cash_ils = await _get_cash(session, user)
+    except Exception:  # noqa: BLE001
+        _cash_ils = 0.0
     # Which contributing agents failed this build. Each block below is defensive so a
     # data hiccup never breaks Today \u2014 but silence made a missing card
     # indistinguishable from "nothing to do", so failures are now logged and reported.
@@ -461,16 +538,48 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         for a in _risk_alerts(snap, cap).get("alerts", []):
             vec = a.get("vector")
             if vec == "geographic":
+                # A named fund and a number, funded explicitly: "diversify" on its
+                # own is a topic, not something you can act on.
+                _amt = round(min(0.10, max(0.05, 1.0 - cap)) * nav, 2) if nav else 0.0
+                _spec, _how = {"kind": "none"}, [
+                    "Favor under-represented regions for your next contributions",
+                    "A broad ex-US global ETF (VXUS) is the simplest single fix"]
+                _act = ("Spread new money across more regions so one country's downturn can't sink "
+                        "the whole portfolio.")
+                try:
+                    from app.services import funding_service as _fs
+                    if _amt >= _fs.MIN_TRADE_ILS:
+                        _f = _fs.plan_funding(rows, snap, plan, objective, cap, _amt,
+                                              cash_ils=_cash_ils, exclude={"VXUS"})
+                        _buy = min(_amt, _f.get("funded_ils") or 0.0)
+                        if _buy >= _fs.MIN_TRADE_ILS:
+                            _f = _fs.plan_funding(rows, snap, plan, objective, cap, _buy,
+                                                  cash_ils=_cash_ils, exclude={"VXUS"})
+                            _act = (f"Buy {_ils(_buy)} of VXUS (global ex-US equities) to spread "
+                                    f"beyond one region. " + _fs.describe_funding(_f))
+                            _how = ([f"Buy {_ils(_buy)} of VXUS (Vanguard Total International Stock)"]
+                                    + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) "
+                                       f"— {x['reason']}" for x in _f.get("sells", [])]
+                                    + ([f"Use {_ils(_f['from_cash_ils'])} of cash"]
+                                       if _f.get("from_cash_ils") else [])
+                                    + ["Alternatives: VEA (developed) or VWO (emerging)"])
+                            _spec = {"kind": "buy_funded", "ticker": "VXUS", "market": "NASDAQ",
+                                     "asset_class": "Equities", "amount_ils": round(_buy, 2),
+                                     "from_cash_ils": _f.get("from_cash_ils", 0.0),
+                                     "sells": _f.get("sells", [])}
+                except Exception:  # noqa: BLE001
+                    logger.warning("geo diversification sizing failed", exc_info=True)
                 recs.append({"id": _rid("divrisk", "geo"), "dimension": "diversification",
-                             "severity": a.get("severity", "MEDIUM"), "title": "Diversify across regions",
+                             "severity": a.get("severity", "MEDIUM"),
+                             "title": ("Diversify across regions"
+                                       + (f" — {_ils(_spec['amount_ils'])} of VXUS"
+                                          if _spec["kind"] == "buy_funded" else "")),
                              "why": a.get("detail") or "Most of your money sits in a single region.",
-                             "action": "Spread new money across more regions so one country's downturn can't "
-                                       "sink the whole portfolio.",
+                             "action": _act,
                              "impact": "Lowers geographic concentration risk from over-reliance on one region.",
-                             "how": ["Favor under-represented regions for your next contributions",
-                                     "Consider a broad ex-home global ETF (e.g. VXUS) to balance exposure",
-                                     "Re-check here as the mix evens out"],
-                             "apply": {"kind": "none"}})
+                             "how": _how,
+                             "est_amount": _spec.get("amount_ils"),
+                             "apply": _spec})
             elif vec == "currency":
                 recs.append({"id": _rid("divrisk", "cur"), "dimension": "diversification",
                              "severity": a.get("severity", "MEDIUM"), "title": "Diversify your currency exposure",
@@ -527,7 +636,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _hedge_recs(rows, snap)
     recs += _momentum_recs(rows, snap)
     recs += _income_cost_recs(pdicts, snap, objective)
-    recs += _commodity_recs(rows, snap, objective)
+    recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
     try:
         from app.services.performance_service import performance as _perf_fn
         recs += _benchmark_recs(await _perf_fn(session, user), objective)
@@ -556,6 +665,37 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("market-regime recommendation failed", exc_info=True)
         degraded.append("market_regime")
         market = {}
+
+    # Liquidity floor: name what to sell and how much, rather than "hold more cash".
+    try:
+        from app.services import funding_service as _fs2
+        _floor = _fs2.cash_floor_ils(nav, objective, plan)
+        if nav and _cash_ils < _floor:
+            _need = round(_floor - _cash_ils, 2)
+            _cands = _fs2.rank_trim_candidates(rows, snap, objective, cap)
+            if _need >= _fs2.MIN_TRADE_ILS and _cands:
+                _c = _cands[0]
+                _sh = int(_need / _c["price_ils"]) if _c["price_ils"] else 0
+                if _sh > 0:
+                    recs.append({
+                        "id": _rid("raise_cash"), "dimension": "liquidity", "severity": "MEDIUM",
+                        "title": f"Raise {_ils(_need)} of cash",
+                        "why": (f"You hold {_ils(_cash_ils)} liquid against a "
+                                f"{_fs2.cash_floor_pct(objective, plan):.0%} floor for a {objective} "
+                                f"plan ({_ils(_floor)}). Too little dry powder means a forced sale "
+                                f"at a bad moment."),
+                        "action": (f"Sell {_sh} {_c['ticker']} (~{_ils(_need)}) to rebuild your cash "
+                                   f"floor. {_c['reason']}."),
+                        "impact": f"Restores your liquidity floor to {_ils(_floor)}.",
+                        "how": [f"Sell {_sh} {_c['ticker']} (~{_ils(_need)})",
+                                _c["reason"].capitalize(),
+                                "Proceeds land in cash, visible on Holdings"],
+                        "est_amount": _need,
+                        "apply": {"kind": "trim", "ticker": _c["ticker"], "shares": _sh},
+                        "meta": {"cash_ils": _cash_ils, "floor_ils": _floor}})
+    except Exception:  # noqa: BLE001
+        logger.warning("cash-floor recommendation failed", exc_info=True)
+        degraded.append("cash_floor")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
@@ -1027,9 +1167,13 @@ def _benchmark_recs(perf, objective) -> list[dict]:
     return out
 
 
-def _commodity_recs(rows, snap, objective) -> list[dict]:
-    """Flag a missing commodities sleeve and name concrete, screener-ranked picks."""
+def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0) -> list[dict]:
+    """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
     out: list[dict] = []
+    try:
+        from app.services import funding_service as _fund
+    except Exception:  # noqa: BLE001
+        _fund = None
     target = (OBJ_TARGET.get(objective or "Balanced", {}) or {}).get("Commodities", 0.0)
     if target <= 0:
         return out
@@ -1046,20 +1190,46 @@ def _commodity_recs(rows, snap, objective) -> list[dict]:
     except Exception:  # noqa: BLE001
         picks = []
     names = [(f"{p.ticker} ({p.name})" if getattr(p, "name", "") else p.ticker) for p in picks][:3]
-    pick_line = ", ".join(names) if names else "a broad basket (DBC), gold (GLD) or agriculture (DBA)"
+    pick = picks[0] if picks else None
+    pick_tk = getattr(pick, "ticker", None) or "DBC"
+    pick_name = getattr(pick, "name", "") or "a broad commodity basket"
+    alts = ", ".join(names[1:3]) if len(names) > 1 else "GLD (gold) or DBA (agriculture)"
+    gap_ils = round(max(0.0, target - com_w) * nav, 2)
+    action = (f"Buy {_ils(gap_ils)} of {pick_tk} ({pick_name}) — that lifts commodities from "
+              f"{com_w:.0%} to your {target:.0%} target. Alternatives if you'd rather: {alts}.")
+    how = [f"Buy {_ils(gap_ils)} of {pick_tk} ({pick_name})"]
+    apply_spec = {"kind": "none"}
+    if _fund is not None and gap_ils >= _fund.MIN_TRADE_ILS:
+        fund = _fund.plan_funding(rows, snap, plan, objective, cap, gap_ils,
+                                  cash_ils=cash_ils, exclude={pick_tk})
+        affordable = min(gap_ils, fund.get("funded_ils") or 0.0)
+        if affordable >= _fund.MIN_TRADE_ILS:
+            fund = _fund.plan_funding(rows, snap, plan, objective, cap, affordable,
+                                      cash_ils=cash_ils, exclude={pick_tk})
+            action = (f"Buy {_ils(affordable)} of {pick_tk} ({pick_name}) — lifting commodities "
+                      f"from {com_w:.0%} toward your {target:.0%} target. "
+                      + _fund.describe_funding(fund)
+                      + f" Alternatives: {alts}.")
+            how = ([f"Buy {_ils(affordable)} of {pick_tk} ({pick_name})"]
+                   + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
+                      for x in fund.get("sells", [])]
+                   + ([f"Use {_ils(fund['from_cash_ils'])} of cash"] if fund.get("from_cash_ils") else []))
+            apply_spec = {"kind": "buy_funded", "ticker": pick_tk, "market": "NYSE",
+                          "asset_class": "Commodities", "amount_ils": round(affordable, 2),
+                          "from_cash_ils": fund.get("from_cash_ils", 0.0),
+                          "sells": fund.get("sells", [])}
+            gap_ils = affordable
     out.append({"id": _rid("commodity_add"), "dimension": "diversification", "severity": "LOW",
-                "title": "Add a commodities sleeve",
-                "action": (f"You hold about {com_w:.0%} in commodities but your {objective or 'Balanced'} target is "
-                           f"~{target:.0%}. A small sleeve diversifies away from stocks and bonds."),
-                "why": (f"Commodities tend to move differently from equities and bonds, so a small allocation "
-                        f"cushions the portfolio when stocks and bonds fall together — your target holds ~{target:.0%}."),
+                "title": f"Add a commodities sleeve — {_ils(gap_ils)} of {pick_tk}",
+                "action": action,
+                "why": (f"Commodities tend to move differently from equities and bonds, so a small "
+                        f"allocation cushions the portfolio when stocks and bonds fall together — "
+                        f"your {objective or 'Balanced'} target holds ~{target:.0%} and you hold {com_w:.0%}."),
                 "impact": "Adds a low-correlation diversifier, smoothing your overall swings.",
-                "how": [f"Consider {pick_line}",
-                        f"Size it toward your ~{target:.0%} target — a little goes a long way",
-                        "Add it under Holdings → Add commodities & real assets"],
-                "est_amount": None, "apply": {"kind": "none"},
+                "how": how,
+                "est_amount": gap_ils, "apply": apply_spec,
                 "meta": {"commodity_weight": round(com_w, 4), "target": target,
-                         "picks": [p.ticker for p in picks]}})
+                         "picks": [p.ticker for p in picks], "chosen": pick_tk}})
     out[-1]["audit_trail"] = audit_for("diversification",
         raw_data={"commodity_weight": round(com_w, 4), "target": target, "picks": [p.ticker for p in picks]},
         formulas=[_fml("Commodity gap", "gap = target - current", result=f"{(target - com_w):.0%}")])
@@ -1170,6 +1340,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = {"sold": sold, "cash_added_ils": round(credited, 2), "tax_ils": round(tax_total, 2)}
     elif kind == "fee_swap":
         detail = await _apply_fee_swap(session, user, by_ticker, spec)
+    elif kind == "buy_funded":
+        detail = await _apply_buy_funded(session, user, spec)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
@@ -1194,6 +1366,78 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         return {"applied": "none", "advisory": True, "title": rec["title"],
                 "note": "Marked as done. This one is guidance -- nothing was bought or sold."}
     return {"applied": kind, "title": rec["title"], **detail}
+
+
+
+async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> dict:
+    """Execute a sized buy, funding it from cash and/or the named trims.
+
+    The sells happen first so the cash is really there, and each leg is priced
+    live rather than assumed. Nothing is bought that can't be funded.
+    """
+    from app.providers.registry import guarded_quote
+    from app.schemas.intake import IntakePosition
+    from app.schemas.state_machine import Market
+    from app.services.fx import fx_rate
+    from app.services.intake_service import (
+        ensure_account, ensure_entity, get_cash, set_cash, upsert_positions,
+    )
+
+    sold, tax_total, raised = [], 0.0, 0.0
+    rows = await list_positions(session, user)
+    by_ticker = {(p.ticker or "").upper(): p for p in rows}
+    for leg in spec.get("sells") or []:
+        p = by_ticker.get((leg.get("ticker") or "").upper())
+        if p is None:
+            continue
+        shares = min(float(leg.get("shares") or 0), float(p.quantity))
+        if shares <= 0:
+            continue
+        gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
+                                     float(p.cost_basis or 0), p.market, p.meta)
+        remaining = float(p.quantity) - shares
+        if remaining <= 0:
+            await delete_position(session, user, p.ticker, p.market)
+        else:
+            await update_position(session, user, str(p.id), quantity=remaining)
+        raised += max(0.0, gross - tax)
+        tax_total += tax
+        sold.append(f"{int(shares)} {p.ticker}")
+
+    cash_before = await get_cash(session, user)
+    budget = round(float(spec.get("from_cash_ils") or 0.0) + raised, 2)
+    if budget <= 0:
+        return {"bought": None, "note": "Nothing could be funded, so nothing was bought."}
+
+    ticker = (spec.get("ticker") or "").upper()
+    try:
+        q = guarded_quote(ticker)
+        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+    except Exception:  # noqa: BLE001 — no live price: keep the money as cash, don't misprice
+        await set_cash(session, user, cash_before + raised)
+        return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": None,
+                "cash_added_ils": round(raised, 2),
+                "note": f"Sold {', '.join(sold) or 'nothing'}; couldn't price {ticker}, held as cash."}
+    if price <= 0:
+        await set_cash(session, user, cash_before + raised)
+        return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": None,
+                "cash_added_ils": round(raised, 2),
+                "note": f"No live price for {ticker}; proceeds held as cash."}
+
+    native = budget / (fx_rate(ccy) or 1.0)
+    qty = native / price
+    mk = spec.get("market") if spec.get("market") in {m.value for m in Market} else "NYSE"
+    ip = IntakePosition(ticker=ticker, market=Market(mk), depth=1, spot_price=price,
+                        listing_price=price, quantity=qty, cost_basis=price,
+                        asset_class=spec.get("asset_class") or "Equities")
+    entity = await ensure_entity(session, user, "Personal", "Personal")
+    account = await ensure_account(session, entity, "Main")
+    await upsert_positions(session, account, [ip])
+    await session.commit()
+    # Cash pays only its share; sale proceeds went straight into the buy.
+    await set_cash(session, user, max(0.0, cash_before - float(spec.get("from_cash_ils") or 0.0)))
+    return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": ticker,
+            "shares": round(qty, 4), "value_ils": round(budget, 2)}
 
 
 async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) -> dict | None:

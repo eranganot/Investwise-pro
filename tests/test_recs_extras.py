@@ -37,9 +37,13 @@ def test_commodity_sleeve_rec_via_api():
              "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 100}]})
         c.put("/api/v1/plan", json={"objective": "Balanced", "risk_tolerance": "Medium"})
         recs = c.get("/api/v1/recommendations").json()["recommendations"]
-        card = next((r for r in recs if r["title"] == "Add a commodities sleeve"), None)
+        # Since Phase 3 the title carries the size, e.g. "Add a commodities
+        # sleeve - ₪1,200 of DBC": a card without a number isn't an action.
+        card = next((r for r in recs if r["title"].startswith("Add a commodities sleeve")), None)
         assert card is not None
         assert card["dimension"] == "diversification" and card["how"]
+        assert card["est_amount"] and card["est_amount"] > 0     # sized, not vague
+        assert card["meta"]["chosen"]                            # one named pick
 
 
 def test_commodity_rec_silent_when_already_held():

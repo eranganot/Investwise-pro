@@ -122,22 +122,42 @@ def test_ungrounded_signals_never_become_today_cards(monkeypatch):
 
 
 def test_grounded_approved_signals_do_become_today_cards(monkeypatch):
-    import asyncio
-    from app.services import recommendations as rr
+    """A grounded, approved signal that fits the plan becomes a sized Today card.
 
-    async def fake_payload(session, user, rows=None):
-        return {"grounded": True, "sessions": [
+    _war_room_recs now sizes and funds against the live portfolio, so this drives
+    it through the API with a stubbed war-room payload rather than calling it with
+    a bare None session.
+    """
+    import os
+    os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    from fastapi.testclient import TestClient
+    import app.main as m
+    from app.api.routes import war_room as wr
+
+    async def fake_payload(session, user, positions=None):
+        return {"grounded": True, "signal_basis": "stub", "sessions": [
             {"ticker": "MSFT", "outcome": "DISPLAYED", "outcome_label": "Growth",
-             "title": "Buy MSFT (NASDAQ)",
+             "action_type": "BUY", "title": "Buy MSFT (NASDAQ)",
              "transcript": [{"agent": "Alpha", "says": "Depth 3 divergence +8.2%"},
-                            {"agent": "Decision", "says": "", "detail": {"impact": 61, "confidence": 80}}]},
-            {"ticker": "NOISE", "outcome": "NO_ACTION", "outcome_label": "none", "transcript": []}]}
+                            {"agent": "Decision", "says": "",
+                             "detail": {"impact": 61, "confidence": 80}}]},
+            {"ticker": "NOISE", "outcome": "NO_ACTION", "outcome_label": "none",
+             "action_type": "BUY", "transcript": []}]}
 
-    monkeypatch.setattr("app.api.routes.war_room._war_room_payload", fake_payload)
-    out = asyncio.get_event_loop().run_until_complete(rr._war_room_recs(None, None, []))
-    assert len(out) == 1                                   # only the approved one
-    card = out[0]
-    assert card["meta"]["source"] == "war_room"
-    assert card["meta"]["ticker"] == "MSFT"
-    assert card["actionable"] is False if "actionable" in card else True
-    assert "61" in card["impact"]
+    monkeypatch.setattr(wr, "_war_room_payload", fake_payload)
+    with TestClient(m.app) as c:
+        # A Grow plan holding only equities: MSFT (an equity) has target room.
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "AAA", "market": "NASDAQ", "asset_class": "Equities", "depth": 2,
+             "spot_price": 100, "listing_price": 100, "quantity": 50, "cost_basis": 100}]})
+        c.put("/api/v1/plan", json={"objective": "Grow", "risk_tolerance": "High"})
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": 5000, "mode": "set"})
+        recs = c.get("/api/v1/recommendations").json()["recommendations"]
+        wcards = [r for r in recs if (r.get("meta") or {}).get("source") == "war_room"]
+        assert wcards, "expected a war-room card for the approved signal"
+        card = next(r for r in wcards if r["meta"]["ticker"] == "MSFT")
+        assert "MSFT" in card["title"]
+        assert card["actionable"] is True                 # sized + fundable => executable
+        assert card["est_amount"] and card["est_amount"] > 0
+        assert not any(r["meta"].get("ticker") == "NOISE"
+                       for r in wcards if r.get("meta"))   # NO_ACTION never promoted

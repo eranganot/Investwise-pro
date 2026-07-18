@@ -22,11 +22,9 @@ remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git 
 7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
 full of CRLF noise.
 
-Files changed: `app/services/recommendations.py`, `app/services/signal_service.py` (new),
-`app/api/routes/recommendations.py`, `app/api/routes/war_room.py`, `app/core/config.py`,
-`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v7`→`iw-v8`),
-`tests/test_signal_service.py` (new), `tests/test_done_vs_ignored.py` (new),
-`tests/test_recommendations.py`.
+Files changed: `app/services/recommendations.py`, `app/services/funding_service.py` (new),
+`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v8`→`iw-v9`),
+`tests/test_funding_service.py` (new), `tests/test_recs_extras.py`, `tests/test_signal_service.py`.
 
 **Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
 2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
@@ -52,6 +50,22 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Phase 3: funding engine — cards are now sized and executable.** Every buy card
+  used to say *what* without *how much* or *how to pay for it*, so it read as advice. New
+  `funding_service`: (a) **sizing** bounded by the plan's asset-class target and single-name cap;
+  (b) **funding** — spendable cash first (down to a % -of-NAV floor that varies by objective:
+  Preserve 10% → Grow 3%, overridable), then the worst-fitting holdings ranked by plan fit (name
+  over cap, class overweight, tax cost), each with the ₪ amount, share count and est. CGT. New
+  executable `buy_funded` apply-kind sells the funding legs then buys the target at a live price,
+  never spending money it hasn't raised. Cards rewritten to be actionable: war-room signals are
+  **plan-checked and sized** (a signal the plan can't fund is dropped with its reason, not shown
+  as vague advice); a held name over its cap becomes a concrete trim; the commodities card names
+  one pick and sizes it; the geographic-diversification card becomes a sized VXUS buy; a new
+  **"Raise ₪X of cash"** card fires below the liquidity floor naming exactly what to sell. Today
+  renders a green **"How it's funded"** block listing every trade leg. **Plan alignment:** war-room
+  cards now derive their sizing from the plan's target mix and caps, so the war room and the plan
+  can no longer disagree. +17 tests (`test_funding_service.py`; `test_recs_extras`,
+  `test_signal_service` updated for sized titles). SW `iw-v8`→`iw-v9`.
 - 2026-07-18 — **Phase 2: grounded signals + war-room/Today unification; Done ≠ Ignore**
   (on disk, uncommitted). (1) **"Mark as done" was filing cards under Ignore.** Both buttons wrote
   to one `dismissed_recs` bucket, so they were indistinguishable. Now two buckets: *ignored*

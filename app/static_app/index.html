@@ -768,10 +768,24 @@ function auditAccordion(o){
     <div class="audit-sec"><h4>Adversary critique</h4>${adv?`<ul class="adv-find">${adv}</ul>`:'<div class="v">No unstated assumptions flagged.</div>'}</div>
   </div></details>`;
 }
+// When a card funds a buy by selling something, show the exact trade legs so the
+// sizing is a real decision, not a vague nudge.
+function fundingBlock(o){
+  const sp=o.apply||{}; if(sp.kind!=="buy_funded") return "";
+  const legs=[];
+  if(sp.from_cash_ils>0) legs.push(`<li>Use ${ils(sp.from_cash_ils)} from cash</li>`);
+  (sp.sells||[]).forEach(x=>legs.push(
+    `<li>Sell ${x.shares} ${x.ticker} (~${ils(x.value_ils)})${x.tax_ils?` · est. tax ${ils(x.tax_ils)}`:""}</li>`));
+  if(!legs.length) return "";
+  return `<div style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #34d399;background:rgba(52,211,153,.08);border-radius:4px">
+    <b>💰 How it's funded:</b><ul style="margin:4px 0 0;padding-left:18px">${legs.join("")}</ul>
+    <div class="mk" style="margin-top:4px">Buy ${ils(sp.amount_ils)} of ${sp.ticker}</div></div>`;
+}
 function recCard(o){
   const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
   const why=o.why?`<div class="why" style="font-size:13px;opacity:.8;margin:2px 0 6px"><b>Why:</b> ${o.why}</div>`:"";
   const impact=o.impact?`<div class="impact" style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px"><b>Impact:</b> ${o.impact}</div>`:"";
+  const fund=fundingBlock(o);
   // Say up front whether the app can execute this or whether it's guidance you
   // act on yourself -- Accept used to look identical for both.
   const tag=o.actionable
@@ -782,6 +796,7 @@ function recCard(o){
     ${why}
     <div class="act">${o.action}</div>
     ${impact}
+    ${fund}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
     ${auditAccordion(o)}
     <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button>${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
