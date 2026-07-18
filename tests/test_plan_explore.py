@@ -40,10 +40,31 @@ def test_mix_check_classifies_and_compares():
         assert "rebalance_required" in mix
 
 
-def test_war_room_includes_market_ideas_with_sources():
+def test_war_room_tags_holding_vs_market_signals(monkeypatch):
+    """Since Phase 2 the war room runs on grounded signals, not demo data, so a
+    non-holding idea is sourced from the screener universe rather than a hardcoded
+    HYPE. This still verifies the thing that mattered: each session is tagged
+    'portfolio' or 'market' by whether the ticker is held."""
+    from app.schemas.lag import LagObservation
+    from app.schemas.state_machine import ActionType, Market
+
+    def fake_build(candidates, **kw):
+        return [
+            LagObservation(ticker="TEVA", market=Market.NYSE, depth=3, spot_price=100,
+                           listing_price=108, action_type=ActionType.BUY,
+                           expected_return_pct=8, volatility_pct=14),          # held
+            LagObservation(ticker="NEWIDEA", market=Market.NYSE, depth=1, spot_price=100,
+                           listing_price=112, action_type=ActionType.BUY,
+                           expected_return_pct=12, volatility_pct=40),         # not held
+        ]
+    monkeypatch.setattr("app.api.routes.war_room.signal_service.build_observations", fake_build)
+    monkeypatch.setattr("app.api.routes.war_room.signal_service.candidate_set",
+                        lambda positions, **kw: [{"ticker": "TEVA", "market": "NYSE"},
+                                                 {"ticker": "NEWIDEA", "market": "NYSE"}])
     with TestClient(app) as c:
         c.post("/api/v1/intake/portfolio", json=PORT)
         wr = c.get("/api/v1/war-room").json()
-        sources = {s["source"] for s in wr["sessions"]}
-        assert "market" in sources  # HYPE etc. always surfaced
-        assert any(s["ticker"] == "HYPE" and s["outcome"] == "VETOED" for s in wr["sessions"])
+        assert wr["grounded"] is True
+        by_ticker = {s["ticker"]: s for s in wr["sessions"]}
+        assert by_ticker["TEVA"]["source"] == "portfolio"      # held
+        assert by_ticker["NEWIDEA"]["source"] == "market"      # a new idea, not held
