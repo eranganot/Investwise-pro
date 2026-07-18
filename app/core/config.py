@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     risk_distribution: str = "normal"   # normal | t (Student-t fat tails)
     risk_t_dof: int = 5                  # degrees of freedom for the t distribution
     lag_min_divergence_pct: float = 2.0  # Lag noise floor; smaller divergences ignored
+    # Fall back to demo_data.DEFAULT_OBSERVATIONS when no real signal is available.
+    # Off in production: sample prices must never be presented as real advice.
+    demo_signals: bool = False
     sim_cpi_pct: float = 3.0          # default annual inflation (CPI) for projections
     sim_fx_change_pct: float = 0.0    # default annual FX drift for projections
     concentration_cap: float = 0.25   # max single-position weight before concentration flag

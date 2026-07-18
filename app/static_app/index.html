@@ -677,9 +677,11 @@ async function loadToday(){
     // "Nothing to do" and "you ignored everything" and "an agent failed" are three
     // different states — say which one it actually is instead of always claiming health.
     const hidden=(all.length-recs.length)+(r.dismissed_count||0);
+    const done=r.completed_count||0;
     const degraded=r.degraded||[];
-    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden))
-      + (hidden&&recs.length?ignoredNote(hidden):"") + degradedNote(degraded);
+    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done))
+      + (hidden&&recs.length?ignoredNote(hidden):"")
+      + (done&&recs.length?doneNote(done):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -704,7 +706,19 @@ async function loadToday(){
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
   }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
 }
-function emptyRecs(hidden){
+function doneNote(done){
+  return `<div class="card center muted" style="font-size:13px">
+    ✅ ${done} ${done>1?"suggestions":"suggestion"} marked done ·
+    <span class="link" onclick="restoreCompleted()">show ${done>1?"them":"it"}</span></div>`;
+}
+async function restoreCompleted(){
+  try{await fetch("/api/v1/recommendations/restore-completed",{method:"POST"});}catch(e){}
+  loadToday();
+}
+function emptyRecs(hidden,done){
+  if(!hidden&&done>0) return `<div class="card center"><div style="font-size:22px">✅</div>
+    <b>All done.</b><div class="muted">You've worked through everything — ${done} ${done>1?"items":"item"} marked done.</div>
+    <button class="soft" style="margin-top:10px" onclick="restoreCompleted()">↩︎ Show completed</button></div>`;
   if(hidden>0) return `<div class="card center"><div style="font-size:22px">🙈</div>
     <b>Nothing showing — but ${hidden} ${hidden>1?"suggestions are":"suggestion is"} ignored.</b>
     <div class="muted">You hid ${hidden>1?"them":"it"} earlier. They aren't gone — bring ${hidden>1?"them":"it"} back to review.</div>

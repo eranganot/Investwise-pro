@@ -22,10 +22,11 @@ remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git 
 7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
 full of CRLF noise.
 
-Files changed: `app/services/intake_service.py`, `app/api/routes/intake.py`,
-`app/api/routes/plan.py`, `app/services/recommendations.py`, `app/static_app/index.html`,
-`app/static_app/sw.js` (`iw-v4`→`iw-v6`), `tests/test_cash.py` (new),
-`tests/test_accept_honesty.py` (new).
+Files changed: `app/services/recommendations.py`, `app/services/signal_service.py` (new),
+`app/api/routes/recommendations.py`, `app/api/routes/war_room.py`, `app/core/config.py`,
+`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v7`→`iw-v8`),
+`tests/test_signal_service.py` (new), `tests/test_done_vs_ignored.py` (new),
+`tests/test_recommendations.py`.
 
 **Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
 2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
@@ -51,6 +52,24 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Phase 2: grounded signals + war-room/Today unification; Done ≠ Ignore**
+  (on disk, uncommitted). (1) **"Mark as done" was filing cards under Ignore.** Both buttons wrote
+  to one `dismissed_recs` bucket, so they were indistinguishable. Now two buckets: *ignored*
+  (7-day, restorable via "show ignored") and *completed* (90-day, its own `completed_count` and
+  `POST /recommendations/restore-completed`). Accept/Mark-as-done writes to completed; Ignore to
+  ignored; restoring one never resurrects the other. Deliberately **not** permanent — a forever
+  hide-list is what caused the original push/Today mismatch. (2) **`signal_service`** builds
+  `LagObservation`s from real price history: `spot` = latest close, `listing` = the name's own
+  50-day trend (so divergence is *measured*, not an assumed fair value), `volatility` = realized
+  annualized vol, `depth` = how persistent the divergence is. Unusable tickers are skipped, never
+  filled with placeholders. `DEFAULT_OBSERVATIONS` is now demo-only behind `DEMO_SIGNALS`
+  (default off). (3) **One pipeline.** `_war_room_payload` is the single entry point; Today's
+  `_war_room_recs` promotes only `DISPLAYED` decisions, and **only when `grounded` is true** — so
+  sample prices can never be laundered into advice. The war room is now the audit trail *for*
+  Today rather than a parallel universe. +27 tests (`test_signal_service.py`,
+  `test_done_vs_ignored.py`); `test_recommendations.py` updated — the war room no longer reads
+  spot/listing from intake metadata, so those two tests inject the observation directly.
+  SW `iw-v7`→`iw-v8`.
 - 2026-07-18 — **Stale-shell fix + recommendation coherence pass** (on disk, uncommitted).
   (1) **Deploys weren't reaching clients.** Diagnosed live via Chrome against production: `actBtn`
   and `restoreIgnored` were `undefined` in the running page while the cache key was already

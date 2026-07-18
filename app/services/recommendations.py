@@ -102,10 +102,19 @@ def _ensure_why_impact(recs: list[dict]) -> list[dict]:
 # An "Ignore" lasts up to this many days; if the recommendation is still relevant
 # after that, it resurfaces (and can notify again).
 _DISMISS_TTL_DAYS = 7
+# "Done" is a stronger statement than "ignore", so it suppresses for longer -- but
+# NOT forever. A permanent hide-list is exactly what caused the original
+# notification/Today mismatch (push kept firing for cards the app had buried), so
+# completed items still age out, and the UI shows the count with its own restore.
+_DONE_TTL_DAYS = 90
 
 
 def _dismiss_key(user: User) -> str:
     return f"dismissed_recs:{user.email}"
+
+
+def _done_key(user: User) -> str:
+    return f"completed_recs:{user.email}"
 
 
 def _now_iso() -> str:
@@ -120,9 +129,9 @@ def _parse_dt(ts: str) -> datetime:
         return datetime.now(timezone.utc)  # unparseable -> treat as fresh
 
 
-async def _load_dismiss_map(session: AsyncSession, user: User) -> dict[str, str]:
-    """Return {rec_id: dismissed_at_iso}. Tolerates the legacy list-of-ids shape."""
-    row = await session.get(KVSetting, _dismiss_key(user))
+async def _load_map(session: AsyncSession, key: str) -> dict[str, str]:
+    """Return {rec_id: marked_at_iso}. Tolerates the legacy list-of-ids shape."""
+    row = await session.get(KVSetting, key)
     if not row:
         return {}
     try:
@@ -134,46 +143,72 @@ async def _load_dismiss_map(session: AsyncSession, user: User) -> dict[str, str]
     return data if isinstance(data, dict) else {}
 
 
-async def load_dismissed(session: AsyncSession, user: User) -> set[str]:
-    """Currently-active dismissals (within the TTL window)."""
-    m = await _load_dismiss_map(session, user)
+async def _active(session: AsyncSession, key: str, ttl_days: int) -> set[str]:
+    m = await _load_map(session, key)
     if not m:
         return set()
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
     return {rid for rid, ts in m.items() if _parse_dt(ts) >= cutoff}
 
 
-async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
-    m = await _load_dismiss_map(session, user)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+async def _mark(session: AsyncSession, key: str, rec_id: str, ttl_days: int) -> None:
+    m = await _load_map(session, key)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
     m = {k: v for k, v in m.items() if _parse_dt(v) >= cutoff}  # prune expired
     m[rec_id] = _now_iso()
     payload = json.dumps(m)
-    row = await session.get(KVSetting, _dismiss_key(user))
+    row = await session.get(KVSetting, key)
     if row:
         row.value = payload
     else:
-        session.add(KVSetting(key=_dismiss_key(user), value=payload))
+        session.add(KVSetting(key=key, value=payload))
     await session.commit()
 
 
-async def restore_dismissed(session: AsyncSession, user: User) -> int:
-    """Clear every active dismissal so ignored cards come back.
-
-    An "Ignore" was previously a one-way door for 7 days with no way to see what
-    had been hidden \u2014 which made a deliberately-emptied Today look identical to
-    a genuinely healthy one. Returns how many dismissals were cleared.
-    """
-    m = await _load_dismiss_map(session, user)
+async def _clear(session: AsyncSession, key: str, ttl_days: int) -> int:
+    m = await _load_map(session, key)
     if not m:
         return 0
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
     active = sum(1 for ts in m.values() if _parse_dt(ts) >= cutoff)
-    row = await session.get(KVSetting, _dismiss_key(user))
+    row = await session.get(KVSetting, key)
     if row:
         row.value = json.dumps({})
         await session.commit()
     return active
+
+
+async def load_dismissed(session: AsyncSession, user: User) -> set[str]:
+    """Cards the user chose to IGNORE (7-day window, restorable)."""
+    return await _active(session, _dismiss_key(user), _DISMISS_TTL_DAYS)
+
+
+async def load_completed(session: AsyncSession, user: User) -> set[str]:
+    """Cards the user marked as DONE (90-day window, tracked separately).
+
+    Ignore and Done mean different things: "not now" vs "handled". Filing them in
+    one bucket made "Mark as done" look identical to "Ignore" -- the card landed
+    in the ignored list, which is what the user reported.
+    """
+    return await _active(session, _done_key(user), _DONE_TTL_DAYS)
+
+
+async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
+    await _mark(session, _dismiss_key(user), rec_id, _DISMISS_TTL_DAYS)
+
+
+async def complete_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
+    await _mark(session, _done_key(user), rec_id, _DONE_TTL_DAYS)
+
+
+async def restore_dismissed(session: AsyncSession, user: User) -> int:
+    """Bring back everything the user ignored (does not touch completed cards)."""
+    return await _clear(session, _dismiss_key(user), _DISMISS_TTL_DAYS)
+
+
+async def restore_completed(session: AsyncSession, user: User) -> int:
+    """Bring back everything the user marked done."""
+    return await _clear(session, _done_key(user), _DONE_TTL_DAYS)
 
 
 
@@ -247,6 +282,65 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
                         "Keep your cash floor intact while you phase in"]
 
     return [r for r in recs if r.get("id") not in drop]
+
+
+
+async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
+    """Surface signals the agent pipeline actually approved as Today cards.
+
+    The war room and the Today view were two disconnected pipelines: the agents
+    could approve "Buy TEVA" and the Today list would never mention it, which is
+    what the user reported. Both now read from the same decisions, so the war
+    room is the audit trail *for* Today rather than a parallel universe.
+
+    Only DISPLAYED (approved) decisions become cards, and only when the
+    underlying signals are grounded in real price history.
+    """
+    out: list[dict] = []
+    try:
+        from app.api.routes.war_room import _war_room_payload
+        payload = await _war_room_payload(session, user, rows)
+    except Exception:  # noqa: BLE001
+        logger.warning("war-room recommendations unavailable", exc_info=True)
+        return out
+    if not payload.get("grounded"):
+        return out  # never turn sample prices into advice
+    held = {(getattr(p, "ticker", "") or "").upper() for p in (rows or [])}
+    for s in payload.get("sessions", []):
+        if s.get("outcome") != "DISPLAYED":
+            continue
+        tk = (s.get("ticker") or "").upper()
+        title = s.get("title") or f"Act on {tk}"
+        conviction = next((ln.get("detail", {}) for ln in s.get("transcript", [])
+                           if ln.get("agent") == "Decision"), {})
+        impact_score = conviction.get("impact")
+        confidence = conviction.get("confidence")
+        alpha = next((ln.get("says") for ln in s.get("transcript", [])
+                      if ln.get("agent") == "Alpha"), "")
+        risk = next((ln.get("says") for ln in s.get("transcript", [])
+                     if ln.get("agent") == "Risk"), "")
+        verb = "Trim" if tk in held and s.get("outcome_label") == "Bulletproof" else "Review"
+        out.append({
+            "id": _rid("warroom", tk, s.get("outcome_label") or ""),
+            "dimension": "signal",
+            "severity": "MEDIUM" if (impact_score or 0) >= 50 else "LOW",
+            "title": title,
+            "why": (f"The agent pipeline approved this on the {s.get('outcome_label')} path. "
+                    f"{alpha}").strip(),
+            "action": (f"{verb} {tk}: the signal cleared risk, tax and adversary review"
+                       + (f" at {confidence:.0f}% confidence" if confidence is not None else "")
+                       + ". Open the war room for the full reasoning before acting."),
+            "impact": (f"Impact score {impact_score:.0f}/100 from the scorer."
+                       if impact_score is not None else "Scored by the decision engine."),
+            "how": ["Open Agents -> war room and read the full transcript for this ticker",
+                    "Check it against your plan's target mix before sizing",
+                    "Signals are trend-divergence based, not a price forecast"],
+            "est_amount": None,
+            "apply": {"kind": "none"},
+            "meta": {"source": "war_room", "ticker": tk, "impact": impact_score,
+                     "confidence": confidence, "risk_note": risk},
+        })
+    return out[:3]
 
 
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
@@ -463,6 +557,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         degraded.append("market_regime")
         market = {}
 
+    # Signals the agent pipeline approved (same decisions the war room shows).
+    try:
+        recs += await _war_room_recs(session, user, rows)
+    except Exception:  # noqa: BLE001
+        logger.warning("war-room recommendations failed", exc_info=True)
+        degraded.append("agent_signals")
+
     # Trading rules that have fired -> top-priority, user-defined actions.
     try:
         from app.services.rules_service import triggered_rule_recs
@@ -480,11 +581,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
-    suppressed = 0
-    if dismissed:
-        _before = len(recs)
+    completed = await load_completed(session, user)
+    suppressed = done_count = 0
+    if dismissed or completed:
+        _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
-        suppressed = _before - len(recs)
+        suppressed = _n - len(recs)
+        _n = len(recs)
+        recs = [r for r in recs if r.get("id") not in completed]
+        done_count = _n - len(recs)
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
@@ -496,6 +601,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             # Honesty signals for the Today empty state: "nothing to do",
             # "you ignored everything" and "an agent failed" are three different things.
             "dismissed_count": suppressed,
+            "completed_count": done_count,
             "degraded": degraded,
             "buy_ideas": _buy_ideas(snap),
             "risk_validation": {"beta_validated": bt.beta_validated,
