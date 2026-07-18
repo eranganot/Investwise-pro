@@ -15,17 +15,21 @@ _Seeded from git history + prior transcripts._
 - Legacy "Advanced" dashboard restored behind the auth gate.
 - Test suite ≈259 passing (5 new for war-room timestamps + benchmark-lag & commodity recs); lint (ruff) + test + test-postgres CI jobs green.
 
-## ⚠️ Uncommitted work on disk (2026-07-18) — needs a commit from Windows
-**Phase 0 of `PLAN_2026-07-18_alignment.md` is written and tested but NOT committed.** The
-sandbox hit two mount faults this session: a stale `.git/index.lock` it lacked permission to
-remove, and bash/git serving a *stale* view of `app/static_app/*` (git still reported
-`sw.js` as `iw-v3` after it was changed to `iw-v4`). Committing from the sandbox would have
-silently dropped the frontend changes. Verify `git status` shows all 8 files before committing.
+## ⚠️ Uncommitted work on disk (2026-07-18) — Phase 1, needs a commit from Windows
+Phase 0 shipped (`defe8ec`, CI green, deployed). **Phase 1 (cash) is written and tested but NOT
+committed.** The sandbox cannot commit here: a stale `.git/index.lock` it lacks permission to
+remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git status` lists all
+7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
+full of CRLF noise.
 
-Files changed: `app/services/market_impact.py`, `app/services/recommendations.py`,
-`app/api/routes/intake.py`, `app/api/routes/recommendations.py`, `app/static_app/index.html`,
-`app/static_app/sw.js`, `tests/test_markets_and_impact.py`, `tests/test_portfolio_totals.py` (new),
-`PLAN_2026-07-18_alignment.md` (new).
+Files changed: `app/services/intake_service.py`, `app/api/routes/intake.py`,
+`app/api/routes/plan.py`, `app/services/recommendations.py`, `app/static_app/index.html`,
+`app/static_app/sw.js` (`iw-v4`→`iw-v6`), `tests/test_cash.py` (new),
+`tests/test_accept_honesty.py` (new).
+
+**Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
+2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
+happened and the follow-up push reported "Everything up-to-date". Don't use here-strings here.
 
 ## Next (confirm priority)
 - **Phase 1–4 of `PLAN_2026-07-18_alignment.md`** — cash as a first-class citizen; grounding the
@@ -47,7 +51,34 @@ Files changed: `app/services/market_impact.py`, `app/services/recommendations.py
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
-- 2026-07-18 — **Phase 0: recommendation alignment groundwork** (on disk, uncommitted — see above).
+- 2026-07-18 — **Accept no longer pretends to act** (on disk, uncommitted). Reported live: tapping
+  Accept on "You're trailing SPY" changed nothing, said "Done — applied.", and parked the card in
+  the ignored list. Cause: 10 of the card types (benchmark lag, commodity sleeve, geo/currency/
+  liquidity diversification, holding verdicts, sector concentration, cash drag, yield lift,
+  contribution) carry `apply.kind == "none"` — plus the macro risk-off card had no `apply` key at
+  all — so `apply_recommendation` fell through every branch and the route dismissed them anyway.
+  Now: a single `_ACTIONABLE_KINDS` set is the source of truth; every card ships an `actionable`
+  flag; the UI tags each card "⚡ The app can do this for you" vs "💡 Guidance — you act on this
+  yourself" and swaps the button between **Accept** and **Mark as done**, with confirm/result text
+  that admits nothing was traded. A 404 from accept now **removes the card outright** instead of
+  leaving it or filing it under ignored. SW `iw-v5`→`iw-v6`. +5 tests (`test_accept_honesty.py`).
+  Phase 3's funding work will convert several of these advisory cards into genuinely actionable ones.
+- 2026-07-18 — **Phase 1: cash as a first-class holding** (on disk, uncommitted — see above).
+  Cash previously materialised *only* as a side effect of accepting a sell, so money already held
+  was untrackable and the donut read 100% Equities for a book with real liquidity. Adds
+  `set_cash`/`get_cash` + `GET|POST /api/v1/portfolio/cash` (set or adjust; adjust accepts a
+  negative for withdrawals and floors at zero; set rejects negatives), a "💵 Set liquid cash"
+  control and modal on Holdings, and a pinned green-bordered Cash row showing % of portfolio.
+  `/api/v1/mix` now always emits a Cash slice (even at 0%) plus `cash_ils`, so "no cash" is
+  visually distinct from "cash not tracked". Cash carries `liquidity_score: 100` and
+  `volatility_pct: 0` via a shared `CASH_META`, so it lifts the liquidity health score instead of
+  falling back to the generic 70. **Latent bug fixed:** `credit_cash` stored the full proceeds as
+  the *per-share* `cost_basis`, so once Phase 0 surfaced invested totals, ₪2,500 of cash reported
+  as ₪6.25M invested — basis is now 1.0, and existing rows self-heal on the next credit/set.
+  Also FX-normalized the cash-drag rec's weight (raw numerator over an ILS-normalized NAV).
+  SW `iw-v4`→`iw-v5`. +7 tests (`test_cash.py`); 60 affected-surface tests green, no new ruff.
+- 2026-07-18 — **Phase 0: recommendation alignment groundwork** — shipped as `defe8ec`, CI green,
+  Railway deploy Active.
   (1) **FX bug fixed**: `market_impact.annotate` computed exposure as `qty × price` with no FX rate
   while every other surface is ILS-normalized — the "What's moving" panel claimed events touched
   "100% of your portfolio (₪5,680)" for a book worth ₪17,306. Now uses `fx_rate(price_currency(...))`

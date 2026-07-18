@@ -160,5 +160,11 @@ async def mix_check(session: AsyncSession = Depends(get_session), user: User = D
     plan = await get_plan(session, user)
     target = _OBJ.get(plan.objective if plan else "Balanced", _OBJ["Balanced"])
     report = AllocationEngine().compute(target_allocation=target, current_allocation=current, nav=nav)
+    out = report.model_dump()
+    # Always surface Cash, even at 0%: a missing slice read as "fully invested"
+    # when the truth was "cash isn't being tracked".
+    if isinstance(out.get("current_allocation"), dict):
+        out["current_allocation"].setdefault("Cash", 0.0)
     return {"note": "Holdings are classified roughly by ticker/venue.",
-            "objective": plan.objective if plan else "Balanced", **report.model_dump()}
+            "objective": plan.objective if plan else "Balanced",
+            "cash_ils": round(current.get("Cash", 0.0) * nav, 2), **out}

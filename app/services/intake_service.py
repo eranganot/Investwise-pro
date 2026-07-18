@@ -141,6 +141,12 @@ async def update_position(
     return row
 
 
+# Cash is the most liquid thing you can hold; without an explicit score it fell
+# back to the generic 70 and dragged the liquidity health score down.
+CASH_META = {"asset_class": "Cash", "price_currency": "ILS", "liquidity_score": 100,
+             "volatility_pct": 0.0}
+
+
 async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> float:
     """Add ILS proceeds as visible liquidity: grow (or create) a 'CASH' holding.
 
@@ -155,7 +161,9 @@ async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> f
     cash = next((p for p in rows if (p.ticker or "").upper() == "CASH"), None)
     if cash is not None:
         cash.quantity = Decimal(str(round(float(cash.quantity) + amount_ils, 2)))
+        cash.cost_basis = Decimal("1")          # repairs rows written before this fix
         cash.current_price = Decimal("1")
+        cash.meta = dict(CASH_META)
         await session.commit()
         return amount_ils
     account_id = rows[0].account_id if rows else None
@@ -165,12 +173,49 @@ async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> f
         account_id = account.id
     session.add(Position(
         account_id=account_id, ticker="CASH", market="TASE",
-        quantity=Decimal(str(round(amount_ils, 2))), cost_basis=Decimal(str(round(amount_ils, 2))),
+        # cost_basis is PER SHARE. Cash holds `amount` units priced at 1.0, so the
+        # basis is 1.0 -- storing the full amount here made invested = qty x basis
+        # report the balance squared (₪2,500 cash -> "₪6.25M invested").
+        quantity=Decimal(str(round(amount_ils, 2))), cost_basis=Decimal("1"),
         current_price=Decimal("1"), lifecycle_stage="ACTIVE",
-        meta={"asset_class": "Cash", "price_currency": "ILS"},
+        meta=CASH_META,
     ))
     await session.commit()
     return amount_ils
+
+
+async def set_cash(session: AsyncSession, user: User, amount_ils: float) -> float:
+    """Set the cash balance to an absolute figure (vs ``credit_cash``, which adds).
+
+    Cash you already hold outside the app was previously untrackable \u2014 a CASH
+    position only ever appeared as a side effect of accepting a sell, so the
+    allocation donut read 100% equities for a book that held real liquidity.
+    Returns the new balance. Passing 0 removes the position entirely.
+    """
+    amount_ils = max(0.0, float(amount_ils or 0.0))
+    rows = await list_positions(session, user)
+    cash = next((p for p in rows if (p.ticker or "").upper() == "CASH"), None)
+    if cash is not None:
+        if amount_ils <= 0:
+            await session.delete(cash)
+            await session.commit()
+            return 0.0
+        cash.quantity = Decimal(str(round(amount_ils, 2)))
+        cash.cost_basis = Decimal("1")          # per-share; cash units are worth 1.0
+        cash.current_price = Decimal("1")
+        cash.meta = dict(CASH_META)
+        await session.commit()
+        return amount_ils
+    if amount_ils <= 0:
+        return 0.0
+    return await credit_cash(session, user, amount_ils)
+
+
+async def get_cash(session: AsyncSession, user: User) -> float:
+    """Current ILS cash balance (0 when no CASH position exists)."""
+    rows = await list_positions(session, user)
+    cash = next((p for p in rows if (p.ticker or "").upper() == "CASH"), None)
+    return float(cash.quantity) if cash is not None else 0.0
 
 
 async def get_entities(session: AsyncSession, user: User) -> list[dict]:

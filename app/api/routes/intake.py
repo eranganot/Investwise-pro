@@ -20,6 +20,7 @@ from app.services.performance_service import performance
 from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
     delete_position,
+    get_cash, set_cash,
     update_position,
     ensure_account, ensure_entity, list_positions, upsert_positions,
 )
@@ -259,6 +260,39 @@ async def remove_position(ticker: str, market: str | None = None,
     if not removed:
         raise HTTPException(status_code=404, detail=f"No holding '{ticker}' found.")
     return {"deleted": removed, "ticker": ticker}
+
+
+class CashRequest(BaseModel):
+    # No ge=0: a negative amount is a withdrawal under mode='adjust'. 'set' rejects
+    # negatives in the handler so a typo can't silently zero the balance.
+    amount_ils: float = Field(description="New balance when mode='set'; delta when mode='adjust'")
+    mode: str = Field(default="set", pattern="^(set|adjust)$")
+
+
+@router.get("/portfolio/cash")
+async def read_cash(session: AsyncSession = Depends(get_session),
+                    user: User = Depends(acting_user)) -> dict:
+    """Current liquid cash balance, in the base currency."""
+    return {"cash_ils": round(await get_cash(session, user), 2)}
+
+
+@router.post("/portfolio/cash", dependencies=[Depends(require_role(Role.ANALYST))])
+async def write_cash(body: CashRequest, session: AsyncSession = Depends(get_session),
+                     user: User = Depends(acting_user)) -> dict:
+    """Set or adjust liquid cash.
+
+    Cash held outside the app was previously invisible \u2014 it only materialised as
+    a side effect of accepting a sell \u2014 so allocation, liquidity scoring and the
+    donut all behaved as if the book were fully invested.
+    """
+    if body.mode == "set" and body.amount_ils < 0:
+        raise HTTPException(status_code=422, detail="Cash balance can't be negative.")
+    if body.mode == "adjust":
+        new_balance = await set_cash(session, user,
+                                     await get_cash(session, user) + body.amount_ils)
+    else:
+        new_balance = await set_cash(session, user, body.amount_ils)
+    return {"ok": True, "cash_ils": round(new_balance, 2)}
 
 
 class EditPositionRequest(BaseModel):

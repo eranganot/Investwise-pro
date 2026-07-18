@@ -30,6 +30,17 @@ CLASS_ETF = {"Equities": "VTI", "Fixed Income": "BND", "Cash": "BIL",
 
 _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
+# Apply kinds that genuinely mutate holdings/plan/rules. Anything else is advice
+# the app can't execute for you -- Accept on those used to fall through every
+# branch, report "Done -- applied." and silently dismiss the card, so guidance
+# looked like it had been carried out when nothing had happened.
+_ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
+                     "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules"}
+
+
+def _is_actionable(rec: dict) -> bool:
+    return ((rec.get("apply") or {}).get("kind") or "none") in _ACTIONABLE_KINDS
+
 
 def _rid(*parts) -> str:
     return "rec_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
@@ -69,6 +80,8 @@ def _ensure_why_impact(recs: list[dict]) -> list[dict]:
     'audit_trail' (the invariant every card must satisfy)."""
     for r in recs:
         dim = r.get("dimension", "")
+        r.setdefault("apply", {"kind": "none"})
+        r["actionable"] = _is_actionable(r)
         if not r.get("why"):
             r["why"] = _DIM_WHY.get(dim, "This helps your portfolio track your plan.")
         if not r.get("impact"):
@@ -754,11 +767,15 @@ def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
     nav = snap["nav"]
     if not nav:
         return out
+    # NAV is FX-normalized, so the numerator must be too -- a USD money-market
+    # sleeve was otherwise counted at ~a third of its real weight.
+    from app.services.fx import fx_rate as _fx, price_currency as _pc
     cash_w = 0.0
     for d in pdicts:
         cls = (d.get("asset_class") or "").lower()
         if cls == "cash" or d["ticker"].upper() in {"BIL", "SHV", "SGOV", "CASH"}:
-            cash_w += (d["quantity"] * d["current_price"]) / nav
+            _r = _fx(_pc(d.get("market"), None))
+            cash_w += (d["quantity"] * d["current_price"] * _r) / nav
     if cash_w >= 0.15:
         out.append({"id": _rid("cashdrag"), "dimension": "income", "severity": "MEDIUM",
                     "title": "Put idle cash to work",
@@ -990,7 +1007,10 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
             if made:
                 created.append(made)
         detail = {"rules_created": created}
-    # kind == "none" -> acknowledged, nothing to mutate
+    # kind == "none" -> acknowledged only; say so rather than claiming an edit
+    if kind not in _ACTIONABLE_KINDS:
+        return {"applied": "none", "advisory": True, "title": rec["title"],
+                "note": "Marked as done. This one is guidance -- nothing was bought or sold."}
     return {"applied": kind, "title": rec["title"], **detail}
 
 

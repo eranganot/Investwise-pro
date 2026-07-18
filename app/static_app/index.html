@@ -313,6 +313,7 @@
       <h2>What you own</h2>
       <div class="hold" id="holds"><div class="card muted">Loading…</div></div>
       <button class="soft" onclick="showAdd(); show('setup')">＋ Add another holding</button>
+      <button class="soft" onclick="openCash()">💵 Set liquid cash</button>
       <h2>Add commodities &amp; real assets</h2>
       <div class="card" id="commBox"><div class="muted">Loading commodities…</div></div>
       <div class="muted" id="commOut" style="margin-top:8px"></div>
@@ -454,6 +455,15 @@
   </section>
 </div>
 
+<div class="ov" id="cashov" onclick="if(event.target.id==='cashov')closeCash()">
+  <div class="modal"><span class="x" onclick="closeCash()">&times;</span><h3>&#128181; Liquid cash</h3>
+    <div class="muted" style="margin-bottom:10px">Money sitting uninvested in your account. It counts toward
+      your portfolio value, your allocation mix and your liquidity score.</div>
+    <label>Cash balance (&#8362;)</label><input id="c_amt" type="number" step="0.01" min="0" placeholder="0.00"/>
+    <button class="primary" onclick="saveCash()">Save</button>
+    <div class="muted" id="c_out" style="margin-top:8px"></div>
+  </div>
+</div>
 <div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
   <div class="modal"><span class="x" onclick="closeEdit()">×</span><h3>Edit holding</h3>
     <input type="hidden" id="e_id"/>
@@ -748,13 +758,19 @@ function recCard(o){
   const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
   const why=o.why?`<div class="why" style="font-size:13px;opacity:.8;margin:2px 0 6px"><b>Why:</b> ${o.why}</div>`:"";
   const impact=o.impact?`<div class="impact" style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px"><b>Impact:</b> ${o.impact}</div>`:"";
+  // Say up front whether the app can execute this or whether it's guidance you
+  // act on yourself -- Accept used to look identical for both.
+  const tag=o.actionable
+    ? `<span class="mk" style="color:#34d399">⚡ The app can do this for you</span>`
+    : `<span class="mk">💡 Guidance — you act on this yourself</span>`;
   return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
+    <div style="margin:2px 0 6px;font-size:12px">${tag}</div>
     ${why}
     <div class="act">${o.action}</div>
     ${impact}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
     ${auditAccordion(o)}
-    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button><button class="acc" onclick="acceptRec('${o.id}')">✓ Accept</button><button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
+    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button>${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 function _applyMsg(j){
@@ -766,12 +782,28 @@ function _applyMsg(j){
   if(j.tax_ils){parts.push(`(est. tax \u20aa${(j.tax_ils).toLocaleString()})`);}
   if(j.rules_created&&j.rules_created.length){parts.push("Armed "+j.rules_created.map(r=>r.label).join(", "));}
   if(j.note){parts.push(j.note);}
+  if(j.advisory){return j.note||"Marked as done \u2014 nothing was bought or sold.";}
   return parts.length?("Done \u2014 "+parts.join(" \u00b7 ")):"Done \u2014 applied.";
 }
-async function acceptRec(id){
-  if(!confirm("Apply this recommendation now? It will update your holdings/plan."))return;
+function actBtn(o){
+  return o.actionable
+    ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
+    : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
+}
+async function acceptRec(id,actionable){
+  const msg=actionable
+    ? "Apply this now? It will update your holdings/plan."
+    : "Mark this as done?\n\nThis is guidance — nothing will be bought or sold. It just clears the card and stops the reminders.";
+  if(!confirm(msg))return;
   try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,{method:"POST"});
     const j=await r.json().catch(()=>({}));
+    if(r.status===404){
+      // The suggestion no longer applies (prices moved, or you already acted).
+      // Drop it outright — don't park it in the ignored list, where it would
+      // look like something you'd deliberately hidden.
+      alert("That suggestion no longer applies, so I've removed it.");
+      HMAP={};loadToday();return;
+    }
     if(!r.ok){throw new Error(j.detail||"Failed to apply");}
     snoozeAdd(id);
     alert(_applyMsg(j));
@@ -978,7 +1010,15 @@ async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);
     const _navTot=p.positions.length?navSummary(p):"";
-    $("holds").innerHTML=_navTot+p.positions.map(h=>{const val=(h.value_ils!=null)?h.value_ils:h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
+    // Cash first, then everything else in the order the API returned it.
+    const _rows=[...p.positions].sort((a,b)=>(isCash(b)?1:0)-(isCash(a)?1:0));
+    $("holds").innerHTML=_navTot+_rows.map(h=>{const val=(h.value_ils!=null)?h.value_ils:h.quantity*(h.current_price||0);
+      if(isCash(h)) return `<div class="row" style="border-left:3px solid #34d399">
+        <div><div class="nm">\u{1F4B5} Cash</div><div class="mk">Liquid · available to invest</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>
+        <div class="mk">${p.nav_ils?(val/p.nav_ils*100).toFixed(1)+"% of portfolio":""}</div></div>
+        <button class="del" title="Edit cash" onclick="openCash()">✎</button></div></div>`;
+      const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
@@ -987,6 +1027,28 @@ async function loadHoldings(){
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
       ||`<div class="card muted">No holdings yet.</div>`;
   }catch(e){$("holds").innerHTML=`<div class="card bad">${e}</div>`;}
+}
+// Cash is money you can act on today, so it leads the list rather than sorting in
+// among the equities. isCash also drives the wallet marker on the row.
+function isCash(h){ return (h.ticker||"").toUpperCase()==="CASH" || (h.asset_class||"").toLowerCase()==="cash"; }
+async function openCash(){
+  let cur=0;
+  try{cur=(await(await fetch("/api/v1/portfolio/cash")).json()).cash_ils||0;}catch(e){}
+  $("c_amt").value=cur||"";
+  $("c_out").textContent="";
+  $("cashov").classList.add("show");
+}
+function closeCash(){$("cashov").classList.remove("show");}
+async function saveCash(){
+  const v=parseFloat($("c_amt").value);
+  if(isNaN(v)||v<0){$("c_out").innerHTML='<span class="bad">Enter an amount of 0 or more.</span>';return;}
+  $("c_out").textContent="Saving\u2026";
+  try{const r=await fetch("/api/v1/portfolio/cash",{method:"POST",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({amount_ils:v,mode:"set"})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.detail||"Save failed");
+    closeCash(); HMAP={}; loadHoldings();
+  }catch(e){$("c_out").innerHTML=`<span class="bad">${e.message||e}</span>`;}
 }
 function editHolding(id){const h=HMAP[id];if(!h)return;
   $("e_id").value=id;$("e_t").value=h.ticker;$("e_m").value=h.market;
