@@ -22,9 +22,9 @@ remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git 
 7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
 full of CRLF noise.
 
-Files changed: `app/services/strategy_profile.py` (new), `app/api/routes/strategy.py`,
-`app/static_app/index.html`, `app/static_app/sw.js` (`iw-v9`→`iw-v10`),
-`tests/test_strategy_profile.py` (new).
+Files changed (Phase 5): `app/services/recommendations.py`, `app/services/llm.py`,
+`app/services/rules_service.py`, `tests/test_funding_service.py`, `tests/test_signal_service.py`,
+`requirements-dev.txt`, `.github/workflows/ci.yml`, `README.md`. No SW bump (no frontend change).
 
 **Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
 2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
@@ -50,6 +50,19 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Phase 5: green CI + README refresh.** (1) `test-postgres` was failing:
+  `test_buy_funded_executes_via_the_apply_service` drove the DB through
+  `asyncio.get_event_loop().run_until_complete()` on the app's shared async engine — the exact
+  cross-event-loop pattern `CLAUDE.md` warns asyncpg rejects (green on SQLite, red on Postgres).
+  Rewritten as an `async def` test with a throwaway `NullPool` engine in its own loop (the conftest
+  pattern); the ungrounded-signals test made async too (no more `run_until_complete` anywhere).
+  (2) `lint` (ruff) was red — 7 pre-existing errors (5 semicolons in `_fund_score`, a
+  `seen.add(...); append(...)` in `llm.py`, an unused `nav` in `rules_service`). All fixed; `ruff
+  check app` is clean. Pinned `ruff==0.15.22` in requirements-dev and made the lint job install it
+  and **gate** (dropped `continue-on-error`) so it can't silently drift red again. (3) README
+  rewritten from the stale "Phase 0 skeleton" to the real system — grounded/sized/funded
+  recommendations, the unified war-room↔Today pipeline, first-class cash, strategy profiles,
+  card reconciliation — with the new endpoints documented. **Phases 0–5 complete; CI fully green.**
 - 2026-07-18 — **Phase 4: strategy differentiation.** The four Grow strategies all read as
   `{"Equities": 1.0}` by asset class and the UI showed only a description + ticker list, so a
   leveraged-Nasdaq basket looked identical to a diversified-index one. New `strategy_profile`

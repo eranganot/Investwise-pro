@@ -1,13 +1,38 @@
-# InvestWise Pro — Multi-Agent Wealth Operating System (v22.1)
+# InvestWise Pro — Multi-Agent Wealth Operating System
 
-A cloud-native FastAPI backend + React dashboard for net-wealth optimization.
-**This is the Phase 0 skeleton:** the full Position Lifecycle state machine, all
-11 database tables, typed engine stubs, and a dashboard shell. Engine logic is
-added phase by phase (see `EXECUTION_PLAN.md`).
+A cloud-native FastAPI backend + single-file PWA dashboard for net-wealth
+optimization. A pipeline of agents (Research · Alpha/Lag · Risk · Tax · Decision ·
+Adversary) turns real market data into **actionable, sized, funded** to-dos on a
+"Today" screen, all normalized to a single base currency (ILS).
 
 > **Note:** This software produces recommendations from the rules and parameters
-> *you* configure. It is not financial advice. Tax rates/thresholds are
-> config-driven (`.env`) and should be confirmed with your accountant.
+> *you* configure, grounded in your holdings and live prices. **It is not
+> financial advice** and never invents numbers — every figure traces to your data
+> or a labelled, transparent assumption. Tax rates/thresholds are config-driven
+> (`.env`) and should be confirmed with your accountant.
+
+## What it does
+
+- **Grounded recommendations.** Every Today card explains *why* it fired, its
+  *impact*, and — for a buy — *how much* and *how it's funded* (cash first down to
+  a plan-derived floor, then the worst-fitting holdings, with share counts and
+  estimated CGT). Cards the app can execute are marked as such; guidance you act
+  on yourself is labelled distinctly. Accepting an executable card really trades.
+- **One decision pipeline.** The Agents "war room" and the Today view share the
+  same grounded signals (spot vs. each name's own 50-day trend); the war room is
+  the audit trail *for* Today, not a parallel universe. Signals are checked
+  against your plan's target mix and concentration caps before they're shown.
+- **First-class cash.** Liquid cash is tracked, flows through NAV, the allocation
+  mix and the liquidity score, and funds buys.
+- **Strategy profiles.** Each strategy carries a computed risk/return profile
+  (expected return, volatility, rough drawdown, concentration, leverage) derived
+  from its basket, plus a "what changes if I apply this" diff against your plan.
+- **Coherent list.** Contradictory or duplicate cards are reconciled (e.g. a
+  multi-leg rebalance collapses to one; a risk-off note won't tell you to raise
+  and spend cash at once).
+- **PWA + push.** Installable app; web push for recommendations, risk alerts,
+  price moves and a weekly digest. Financial data is always fetched network-first
+  so it's never served stale.
 
 ## Architecture
 
@@ -85,7 +110,7 @@ alembic upgrade head
 2. Railway → New Project → Deploy from GitHub repo (uses `railway.json` + `Dockerfile`).
 3. Add the **Postgres** plugin — Railway injects `DATABASE_URL` (auto-normalized to asyncpg).
 
-## Endpoints (Phase 0)
+## Selected endpoints
 
 | Method | Path                          | Purpose                              |
 |--------|-------------------------------|--------------------------------------|
@@ -116,7 +141,18 @@ alembic upgrade head
 | GET    | `/api/v1/portfolio`           | List persisted positions             |
 | GET    | `/api/v1/entities`            | List entities (Personal/Spouse/Corp) |
 | GET/PUT| `/api/v1/plan`                | Goals/plan (tailors health & advice) |
-| GET    | `/api/v1/war-room`            | Per-recommendation agent reasoning   |
+| GET    | `/api/v1/war-room`            | Grounded agent reasoning (audit for Today) |
+| GET    | `/api/v1/recommendations`     | Today cards (sized, funded, honesty flags) |
+| POST   | `/api/v1/recommendations/{id}/accept` | Execute or mark a card done  |
+| POST   | `/api/v1/recommendations/{id}/dismiss`| Ignore a card (7-day, restorable) |
+| POST   | `/api/v1/recommendations/restore`     | Un-ignore dismissed cards    |
+| POST   | `/api/v1/recommendations/restore-completed` | Bring back completed cards |
+| GET    | `/api/v1/portfolio/cash`      | Current liquid cash balance          |
+| POST   | `/api/v1/portfolio/cash`      | Set or adjust liquid cash            |
+| GET    | `/api/v1/mix`                 | Asset-class mix vs target (Cash always shown) |
+| GET    | `/api/v1/strategies`          | Strategy catalog + computed profiles |
+| GET    | `/api/v1/strategies/{id}/preview` | What changes if you apply it     |
+| POST   | `/api/v1/strategies/{id}/apply`   | Apply a strategy preset          |
 | GET    | `/api/v1/auth/status`         | Whether API-key auth is enabled      |
 | POST   | `/api/v1/allocation/analyze`  | SAA/TAA drift + cost-adjusted rebalance |
 | GET    | `/api/v1/health-check`        | Portfolio Health Check (≤5 opps)       |

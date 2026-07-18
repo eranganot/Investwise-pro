@@ -5,6 +5,7 @@ The war room used to run the agent pipeline over demo_data.DEFAULT_OBSERVATIONS
 verdict as a real "Approved: Buy TEVA" decision -- while the Today view, running
 a completely separate pipeline, never mentioned it.
 """
+import pytest
 import os
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 import math
@@ -106,9 +107,9 @@ def test_war_room_reports_whether_its_signals_are_grounded():
             assert "SAMPLE" in w["signal_basis"].upper()
 
 
-def test_ungrounded_signals_never_become_today_cards(monkeypatch):
+@pytest.mark.asyncio
+async def test_ungrounded_signals_never_become_today_cards(monkeypatch):
     """Sample prices must not be laundered into advice via the Today view."""
-    import asyncio
     from app.services import recommendations as rr
 
     async def fake_payload(session, user, rows=None):
@@ -117,7 +118,8 @@ def test_ungrounded_signals_never_become_today_cards(monkeypatch):
              "title": "Buy TEVA (NYSE)", "transcript": []}]}
 
     monkeypatch.setattr("app.api.routes.war_room._war_room_payload", fake_payload)
-    out = asyncio.get_event_loop().run_until_complete(rr._war_room_recs(None, None, []))
+    # grounded=False -> returns before any DB access, so a None session is fine.
+    out = await rr._war_room_recs(None, None, [])
     assert out == []
 
 

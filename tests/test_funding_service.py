@@ -4,6 +4,7 @@ Cards used to say what to do but not how to pay for it or how much, so they read
 as advice. Cash is spent first (down to a plan-derived floor), then the
 worst-fitting holdings, ranked by plan fit rather than by what's easiest to sell.
 """
+import pytest
 from types import SimpleNamespace
 
 from app.services import funding_service as f
@@ -77,13 +78,20 @@ def test_trim_ranking_puts_over_cap_names_first():
     assert "cap" in ranked[0]["reason"]
 
 
-def test_buy_funded_executes_via_the_apply_service(monkeypatch):
+@pytest.mark.asyncio
+async def test_buy_funded_executes_via_the_apply_service(monkeypatch):
     """Accepting a buy_funded spec sells the funding leg and buys the target,
-    exercising the real apply_recommendation path (no money spent unraised)."""
-    import asyncio
+    exercising the real apply_recommendation path (no money spent unraised).
+
+    Uses a throwaway NullPool engine in this test's own event loop, per the
+    Postgres isolation rule in CLAUDE.md -- borrowing the app's shared async
+    engine across loops makes asyncpg reject the connection.
+    """
     from types import SimpleNamespace as NS
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+    from app.core.config import get_settings
     from app.providers import registry
-    from app.core.database import AsyncSessionLocal
     from app.services import recommendations as rr
     from app.services.feed_service import ensure_user
     from app.services.intake_service import (
@@ -94,8 +102,10 @@ def test_buy_funded_executes_via_the_apply_service(monkeypatch):
     monkeypatch.setattr(registry, "guarded_quote",
                         lambda tk: NS(price=100.0, currency="USD"))
 
-    async def run():
-        async with AsyncSessionLocal() as s:
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as s:
             user = await ensure_user(s, "fund_probe@example.com")
             entity = await ensure_entity(s, user, "Personal", "Personal")
             account = await ensure_account(s, entity, "Main")
@@ -117,9 +127,9 @@ def test_buy_funded_executes_via_the_apply_service(monkeypatch):
             finally:
                 rr.build_recommendations = orig
             rows = {p.ticker: p for p in await list_positions(s, user)}
-            return result, rows
+    finally:
+        await eng.dispose()
 
-    result, rows = asyncio.get_event_loop().run_until_complete(run())
     assert result and result.get("bought") == "NEWBUY"
     assert "NEWBUY" in rows
     assert float(rows["OVERWEIGHT"].quantity) < 200      # funding leg really sold

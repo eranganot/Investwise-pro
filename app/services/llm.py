@@ -90,7 +90,8 @@ def gemini_generate_grounded(prompt: str, *, model: str | None = None,
         seen, uniq = set(), []
         for s in sources:
             if s["url"] not in seen:
-                seen.add(s["url"]); uniq.append(s)
+                seen.add(s["url"])
+                uniq.append(s)
         return {"text": text, "sources": uniq[:8]}
 
     def _call() -> dict:

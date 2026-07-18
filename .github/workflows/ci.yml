@@ -40,11 +40,12 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      # Pinned ruff (via requirements-dev) so lint is reproducible and can be a
+      # real gate rather than silently drifting red under a floating latest.
+      - run: pip install -r requirements-dev.txt
       - run: ruff check app

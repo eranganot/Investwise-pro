@@ -32,7 +32,6 @@ def _now():
 async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]:
     positions = await load_positions(session, user)
     snap = compute_snapshot(positions) if positions else {"nav": 0, "exposure_ticker": {}}
-    nav = snap.get("nav") or 0
     weights = snap.get("exposure_ticker") or {}
     out = {}
     for p in positions:

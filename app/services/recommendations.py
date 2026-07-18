@@ -879,15 +879,20 @@ def _fund_score(f) -> float | None:
         return None
     s, n = 0.0, 0
     if f.pe is not None:
-        s += 100.0 if 0 < f.pe <= 15 else (60.0 if 0 < f.pe <= 30 else (20.0 if f.pe > 0 else 0.0)); n += 1
+        s += 100.0 if 0 < f.pe <= 15 else (60.0 if 0 < f.pe <= 30 else (20.0 if f.pe > 0 else 0.0))
+        n += 1
     if f.earnings_growth_pct is not None:
-        s += max(0.0, min(100.0, 50.0 + f.earnings_growth_pct * 2.0)); n += 1
+        s += max(0.0, min(100.0, 50.0 + f.earnings_growth_pct * 2.0))
+        n += 1
     if f.roe_pct is not None:
-        s += max(0.0, min(100.0, f.roe_pct * 2.5)); n += 1
+        s += max(0.0, min(100.0, f.roe_pct * 2.5))
+        n += 1
     if f.profit_margin_pct is not None:
-        s += max(0.0, min(100.0, 50.0 + f.profit_margin_pct * 1.5)); n += 1
+        s += max(0.0, min(100.0, 50.0 + f.profit_margin_pct * 1.5))
+        n += 1
     if f.debt_to_equity is not None:
-        s += max(0.0, min(100.0, 100.0 - f.debt_to_equity / 2.5)); n += 1
+        s += max(0.0, min(100.0, 100.0 - f.debt_to_equity / 2.5))
+        n += 1
     return round(s / n, 1) if n else None
 
 
