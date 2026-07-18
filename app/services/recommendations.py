@@ -176,6 +176,79 @@ async def restore_dismissed(session: AsyncSession, user: User) -> int:
     return active
 
 
+
+def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
+    """Collapse duplicate advice and drop cards that contradict each other.
+
+    The Today list is assembled from ~10 independent agents that never consult
+    one another, so a real portfolio produced, simultaneously: "Sell Cash" AND
+    "Buy Equities" (two legs of one rebalance, both applying the identical
+    action), "Put idle cash to work" (a third card for the same surplus), and
+    "Markets look risk-off" telling the user to *raise* cash 5-10% while the
+    other three told them to spend it. Acting on all four was impossible.
+
+    Rules, in order:
+      1. Merge multi-leg rebalance cards into one card for the whole move.
+      2. Geographic and currency concentration collapse into one card when they
+         describe the same exposure (a US-only book is also a USD-only book).
+      3. Cash-drag is dropped when a rebalance already redeploys the cash.
+      4. Risk-off vs deploy-cash: the allocation cards win (they are actionable
+         and plan-derived); the macro card is reworded from "raise cash" to a
+         timing note so the two no longer point in opposite directions.
+    """
+    market = market or {}
+    by_id = {r.get("id"): r for r in recs}
+    drop: set[str] = set()
+
+    # 1) One rebalance, one card.
+    rebal = [r for r in recs if (r.get("apply") or {}).get("kind") == "rebalance_to_objective"]
+    if len(rebal) > 1:
+        legs = [r["title"] for r in rebal]
+        keep = rebal[0]
+        keep["title"] = "Rebalance toward your target mix"
+        keep["action"] = ("One rebalance covers the whole move: "
+                          + "; ".join(f"{r['title']} (~{_ils(abs(r.get('est_amount') or 0))})"
+                                      for r in rebal) + ".")
+        keep["why"] = ("Your mix has drifted from your plan's target across more than one asset "
+                       "class. These move together, so they're one decision, not several.")
+        keep["meta"] = {**(keep.get("meta") or {}), "merged_legs": legs}
+        for r in rebal[1:]:
+            drop.add(r["id"])
+
+    # 2) Region and currency concentration are usually the same fact twice.
+    geo, cur = by_id.get(_rid("divrisk", "geo")), by_id.get(_rid("divrisk", "cur"))
+    if geo and cur:
+        geo["title"] = "Diversify beyond one region and currency"
+        geo["action"] = ("Most of your money sits in a single region *and* the currency that goes "
+                         "with it, so one country's downturn hits you twice. Spread new money "
+                         "across other regions to fix both at once.")
+        geo["meta"] = {**(geo.get("meta") or {}), "merged": ["geographic", "currency"]}
+        drop.add(cur["id"])
+
+    # 3) A rebalance that buys into the portfolio already spends the idle cash.
+    redeploys_cash = any((r.get("apply") or {}).get("kind") == "rebalance_to_objective"
+                         and r["id"] not in drop for r in recs)
+    cash_drag = by_id.get(_rid("cashdrag"))
+    if cash_drag and redeploys_cash:
+        drop.add(cash_drag["id"])
+
+    # 4) Don't tell someone to raise and spend cash in the same breath.
+    macro = by_id.get(_rid("macro", "riskoff"))
+    if macro and redeploys_cash and macro["id"] not in drop:
+        macro["title"] = "Markets look risk-off — phase the rebalance in"
+        macro["action"] = (f"The market backdrop is risk-off ({market.get('rationale', '')}). "
+                           "That's not a reason to abandon the rebalance above, but it is a reason "
+                           "to phase it in over a few weeks rather than all at once.")
+        macro["why"] = ("A risk-off backdrop raises the odds of a near-term drawdown, so the timing "
+                        "of a large purchase matters more than usual.")
+        macro["impact"] = "Spreads entry risk without leaving you off-plan."
+        macro["how"] = ["Split the rebalance into 2-4 tranches over a few weeks",
+                        "Start with the broadest, least volatile leg",
+                        "Keep your cash floor intact while you phase in"]
+
+    return [r for r in recs if r.get("id") not in drop]
+
+
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
     rows = await list_positions(session, user)
     if not rows:
@@ -397,6 +470,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("triggered trading-rule recommendations failed", exc_info=True)
         degraded.append("trading_rules")
+
+    # Independent agents can contradict each other; reconcile before display.
+    recs = _reconcile(recs, market)
 
     # Every card carries a plain-language "why" and "impact" (safety net for the
     # holding/hedge/momentum/fee agents that don't set them explicitly).

@@ -74,6 +74,24 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+
+class _NoCacheShell(StaticFiles):
+    """Serve the PWA shell and service worker with revalidation forced.
+
+    Default StaticFiles sends no Cache-Control, so browsers heuristically cache
+    index.html and sw.js. Combined with the service worker caching the shell,
+    deploys repeatedly failed to reach installed clients: the app kept running
+    old JavaScript while reporting a successful deployment. Static hashed assets
+    (icons, manifest) keep normal caching.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        if path.endswith((".html", "sw.js")) or path in ("", "."):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.app_name,
@@ -175,7 +193,7 @@ def create_app() -> FastAPI:
 
     app_dir = Path(__file__).parent / "static_app"
     if app_dir.exists():
-        app.mount("/app", StaticFiles(directory=str(app_dir), html=True), name="app")
+        app.mount("/app", _NoCacheShell(directory=str(app_dir), html=True), name="app")
 
     @app.get("/")
     async def root() -> dict:

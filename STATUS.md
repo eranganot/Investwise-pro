@@ -51,6 +51,24 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Stale-shell fix + recommendation coherence pass** (on disk, uncommitted).
+  (1) **Deploys weren't reaching clients.** Diagnosed live via Chrome against production: `actBtn`
+  and `restoreIgnored` were `undefined` in the running page while the cache key was already
+  `iw-v6-shell` — i.e. the SW had bumped version but cached the *old* `index.html` under the new
+  key. Two causes: `cache.add(url)` fetches *through* the browser HTTP cache (now
+  `new Request(url, {cache:'reload'})`), and `StaticFiles` sent no `Cache-Control` on the shell
+  (now a `_NoCacheShell` subclass sending `no-cache, must-revalidate` for `*.html` and `sw.js`).
+  Shell HTML is also network-first in the SW rather than cache-first. **The reported "Ignore does
+  nothing / cards don't disappear" bugs were this — verified working once the client was forced to
+  the deployed build (cards 8→7, dismissals 1→2).** SW `iw-v6`→`iw-v7`.
+  (2) **`_reconcile` pass** — the ~10 agents never consulted each other, so production showed
+  "Sell Cash" + "Buy Equities" (two legs of one rebalance, both applying the *identical* action),
+  "Put idle cash to work" (a third card for the same surplus) and "Markets look risk-off" advising
+  a 5-10% *increase* in cash — four mutually impossible cards. Now: multi-leg rebalances merge into
+  one card; geographic + currency concentration merge when they describe the same exposure;
+  cash-drag is dropped when a rebalance already redeploys the cash; and a risk-off macro card
+  alongside a pending rebalance is reworded from "raise cash" to "phase the rebalance in" instead
+  of contradicting it. +10 tests (`test_reconcile.py`, `test_shell_cache_headers.py`).
 - 2026-07-18 — **Accept no longer pretends to act** (on disk, uncommitted). Reported live: tapping
   Accept on "You're trailing SPY" changed nothing, said "Done — applied.", and parked the card in
   the ignored list. Cause: 10 of the card types (benchmark lag, commodity sleeve, geo/currency/

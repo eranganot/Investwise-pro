@@ -1,5 +1,5 @@
 /* InvestWise PWA service worker */
-const VERSION = 'iw-v6';
+const VERSION = 'iw-v7';
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 
@@ -19,7 +19,11 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE).then((cache) =>
       // Add individually so one missing asset doesn't abort the whole install.
-      Promise.allSettled(SHELL_ASSETS.map((url) => cache.add(url)))
+      // {cache:'reload'} bypasses the browser's HTTP cache. Plain cache.add()
+      // fetches *through* it, so a version bump happily re-cached the previous
+      // index.html under the new key -- the shell looked updated but wasn't.
+      Promise.allSettled(SHELL_ASSETS.map(
+        (url) => cache.add(new Request(url, { cache: 'reload' }))))
     ).then(() => self.skipWaiting())
   );
 });
@@ -56,7 +60,21 @@ self.addEventListener('fetch', (event) => {
     return; // default browser handling
   }
 
-  // Same-origin static assets (icons, manifest, html): cache-first.
+  // The shell HTML is network-first (cache only as an offline fallback): serving
+  // it cache-first is what stranded users on old JS across several deploys.
+  if (url.origin === self.location.origin &&
+      (url.pathname.endsWith('.html') || url.pathname === '/app/' || url.pathname === '/app')) {
+    event.respondWith(
+      fetch(new Request(req, { cache: 'reload' })).then((res) => {
+        const copy = res.clone();
+        caches.open(SHELL_CACHE).then((c) => c.put(req, copy));
+        return res;
+      }).catch(() => caches.match(req).then((r) => r || caches.match('/app/index.html')))
+    );
+    return;
+  }
+
+  // Other same-origin static assets (icons, manifest): cache-first.
   if (url.origin === self.location.origin) {
     event.respondWith(
       caches.match(req).then((cached) =>
