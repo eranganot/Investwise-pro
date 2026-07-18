@@ -15,7 +15,24 @@ _Seeded from git history + prior transcripts._
 - Legacy "Advanced" dashboard restored behind the auth gate.
 - Test suite ≈259 passing (5 new for war-room timestamps + benchmark-lag & commodity recs); lint (ruff) + test + test-postgres CI jobs green.
 
+## ⚠️ Uncommitted work on disk (2026-07-18) — needs a commit from Windows
+**Phase 0 of `PLAN_2026-07-18_alignment.md` is written and tested but NOT committed.** The
+sandbox hit two mount faults this session: a stale `.git/index.lock` it lacked permission to
+remove, and bash/git serving a *stale* view of `app/static_app/*` (git still reported
+`sw.js` as `iw-v3` after it was changed to `iw-v4`). Committing from the sandbox would have
+silently dropped the frontend changes. Verify `git status` shows all 8 files before committing.
+
+Files changed: `app/services/market_impact.py`, `app/services/recommendations.py`,
+`app/api/routes/intake.py`, `app/api/routes/recommendations.py`, `app/static_app/index.html`,
+`app/static_app/sw.js`, `tests/test_markets_and_impact.py`, `tests/test_portfolio_totals.py` (new),
+`PLAN_2026-07-18_alignment.md` (new).
+
 ## Next (confirm priority)
+- **Phase 1–4 of `PLAN_2026-07-18_alignment.md`** — cash as a first-class citizen; grounding the
+  war-room signals in live prices and unifying them with Today; funding/sell recommendations;
+  strategy differentiation. Decisions locked: signals grounded before wiring to Today; cash floor
+  = % of NAV by objective; all candidates eligible for buy signals; funding = cash first, then
+  worst-fit holding.
 - Broker integration — see `BROKER_INTEGRATION_PLAN.md` (unstarted; confirm it's the next initiative).
 - Live-verify the trading-rules alerts + Today banner fire correctly against real triggers post-deploy.
 
@@ -30,6 +47,22 @@ _Seeded from git history + prior transcripts._
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-07-18 — **Phase 0: recommendation alignment groundwork** (on disk, uncommitted — see above).
+  (1) **FX bug fixed**: `market_impact.annotate` computed exposure as `qty × price` with no FX rate
+  while every other surface is ILS-normalized — the "What's moving" panel claimed events touched
+  "100% of your portfolio (₪5,680)" for a book worth ₪17,306. Now uses `fx_rate(price_currency(...))`
+  like `current_mix`; +2 regression tests. (2) **Silent failures instrumented**: the four bare
+  `except: pass` blocks in `build_recommendations` (risk alerts, performance/benchmark, market
+  regime, trading rules) now log with `exc_info` and report a `degraded` list to the client, so a
+  missing card is distinguishable from "nothing to do". (3) **Honest empty state**: Today now
+  separates "nothing to do" from "you ignored N suggestions", surfaces a warning when an agent
+  failed, and adds a **Show ignored** control backed by a new `POST /api/v1/recommendations/restore`
+  — an Ignore was previously a one-way door for 7 days with no way to see what was hidden.
+  (4) **Total portfolio value** gains invested ("you put in"), absolute + % gain, and a liquid-cash
+  line; `/api/v1/portfolio` now returns `invested_ils`, `gain_ils`, `gain_pct`, `cash_ils` and
+  per-position `invested_ils`/`gain_ils`. SW cache bumped `iw-v3`→`iw-v4`. +4 tests
+  (`test_portfolio_totals.py`). 56 affected-surface tests pass locally; no new ruff errors
+  (verified by diffing lint output against HEAD); **full suite still gated by CI on push**.
 - 2026-07-14 — **War-room timestamps + benchmark-lag & commodity recommendations.** (1) The Agents war room now stamps each run: an 'Analyzed at <date · time>' header plus a per-decision time on every session card (`build_war_room` returns `generated_at`; each session carries `decided_at`). (2) New performance-driven card in Today's What-to-do-now: when the portfolio trails its benchmark by >3% the engine surfaces a grounded 'You're trailing <benchmark>' improvement rec (real excess-return number, points at laggards/fees/drift). (3) Commodities now surface as holdings advice — an 'Add a commodities sleeve' card fires when under-allocated vs the objective's commodity target, naming concrete screener-ranked picks, and `buy_ideas` now includes commodity picks alongside equities. +5 tests (`test_recs_extras.py`).
 - 2026-07-14 — **Trading-rules UI redesign (grouped by holding).** The rules list was a flat stack of fat cards — ticker repeated on every row, same-holding rules scattered, no colour coding, duplicates unflagged. Rebuilt as a `Positions | Rules` segmented sub-tab inside Holdings (no new bottom-nav tab): rules now group under one card per holding (ticker + live price header), each rule a compact colour-coded row (stop-loss red / take-profit green / trailing blue / max-weight amber) with a distance-to-trigger bar. Adds filter chips (all/triggered/armed/paused), sort (closest/holding/type), duplicate detection with a one-click remove, and triggered rules pinned + highlighted on top of their group (and their group floated first). Count badge on the Rules tab; Today's rule-alert banner deep-links straight into the Rules pane. Client-side only (regroups the existing `/api/v1/rules` payload) — no backend change.
 - 2026-07-14 — **Actionable trend cards + per-holding suggested rules.** The downtrend/uptrend momentum cards were advice-only (`apply: none`) — Accept did nothing user-visible. They now arm a concrete rule: downtrend → stop-loss at a volatility-derived price (≈8–15% below today); uptrend → trailing stop (10–20%) plus a max-weight cap when the name is already a large slice. Accept returns an "Armed …" summary; the rule then fires the normal alert + Today to-do. Added `stop_buffer_pct` (levels grounded in each holding's own realized volatility, never invented), a `create_rules` apply-kind, `rules_service.suggest_rules_for_holdings` + `GET /api/v1/rules/suggestions`, and a "Suggested rules" UI panel (add each / arm-all). +5 tests (`test_trading_rule_suggestions.py`); changed surfaces green locally, full suite gated by CI on push.

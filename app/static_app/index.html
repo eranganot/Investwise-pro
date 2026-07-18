@@ -662,9 +662,14 @@ async function loadToday(){
   }catch(e){}
   try{const r=await(await fetch("/api/v1/recommendations")).json();
     const _sn=activeSnoozed();
-    const recs=(r.recommendations||[]).filter(o=>!_sn.has(o.id));
-    $("recs").innerHTML=recs.length? recs.map(recCard).join("")
-      : `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b><div class="muted">You're tracking your plan.</div></div>`;
+    const all=r.recommendations||[];
+    const recs=all.filter(o=>!_sn.has(o.id));
+    // "Nothing to do" and "you ignored everything" and "an agent failed" are three
+    // different states — say which one it actually is instead of always claiming health.
+    const hidden=(all.length-recs.length)+(r.dismissed_count||0);
+    const degraded=r.degraded||[];
+    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden))
+      + (hidden&&recs.length?ignoredNote(hidden):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -688,6 +693,33 @@ async function loadToday(){
     $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
   }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
+}
+function emptyRecs(hidden){
+  if(hidden>0) return `<div class="card center"><div style="font-size:22px">🙈</div>
+    <b>Nothing showing — but ${hidden} ${hidden>1?"suggestions are":"suggestion is"} ignored.</b>
+    <div class="muted">You hid ${hidden>1?"them":"it"} earlier. They aren't gone — bring ${hidden>1?"them":"it"} back to review.</div>
+    <button class="soft" style="margin-top:10px" onclick="restoreIgnored()">↩︎ Show ignored ${hidden>1?"suggestions":"suggestion"}</button></div>`;
+  return `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b>
+    <div class="muted">You're tracking your plan.</div></div>`;
+}
+function ignoredNote(hidden){
+  return `<div class="card center muted" style="font-size:13px">
+    ${hidden} other ${hidden>1?"suggestions are":"suggestion is"} ignored ·
+    <span class="link" onclick="restoreIgnored()">show ${hidden>1?"them":"it"}</span></div>`;
+}
+function degradedNote(list){
+  if(!list||!list.length) return "";
+  const names={risk_alerts:"risk alerts",performance:"benchmark comparison",
+               market_regime:"market regime",trading_rules:"trading rules"};
+  const txt=list.map(k=>names[k]||k).join(", ");
+  return `<div class="card" style="border-left:3px solid #fbbf24;font-size:13px">
+    <b>⚠️ Some checks didn't run.</b>
+    <div class="muted" style="margin-top:4px">Couldn't evaluate: ${txt}. There may be advice you're not seeing — try refreshing prices.</div></div>`;
+}
+async function restoreIgnored(){
+  try{await fetch("/api/v1/recommendations/restore",{method:"POST"});}catch(e){}
+  snoozeMap={};_saveSnooze();   // clear the local TTL store too
+  loadToday();
 }
 function plainRisk(a){
   if(a.vector==="single_position")return a.detail.replace(/\(.*\)/,"— too much in one holding.");
@@ -926,10 +958,26 @@ async function deleteRule(id){
 async function toggleRule(id){
   try{await fetch(`/api/v1/rules/${id}/toggle`,{method:"POST"}); loadRules();}catch(e){}
 }
+// Total value alone doesn't answer "am I up?" — show what went in, what it's worth
+// now, and the gap between them. All figures arrive ILS-normalized from the API.
+function navSummary(p){
+  const nav=p.nav_ils||0, inv=p.invested_ils||0, g=p.gain_ils||0, gp=p.gain_pct;
+  const up=g>=0, cash=p.cash_ils||0;
+  const chg=(gp==null)?"":`<div class="${up?'up':'down'}" style="font-size:15px;margin-top:2px">
+      ${up?'▲':'▼'} ${ils(Math.abs(g))} (${up?'+':'-'}${Math.abs(gp).toFixed(2)}%)</div>`;
+  const cashRow=`<div class="mk" style="margin-top:8px">💵 Liquid cash ${ils(cash)}${nav?` · ${(cash/nav*100).toFixed(1)}% of portfolio`:""}</div>`;
+  return `<div class="card" style="text-align:center">
+    <div class="mk">Total portfolio value (${p.base_currency||"₪"})</div>
+    <div class="nm" style="font-size:24px">${ils(nav)}</div>
+    ${chg}
+    <div class="mk" style="margin-top:6px">You put in ${ils(inv)}</div>
+    ${cashRow}
+  </div>`;
+}
 async function loadHoldings(){
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);
-    const _navTot=p.positions.length?`<div class="card" style="text-align:center"><div class="mk">Total portfolio value (${p.base_currency||"₪"})</div><div class="nm" style="font-size:24px">${ils(p.nav_ils||0)}</div></div>`:"";
+    const _navTot=p.positions.length?navSummary(p):"";
     $("holds").innerHTML=_navTot+p.positions.map(h=>{const val=(h.value_ils!=null)?h.value_ils:h.quantity*(h.current_price||0);const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
       return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>

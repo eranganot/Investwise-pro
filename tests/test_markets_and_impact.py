@@ -52,3 +52,35 @@ def test_event_with_no_overlap_is_informational():
     assert out["affected_holdings"] == []
     assert out["direction"] == "info"
     assert out["actions"] == []
+
+
+def test_exposure_is_fx_normalized_to_base_currency(monkeypatch):
+    """A USD holding's exposure must be reported in ILS, not raw USD.
+
+    Regression: annotate() used to compute quantity x price with no FX rate while
+    every other surface (NAV, allocation mix) is ILS-normalized -- so the panel
+    claimed an event touched "100% of your portfolio (₪5,680)" for a book the
+    app valued at ₪17,306.
+    """
+    monkeypatch.setattr("app.services.fx.fx_rate",
+                        lambda ccy, base=None: 1.0 if (ccy or "").upper() == "ILS" else 3.5)
+    ev = ResearchEvent(event_id="evt_fx", event_type="REGULATORY_SURTAX_UPDATE",
+                       relevance_score=95, affected_assets=["NASDAQ:AAPL"],
+                       expected_time_horizon="MEDIUM", confidence=90)
+    rows = [_pos("AAPL", "NASDAQ", qty=10, price=100.0)]   # $1,000 -> ₪3,500
+    out = annotate([ev], rows)[0]
+    assert out["exposure_ils"] == 3500
+    assert out["exposure_pct"] == 100
+
+
+def test_mixed_currency_exposure_uses_normalized_denominator(monkeypatch):
+    """Exposure % must divide an ILS numerator by an ILS NAV, not mix currencies."""
+    monkeypatch.setattr("app.services.fx.fx_rate",
+                        lambda ccy, base=None: 1.0 if (ccy or "").upper() == "ILS" else 3.5)
+    ev = ResearchEvent(event_id="evt_mix", event_type="EARNINGS", relevance_score=70,
+                       affected_assets=["NASDAQ:AAPL"], expected_time_horizon="SHORT", confidence=65)
+    rows = [_pos("AAPL", "NASDAQ", qty=10, price=100.0),    # ₪3,500
+            _pos("BOND", "TASE", qty=35, price=100.0)]      # ₪3,500
+    out = annotate([ev], rows)[0]
+    assert out["exposure_ils"] == 3500
+    assert out["exposure_pct"] == 50      # would be ~22% unnormalized

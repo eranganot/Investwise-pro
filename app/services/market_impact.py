@@ -85,16 +85,26 @@ def _playbook(event_type: str, holdings_txt: str, exposure_pct: int):
 
 
 def annotate(events, rows) -> list[dict]:
-    """events: list[ResearchEvent]; rows: ORM Position objects."""
+    """events: list[ResearchEvent]; rows: ORM Position objects.
+
+    Values are FX-normalized to the base currency exactly as
+    ``allocation_mix.current_mix`` does \u2014 without this a USD-heavy book is
+    understated by the USD/ILS rate, and the panel reports an exposure figure
+    that contradicts the NAV shown everywhere else.
+    """
+    from app.services.fx import fx_rate, price_currency
+
     holdings = []
     nav = 0.0
     for p in rows:
-        val = float(p.quantity) * float(p.current_price or 0)
+        meta = p.meta if isinstance(p.meta, dict) else None
+        rate = fx_rate(price_currency(p.market, meta))
+        val = float(p.quantity) * float(p.current_price or 0) * rate
         nav += val
         cls = classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))
         holdings.append({
             "ticker": (p.ticker or "").upper(), "market": (p.market or "").upper(),
-            "cur": MARKET_CURRENCY.get((p.market or "").upper(), "USD"),
+            "cur": price_currency(p.market, meta),
             "cls": cls, "val": val,
         })
 

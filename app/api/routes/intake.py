@@ -109,7 +109,7 @@ async def get_portfolio(entity: str | None = None,
     from app.core.config import get_settings as _gs
     base = _gs().base_currency
     positions = await list_positions(session, user, entity)
-    out, nav_ils, nav_native = [], 0.0, 0.0
+    out, nav_ils, nav_native, invested_ils = [], 0.0, 0.0, 0.0
     for p in positions:
         price = float(p.current_price) if p.current_price is not None else None
         qty = float(p.quantity)
@@ -117,8 +117,12 @@ async def get_portfolio(entity: str | None = None,
         rate = fx_rate(ccy)
         val_native = (qty * price) if price is not None else 0.0
         val_ils = val_native * rate
+        # What you actually put in: cost_basis is per-share in the position's own
+        # price currency, so it needs the same FX normalization as market value.
+        cost_ils = qty * float(p.cost_basis) * rate
         nav_native += val_native
         nav_ils += val_ils
+        invested_ils += cost_ils
         out.append({
             "id": str(p.id), "ticker": p.ticker, "market": p.market,
             "quantity": qty, "cost_basis": float(p.cost_basis),
@@ -126,15 +130,24 @@ async def get_portfolio(entity: str | None = None,
             "currency": ccy,
             "current_price_ils": (round(price * rate, 4) if price is not None else None),
             "value_ils": round(val_ils, 2),
+            "invested_ils": round(cost_ils, 2),
+            "gain_ils": round(val_ils - cost_ils, 2),
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
             "asset_class": (p.meta or {}).get("asset_class"),
         })
+    gain_ils = nav_ils - invested_ils
     return {
         "count": len(positions),
         "base_currency": base,
         "nav_ils": round(nav_ils, 2),
         "nav_native": round(nav_native, 2),
+        "invested_ils": round(invested_ils, 2),
+        "gain_ils": round(gain_ils, 2),
+        "gain_pct": (round(gain_ils / invested_ils * 100, 2) if invested_ils else None),
+        "cash_ils": round(sum(o["value_ils"] for o in out
+                              if (o["asset_class"] or "").lower() == "cash"
+                              or (o["ticker"] or "").upper() == "CASH"), 2),
         "positions": out,
     }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from datetime import datetime, timedelta, timezone
 
@@ -21,6 +22,8 @@ from app.services.intake_service import (
 )
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot, tax_opportunities
+
+logger = logging.getLogger(__name__)
 
 CLASS_ETF = {"Equities": "VTI", "Fixed Income": "BND", "Cash": "BIL",
              "Commodities": "DBC", "Real Estate": "VNQ", "Alternatives": "BTAL"}
@@ -141,6 +144,25 @@ async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str)
     await session.commit()
 
 
+async def restore_dismissed(session: AsyncSession, user: User) -> int:
+    """Clear every active dismissal so ignored cards come back.
+
+    An "Ignore" was previously a one-way door for 7 days with no way to see what
+    had been hidden \u2014 which made a deliberately-emptied Today look identical to
+    a genuinely healthy one. Returns how many dismissals were cleared.
+    """
+    m = await _load_dismiss_map(session, user)
+    if not m:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+    active = sum(1 for ts in m.values() if _parse_dt(ts) >= cutoff)
+    row = await session.get(KVSetting, _dismiss_key(user))
+    if row:
+        row.value = json.dumps({})
+        await session.commit()
+    return active
+
+
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
     rows = await list_positions(session, user)
     if not rows:
@@ -157,6 +179,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     cap = effective_caps(plan)["concentration_cap"]
     objective = plan.objective if plan else "Balanced"
     recs: list[dict] = []
+    # Which contributing agents failed this build. Each block below is defensive so a
+    # data hiccup never breaks Today \u2014 but silence made a missing card
+    # indistinguishable from "nothing to do", so failures are now logged and reported.
+    degraded: list[str] = []
 
     # 1) Concentration trim
     if snap["max_weight"] > cap and nav:
@@ -288,7 +314,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                      "Keep enough liquidity for near-term needs"],
                              "apply": {"kind": "none"}})
     except Exception:  # noqa: BLE001
-        pass
+        logger.warning("risk-alert recommendations failed", exc_info=True)
+        degraded.append("risk_alerts")
 
     # 4) Behind your goal? Optimize across every lever to close the gap.
     #    Reconcile the "current path" projection with the app's home panel — same
@@ -325,7 +352,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         from app.services.performance_service import performance as _perf_fn
         recs += _benchmark_recs(await _perf_fn(session, user), objective)
     except Exception:  # noqa: BLE001 -- performance is best-effort, never break Today
-        pass
+        logger.warning("benchmark-lag recommendation failed", exc_info=True)
+        degraded.append("performance")
 
     # Macro signal: factor the futures-derived market regime into the agents. A
     # risk-off backdrop surfaces a defensive action. Defensive - never break Today.
@@ -345,6 +373,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                  "Consider raising cash by ~5-10%",
                                  "Hold off on adding leverage or speculative names"]})
     except Exception:  # noqa: BLE001
+        logger.warning("market-regime recommendation failed", exc_info=True)
+        degraded.append("market_regime")
         market = {}
 
     # Trading rules that have fired -> top-priority, user-defined actions.
@@ -352,7 +382,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         from app.services.rules_service import triggered_rule_recs
         recs += await triggered_rule_recs(session, user)
     except Exception:  # noqa: BLE001
-        pass
+        logger.warning("triggered trading-rule recommendations failed", exc_info=True)
+        degraded.append("trading_rules")
 
     # Every card carries a plain-language "why" and "impact" (safety net for the
     # holding/hedge/momentum/fee agents that don't set them explicitly).
@@ -360,8 +391,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
+    suppressed = 0
     if dismissed:
+        _before = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
+        suppressed = _before - len(recs)
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
@@ -370,6 +404,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
             "market": market,
+            # Honesty signals for the Today empty state: "nothing to do",
+            # "you ignored everything" and "an agent failed" are three different things.
+            "dismissed_count": suppressed,
+            "degraded": degraded,
             "buy_ideas": _buy_ideas(snap),
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,
