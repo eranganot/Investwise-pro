@@ -42,9 +42,14 @@ def test_accept_counts_as_done_not_ignored():
         rid = ids[0]
         c.post(f"/api/v1/recommendations/{rid}/accept")
         r = c.get("/api/v1/recommendations").json()
-        assert rid not in [x["id"] for x in r["recommendations"]]
-        assert r["completed_count"] >= 1
-        assert r["dismissed_count"] == 0        # the bug: this used to be the 1
+        assert rid not in [x["id"] for x in r["recommendations"]]   # gone from Today
+        assert r["dismissed_count"] == 0        # the bug: accept used to land it here
+        # Prove it went into the *completed* bucket, not ignored. Asserting via the
+        # bucket (not completed_count) is robust to whether the card would have
+        # regenerated -- a background reprice can change the card set between calls,
+        # and completed_count only counts cards that still regenerate.
+        restored = c.post("/api/v1/recommendations/restore-completed").json()
+        assert restored["restored"] >= 1
 
 
 def test_ignore_counts_as_ignored_not_done():
@@ -56,9 +61,11 @@ def test_ignore_counts_as_ignored_not_done():
         rid = ids[0]
         c.post(f"/api/v1/recommendations/{rid}/dismiss")
         r = c.get("/api/v1/recommendations").json()
-        assert rid not in [x["id"] for x in r["recommendations"]]
-        assert r["dismissed_count"] >= 1
-        assert r["completed_count"] == 0
+        assert rid not in [x["id"] for x in r["recommendations"]]   # gone from Today
+        assert r["completed_count"] == 0        # ignore must not land in "done"
+        # Prove it's in the *ignored* bucket via the restore count (robust to
+        # whether the card would regenerate; a background reprice can change the set).
+        assert c.post("/api/v1/recommendations/restore").json()["restored"] >= 1
 
 
 def test_restoring_ignored_does_not_resurrect_completed():
@@ -74,7 +81,8 @@ def test_restoring_ignored_does_not_resurrect_completed():
         live = [x["id"] for x in r["recommendations"]]
         assert ids[1] in live               # the ignored one is back
         assert ids[0] not in live           # the completed one stays gone
-        assert r["completed_count"] >= 1
+        # ...and it's genuinely in the completed bucket, not just filtered out.
+        assert c.post("/api/v1/recommendations/restore-completed").json()["restored"] >= 1
 
 
 def test_completed_can_be_restored_on_demand():

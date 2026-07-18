@@ -24,7 +24,14 @@ full of CRLF noise.
 
 Files changed (Phase 5): `app/services/recommendations.py`, `app/services/llm.py`,
 `app/services/rules_service.py`, `tests/test_funding_service.py`, `tests/test_signal_service.py`,
-`requirements-dev.txt`, `.github/workflows/ci.yml`, `README.md`. No SW bump (no frontend change).
+`tests/test_done_vs_ignored.py`, `requirements-dev.txt`, `.github/workflows/ci.yml`, `README.md`.
+No SW bump (no frontend change).
+
+**Also hardened a flaky test:** `test_done_vs_ignored` asserted `completed_count`/`dismissed_count`
+`>= 1` after accept/ignore, but those counts only tally cards that still regenerate — a background
+reprice can change the card set between calls, so the count was legitimately 0 in a full run (green
+in isolation, red in the full suite). Rewritten to assert the invariant via the restore endpoints,
+which read the buckets directly. Production behaviour was correct; the assertion was too strict.
 
 **Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
 2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
