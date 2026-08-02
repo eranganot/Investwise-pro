@@ -45,6 +45,13 @@ async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]
     out = {}
     for p in positions:
         tk = p["ticker"].upper()
+        # Cash is not a tradeable holding: a stop-loss on your bank balance is
+        # meaningless. It leaked in because the index was built from every
+        # position, so the rule suggester happily offered stops on CASH -- and
+        # once the pricing fix reset the corrupted row from ~72.9 back to its
+        # true 1.0, any such rule "crashed" and fired.
+        if tk == "CASH":
+            continue
         out[tk] = {"price": float(p.get("current_price") or 0),
                    "cost": float(p.get("cost_basis") or 0),
                    "qty": float(p.get("quantity") or 0),
@@ -129,6 +136,13 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     for r in rules:
         pos = idx.get(r.ticker.upper())
         if not pos:
+            # The thing this rule watches is no longer a tradeable holding —
+            # sold, or (for CASH) never one to begin with. Retire it instead of
+            # skipping, which would leave a latched `triggered` flag counting
+            # toward the banner forever with no card able to clear it.
+            if r.triggered or r.ticker.upper() == "CASH":
+                r.triggered = False
+                r.active = False
             continue
         cur, cost, w = pos["price"], pos["cost"], pos["weight_pct"]
         if r.rule_type == "trailing_stop" and cur > 0:
@@ -182,6 +196,45 @@ async def list_events(session: AsyncSession, user: User, limit: int = 50) -> lis
         "outcome_at": e.outcome_at.isoformat() if e.outcome_at else None,
         "action": e.action or {},
     } for e in rows]
+
+
+# A fired stop-loss / take-profit / trailing stop / buy-dip is a ONE-SHOT order:
+# once you've dealt with it, it's spent. A max-weight cap or a price alert is a
+# standing condition, so it re-arms instead.
+_ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip"}
+
+
+async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str,
+                       outcome: str, action: dict | None = None) -> bool:
+    """Close the loop on a triggered rule once the user has dealt with it.
+
+    Without this the banner never cleared: `triggered` latches True and only
+    price alerts ever reset it, so "4 trading rules triggered" persisted forever
+    even after the user had acted — nagging about work already done.
+    """
+    rid = str(rule_id_or_prefix)
+    rule = None
+    try:
+        rule = await session.get(TradingRule, uuid.UUID(rid))
+    except Exception:  # noqa: BLE001 -- not a full UUID; fall back to a prefix match
+        rule = None
+    if rule is None:
+        for r in (await session.scalars(
+                select(TradingRule).where(TradingRule.subject == user.email))).all():
+            if str(r.id).startswith(rid):
+                rule = r
+                break
+    if rule is None or rule.subject != user.email:
+        return False
+
+    await record_outcome(session, user, str(rule.id), outcome, action)
+    rule.triggered = False
+    if rule.rule_type in _ONE_SHOT:
+        # Spent: the exit it described has either happened or been declined.
+        # Leaving it armed would re-fire on the same condition immediately.
+        rule.active = False
+    await session.commit()
+    return True
 
 
 async def record_outcome(session: AsyncSession, user: User, rule_id: str,

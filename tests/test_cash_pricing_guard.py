@@ -52,7 +52,7 @@ def test_repair_restores_the_ils_native_invariant():
     assert repair_cash_row(corrupted) is False
 
 
-def test_refresh_skips_cash_and_reprices_everything_else():
+def test_refresh_skips_cash_and_reprices_everything_else(monkeypatch):
     import asyncio
 
     from app.services import pricing_service
@@ -83,8 +83,11 @@ def test_refresh_skips_cash_and_reprices_everything_else():
     class _Quote:
         price, currency, as_of = 464.72, "USD", "2026-08-02"
 
-    pricing_service.guarded_quote = lambda tk: _Quote()
-    pricing_service.market_provider = lambda: type("P", (), {"name": "fmp"})()
+    # monkeypatch, not a bare assignment: a bare assignment to a module global
+    # leaks into every subsequent test in the session.
+    monkeypatch.setattr(pricing_service, "guarded_quote", lambda tk: _Quote())
+    monkeypatch.setattr(pricing_service, "market_provider",
+                        lambda: type("P", (), {"name": "fmp"})())
 
     res = asyncio.run(pricing_service.refresh_all_positions(_Session()))
 

@@ -1,10 +1,11 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-07-13 by Claude (weekly status review)._
+_Last updated: 2026-07-27 by Claude (weekly status review)._
 _Seeded from git history + prior transcripts._
 
 ## Now (on main, CI green)
-- **Trading rules engine**: stop-loss / take-profit / trailing-stop / price alerts / buy-the-dip / max-weight, each raising alerts + to-dos, with a management UI. Triggered rules surface in the daily digest and as a Today-screen alert banner — HEAD `67f7da3`.
+- **Alignment plan Phases 0–5 COMPLETE and committed** (`defe8ec`…`9e2cd01` = HEAD, all 2026-07-18; CI fully green incl. gated ruff lint): first-class **cash** (set/adjust API + Holdings UI + Cash slice in mix); **funding engine** — every buy card sized and funded (cash first → worst-fit holdings, per-objective cash floor), executable `buy_funded`, "How it's funded" legs on Today; **grounded war-room signals** unified with Today (only `grounded` + DISPLAYED promote; demo signals opt-in); **Done ≠ Ignore** (separate completed/ignored buckets + restore); **Accept honesty** (actionable vs guidance cards, no fake "applied"); `_reconcile` pass kills contradictory cards; stale-PWA-shell fix (no-cache shell + network-first SW); **strategy profiles** (risk/return/concentration chips + "What changes?" before/after preview). SW at `iw-v10`.
+- **Trading rules engine**: stop-loss / take-profit / trailing-stop / price alerts / buy-the-dip / max-weight, each raising alerts + to-dos, with a management UI. Triggered rules surface in the daily digest and as a Today-screen alert banner.
 - **Actionable Accept**: the Today-view "Accept" on a recommendation now really executes it — sells credit net-of-CGT proceeds to a visible CASH holding, fee-swaps replace the fund at a live price, trims credit the sold portion; Accept returns a "what changed" summary the UI shows.
 - **Actionable trend cards + suggested rules**: the momentum downtrend/uptrend cards (previously `apply: none`, so Accept did nothing) now arm a concrete, one-click discipline rule — downtrend → stop-loss at a volatility-derived price; uptrend → trailing stop (+ a max-weight cap on already-large positions) — which becomes a real alert + Today to-do; Accept returns an "Armed …" summary. New per-holding **Suggested rules** panel (`GET /api/v1/rules/suggestions`) proposes a stop-loss / trailing-stop / take-profit / max-weight set with concrete, vol-derived levels; add each or "arm all".
 - **Price freshness**: scheduled 30-min auto-reprice of all holdings (FMP → Yahoo fallback) with a truthful data-source/status label (no more silently-stale prices).
@@ -13,40 +14,27 @@ _Seeded from git history + prior transcripts._
 - ILS currency normalization across valuation + display; goal target, projections, and allocation mix all derived from live FX-normalized NAV (kept aligned).
 - Opportunity screener agent + fundamentals layer + expanded holdings recommendations; expanded commodity catalog (advisor reasons grounded, never invents numbers, "Not financial advice").
 - Legacy "Advanced" dashboard restored behind the auth gate.
-- Test suite ≈259 passing (5 new for war-room timestamps + benchmark-lag & commodity recs); lint (ruff) + test + test-postgres CI jobs green.
+- Test suite ≈259 passing as of 07-14, plus ~75 alignment-batch tests (Phases 0–5: cash 7, honesty 5, reconcile/shell 10, signals+done 27, funding 17, profiles 9); lint (ruff, now gated) + test + test-postgres CI jobs green.
 
-## ⚠️ Uncommitted work on disk (2026-07-18) — Phase 1, needs a commit from Windows
-Phase 0 shipped (`defe8ec`, CI green, deployed). **Phase 1 (cash) is written and tested but NOT
-committed.** The sandbox cannot commit here: a stale `.git/index.lock` it lacks permission to
-remove, plus bash/git serving a *stale* view of `app/static_app/*`. Verify `git status` lists all
-7 files before committing, and **never `git add -A`** — `frontend/node_modules` is tracked and
-full of CRLF noise.
+## Uncommitted (2026-08-02) — 5-issue bug batch, staged as phases 1–5
+Working tree carries fixes for five live-reported issues. **Not yet committed, tested or deployed** — the sandbox VM was down this session, so nothing was run locally. Deploy scripts: `scripts/deploy/phase{1..5}-*.ps1` (run in order; phase 5 carries the SW bump `iw-v10`→`iw-v11`).
+1. **Cash quoted as a stock (worst one).** `refresh_all_positions` quoted the synthetic `CASH` row against the real NASDAQ ticker CASH (Pathward Financial ~$73) and stamped `price_currency: USD`; FX doubled it again → ₪1,934.52 shown as ₪521,904, and a fictional +2153% portfolio gain. Guard + idempotent self-heal (`is_cash_position`, `repair_cash_row`).
+2. **Rules now execute + are logged.** `triggered_rule_recs` had no `apply` key at all, so every firing was guidance-only. New `execution_plan` (stops/take-profit → full exit; max-weight → exact trim; price alerts/buy-dip stay advisory), new `sell_position` apply-kind, new `RuleEvent` table + `GET /rules/events`. One-tap, never automatic; tracked book only, stated on the card.
+3. **Health score ceiling removed.** `thematic=60.0` hardcoded at 15% weight (invisible, capped everything at 94), tax base 85, and risk = `100 − vol×2` (only 100 at zero volatility). Now four measured components 30/25/25/20, tax tops at 100, risk scored against the plan's own volatility budget. Legacy `/whs` endpoint unchanged.
+4. **Notification outage — ROOT CAUSE FOUND (2026-08-02, from live `/push/status`).** The dedupe ledger's newest entry is `2026-07-18T18:47` — the exact day the alignment batch shipped (SW `iw-v9`→`iw-v10`). Replacing the service worker dropped the browser push subscription; the server pruned the dead row (`subscriptions: 0`); and `initNotifyState` only re-registered when a subscription *already existed* — with permission still `granted` and `sub === null` it fell through to `_setNotifyState("off")` and never re-subscribed. The app looked switched off rather than broken, so the outage was permanent and invisible. Fixed in phase 5: re-create the subscription when permission is granted but it's missing. (Scheduler/403/watchdog hardening below was real but was *not* the cause.)
+5. **Push silent-failure modes.** 403 added to `DEAD_CODES` (a rotated VAPID key meant permanent silence with no pruning), misfire grace raised from APScheduler's 1 s default, job watchdog so a hung run can't wedge `max_instances=1` forever. New `GET /api/v1/push/status`.
 
-Files changed (Phase 5): `app/services/recommendations.py`, `app/services/llm.py`,
-`app/services/rules_service.py`, `tests/test_funding_service.py`, `tests/test_signal_service.py`,
-`tests/test_done_vs_ignored.py`, `requirements-dev.txt`, `.github/workflows/ci.yml`, `README.md`.
-No SW bump (no frontend change).
+6. **Phase 6 — triggered rules clear; cash isn't tradeable.** Reported after phase 2 went live ("4 trading rules triggered: CASH, MSFT, META, META — I already took actions"). (a) `triggered` latched True and only price alerts reset it, so acting never cleared the rule and the banner counted finished work. `resolve_rule` now stamps the event *and* clears the flag — one-shot exits (stop/take-profit/trailing/dip) are consumed, standing conditions (max-weight, price alerts) re-arm; wired into apply + dismiss + complete. (b) CASH sat in the rule position index, so the suggester offered stops on a cash balance; the phase 1 repair reset that row from ~72.9 to its true 1.0, which those stops read as a 98% crash and fired. Cash excluded, and rules whose ticker is no longer a tradeable holding are retired rather than skipped.
 
-**Also hardened a flaky test:** `test_done_vs_ignored` asserted `completed_count`/`dismissed_count`
-`>= 1` after accept/ignore, but those counts only tally cards that still regenerate — a background
-reprice can change the card set between calls, so the count was legitimately 0 in a full run (green
-in isolation, red in the full suite). Rewritten to assert the invariant via the restore endpoints,
-which read the buckets directly. Production behaviour was correct; the assertion was too strict.
-
-**Commit with `git commit -F COMMIT_MSG.txt`** — a PowerShell here-string (`@"…"@`) failed on
-2026-07-18: PowerShell didn't parse it, git took each line as a pathspec, the commit never
-happened and the follow-up push reported "Everything up-to-date". Don't use here-strings here.
+⚠️ **Before shipping:** run the suite + ruff locally (`phase*.ps1` gate on both). The thematic/tax/risk changes will shift existing health assertions — expect `test_*health*` / workflow tests to need updating. `rule_events` relies on `auto_create_tables` (same as `trading_rules`); add an Alembic revision if that's off in production.
 
 ## Next (confirm priority)
-- **Phase 1–4 of `PLAN_2026-07-18_alignment.md`** — cash as a first-class citizen; grounding the
-  war-room signals in live prices and unifying them with Today; funding/sell recommendations;
-  strategy differentiation. Decisions locked: signals grounded before wiring to Today; cash floor
-  = % of NAV by objective; all candidates eligible for buy signals; funding = cash first, then
-  worst-fit holding.
+- **Live-QA the alignment batch (Phases 0–5) on the Pixel 9** — see Pending QA; SW update path ends at `iw-v10`.
 - Broker integration — see `BROKER_INTEGRATION_PLAN.md` (unstarted; confirm it's the next initiative).
 - Live-verify the trading-rules alerts + Today banner fire correctly against real triggers post-deploy.
 
 ## Pending QA / open questions
+- **Alignment batch (Phases 0–5, 2026-07-18):** on the Pixel 9 post-deploy — cash set/adjust + pinned Cash row + Cash slice in donut; a buy card shows sizing + "How it's funded" legs and executes; Mark-as-done vs Ignore land in separate restore lists; war-room cards match Today; strategy "What changes?" preview renders; no stale shell after SW `iw-v10`.
 - **Notification ↔ Today alignment (2026-07-12):** run `qa/QA-2026-07-12-notification-alignment.md` on the Pixel 9 post-deploy (PWA update path: SW `iw-v2`→`iw-v3`).
 - Confirm on live: accepting a tax-loss/sell rec removes the holding and adds a CASH position for the net proceeds; fee-swap replaces the fund; trim credits cash. (Accept-executes fix.)
 - Confirm triggered trading rules render correctly in both the daily digest and the Today-screen banner after deploy.
@@ -54,142 +42,25 @@ happened and the follow-up push reported "Everything up-to-date". Don't use here
 - Confirm the live advisor answer for "should I add commodities?" reads as a balanced for/against after deploy.
 
 ## Known sharp edges
-Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). See CLAUDE.md.
+Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
-- 2026-07-18 — **Phase 5: green CI + README refresh.** (1) `test-postgres` was failing:
-  `test_buy_funded_executes_via_the_apply_service` drove the DB through
-  `asyncio.get_event_loop().run_until_complete()` on the app's shared async engine — the exact
-  cross-event-loop pattern `CLAUDE.md` warns asyncpg rejects (green on SQLite, red on Postgres).
-  Rewritten as an `async def` test with a throwaway `NullPool` engine in its own loop (the conftest
-  pattern); the ungrounded-signals test made async too (no more `run_until_complete` anywhere).
-  (2) `lint` (ruff) was red — 7 pre-existing errors (5 semicolons in `_fund_score`, a
-  `seen.add(...); append(...)` in `llm.py`, an unused `nav` in `rules_service`). All fixed; `ruff
-  check app` is clean. Pinned `ruff==0.15.22` in requirements-dev and made the lint job install it
-  and **gate** (dropped `continue-on-error`) so it can't silently drift red again. (3) README
-  rewritten from the stale "Phase 0 skeleton" to the real system — grounded/sized/funded
-  recommendations, the unified war-room↔Today pipeline, first-class cash, strategy profiles,
-  card reconciliation — with the new endpoints documented. **Phases 0–5 complete; CI fully green.**
-- 2026-07-18 — **Phase 4: strategy differentiation.** The four Grow strategies all read as
-  `{"Equities": 1.0}` by asset class and the UI showed only a description + ticker list, so a
-  leveraged-Nasdaq basket looked identical to a diversified-index one. New `strategy_profile`
-  derives a comparable profile *from each basket*: expected return, volatility, a rough bad-year
-  drawdown, concentration (single-name weight, effective holdings), a leverage flag, and a time
-  horizon — via a transparent per-instrument-character lookup (broad index / sector / single name
-  / leveraged / bond / commodity / cash), labelled as planning assumptions, not forecasts.
-  `/api/v1/strategies` now returns a `profile` per strategy; the Plan cards show the numbers as
-  chips (leverage gets a ⚠). New `GET /strategies/{id}/preview` and a **"What changes?"** button
-  give a concrete before/after diff — objective, risk tolerance, target-mix shifts and the exact
-  rebalancing trades — instead of a bare "HIGH RISK" chip, and flag the currently-applied strategy.
-  Deliberately did **not** fabricate asset-class differences between the all-equity Grow
-  strategies (that would invent numbers); the honest separation is the computed risk/return
-  profile. +9 tests (`test_strategy_profile.py`). SW `iw-v9`→`iw-v10`. **Phases 0–4 of
-  `PLAN_2026-07-18_alignment.md` complete.**
-- 2026-07-18 — **Phase 3: funding engine — cards are now sized and executable.** Every buy card
-  used to say *what* without *how much* or *how to pay for it*, so it read as advice. New
-  `funding_service`: (a) **sizing** bounded by the plan's asset-class target and single-name cap;
-  (b) **funding** — spendable cash first (down to a % -of-NAV floor that varies by objective:
-  Preserve 10% → Grow 3%, overridable), then the worst-fitting holdings ranked by plan fit (name
-  over cap, class overweight, tax cost), each with the ₪ amount, share count and est. CGT. New
-  executable `buy_funded` apply-kind sells the funding legs then buys the target at a live price,
-  never spending money it hasn't raised. Cards rewritten to be actionable: war-room signals are
-  **plan-checked and sized** (a signal the plan can't fund is dropped with its reason, not shown
-  as vague advice); a held name over its cap becomes a concrete trim; the commodities card names
-  one pick and sizes it; the geographic-diversification card becomes a sized VXUS buy; a new
-  **"Raise ₪X of cash"** card fires below the liquidity floor naming exactly what to sell. Today
-  renders a green **"How it's funded"** block listing every trade leg. **Plan alignment:** war-room
-  cards now derive their sizing from the plan's target mix and caps, so the war room and the plan
-  can no longer disagree. +17 tests (`test_funding_service.py`; `test_recs_extras`,
-  `test_signal_service` updated for sized titles). SW `iw-v8`→`iw-v9`.
-- 2026-07-18 — **Phase 2: grounded signals + war-room/Today unification; Done ≠ Ignore**
-  (on disk, uncommitted). (1) **"Mark as done" was filing cards under Ignore.** Both buttons wrote
-  to one `dismissed_recs` bucket, so they were indistinguishable. Now two buckets: *ignored*
-  (7-day, restorable via "show ignored") and *completed* (90-day, its own `completed_count` and
-  `POST /recommendations/restore-completed`). Accept/Mark-as-done writes to completed; Ignore to
-  ignored; restoring one never resurrects the other. Deliberately **not** permanent — a forever
-  hide-list is what caused the original push/Today mismatch. (2) **`signal_service`** builds
-  `LagObservation`s from real price history: `spot` = latest close, `listing` = the name's own
-  50-day trend (so divergence is *measured*, not an assumed fair value), `volatility` = realized
-  annualized vol, `depth` = how persistent the divergence is. Unusable tickers are skipped, never
-  filled with placeholders. `DEFAULT_OBSERVATIONS` is now demo-only behind `DEMO_SIGNALS`
-  (default off). (3) **One pipeline.** `_war_room_payload` is the single entry point; Today's
-  `_war_room_recs` promotes only `DISPLAYED` decisions, and **only when `grounded` is true** — so
-  sample prices can never be laundered into advice. The war room is now the audit trail *for*
-  Today rather than a parallel universe. +27 tests (`test_signal_service.py`,
-  `test_done_vs_ignored.py`); `test_recommendations.py` updated — the war room no longer reads
-  spot/listing from intake metadata, so those two tests inject the observation directly.
-  SW `iw-v7`→`iw-v8`.
-- 2026-07-18 — **Stale-shell fix + recommendation coherence pass** (on disk, uncommitted).
-  (1) **Deploys weren't reaching clients.** Diagnosed live via Chrome against production: `actBtn`
-  and `restoreIgnored` were `undefined` in the running page while the cache key was already
-  `iw-v6-shell` — i.e. the SW had bumped version but cached the *old* `index.html` under the new
-  key. Two causes: `cache.add(url)` fetches *through* the browser HTTP cache (now
-  `new Request(url, {cache:'reload'})`), and `StaticFiles` sent no `Cache-Control` on the shell
-  (now a `_NoCacheShell` subclass sending `no-cache, must-revalidate` for `*.html` and `sw.js`).
-  Shell HTML is also network-first in the SW rather than cache-first. **The reported "Ignore does
-  nothing / cards don't disappear" bugs were this — verified working once the client was forced to
-  the deployed build (cards 8→7, dismissals 1→2).** SW `iw-v6`→`iw-v7`.
-  (2) **`_reconcile` pass** — the ~10 agents never consulted each other, so production showed
-  "Sell Cash" + "Buy Equities" (two legs of one rebalance, both applying the *identical* action),
-  "Put idle cash to work" (a third card for the same surplus) and "Markets look risk-off" advising
-  a 5-10% *increase* in cash — four mutually impossible cards. Now: multi-leg rebalances merge into
-  one card; geographic + currency concentration merge when they describe the same exposure;
-  cash-drag is dropped when a rebalance already redeploys the cash; and a risk-off macro card
-  alongside a pending rebalance is reworded from "raise cash" to "phase the rebalance in" instead
-  of contradicting it. +10 tests (`test_reconcile.py`, `test_shell_cache_headers.py`).
-- 2026-07-18 — **Accept no longer pretends to act** (on disk, uncommitted). Reported live: tapping
-  Accept on "You're trailing SPY" changed nothing, said "Done — applied.", and parked the card in
-  the ignored list. Cause: 10 of the card types (benchmark lag, commodity sleeve, geo/currency/
-  liquidity diversification, holding verdicts, sector concentration, cash drag, yield lift,
-  contribution) carry `apply.kind == "none"` — plus the macro risk-off card had no `apply` key at
-  all — so `apply_recommendation` fell through every branch and the route dismissed them anyway.
-  Now: a single `_ACTIONABLE_KINDS` set is the source of truth; every card ships an `actionable`
-  flag; the UI tags each card "⚡ The app can do this for you" vs "💡 Guidance — you act on this
-  yourself" and swaps the button between **Accept** and **Mark as done**, with confirm/result text
-  that admits nothing was traded. A 404 from accept now **removes the card outright** instead of
-  leaving it or filing it under ignored. SW `iw-v5`→`iw-v6`. +5 tests (`test_accept_honesty.py`).
-  Phase 3's funding work will convert several of these advisory cards into genuinely actionable ones.
-- 2026-07-18 — **Phase 1: cash as a first-class holding** (on disk, uncommitted — see above).
-  Cash previously materialised *only* as a side effect of accepting a sell, so money already held
-  was untrackable and the donut read 100% Equities for a book with real liquidity. Adds
-  `set_cash`/`get_cash` + `GET|POST /api/v1/portfolio/cash` (set or adjust; adjust accepts a
-  negative for withdrawals and floors at zero; set rejects negatives), a "💵 Set liquid cash"
-  control and modal on Holdings, and a pinned green-bordered Cash row showing % of portfolio.
-  `/api/v1/mix` now always emits a Cash slice (even at 0%) plus `cash_ils`, so "no cash" is
-  visually distinct from "cash not tracked". Cash carries `liquidity_score: 100` and
-  `volatility_pct: 0` via a shared `CASH_META`, so it lifts the liquidity health score instead of
-  falling back to the generic 70. **Latent bug fixed:** `credit_cash` stored the full proceeds as
-  the *per-share* `cost_basis`, so once Phase 0 surfaced invested totals, ₪2,500 of cash reported
-  as ₪6.25M invested — basis is now 1.0, and existing rows self-heal on the next credit/set.
-  Also FX-normalized the cash-drag rec's weight (raw numerator over an ILS-normalized NAV).
-  SW `iw-v4`→`iw-v5`. +7 tests (`test_cash.py`); 60 affected-surface tests green, no new ruff.
-- 2026-07-18 — **Phase 0: recommendation alignment groundwork** — shipped as `defe8ec`, CI green,
-  Railway deploy Active.
-  (1) **FX bug fixed**: `market_impact.annotate` computed exposure as `qty × price` with no FX rate
-  while every other surface is ILS-normalized — the "What's moving" panel claimed events touched
-  "100% of your portfolio (₪5,680)" for a book worth ₪17,306. Now uses `fx_rate(price_currency(...))`
-  like `current_mix`; +2 regression tests. (2) **Silent failures instrumented**: the four bare
-  `except: pass` blocks in `build_recommendations` (risk alerts, performance/benchmark, market
-  regime, trading rules) now log with `exc_info` and report a `degraded` list to the client, so a
-  missing card is distinguishable from "nothing to do". (3) **Honest empty state**: Today now
-  separates "nothing to do" from "you ignored N suggestions", surfaces a warning when an agent
-  failed, and adds a **Show ignored** control backed by a new `POST /api/v1/recommendations/restore`
-  — an Ignore was previously a one-way door for 7 days with no way to see what was hidden.
-  (4) **Total portfolio value** gains invested ("you put in"), absolute + % gain, and a liquid-cash
-  line; `/api/v1/portfolio` now returns `invested_ils`, `gain_ils`, `gain_pct`, `cash_ils` and
-  per-position `invested_ils`/`gain_ils`. SW cache bumped `iw-v3`→`iw-v4`. +4 tests
-  (`test_portfolio_totals.py`). 56 affected-surface tests pass locally; no new ruff errors
-  (verified by diffing lint output against HEAD); **full suite still gated by CI on push**.
+- 2026-07-27 — Weekly status review: quiet week — no commits since `9e2cd01` (2026-07-18); working tree clean; STATUS already in sync. ⚠️ Pending QA still open: the Phases 0–5 alignment batch + notification-alignment checks on the Pixel 9 (SW `iw-v10`) — verify and promote to "Now" once confirmed. Next initiative (broker integration) still unstarted.
+- 2026-07-20 — Weekly status review: ✅ **the whole 2026-07-18 alignment batch is now committed** — 8 commits `defe8ec`→`9e2cd01` (HEAD), resolving the "Phase 1+ uncommitted" flag; working tree clean apart from doc edits. Note: two near-duplicate commit pairs in history (`5acab4c`/`9e2cd01`, `2c02d07`/`fe9ffc6`) — harmless, both phases landed once in the tree. Folded the commit-hygiene notes (no here-strings, no `git add -A`) into Known sharp edges; collapsed old review entries. (This STATUS was also rewritten whole via bash after an Edit-tool write truncated it on the mount.)
+- 2026-07-18 — **Phase 5: green CI + README refresh.** (1) `test-postgres` was failing: `test_buy_funded_executes_via_the_apply_service` drove the DB through `asyncio.get_event_loop().run_until_complete()` on the app's shared async engine — the exact cross-event-loop pattern `CLAUDE.md` warns asyncpg rejects (green on SQLite, red on Postgres). Rewritten as an `async def` test with a throwaway `NullPool` engine in its own loop (the conftest pattern); the ungrounded-signals test made async too (no more `run_until_complete` anywhere). (2) `lint` (ruff) was red — 7 pre-existing errors (5 semicolons in `_fund_score`, a `seen.add(...); append(...)` in `llm.py`, an unused `nav` in `rules_service`). All fixed; `ruff check app` is clean. Pinned `ruff==0.15.22` in requirements-dev and made the lint job install it and **gate** (dropped `continue-on-error`) so it can't silently drift red again. (3) README rewritten from the stale "Phase 0 skeleton" to the real system — grounded/sized/funded recommendations, the unified war-room↔Today pipeline, first-class cash, strategy profiles, card reconciliation — with the new endpoints documented. Also hardened flaky `test_done_vs_ignored` (asserted counts that only tally still-regenerating cards — a background reprice could zero them; rewritten against the restore endpoints, which read the buckets directly). **Phases 0–5 complete; CI fully green.**
+- 2026-07-18 — **Phase 4: strategy differentiation.** The four Grow strategies all read as `{"Equities": 1.0}` by asset class and the UI showed only a description + ticker list, so a leveraged-Nasdaq basket looked identical to a diversified-index one. New `strategy_profile` derives a comparable profile *from each basket*: expected return, volatility, a rough bad-year drawdown, concentration (single-name weight, effective holdings), a leverage flag, and a time horizon — via a transparent per-instrument-character lookup (broad index / sector / single name / leveraged / bond / commodity / cash), labelled as planning assumptions, not forecasts. `/api/v1/strategies` now returns a `profile` per strategy; the Plan cards show the numbers as chips (leverage gets a ⚠). New `GET /strategies/{id}/preview` and a **"What changes?"** button give a concrete before/after diff — objective, risk tolerance, target-mix shifts and the exact rebalancing trades — instead of a bare "HIGH RISK" chip, and flag the currently-applied strategy. Deliberately did **not** fabricate asset-class differences between the all-equity Grow strategies (that would invent numbers); the honest separation is the computed risk/return profile. +9 tests (`test_strategy_profile.py`). SW `iw-v9`→`iw-v10`.
+- 2026-07-18 — **Phase 3: funding engine — cards are now sized and executable.** Every buy card used to say *what* without *how much* or *how to pay for it*, so it read as advice. New `funding_service`: (a) **sizing** bounded by the plan's asset-class target and single-name cap; (b) **funding** — spendable cash first (down to a % -of-NAV floor that varies by objective: Preserve 10% → Grow 3%, overridable), then the worst-fitting holdings ranked by plan fit (name over cap, class overweight, tax cost), each with the ₪ amount, share count and est. CGT. New executable `buy_funded` apply-kind sells the funding legs then buys the target at a live price, never spending money it hasn't raised. Cards rewritten to be actionable: war-room signals are **plan-checked and sized** (a signal the plan can't fund is dropped with its reason, not shown as vague advice); a held name over its cap becomes a concrete trim; the commodities card names one pick and sizes it; the geographic-diversification card becomes a sized VXUS buy; a new **"Raise ₪X of cash"** card fires below the liquidity floor naming exactly what to sell. Today renders a green **"How it's funded"** block listing every trade leg. **Plan alignment:** war-room cards now derive their sizing from the plan's target mix and caps, so the war room and the plan can no longer disagree. +17 tests (`test_funding_service.py`; `test_recs_extras`, `test_signal_service` updated for sized titles). SW `iw-v8`→`iw-v9`.
+- 2026-07-18 — **Phase 2: grounded signals + war-room/Today unification; Done ≠ Ignore.** (1) **"Mark as done" was filing cards under Ignore.** Both buttons wrote to one `dismissed_recs` bucket, so they were indistinguishable. Now two buckets: *ignored* (7-day, restorable via "show ignored") and *completed* (90-day, its own `completed_count` and `POST /recommendations/restore-completed`). Accept/Mark-as-done writes to completed; Ignore to ignored; restoring one never resurrects the other. Deliberately **not** permanent — a forever hide-list is what caused the original push/Today mismatch. (2) **`signal_service`** builds `LagObservation`s from real price history: `spot` = latest close, `listing` = the name's own 50-day trend (so divergence is *measured*, not an assumed fair value), `volatility` = realized annualized vol, `depth` = how persistent the divergence is. Unusable tickers are skipped, never filled with placeholders. `DEFAULT_OBSERVATIONS` is now demo-only behind `DEMO_SIGNALS` (default off). (3) **One pipeline.** `_war_room_payload` is the single entry point; Today's `_war_room_recs` promotes only `DISPLAYED` decisions, and **only when `grounded` is true** — so sample prices can never be laundered into advice. The war room is now the audit trail *for* Today rather than a parallel universe. +27 tests (`test_signal_service.py`, `test_done_vs_ignored.py`); `test_recommendations.py` updated — the war room no longer reads spot/listing from intake metadata, so those two tests inject the observation directly. SW `iw-v7`→`iw-v8`.
+- 2026-07-18 — **Stale-shell fix + recommendation coherence pass.** (1) **Deploys weren't reaching clients.** Diagnosed live via Chrome against production: `actBtn` and `restoreIgnored` were `undefined` in the running page while the cache key was already `iw-v6-shell` — i.e. the SW had bumped version but cached the *old* `index.html` under the new key. Two causes: `cache.add(url)` fetches *through* the browser HTTP cache (now `new Request(url, {cache:'reload'})`), and `StaticFiles` sent no `Cache-Control` on the shell (now a `_NoCacheShell` subclass sending `no-cache, must-revalidate` for `*.html` and `sw.js`). Shell HTML is also network-first in the SW rather than cache-first. **The reported "Ignore does nothing / cards don't disappear" bugs were this — verified working once the client was forced to the deployed build (cards 8→7, dismissals 1→2).** SW `iw-v6`→`iw-v7`. (2) **`_reconcile` pass** — the ~10 agents never consulted each other, so production showed "Sell Cash" + "Buy Equities" (two legs of one rebalance, both applying the *identical* action), "Put idle cash to work" (a third card for the same surplus) and "Markets look risk-off" advising a 5-10% *increase* in cash — four mutually impossible cards. Now: multi-leg rebalances merge into one card; geographic + currency concentration merge when they describe the same exposure; cash-drag is dropped when a rebalance already redeploys the cash; and a risk-off macro card alongside a pending rebalance is reworded from "raise cash" to "phase the rebalance in" instead of contradicting it. +10 tests (`test_reconcile.py`, `test_shell_cache_headers.py`).
+- 2026-07-18 — **Accept no longer pretends to act.** Reported live: tapping Accept on "You're trailing SPY" changed nothing, said "Done — applied.", and parked the card in the ignored list. Cause: 10 of the card types (benchmark lag, commodity sleeve, geo/currency/liquidity diversification, holding verdicts, sector concentration, cash drag, yield lift, contribution) carry `apply.kind == "none"` — plus the macro risk-off card had no `apply` key at all — so `apply_recommendation` fell through every branch and the route dismissed them anyway. Now: a single `_ACTIONABLE_KINDS` set is the source of truth; every card ships an `actionable` flag; the UI tags each card "⚡ The app can do this for you" vs "💡 Guidance — you act on this yourself" and swaps the button between **Accept** and **Mark as done**, with confirm/result text that admits nothing was traded. A 404 from accept now **removes the card outright** instead of leaving it or filing it under ignored. SW `iw-v5`→`iw-v6`. +5 tests (`test_accept_honesty.py`). Phase 3's funding work converted several of these advisory cards into genuinely actionable ones.
+- 2026-07-18 — **Phase 1: cash as a first-class holding.** Cash previously materialised *only* as a side effect of accepting a sell, so money already held was untrackable and the donut read 100% Equities for a book with real liquidity. Adds `set_cash`/`get_cash` + `GET|POST /api/v1/portfolio/cash` (set or adjust; adjust accepts a negative for withdrawals and floors at zero; set rejects negatives), a "💵 Set liquid cash" control and modal on Holdings, and a pinned green-bordered Cash row showing % of portfolio. `/api/v1/mix` now always emits a Cash slice (even at 0%) plus `cash_ils`, so "no cash" is visually distinct from "cash not tracked". Cash carries `liquidity_score: 100` and `volatility_pct: 0` via a shared `CASH_META`, so it lifts the liquidity health score instead of falling back to the generic 70. **Latent bug fixed:** `credit_cash` stored the full proceeds as the *per-share* `cost_basis`, so once Phase 0 surfaced invested totals, ₪2,500 of cash reported as ₪6.25M invested — basis is now 1.0, and existing rows self-heal on the next credit/set. Also FX-normalized the cash-drag rec's weight (raw numerator over an ILS-normalized NAV). SW `iw-v4`→`iw-v5`. +7 tests (`test_cash.py`).
+- 2026-07-18 — **Phase 0: recommendation alignment groundwork** — shipped as `defe8ec`, CI green, Railway deploy Active. (1) **FX bug fixed**: `market_impact.annotate` computed exposure as `qty × price` with no FX rate while every other surface is ILS-normalized — the "What's moving" panel claimed events touched "100% of your portfolio (₪5,680)" for a book worth ₪17,306. Now uses `fx_rate(price_currency(...))` like `current_mix`; +2 regression tests. (2) **Silent failures instrumented**: the four bare `except: pass` blocks in `build_recommendations` (risk alerts, performance/benchmark, market regime, trading rules) now log with `exc_info` and report a `degraded` list to the client, so a missing card is distinguishable from "nothing to do". (3) **Honest empty state**: Today now separates "nothing to do" from "you ignored N suggestions", surfaces a warning when an agent failed, and adds a **Show ignored** control backed by a new `POST /api/v1/recommendations/restore` — an Ignore was previously a one-way door for 7 days with no way to see what was hidden. (4) **Total portfolio value** gains invested ("you put in"), absolute + % gain, and a liquid-cash line; `/api/v1/portfolio` now returns `invested_ils`, `gain_ils`, `gain_pct`, `cash_ils` and per-position `invested_ils`/`gain_ils`. SW cache bumped `iw-v3`→`iw-v4`. +4 tests (`test_portfolio_totals.py`).
 - 2026-07-14 — **War-room timestamps + benchmark-lag & commodity recommendations.** (1) The Agents war room now stamps each run: an 'Analyzed at <date · time>' header plus a per-decision time on every session card (`build_war_room` returns `generated_at`; each session carries `decided_at`). (2) New performance-driven card in Today's What-to-do-now: when the portfolio trails its benchmark by >3% the engine surfaces a grounded 'You're trailing <benchmark>' improvement rec (real excess-return number, points at laggards/fees/drift). (3) Commodities now surface as holdings advice — an 'Add a commodities sleeve' card fires when under-allocated vs the objective's commodity target, naming concrete screener-ranked picks, and `buy_ideas` now includes commodity picks alongside equities. +5 tests (`test_recs_extras.py`).
 - 2026-07-14 — **Trading-rules UI redesign (grouped by holding).** The rules list was a flat stack of fat cards — ticker repeated on every row, same-holding rules scattered, no colour coding, duplicates unflagged. Rebuilt as a `Positions | Rules` segmented sub-tab inside Holdings (no new bottom-nav tab): rules now group under one card per holding (ticker + live price header), each rule a compact colour-coded row (stop-loss red / take-profit green / trailing blue / max-weight amber) with a distance-to-trigger bar. Adds filter chips (all/triggered/armed/paused), sort (closest/holding/type), duplicate detection with a one-click remove, and triggered rules pinned + highlighted on top of their group (and their group floated first). Count badge on the Rules tab; Today's rule-alert banner deep-links straight into the Rules pane. Client-side only (regroups the existing `/api/v1/rules` payload) — no backend change.
 - 2026-07-14 — **Actionable trend cards + per-holding suggested rules.** The downtrend/uptrend momentum cards were advice-only (`apply: none`) — Accept did nothing user-visible. They now arm a concrete rule: downtrend → stop-loss at a volatility-derived price (≈8–15% below today); uptrend → trailing stop (10–20%) plus a max-weight cap when the name is already a large slice. Accept returns an "Armed …" summary; the rule then fires the normal alert + Today to-do. Added `stop_buffer_pct` (levels grounded in each holding's own realized volatility, never invented), a `create_rules` apply-kind, `rules_service.suggest_rules_for_holdings` + `GET /api/v1/rules/suggestions`, and a "Suggested rules" UI panel (add each / arm-all). +5 tests (`test_trading_rule_suggestions.py`); changed surfaces green locally, full suite gated by CI on push.
-- 2026-07-13 — Weekly status review: ✅ **the previously-uncommitted Accept-executes + notification-alignment/why-impact work is now committed** — HEAD `6036e61`→`67f7da3` ("Align push notifications with Today actions + explain recommendations", 2026-07-12), working tree now clean. Resolves last week's uncommitted-work flag. The Pending-QA items below still need live Pixel 9 verification post-deploy.
+- 2026-07-13 — Weekly status review: the Accept-executes + notification-alignment work landed as `67f7da3` (2026-07-12), resolving that week's uncommitted-work flag.
 - 2026-07-06 — **Accept now executes recommendations.** The Today-view "Accept" applied nothing user-visible: sells just deleted holdings (value vanished) and fee/other cards were `apply:none`. Now sells credit net-of-CGT proceeds to a visible **CASH** holding (liquidity you can see/redeploy), `trim` credits the sold portion, and fee-swap cards actually sell the high-fee fund and buy the cheaper equivalent at a live price (falls back to cash if unpriceable). Accept returns a "what changed" summary the UI now shows. Tests: sell→cash added.
 - 2026-07-12 — **Notification ↔ Today alignment + why/impact recommendations.** Root cause of "push says do X, app says nothing to do": the app hid cards via a *permanent* `localStorage` list while server dismissals (which gate push) expire after 7 days — so a resurfaced item re-notified while the app hid it forever. Replaced the permanent list with a TTL-matched (7-day) local store keyed by `iw_snoozed_v2`; the server dismissal is now the single source of truth. Notifications are now categorised `action` (maps 1:1 to a Today card) vs `info` (price moves + weekly digest, reworded as FYI, `silent`/no-nag in the SW). Added actionable region/currency/liquidity diversification cards so every pushed alert maps to a card. Every recommendation now carries plain-language `why` + `impact` (rendered in the card); the goal-gap contribution card, the digest and the home "Where this could end up" panel now share one Monte-Carlo projection instead of diverging. SW cache bumped `iw-v2`→`iw-v3`. Ships alongside the previously-uncommitted Accept-executes work.
-- 2026-07-06 — Weekly status review: caught STATUS up to 4 shipped commits it was missing (2026-06-28/29). HEAD `8165628` → `6036e61`.
-- 2026-06-29 — **Trading rules + digest/banner.** Stop-loss/take-profit/trailing/price-alert/buy-dip/max-weight rules with alerts, to-dos and a management UI; triggered rules surfaced in the daily digest and a Today-screen alert banner.
-- 2026-06-29 — **Stale-price fix.** Scheduled 30-min reprice of all holdings (FMP → Yahoo fallback) + truthful data-source/status label.
-- 2026-06-29 — **Markets + AI.** Yahoo futures with risk-on/off regime feeding the agents; Gemini portfolio/holding/macro summaries + grounded deep-research-per-holding; Markets tab and AI cards.
-- 2026-06-28 — **PWA + push notifications.** Installable app (manifest, service worker, blue-bars icons, mobile bottom-nav); web push for recommendations, risk alerts, price moves and daily digest; price-provider hardening (FMP stable API + keyless Yahoo fallback + transparent errors); server-side recommendation dismissals with 7-day TTL.
+- 2026-06-28→29 (consolidated) — **PWA/push + Markets/AI + trading rules + stale-price fix.** Installable PWA (manifest, SW, mobile bottom-nav) + web push (recs, risk alerts, price moves, daily digest) with server-side 7-day-TTL dismissals; price-provider hardening (FMP stable + keyless Yahoo fallback). Markets tab: Yahoo futures risk-on/off regime feeding the agents; Gemini portfolio/holding/macro summaries + grounded deep-research-per-holding. Trading-rules engine (stop-loss/take-profit/trailing/price-alert/buy-dip/max-weight → alerts + to-dos + management UI; triggered rules in digest + Today banner). Scheduled 30-min reprice of all holdings with truthful data-source label.
 - 2026-06-22 — STATUS.md + CLAUDE.md seeded.
 - (prior) — NAV/goal alignment, FX normalization, opportunity screener + fundamentals, commodities advisor context, advanced dashboard restore, Postgres test-isolation fix.

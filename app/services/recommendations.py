@@ -36,7 +36,7 @@ _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 # looked like it had been carried out when nothing had happened.
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
-                     "buy_funded", "sell_position"}
+                     "buy_funded", "sell_position", "redeploy_cash"}
 
 
 def _is_actionable(rec: dict) -> bool:
@@ -194,12 +194,31 @@ async def load_completed(session: AsyncSession, user: User) -> set[str]:
     return await _active(session, _done_key(user), _DONE_TTL_DAYS)
 
 
+async def _resolve_if_rule_card(session: AsyncSession, user: User, rec_id: str,
+                                outcome: str) -> None:
+    """Rule cards carry their rule's id in the card id (``rule_<8 hex>``).
+
+    A 7-day dismissal hides the *card*, but the rule itself stayed latched
+    ``triggered`` forever — so the red "N trading rules triggered" banner, which
+    reads the rules directly, kept counting work the user had already dealt with.
+    """
+    if not rec_id.startswith("rule_"):
+        return
+    from app.services.rules_service import resolve_rule
+    try:
+        await resolve_rule(session, user, rec_id[5:], outcome)
+    except Exception:  # noqa: BLE001 -- hiding the card must never fail on this
+        logger.warning("could not resolve rule for %s", rec_id, exc_info=False)
+
+
 async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
     await _mark(session, _dismiss_key(user), rec_id, _DISMISS_TTL_DAYS)
+    await _resolve_if_rule_card(session, user, rec_id, "dismissed")
 
 
 async def complete_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
     await _mark(session, _done_key(user), rec_id, _DONE_TTL_DAYS)
+    await _resolve_if_rule_card(session, user, rec_id, "acknowledged")
 
 
 async def restore_dismissed(session: AsyncSession, user: User) -> int:
@@ -636,6 +655,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     recs += _hedge_recs(rows, snap)
     recs += _momentum_recs(rows, snap)
     recs += _income_cost_recs(pdicts, snap, objective)
+    # Surplus cash gets a sized, executable home. Emitted after the income agent
+    # so _reconcile can drop the old advisory "Put idle cash to work" card when
+    # this one fires -- two cards about the same shekels is what the reconcile
+    # pass exists to prevent.
+    _redeploy = _redeploy_cash_recs(rows, snap, plan, objective, cap, _cash_ils)
+    if _redeploy:
+        recs = [r for r in recs if r.get("id") != _rid("cashdrag")]
+        recs += _redeploy
     recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
     try:
         from app.services.performance_service import performance as _perf_fn
@@ -1088,6 +1115,124 @@ def _momentum_recs(rows, snap) -> list[dict]:
     return out[:3]
 
 
+def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict]:
+    """Surplus cash -> one sized, executable redeployment plan.
+
+    After a stop-loss fires and you accept it, the proceeds land in cash and the
+    portfolio drifts away from its plan. The old "Put idle cash to work" card
+    noticed this but was `apply: none` -- it said "move the rest into your target
+    mix" without naming what, sizing it, or being able to do it.
+
+    Allocation is derived, never invented:
+      * spendable  = cash above the objective's floor (Preserve 10% .. Grow 3%);
+      * candidates = every asset class under its target weight, filled first by
+        the holdings you already own that sit below their share of that class,
+        then by screener picks for classes with no representation at all;
+      * each leg is clipped by the single-name concentration cap, and legs below
+        the minimum trade size are dropped rather than rounded up.
+    """
+    from app.services import funding_service as _fund
+
+    nav = snap.get("nav") or 0.0
+    if not nav or cash_ils <= 0:
+        return []
+    spendable = _fund.spendable_cash(cash_ils, nav, objective, plan)
+    if spendable < _fund.MIN_TRADE_ILS:
+        return []
+
+    mix, _ = current_mix(rows)
+    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+    weights = snap.get("exposure_ticker") or {}
+    held_by_class: dict[str, list] = {}
+    for r in rows:
+        # The meta asset_class must be passed: classify() falls back to ticker
+        # heuristics otherwise, and "CASH" matches none of them -- so the cash
+        # row itself would land in Equities and become a top-up target, i.e. the
+        # app proposing to buy cash with cash.
+        _meta = getattr(r, "meta", None)
+        cls = classify(r.ticker, getattr(r, "market", None),
+                       (_meta or {}).get("asset_class") if isinstance(_meta, dict) else None)
+        if cls and cls.lower() != "cash":
+            held_by_class.setdefault(cls, []).append(r)
+
+    # Gaps per asset class, largest shortfall first.
+    gaps = []
+    for cls, tw in (target or {}).items():
+        if cls.lower() == "cash" or not tw:
+            continue
+        gap_ils = max(0.0, (float(tw) - float(mix.get(cls, 0.0)))) * nav
+        if gap_ils >= _fund.MIN_TRADE_ILS:
+            gaps.append((cls, gap_ils, float(tw)))
+    if not gaps:
+        return []
+    gaps.sort(key=lambda g: g[1], reverse=True)
+
+    total_gap = sum(g[1] for g in gaps)
+    legs: list[dict] = []
+    remaining = spendable
+    for cls, gap_ils, tw in gaps:
+        if remaining < _fund.MIN_TRADE_ILS:
+            break
+        # Proportional share of the surplus, never more than the class actually needs.
+        budget = min(gap_ils, round(spendable * (gap_ils / total_gap), 2), remaining)
+        held = held_by_class.get(cls) or []
+        if held:
+            # Top up what you already own, weakest weight first.
+            held.sort(key=lambda p: weights.get(p.ticker, 0.0))
+            per = round(budget / len(held), 2)
+            for p in held:
+                if remaining < _fund.MIN_TRADE_ILS:
+                    break
+                room = _fund.size_purchase(nav, weights.get(p.ticker, 0.0), cap, cap)
+                amt = round(min(per, room, remaining), 2)
+                if amt < _fund.MIN_TRADE_ILS:
+                    continue
+                legs.append({"ticker": p.ticker, "amount_ils": amt, "asset_class": cls,
+                             "reason": f"{cls} is {mix.get(cls, 0.0):.0%} vs a {tw:.0%} target"})
+                remaining = round(remaining - amt, 2)
+        else:
+            # The plan wants this class and you hold none of it -- a real gap, so
+            # a new name is warranted rather than concentrating further.
+            pick = next((b for b in _buy_ideas(snap)
+                         if classify(b.get("ticker"), None) == cls), None)
+            amt = round(min(budget, remaining), 2)
+            if pick and amt >= _fund.MIN_TRADE_ILS:
+                legs.append({"ticker": pick["ticker"], "amount_ils": amt, "asset_class": cls,
+                             "reason": f"you hold no {cls}; the plan targets {tw:.0%}",
+                             "new_position": True})
+                remaining = round(remaining - amt, 2)
+
+    if not legs:
+        return []
+    deployed = round(sum(x["amount_ils"] for x in legs), 2)
+    kept = round(cash_ils - deployed, 2)
+    floor_pct = _fund.cash_floor_pct(objective, plan)
+    new_names = [x["ticker"] for x in legs if x.get("new_position")]
+
+    return [{
+        "id": _rid("redeploy", round(deployed)), "dimension": "allocation", "severity": "HIGH",
+        "title": f"Redeploy {_ils(deployed)} of idle cash",
+        "why": (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.0%} of the portfolio) against a "
+                f"{floor_pct:.0%} floor for a {objective or 'Balanced'} plan. Cash earns nothing "
+                f"toward your goal, and the sale proceeds left your mix off-plan."),
+        "action": ("Put it back to work: "
+                   + "; ".join(f"{_ils(x['amount_ils'])} into {x['ticker']}" for x in legs)
+                   + f". Keeps {_ils(kept)} as your buffer."),
+        "impact": (f"Moves every underweight asset class toward its target and cuts cash from "
+                   f"{cash_ils / nav:.0%} to {kept / nav:.0%}."
+                   + (f" Adds {', '.join(new_names)} to fill a gap the plan needs."
+                      if new_names else "")),
+        "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
+                + [f"Keep {_ils(kept)} in cash ({floor_pct:.0%} floor for {objective or 'Balanced'})",
+                   "Accept executes every leg at live prices, funded entirely from cash",
+                   "Tracked book only — no brokerage order is placed"]),
+        "est_amount": deployed,
+        "apply": {"kind": "redeploy_cash", "legs": legs},
+        "meta": {"cash_before_ils": round(cash_ils, 2), "cash_after_ils": kept,
+                 "floor_pct": floor_pct},
+    }]
+
+
 def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
     """Cash drag and dividend-income opportunities (fees handled by the FeeAgent)."""
     out: list[dict] = []
@@ -1367,6 +1512,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = await _apply_fee_swap(session, user, by_ticker, spec)
     elif kind == "buy_funded":
         detail = await _apply_buy_funded(session, user, spec)
+    elif kind == "redeploy_cash":
+        detail = await _apply_redeploy_cash(session, user, spec)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
@@ -1390,8 +1537,11 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     # produced this card is stamped with what was actually done.
     rule_id = spec.get("rule_id")
     if rule_id:
-        from app.services.rules_service import record_outcome
-        await record_outcome(
+        from app.services.rules_service import resolve_rule
+        # Stamps the audit event AND clears/consumes the rule, so the "N trading
+        # rules triggered" banner reflects what's still outstanding rather than
+        # everything that has ever fired.
+        await resolve_rule(
             session, user, rule_id,
             "executed" if kind in _ACTIONABLE_KINDS else "acknowledged",
             {"kind": kind, **detail} if detail else {"kind": kind})
@@ -1402,6 +1552,76 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
                 "note": "Marked as done. This one is guidance -- nothing was bought or sold."}
     return {"applied": kind, "title": rec["title"], **detail}
 
+
+
+async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) -> dict:
+    """Buy every leg straight out of cash, at live prices.
+
+    Cash is debited leg by leg as we go, so a price move between building the
+    card and accepting it can only shorten the list -- it can never spend money
+    that isn't there.
+    """
+    from decimal import Decimal
+
+    from app.providers.registry import guarded_quote
+    from app.schemas.intake import IntakePosition
+    from app.services.fx import fx_rate
+    from app.services.intake_service import (
+        ensure_account, ensure_entity, get_cash, set_cash, upsert_positions,
+    )
+
+    cash = await get_cash(session, user)
+    rows = await list_positions(session, user)
+    by_ticker = {p.ticker: p for p in rows}
+    entity = await ensure_entity(session, user, "Personal", "Personal")
+    account = await ensure_account(session, entity, "Main")
+
+    bought, skipped = [], []
+    for leg in (spec.get("legs") or []):
+        tk, amount = leg.get("ticker"), float(leg.get("amount_ils") or 0)
+        if not tk or amount <= 0:
+            continue
+        if amount > cash:
+            skipped.append({"ticker": tk, "reason": "not enough cash left"})
+            continue
+        try:
+            q = guarded_quote(tk)
+        except Exception:  # noqa: BLE001
+            q = None
+        if q is None or not q.price:
+            skipped.append({"ticker": tk, "reason": "no live price"})
+            continue
+        price_ils = float(q.price) * fx_rate(getattr(q, "currency", None) or "USD")
+        if price_ils <= 0:
+            skipped.append({"ticker": tk, "reason": "no live price"})
+            continue
+        shares = round(amount / price_ils, 4)
+        if shares <= 0:
+            skipped.append({"ticker": tk, "reason": "amount too small for one share"})
+            continue
+        existing = by_ticker.get(tk)
+        if existing is not None:
+            # Blend the basis so gain/loss stays honest after topping up.
+            old_qty, old_basis = float(existing.quantity), float(existing.cost_basis or 0)
+            new_qty = old_qty + shares
+            existing.quantity = Decimal(str(round(new_qty, 6)))
+            if new_qty > 0:
+                existing.cost_basis = Decimal(str(round(
+                    (old_qty * old_basis + shares * float(q.price)) / new_qty, 6)))
+            existing.current_price = Decimal(str(q.price))
+        else:
+            await upsert_positions(session, user, entity.name, "Personal", account.name, [
+                IntakePosition(ticker=tk, market=getattr(q, "market", None) or "NASDAQ",
+                               quantity=shares, cost_basis=float(q.price),
+                               spot_price=float(q.price)),
+            ])
+        cash = round(cash - amount, 2)
+        bought.append({"ticker": tk, "shares": shares, "amount_ils": round(amount, 2),
+                       "price": float(q.price), "new_position": existing is None})
+    await set_cash(session, user, cash)
+    await session.commit()
+    return {"bought": bought, "skipped": skipped, "cash_remaining_ils": round(cash, 2),
+            "broker_note": "Tracked book updated — no brokerage order was placed."}
 
 
 async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> dict:
