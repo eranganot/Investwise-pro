@@ -82,6 +82,24 @@ def _character(ticker: str) -> str:
     return "single_name"  # unrecognized tickers are treated as concentrated stock
 
 
+def assumptions_for(ticker: str, asset_class: str | None = None) -> tuple[float, float]:
+    """(expected_return_pct, volatility_pct) for a holding, from its character.
+
+    Shared with the plan projection and the risk score so a holding whose intake
+    metadata is missing these fields is still modelled as the kind of instrument
+    it actually is. Positions added through the UI carry neither field, and the
+    old fallbacks -- expected return 0.0, volatility 12/15 -- silently reported a
+    normal equity book as "~0%/yr expected return, behind your target", which is
+    an artefact of absent metadata rather than anything about the portfolio.
+
+    These are coarse planning assumptions, not forecasts; the same caveat that
+    applies to the strategy profiles applies here.
+    """
+    if asset_class and str(asset_class).lower() == "cash":
+        return _CLASS_ASSUMPTIONS["cash"]
+    return _CLASS_ASSUMPTIONS.get(_character(ticker), _CLASS_ASSUMPTIONS["single_name"])
+
+
 def _weights(strategy: dict) -> list[tuple[str, float]]:
     basket = strategy.get("basket") or []
     total = sum(w for _, w in basket) or 1.0

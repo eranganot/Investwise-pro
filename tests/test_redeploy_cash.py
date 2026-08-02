@@ -90,6 +90,24 @@ def test_never_proposes_breaching_the_single_name_cap():
             assert leg["ticker"] != "AMZN", "AMZN is already at the 25% cap"
 
 
+def test_cap_holds_even_when_the_snapshot_weights_are_missing():
+    """Regression: live, every leg came back an identical 970.95.
+
+    Weights were read from snap["exposure_ticker"], which returned 0 for every
+    ticker, so size_purchase saw "current weight 0" for AMZN at 29% and never
+    clipped it -- the card proposed buying MORE of a holding already past the
+    cap. Weights are now derived from the rows, so an empty snapshot changes
+    nothing.
+    """
+    out = _redeploy_cash_recs(_book(), _snap(NAV, {}), None, "Grow", 0.25, 6473.0)
+    assert out, "expected a card"
+    legs = out[0]["apply"]["legs"]
+    assert "AMZN" not in [x["ticker"] for x in legs], \
+        "AMZN is 29% of NAV, over the 25% cap - it must not be topped up"
+    amounts = {round(x["amount_ils"], 2) for x in legs}
+    assert len(legs) < 2 or len(amounts) > 1 or "AMZN" not in [x["ticker"] for x in legs]
+
+
 def test_card_states_the_buffer_it_keeps():
     out = _redeploy_cash_recs(_book(), _snap(NAV, WEIGHTS), None, "Grow", 0.25, 6473.0)
     assert out, "expected a card for 30% cash against a 3% floor"

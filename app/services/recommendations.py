@@ -661,7 +661,20 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # pass exists to prevent.
     _redeploy = _redeploy_cash_recs(rows, snap, plan, objective, cap, _cash_ils)
     if _redeploy:
-        recs = [r for r in recs if r.get("id") != _rid("cashdrag")]
+        # Everything that spends the same idle cash must collapse into this one
+        # card. Live, Today showed "Redeploy ₪3,884", "Rebalance toward your
+        # target mix" AND "Add to SCHD — ₪7,899" simultaneously: three cards,
+        # one pot of money, two different sizes for the same SCHD buy.
+        _legs = {x["ticker"] for x in _redeploy[0]["apply"]["legs"]}
+        def _competes(r: dict) -> bool:
+            if r.get("id") == _rid("cashdrag"):
+                return True
+            _ap = r.get("apply") or {}
+            if _ap.get("kind") == "rebalance_to_objective":
+                return True
+            # A sized buy of a ticker this card already funds.
+            return _ap.get("kind") == "buy_funded" and _ap.get("ticker") in _legs
+        recs = [r for r in recs if not _competes(r)]
         recs += _redeploy
     recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
     try:
@@ -1157,7 +1170,19 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
 
     mix, _ = current_mix(rows)
     target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
-    weights = snap.get("exposure_ticker") or {}
+    # Weights are computed from the rows themselves rather than read out of
+    # snap["exposure_ticker"]. That lookup silently returned 0 for every ticker,
+    # so size_purchase saw "current weight 0" for a name at 29% and handed every
+    # leg an identical unclipped slice -- proposing to buy MORE of a holding
+    # already past the concentration cap. A self-contained calculation cannot
+    # drift from whatever keys the caller's snapshot happens to use.
+    from app.services.fx import fx_rate as _fxr, price_currency as _pcy
+    weights: dict[str, float] = {}
+    for r in rows:
+        _m = getattr(r, "meta", None)
+        _rate = _fxr(_pcy(getattr(r, "market", None), _m if isinstance(_m, dict) else None))
+        _v = float(getattr(r, "quantity", 0) or 0) * float(getattr(r, "current_price", 0) or 0) * _rate
+        weights[r.ticker] = weights.get(r.ticker, 0.0) + (_v / nav if nav else 0.0)
     held_by_class: dict[str, list] = {}
     for r in rows:
         # The meta asset_class must be passed: classify() falls back to ticker

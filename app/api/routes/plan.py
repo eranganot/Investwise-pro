@@ -39,14 +39,21 @@ async def _orm(session, user):
 
 def _portfolio_stats(rows) -> dict:
     from app.services.fx import price_currency, fx_rate
+    from app.services.strategy_profile import assumptions_for
     nav = ret = vol = 0.0
     for p in rows:
         m = p.meta or {}
         rate = fx_rate(price_currency(p.market, m if isinstance(m, dict) else None))
         val = float(p.quantity) * float(p.current_price or 0) * rate  # base-currency value
         nav += val
-        ret += val * (m.get("expected_return_pct") or 0.0)
-        vol += val * (m.get("volatility_pct") or 12.0)
+        # Holdings added through the UI carry no expected_return_pct, and the old
+        # `or 0.0` counted them as returning exactly nothing -- so a normal equity
+        # book reported "~0%/yr vs your 10% target - behind", which was an
+        # artefact of missing metadata, not a fact about the portfolio. Fall back
+        # to the instrument's character instead of to zero.
+        _ret, _vol = assumptions_for(p.ticker, m.get("asset_class"))
+        ret += val * (m.get("expected_return_pct") if m.get("expected_return_pct") is not None else _ret)
+        vol += val * (m.get("volatility_pct") if m.get("volatility_pct") is not None else _vol)
     if not nav:
         return {"nav": 0.0, "expected_roi": None, "volatility": None}
     return {"nav": nav, "expected_roi": round(ret / nav, 2), "volatility": round(vol / nav, 2)}

@@ -39,6 +39,8 @@ def compute_snapshot(positions: list[dict]) -> dict:
             "value": value, "unrealized": (price - cost) * qty,
             "volatility_pct": p.get("volatility_pct"),
             "liquidity_score": p.get("liquidity_score"),
+            "asset_class": (p.get("meta") or {}).get("asset_class")
+            if isinstance(p.get("meta"), dict) else p.get("asset_class"),
         })
     nav = sum(r["value"] for r in rows)
     for r in rows:
@@ -52,7 +54,15 @@ def compute_snapshot(positions: list[dict]) -> dict:
         exposure_cur[CUR.get(r["market"], "OTHER")] = exposure_cur.get(CUR.get(r["market"], "OTHER"), 0.0) + r["weight"]
         exposure_ticker[r["ticker"]] = exposure_ticker.get(r["ticker"], 0.0) + r["weight"]
 
-    vol_weighted = sum(r["weight"] * (r["volatility_pct"] or 15.0) for r in rows) if nav else 0.0
+    # A holding with no volatility metadata used to count as a flat 15%, so the
+    # Risk score was computed from a placeholder rather than from the book. Fall
+    # back to the instrument's character (a single name is ~32%, a bond ~6%),
+    # which is at least the right shape for what is actually held.
+    from app.services.strategy_profile import assumptions_for
+    vol_weighted = sum(
+        r["weight"] * (r["volatility_pct"] if r["volatility_pct"] is not None
+                       else assumptions_for(r["ticker"], r.get("asset_class"))[1])
+        for r in rows) if nav else 0.0
     liq_weighted = sum(r["weight"] * (r["liquidity_score"] if r["liquidity_score"] is not None else 70.0)
                        for r in rows) if nav else 70.0
     return {
