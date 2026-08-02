@@ -751,6 +751,21 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     completed = await load_completed(session, user)
     suppressed = done_count = 0
     if dismissed or completed:
+        # Self-heal a deadlock before suppressing: a rule can sit latched
+        # `triggered` while its card is hidden by an earlier dismissal, so the
+        # red "N trading rules triggered" banner counts work with nothing left to
+        # click. Any rule acted on before rule-clearing shipped is in exactly
+        # that state, and would stay there for the life of the rule. Being
+        # suppressed means the user already dealt with it, so resolve it.
+        _hidden_rules = {r.get("id") for r in recs
+                         if str(r.get("id", "")).startswith("rule_")} & (dismissed | completed)
+        if _hidden_rules:
+            from app.services.rules_service import resolve_rule
+            for _hid in _hidden_rules:
+                try:
+                    await resolve_rule(session, user, _hid[5:], "acknowledged")
+                except Exception:  # noqa: BLE001 -- never break Today over cleanup
+                    logger.warning("could not self-heal rule %s", _hid, exc_info=False)
         _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
         suppressed = _n - len(recs)
