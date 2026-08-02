@@ -27,6 +27,17 @@ logger = logging.getLogger("investwise.push")
 
 _KV_PUB = "vapid_public_key"
 _KV_PRIV = "vapid_private_key"
+KV_LAST_PUSH_RUN = "last_push_run"
+
+# Statuses that mean "this subscription will never work again, drop it so the
+# browser re-subscribes on the next visit".
+#   404/410 - the endpoint is gone (classic expiry).
+#   403     - VAPID signature rejected: the keypair no longer matches the one the
+#             subscription was created with. This was NOT pruned before, so if the
+#             DB-persisted keypair was ever regenerated, every push failed 403
+#             forever, nothing was cleaned up, and no client ever re-subscribed --
+#             a permanent, completely silent outage.
+DEAD_CODES = (403, 404, 410)
 
 
 # --------------------------------------------------------------------------- #
@@ -146,9 +157,17 @@ def _send_sync(sub_info: dict, payload: dict, private_key: str, subject: str) ->
         return 201
     except WebPushException as exc:  # noqa: BLE001
         code = getattr(getattr(exc, "response", None), "status_code", 0) or 0
-        if code not in (404, 410):
+        if code not in DEAD_CODES:
             logger.warning("web push failed (%s): %s", code, exc)
+        else:
+            logger.info("pruning dead push subscription (%s)", code)
         return code or 500
+    except Exception as exc:  # noqa: BLE001
+        # pywebpush/py_vapid missing, or a malformed key: without this the
+        # ImportError escaped into the caller's broad except and every push
+        # disappeared with a single ambiguous warning.
+        logger.warning("web push unavailable: %s: %s", type(exc).__name__, exc)
+        return 500
 
 
 async def send_to_subject(session: AsyncSession, subject: str, title: str, body: str,
@@ -169,7 +188,7 @@ async def send_to_subject(session: AsyncSession, subject: str, title: str, body:
     for sub in subs:
         info = {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}}
         code = await asyncio.to_thread(_send_sync, info, payload, private, vsubject)
-        if code in (404, 410):
+        if code in DEAD_CODES:
             dead.append(sub.endpoint)
         elif code == 201:
             sent += 1
@@ -309,6 +328,61 @@ async def send_digest(session: AsyncSession, user: User) -> dict:
 # --------------------------------------------------------------------------- #
 # Background runners (own short-lived engine; safe from APScheduler threads)
 # --------------------------------------------------------------------------- #
+async def diagnostics(session: AsyncSession, user: User) -> dict:
+    """Why am I not getting notifications? Answers it without guesswork.
+
+    Reports the three independent things that must all be true -- the scheduler
+    is running its jobs, this user has a live subscription, and the push library
+    can actually sign and send -- plus when each last happened.
+    """
+    from app.worker.scheduler import job_state
+
+    subject = user.email
+    subs = (await session.scalars(
+        select(PushSubscription).where(PushSubscription.subject == subject))).all()
+    last_run = await _kv_get(session, KV_LAST_PUSH_RUN)
+    recent = (await session.scalars(
+        select(NotifiedEvent).where(NotifiedEvent.subject == subject)
+        .order_by(NotifiedEvent.created_at.desc()).limit(10))).all()
+
+    library_ok, library_error = True, None
+    try:
+        import pywebpush  # noqa: F401
+        import py_vapid  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        library_ok, library_error = False, f"{type(exc).__name__}: {exc}"
+
+    sched = job_state()
+    blockers = []
+    if not subs:
+        blockers.append("No push subscription for this account — re-enable notifications in the app.")
+    if not library_ok:
+        blockers.append(f"Push library unavailable ({library_error}).")
+    if not sched.get("scheduler_running"):
+        blockers.append("Scheduler is not running in this process — no job can fire.")
+    for jid in ("push_evaluate", "push_digest"):
+        h = sched.get("history", {}).get(jid)
+        if h and not h.get("last_ok"):
+            blockers.append(f"Job {jid} last failed: {h.get('last_error')}")
+        if h is None and sched.get("scheduler_running"):
+            blockers.append(f"Job {jid} has not run yet since this process started.")
+
+    return {
+        "subscriptions": len(subs),
+        "vapid_pinned_by_env": bool(get_settings().vapid_public_key),
+        "push_library_ok": library_ok,
+        "push_library_error": library_error,
+        "last_fanout_run": last_run,
+        "dedupe_days": get_settings().push_dedupe_days,
+        "notify_severities": get_settings().push_notify_severities,
+        "recent_notifications": [
+            {"signature": e.signature,
+             "at": e.created_at.isoformat() if e.created_at else None} for e in recent],
+        "scheduler": sched,
+        "blockers": blockers or ["Nothing obviously broken — send a test push to confirm delivery."],
+    }
+
+
 async def _for_each_subscriber(coro_name: str) -> dict:
     """Run evaluate_and_notify or send_digest for every distinct subscriber."""
     from app.services.feed_service import ensure_user
@@ -327,6 +401,13 @@ async def _for_each_subscriber(coro_name: str) -> dict:
                 fn = evaluate_and_notify if coro_name == "evaluate" else send_digest
                 res = await fn(session, user)
                 total += res.get("sent", 0)
+        # Persist a heartbeat: a fan-out that ran and sent nothing is a very
+        # different diagnosis from one that never ran at all.
+        async with Session() as session:
+            await _kv_set(session, KV_LAST_PUSH_RUN,
+                          f"{coro_name}@{datetime.now(timezone.utc).isoformat()}"
+                          f" subscribers={len(subjects)} sent={total}")
+            await session.commit()
     finally:
         await engine.dispose()
     return {"subscribers": len(subjects), "sent": total}

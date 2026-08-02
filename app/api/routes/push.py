@@ -51,6 +51,14 @@ async def test(session: AsyncSession = Depends(get_session),
     return {"ok": True, "sent": sent}
 
 
+@router.get("/status")
+async def status(session: AsyncSession = Depends(get_session),
+                 user: User = Depends(acting_user)) -> dict:
+    """Why notifications are (or aren't) arriving — subscriptions, scheduler
+    job history, push-library health, and the last fan-out heartbeat."""
+    return await push_service.diagnostics(session, user)
+
+
 @router.post("/check")
 async def check(session: AsyncSession = Depends(get_session),
                 user: User = Depends(acting_user)) -> dict:
