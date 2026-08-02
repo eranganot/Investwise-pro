@@ -20,6 +20,7 @@ from app.core.config import get_settings
 from app.models.tables import KVSetting, Position
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
+from app.services.intake_service import is_cash_position, repair_cash_row
 
 logger = logging.getLogger("investwise.pricing")
 
@@ -36,16 +37,26 @@ async def _kv_set(session, key: str, value: str) -> None:
 
 
 async def refresh_all_positions(session) -> dict:
-    """Reprice every position. Returns {updated, failed, by_source}."""
+    """Reprice every position. Returns {updated, failed, skipped, repaired, by_source}."""
     primary = market_provider()
     yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
     positions = list((await session.scalars(select(Position))).all())
     by_source: dict[str, int] = {}
-    updated = failed = 0
+    updated = failed = skipped = repaired = 0
     quote_cache: dict[str, tuple] = {}  # ticker -> (price, source) or (None, None)
 
     for p in positions:
         tk = p.ticker
+        # Cash is ILS-native: 1 unit = ₪1, never quoted. "CASH" is also a real
+        # NASDAQ ticker (Pathward Financial, ~$73), so quoting it repriced the
+        # balance as a US bank stock *and* stamped price_currency USD -- turning
+        # ₪1,934.52 of cash into ₪521,904 of NAV once FX was applied. Skip it,
+        # and heal any row a previous refresh already corrupted.
+        if is_cash_position(tk, p.meta if isinstance(p.meta, dict) else None):
+            skipped += 1
+            if repair_cash_row(p):
+                repaired += 1
+            continue
         if tk not in quote_cache:
             q, used = None, None
             try:
@@ -75,7 +86,10 @@ async def refresh_all_positions(session) -> dict:
         await _kv_set(session, KV_LAST_SOURCE, dominant)
     await _kv_set(session, KV_LAST_REFRESH, datetime.now(timezone.utc).isoformat())
     await session.commit()
-    return {"updated": updated, "failed": failed, "by_source": by_source}
+    if repaired:
+        logger.warning("repaired %d cash row(s) mispriced by an earlier refresh", repaired)
+    return {"updated": updated, "failed": failed, "skipped_cash": skipped,
+            "repaired_cash": repaired, "by_source": by_source}
 
 
 async def _refresh_all() -> dict:

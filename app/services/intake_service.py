@@ -147,6 +147,42 @@ CASH_META = {"asset_class": "Cash", "price_currency": "ILS", "liquidity_score": 
              "volatility_pct": 0.0}
 
 
+def is_cash_position(ticker: str | None, meta: dict | None = None) -> bool:
+    """True for the synthetic ILS cash row.
+
+    Matters because "CASH" is *also* a real listed ticker (Pathward Financial,
+    NASDAQ), so anything that quotes tickers blindly will happily reprice your
+    shekels as a US bank stock.
+    """
+    if (ticker or "").upper() == "CASH":
+        return True
+    if isinstance(meta, dict) and str(meta.get("asset_class") or "").lower() == "cash":
+        return True
+    return False
+
+
+def repair_cash_row(position) -> bool:
+    """Force a cash row back to its ILS-native invariant (1 unit = ₪1).
+
+    Returns True when something was actually wrong. Used to self-heal rows that
+    a price refresh corrupted before cash was excluded from quoting.
+    """
+    changed = False
+    if float(position.current_price or 0) != 1.0:
+        position.current_price = Decimal("1")
+        changed = True
+    if float(position.cost_basis or 0) != 1.0:
+        position.cost_basis = Decimal("1")
+        changed = True
+    meta = {k: v for k, v in (position.meta or {}).items()
+            if k not in ("price_source", "price_as_of")}
+    meta.update(CASH_META)
+    if meta != (position.meta or {}):
+        position.meta = meta
+        changed = True
+    return changed
+
+
 async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> float:
     """Add ILS proceeds as visible liquidity: grow (or create) a 'CASH' holding.
 
