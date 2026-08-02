@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
 from app.services.context_service import gather
-from app.services.llm import gemini_enabled, gemini_generate
+from app.services.llm import gemini_enabled, gemini_generate_ex
 
 _PROMPT = (
     "You are InvestWise, a careful personal-wealth assistant. Treat the JSON below as the ground "
@@ -31,8 +31,11 @@ async def answer(session: AsyncSession, user: User, question: str) -> dict:
         return {"llm": False, "grounded_on": grounded, "context": ctx,
                 "answer": "The AI assistant is off. Set GOOGLE_API_KEY to enable it - "
                           "your data context is included below."}
-    out = gemini_generate(_PROMPT.format(data=json.dumps(ctx, default=str)[:12000], q=question.strip()))
+    out, err = gemini_generate_ex(
+        _PROMPT.format(data=json.dumps(ctx, default=str)[:12000], q=question.strip()))
     if not out:
-        return {"llm": False, "grounded_on": grounded,
-                "answer": "The assistant couldn't reach the model just now - try again shortly."}
+        # Say WHY. "Couldn't reach the model" made an exhausted billing balance
+        # (a two-minute fix) look identical to a permanent outage.
+        return {"llm": False, "grounded_on": grounded, "error": err,
+                "answer": err or "The assistant couldn't reach the model just now - try again shortly."}
     return {"llm": True, "answer": out, "grounded_on": grounded}

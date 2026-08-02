@@ -21,12 +21,12 @@ _MARKET = {"builtin": BuiltinMarketDataProvider, "yahoo": YahooMarketDataProvide
 _FX = {"builtin": BuiltinFXProvider, "frankfurter": FrankfurterFXProvider}
 
 
-def _tier() -> ResilienceTier:
+def _tier(cache_ttl_sec: float | None = None) -> ResilienceTier:
     s = get_settings()
     return ResilienceTier(
         breaker=CircuitBreaker(s.provider_cb_failure_threshold, s.provider_cb_recovery_sec),
         bucket=TokenBucket(s.provider_rate_limit_per_sec, s.provider_rate_limit_per_sec),
-        cache=TTLCache(s.provider_cache_ttl_sec),
+        cache=TTLCache(s.provider_cache_ttl_sec if cache_ttl_sec is None else cache_ttl_sec),
     )
 
 
@@ -52,7 +52,12 @@ def broker_provider() -> BrokerProvider:
 
 @lru_cache
 def _tiers() -> dict:
-    return {"market": _tier(), "fx": _tier(), "economic": _tier()}
+    s = get_settings()
+    return {"market": _tier(), "fx": _tier(), "economic": _tier(),
+            # Same resilience, longer memory: slow-moving data should not be
+            # refetched at quote cadence.
+            "history": _tier(s.provider_history_cache_ttl_sec),
+            "fundamentals": _tier(s.provider_fundamentals_cache_ttl_sec)}
 
 
 def guarded_quote(ticker: str):
@@ -60,11 +65,11 @@ def guarded_quote(ticker: str):
 
 
 def guarded_history(ticker: str, days: int = 252):
-    return _tiers()["market"].call(f"hist:{ticker}:{days}", lambda: market_provider().get_history(ticker, days))
+    return _tiers()["history"].call(f"hist:{ticker}:{days}", lambda: market_provider().get_history(ticker, days))
 
 
 def guarded_fundamentals(ticker: str):
-    return _tiers()["market"].call(f"fund:{ticker}", lambda: market_provider().get_fundamentals(ticker))
+    return _tiers()["fundamentals"].call(f"fund:{ticker}", lambda: market_provider().get_fundamentals(ticker))
 
 
 def guarded_fx(base: str, quote: str):

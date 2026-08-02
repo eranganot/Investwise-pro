@@ -27,13 +27,28 @@ def test_ask_without_key_returns_grounded_context():
 
 
 def test_ask_with_stubbed_llm_answers(monkeypatch):
+    # ask_service now calls gemini_generate_ex, which returns (text, error) so a
+    # failure can tell the user WHY rather than "couldn't reach the model".
     monkeypatch.setattr(ask_mod, "gemini_enabled", lambda: True)
-    monkeypatch.setattr(ask_mod, "gemini_generate",
-                        lambda prompt, **k: "Your biggest position is AAA. Not financial advice.")
+    monkeypatch.setattr(ask_mod, "gemini_generate_ex",
+                        lambda prompt, **k: ("Your biggest position is AAA. Not financial advice.", None))
     with TestClient(app) as c:
         c.post("/api/v1/intake/portfolio", json=PORT)
         r = c.post("/api/v1/ask", json={"question": "What's my biggest holding?"}).json()
         assert r["llm"] is True and "AAA" in r["answer"]
+
+
+def test_ask_surfaces_the_reason_when_the_model_fails(monkeypatch):
+    """Live, an exhausted billing balance showed as 'couldn't reach the model'."""
+    monkeypatch.setattr(ask_mod, "gemini_enabled", lambda: True)
+    monkeypatch.setattr(ask_mod, "gemini_generate_ex",
+                        lambda prompt, **k: (None, "AI credits are exhausted — top up billing in Google AI Studio."))
+    with TestClient(app) as c:
+        c.post("/api/v1/intake/portfolio", json=PORT)
+        r = c.post("/api/v1/ask", json={"question": "What's my biggest holding?"}).json()
+        assert r["llm"] is False
+        assert "credits" in r["answer"].lower(), "the user must see the actual cause"
+        assert r["error"]
 
 
 def test_digest_fallback_without_key_has_numbers():

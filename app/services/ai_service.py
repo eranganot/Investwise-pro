@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
-from app.services.llm import gemini_enabled, gemini_generate, gemini_generate_grounded
+from app.services.llm import (
+    gemini_enabled, gemini_generate_ex, gemini_generate_grounded,
+)
 from app.services.markets_service import futures_snapshot
 from app.services.plan_service import effective_caps, get_plan
 from app.services.portfolio_analytics import compute_snapshot, health_scores, load_positions
@@ -72,9 +74,9 @@ async def portfolio_summary(session: AsyncSession, user: User) -> dict:
         "Using ONLY the JSON below, write a 3-5 sentence summary: lead with how their wealth is doing, "
         "note the market backdrop, then the 1-2 most useful actions. Use ₪ for amounts. "
         f"Never invent numbers. End with '{_DISCLAIMER}'\n\n" + json.dumps(ctx, default=str)[:6000])
-    out = gemini_generate(prompt)
-    return {"llm": bool(out), "summary": out or "Summary unavailable right now.",
-            "generated_at": _now(), "context": ctx}
+    out, err = gemini_generate_ex(prompt)
+    return {"llm": bool(out), "summary": out or err or "Summary unavailable right now.",
+            "error": None if out else err, "generated_at": _now(), "context": ctx}
 
 
 async def holding_summary(session: AsyncSession, user: User, ticker: str) -> dict:
@@ -99,9 +101,10 @@ async def holding_summary(session: AsyncSession, user: User, ticker: str) -> dic
         f"In 2-3 plain sentences, explain what the investor should understand about their {ticker} "
         "position right now, using ONLY this JSON (don't invent prices or news). Mention how it's doing "
         f"vs their cost and what role it plays. End with '{_DISCLAIMER}'\n\n" + json.dumps(ctx, default=str))
-    out = gemini_generate(prompt)
+    out, err = gemini_generate_ex(prompt)
     return {"llm": bool(out), "ticker": ticker, "context": ctx,
-            "summary": out or "Summary unavailable.", "generated_at": _now()}
+            "summary": out or err or "Summary unavailable.",
+            "error": None if out else err, "generated_at": _now()}
 
 
 async def macro_summary() -> dict:
@@ -115,8 +118,9 @@ async def macro_summary() -> dict:
         "Using ONLY this JSON of futures and the derived regime, summarize the market backdrop in plain "
         f"language (stocks, oil, gold, rates, dollar, volatility) and what regime it implies. End with '{_DISCLAIMER}'\n\n"
         + json.dumps(snap, default=str)[:4000])
-    out = gemini_generate(prompt)
-    return {"llm": bool(out), "summary": out or "Summary unavailable.",
+    out, err = gemini_generate_ex(prompt)
+    return {"llm": bool(out), "summary": out or err or "Summary unavailable.",
+            "error": None if out else err,
             "futures": snap.get("futures", []), "market": snap.get("market", {}), "generated_at": _now()}
 
 

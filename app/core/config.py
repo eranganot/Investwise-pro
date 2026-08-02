@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     provider_cb_failure_threshold: int = 5
     provider_cb_recovery_sec: float = 30.0
     provider_cache_ttl_sec: float = 15.0
+    # Quotes go stale in seconds; fundamentals and price history do not. One
+    # shared 15s TTL meant /recommendations refetched ~18 payloads on every
+    # request (6 holdings x fundamentals twice + 200-day history), costing 24s
+    # of sequential network latency. Separate TTLs by how fast the data actually
+    # moves: daily bars for an hour, quarterly fundamentals for six.
+    provider_history_cache_ttl_sec: float = 3600.0        # daily bars
+    provider_fundamentals_cache_ttl_sec: float = 21600.0  # quarterly filings
     redis_url: str = ""               # if set, Celery uses Redis; else runs eager (synchronous)
     enable_scheduler: bool = True     # start APScheduler cron jobs in-process (hourly market refresh)
     # Google sign-in (Phase A)
