@@ -36,7 +36,7 @@ _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 # looked like it had been carried out when nothing had happened.
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
-                     "buy_funded"}
+                     "buy_funded", "sell_position"}
 
 
 def _is_actionable(rec: dict) -> bool:
@@ -1330,6 +1330,26 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
             credited = await credit_cash(session, user, gross - tax)
             detail = {"sold": [spec["ticker"]], "cash_added_ils": round(credited, 2),
                       "tax_ils": round(tax, 2)}
+    elif kind == "sell_position":
+        # A stop-loss / trailing stop / take-profit is a full exit by definition.
+        # The position leaves the book and the net-of-CGT proceeds land in cash,
+        # so the money is visible and redeployable rather than vanishing.
+        p = by_ticker.get(spec["ticker"])
+        if p:
+            shares = min(float(spec.get("shares") or 0) or float(p.quantity), float(p.quantity))
+            gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
+                                         float(p.cost_basis or 0), p.market, p.meta)
+            remaining = max(0.0, float(p.quantity) - shares)
+            if remaining <= 0:
+                await delete_position(session, user, p.ticker, p.market)
+            else:
+                await update_position(session, user, str(p.id), quantity=remaining)
+            credited = await credit_cash(session, user, gross - tax)
+            detail = {"sold": [spec["ticker"]], "shares": round(shares, 6),
+                      "cash_added_ils": round(credited, 2), "tax_ils": round(tax, 2),
+                      "broker_note": "Tracked book updated — no brokerage order was placed."}
+        else:
+            detail = {"sold": [], "note": f"{spec['ticker']} is no longer held."}
     elif kind == "sell_losers":
         sold, proceeds, tax_total = [], 0.0, 0.0
         for tk in spec.get("tickers", []):
@@ -1366,6 +1386,16 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
             if made:
                 created.append(made)
         detail = {"rules_created": created}
+    # A rule-driven card closes the loop on its own audit trail: the firing that
+    # produced this card is stamped with what was actually done.
+    rule_id = spec.get("rule_id")
+    if rule_id:
+        from app.services.rules_service import record_outcome
+        await record_outcome(
+            session, user, rule_id,
+            "executed" if kind in _ACTIONABLE_KINDS else "acknowledged",
+            {"kind": kind, **detail} if detail else {"kind": kind})
+
     # kind == "none" -> acknowledged only; say so rather than claiming an edit
     if kind not in _ACTIONABLE_KINDS:
         return {"applied": "none", "advisory": True, "title": rec["title"],

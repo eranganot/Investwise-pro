@@ -32,6 +32,13 @@ async def suggest_rules(session: AsyncSession = Depends(get_session),
     return {"suggestions": await rules_service.suggest_rules_for_holdings(session, user)}
 
 
+@router.get("/events")
+async def rule_events(limit: int = 50, session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
+    """Audit trail: every rule firing and what was done about it."""
+    return {"events": await rules_service.list_events(session, user, limit=min(limit, 200))}
+
+
 @router.post("")
 async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:

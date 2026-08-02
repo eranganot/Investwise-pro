@@ -1,6 +1,15 @@
 """Trading rules: user-defined stop-loss / take-profit / trailing-stop / price
-alerts / buy-the-dip / max-weight. The app never executes trades - a triggered
-rule notifies (push) and surfaces a recommended action in 'What to do now'.
+alerts / buy-the-dip / max-weight.
+
+A trigger drives real action in three steps, each of them recorded:
+  1. ``evaluate_user`` latches the rule and writes a ``RuleEvent`` (what fired,
+     at what price, against which target) — the audit trail;
+  2. the event surfaces as an *executable* card carrying an ``apply`` spec, so
+     Accept genuinely sells rather than saying "consider selling";
+  3. executing (or ignoring) stamps the outcome back onto that same event.
+
+InvestWise still places no broker orders — executing updates the tracked book
+and tells you so plainly, so you can mirror the trade at your broker.
 """
 from __future__ import annotations
 
@@ -11,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.tables import TradingRule, User
+from app.models.tables import RuleEvent, TradingRule, User
 from app.services.portfolio_analytics import compute_snapshot, load_positions
 
 RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
@@ -38,8 +47,40 @@ async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]
         tk = p["ticker"].upper()
         out[tk] = {"price": float(p.get("current_price") or 0),
                    "cost": float(p.get("cost_basis") or 0),
+                   "qty": float(p.get("quantity") or 0),
                    "weight_pct": round((weights.get(p["ticker"], 0) or 0) * 100, 1)}
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Execution plans — what a triggered rule would actually do
+# --------------------------------------------------------------------------- #
+def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
+    """The concrete trade a triggered rule implies, or None if it's advisory.
+
+    Only rule types that map to an unambiguous broker order are executable: a
+    stop-loss, trailing stop and take-profit are each a full exit by definition,
+    and a max-weight breach has an exactly computable trim back to the cap.
+    Price alerts carry no trade, and buy-the-dip needs a funding decision, so
+    both stay advisory rather than inventing a size.
+    """
+    qty = float(pos.get("qty") or 0.0)
+    if qty <= 0:
+        return None
+    rt = rule.rule_type
+    if rt in ("stop_loss", "trailing_stop", "take_profit"):
+        return {"kind": "sell_position", "ticker": rule.ticker.upper(),
+                "shares": round(qty, 6), "rule_type": rt}
+    if rt == "max_weight":
+        weight = float(pos.get("weight_pct") or 0.0)
+        if weight <= float(rule.level) or weight <= 0:
+            return None
+        shares = round(qty * (weight - float(rule.level)) / weight, 6)
+        if shares <= 0:
+            return None
+        return {"kind": "trim", "ticker": rule.ticker.upper(),
+                "shares": shares, "rule_type": rt}
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -92,12 +133,21 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
         cur, cost, w = pos["price"], pos["cost"], pos["weight_pct"]
         if r.rule_type == "trailing_stop" and cur > 0:
             r.peak_price = max(r.peak_price or cur, cur)
-        hit, title, action, _ = _evaluate(r, cur, cost, w)
+        hit, title, action, target = _evaluate(r, cur, cost, w)
         if hit and not r.triggered:
             r.triggered = True
             r.last_triggered_at = _now()
+            # One row per firing: this is the record that survives the card being
+            # accepted, ignored or regenerated.
+            event = RuleEvent(
+                subject=user.email, rule_id=str(r.id), ticker=r.ticker,
+                rule_type=r.rule_type, trigger_price=cur, target_price=target,
+                title=title, outcome="triggered",
+                action={"plan": execution_plan(r, pos) or {}},
+            )
+            session.add(event)
             newly.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
-                          "title": title, "action": action})
+                          "title": title, "action": action, "event": event})
         elif not hit and r.triggered and r.rule_type in ("price_above", "price_below"):
             r.triggered = False  # transient alerts re-arm when condition clears
     await session.commit()
@@ -105,9 +155,55 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     if notify and newly:
         from app.services import push_service
         for n in newly:
-            await push_service.send_to_subject(
+            sent = await push_service.send_to_subject(
                 session, user.email, n["title"], n["action"], url="/app/", tag=f"rule:{n['id']}")
+            n["event"].notified = bool(sent)
+        await session.commit()
+    for n in newly:
+        n["event_id"] = str(n["event"].id)
+        n.pop("event", None)
     return newly
+
+
+# --------------------------------------------------------------------------- #
+# Event log (audit trail)
+# --------------------------------------------------------------------------- #
+async def list_events(session: AsyncSession, user: User, limit: int = 50) -> list[dict]:
+    """Most-recent rule firings and what was done about each one."""
+    rows = (await session.scalars(
+        select(RuleEvent).where(RuleEvent.subject == user.email)
+        .order_by(RuleEvent.created_at.desc()).limit(limit))).all()
+    return [{
+        "id": str(e.id), "rule_id": e.rule_id, "ticker": e.ticker,
+        "rule_type": e.rule_type, "title": e.title,
+        "trigger_price": e.trigger_price, "target_price": e.target_price,
+        "outcome": e.outcome, "notified": e.notified,
+        "triggered_at": e.created_at.isoformat() if e.created_at else None,
+        "outcome_at": e.outcome_at.isoformat() if e.outcome_at else None,
+        "action": e.action or {},
+    } for e in rows]
+
+
+async def record_outcome(session: AsyncSession, user: User, rule_id: str,
+                         outcome: str, action: dict | None = None) -> bool:
+    """Stamp the newest open event for a rule with what the user did.
+
+    Only the still-open ("triggered") event is updated, so re-accepting a
+    regenerated card can never rewrite the history of an earlier firing.
+    """
+    event = await session.scalar(
+        select(RuleEvent).where(RuleEvent.subject == user.email,
+                                RuleEvent.rule_id == str(rule_id),
+                                RuleEvent.outcome == "triggered")
+        .order_by(RuleEvent.created_at.desc()).limit(1))
+    if event is None:
+        return False
+    event.outcome = outcome
+    event.outcome_at = _now()
+    if action:
+        event.action = {**(event.action or {}), "executed": action}
+    await session.commit()
+    return True
 
 
 async def evaluate_all(session: AsyncSession) -> dict:
@@ -134,15 +230,30 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
     idx = await _positions_index(session, user) if rules else {}
     out = []
     for r in rules:
-        pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "weight_pct": 0}
+        pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0}
         _, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"])
+        plan = execution_plan(r, pos)
+        price = float(pos.get("price") or 0)
+        if plan:
+            shares, value = plan["shares"], plan["shares"] * price
+            verb = "Sell all" if plan["kind"] == "sell_position" else "Trim"
+            action = (f"{verb} {shares:g} {r.ticker} at {price:,.2f} "
+                      f"(~{value:,.0f}) — the rule you set.")
+            how = [f"Accept executes this: {verb.lower()} {shares:g} {r.ticker} in your "
+                   "InvestWise book and credits the net-of-tax proceeds to cash.",
+                   "No brokerage order is placed — mirror the trade at your broker.",
+                   "Ignore leaves the position alone and logs that you declined."]
+        else:
+            how = ["This is your own trading rule firing.",
+                   "There's no single obvious trade here, so the app won't guess one.",
+                   "Place the order in your brokerage if you agree."]
         out.append({"id": f"rule_{str(r.id)[:8]}", "dimension": "rule",
                     "severity": _SEV.get(r.rule_type, "HIGH"),
                     "title": title or f"Rule on {r.ticker}",
                     "action": action or "Review this holding.",
-                    "how": ["This is your own trading rule firing.",
-                            "Place the order in your brokerage if you agree.",
-                            "Delete or edit the rule in Holdings → Trading rules."]})
+                    "rule_id": str(r.id),
+                    "apply": {**(plan or {"kind": "none"}), "rule_id": str(r.id)},
+                    "how": how})
     return out
 
 

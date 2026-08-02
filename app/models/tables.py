@@ -305,8 +305,11 @@ class KVSetting(Base, TimestampMixin):
 
 
 class TradingRule(Base, PKMixin, TimestampMixin):
-    """A user-defined alert/discipline rule on a holding. The app never executes
-    trades - a triggered rule notifies and surfaces a recommended action."""
+    """A user-defined alert/discipline rule on a holding.
+
+    A trigger never moves anything on its own: it records a RuleEvent, notifies,
+    and surfaces an executable card. Executing it updates the *tracked* book only
+    -- InvestWise places no broker orders."""
     __tablename__ = "trading_rules"
     subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
     ticker: Mapped[str] = mapped_column(String(32), index=True)
@@ -320,3 +323,30 @@ class TradingRule(Base, PKMixin, TimestampMixin):
     triggered: Mapped[bool] = mapped_column(Boolean, default=False)
     last_triggered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class RuleEvent(Base, PKMixin, TimestampMixin):
+    """The life story of a trading rule: it fired, and here's what happened next.
+
+    Previously a firing left only ``triggered`` + ``last_triggered_at`` on the
+    rule itself, so 'the rule triggered' was visible but 'what was done about it'
+    was not recorded anywhere. Each firing writes one row; executing or
+    dismissing the resulting card updates that same row in place.
+    """
+    __tablename__ = "rule_events"
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    rule_id: Mapped[str] = mapped_column(String(64), index=True)
+    ticker: Mapped[str] = mapped_column(String(32), index=True)
+    rule_type: Mapped[str] = mapped_column(String(24))
+    # What the market did to fire it (grounded, never back-filled).
+    trigger_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    # triggered -> executed | dismissed | expired
+    outcome: Mapped[str] = mapped_column(String(16), default="triggered", index=True)
+    outcome_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    # What actually changed in the tracked book (shares, proceeds, tax) -- empty
+    # until the user executes, so "nothing was done" stays legible as nothing.
+    action: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
