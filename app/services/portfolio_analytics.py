@@ -66,22 +66,53 @@ def compute_snapshot(positions: list[dict]) -> dict:
     }
 
 
-def health_scores(snap: dict, cap: float | None = None) -> dict:
+def risk_score_vs_budget(avg_volatility_pct: float, vol_cap: float) -> float:
+    """Score realized volatility against *your own* risk budget, not against zero.
+
+    The previous formula (100 - vol% x 2) could only reach 100 at zero
+    volatility, so the only way to score well on Risk was to stop investing --
+    which contradicted every other recommendation the app made. A book sitting
+    inside its volatility cap is on plan, and scores accordingly:
+
+      * at or under the cap -> 85-100 (100 only at zero vol, 85 exactly at cap)
+      * over the cap        -> falls from 85 to 0 as it reaches twice the cap
+    """
+    vol = max(0.0, float(avg_volatility_pct or 0.0)) / 100.0
+    cap = float(vol_cap or 0.0)
+    if cap <= 0:
+        return 100.0 if vol <= 0 else 0.0
+    if vol <= cap:
+        return clamp_score(100.0 - 15.0 * (vol / cap))
+    return clamp_score(85.0 * (1.0 - (vol - cap) / cap))
+
+
+def health_scores(snap: dict, cap: float | None = None,
+                  vol_cap: float | None = None) -> dict:
     st = get_settings()
     cap = st.concentration_cap if cap is None else cap
-    risk_score = clamp_score(100.0 - snap["avg_volatility_pct"] * st.analytics_vol_risk_factor)
+    vol_cap = st.volatility_cap if vol_cap is None else vol_cap
+    risk_score = risk_score_vs_budget(snap["avg_volatility_pct"], vol_cap)
     div = clamp_score(100.0 - max(0.0, snap["max_weight"] - cap) * 250.0)
     liquidity = clamp_score(snap["liquidity_avg"])
     loss_ratio = (snap["unrealized_losses"] / snap["nav"]) if snap["nav"] else 0.0
-    tax_eff = clamp_score(st.analytics_tax_efficiency_base - loss_ratio * 200.0)  # unharvested losses dent efficiency
-    whs = WhsEngine().compute(risk=risk_score, tax=tax_eff, alloc=div, liq=liquidity, thematic=60.0)
+    # A book with nothing left to harvest is fully tax-efficient. The old base of
+    # 85 was an arbitrary constant that capped this component 15 points short of
+    # perfect no matter what the user did.
+    tax_eff = clamp_score(100.0 - loss_ratio * 200.0)
+    whs = WhsEngine().compute(risk=risk_score, tax=tax_eff, alloc=div, liq=liquidity)
     return {
         "wealth_health_score": round(whs["score"]),
         "risk_score": round(risk_score),
         "tax_efficiency_score": round(tax_eff),
         "liquidity_score": round(liquidity),
         "diversification_score": round(div),
+        "weights": whs["weights"],
+        # Every component is displayed and every one can reach 100, so the score
+        # has no hidden ceiling: 100 is attainable, and what's holding it back is
+        # always visible in the chips.
+        "max_achievable": 100,
         "_cap": cap,
+        "_vol_cap": vol_cap,
     }
 
 

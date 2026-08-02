@@ -37,14 +37,23 @@ async def portfolio_health_check(entity: str | None = None,
     if not snap["nav"]:
         return {"wealth_health_score": None,
                 "message": "No portfolio value. POST /api/v1/intake/portfolio first."}
-    cap = effective_caps(await get_plan(session, user))["concentration_cap"]
-    sc = health_scores(snap, cap)
+    caps = effective_caps(await get_plan(session, user))
+    cap = caps["concentration_cap"]
+    # Risk is scored against the plan's own volatility budget, so a Grow investor
+    # isn't marked down for the volatility their objective requires.
+    sc = health_scores(snap, cap, caps.get("volatility_cap"))
     return {
         "wealth_health_score": sc["wealth_health_score"],
         "risk_score": sc["risk_score"],
         "tax_efficiency_score": sc["tax_efficiency_score"],
         "liquidity_score": sc["liquidity_score"],
         "diversification_score": sc["diversification_score"],
+        # Surfaced so the UI can show how the number is built and, crucially,
+        # that nothing invisible is holding it down.
+        "weights": sc["weights"],
+        "max_achievable": sc["max_achievable"],
+        "volatility_cap_pct": round((sc["_vol_cap"] or 0) * 100, 1),
+        "avg_volatility_pct": round(snap["avg_volatility_pct"], 1),
         "top_improvement_opportunities": health_opportunities(snap, sc),  # capped at 5
     }
 

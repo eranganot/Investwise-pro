@@ -30,8 +30,9 @@ def _now() -> str:
 async def _portfolio_context(session: AsyncSession, user: User) -> dict:
     positions = await load_positions(session, user)
     snap = compute_snapshot(positions) if positions else {}
-    cap = effective_caps(await get_plan(session, user)).get("concentration_cap")
-    health = health_scores(snap, cap) if snap else {}
+    _caps = effective_caps(await get_plan(session, user))
+    cap = _caps.get("concentration_cap")
+    health = health_scores(snap, cap, _caps.get("volatility_cap")) if snap else {}
     recs = await build_recommendations(session, user)
     holdings = []
     nav = snap.get("nav") or 0
