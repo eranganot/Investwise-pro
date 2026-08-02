@@ -366,6 +366,10 @@
       </details>
       <div id="ruleSug" style="margin-top:10px"></div>
       <div id="rulesList" style="margin-top:10px"></div>
+      <details style="margin-top:14px">
+        <summary style="cursor:pointer"><b>Rule history</b> — what fired, and what was done</summary>
+        <div id="ruleEvents" style="margin-top:10px"></div>
+      </details>
     </div>
   </section>
 
@@ -563,9 +567,9 @@ async function boot(){
 }
 
 const EXPLAIN={
-  health:["Your wealth health","0–100 blending five things: <b>25% Risk + 25% Tax + 20% Spread + 15% Cash + 15% themes</b>. 80+ Strong, 60+ Healthy."],
-  risk:["Risk score","How <b>calm</b> your money is — from each holding's volatility, blended by size. Calmer = higher (≈100 − volatility × 2)."],
-  tax:["Tax score","How <b>tax-efficient</b> you are. Unrealized losses you haven't used to offset gains lower it."],
+  health:["Your wealth health","0–100 blending the four things we can actually measure from your holdings: <b>30% Risk + 25% Tax + 25% Spread + 20% Cash</b>. Every one of them is shown below the score, and every one can reach 100 — so 100 is attainable and whatever is holding you back is always visible. 80+ Strong, 60+ Healthy."],
+  risk:["Risk score","Whether your money is as calm as <b>your own plan asks for</b>. We blend each holding's volatility by size and compare it to the volatility budget your risk tolerance sets (Low 10%, Medium 15%, High 25%). Inside your budget scores 85–100; going over it pulls the score down. You are <b>not</b> penalised for the volatility your objective requires — only for exceeding it."],
+  tax:["Tax score","How <b>tax-efficient</b> you are. Starts at 100 and falls as you carry unrealized losses you haven't used to offset gains. Nothing left to harvest = 100."],
   spread:["Spread","Diversification. If one holding is a big slice, this drops. The limit flexes with your risk tolerance."],
   cash:["Cash","Liquidity — how <b>easily you could sell</b> if you needed money."],
   roiyield:["ROI vs Yield","<b>ROI</b> is your <i>total</i> return — price gains plus income — as a %. <b>Yield</b> is just the <i>income</i> you actually receive (dividends/interest), like rent from property. A growth stock can have high ROI but low yield; a bond can have steady yield but low ROI."],
@@ -896,6 +900,37 @@ async function loadRules(){
     renderRules();
   }catch(e){$("rulesList").innerHTML=`<div class="card bad">${e}</div>`;}
   loadRuleSuggestions();
+  loadRuleEvents();
+}
+// Rule history: every firing and what was actually done about it. Previously a
+// trigger left no trace beyond the rule's own "triggered" flag, so "the rule
+// fired" was visible but "and then?" was unanswerable.
+const _OUTCOME={
+  executed:{t:"✅ Executed",c:"var(--green)"},
+  dismissed:{t:"🚫 Ignored",c:"var(--muted)"},
+  acknowledged:{t:"👍 Marked done",c:"var(--muted)"},
+  triggered:{t:"⏳ Awaiting your call",c:"var(--amber)"}
+};
+async function loadRuleEvents(){
+  const box=$("ruleEvents"); if(!box) return;
+  try{
+    const r=await(await fetch("/api/v1/rules/events?limit=40")).json();
+    const evs=r.events||[];
+    if(!evs.length){box.innerHTML=`<div class="muted" style="padding:8px">No rule has fired yet. When one does, it'll be logged here with whatever action you took.</div>`;return;}
+    box.innerHTML=evs.map(e=>{
+      const o=_OUTCOME[e.outcome]||_OUTCOME.triggered;
+      const when=e.triggered_at?new Date(e.triggered_at).toLocaleString():"";
+      const x=(e.action||{}).executed;
+      const did=x?`<div class="mk" style="margin-top:4px">Sold ${x.shares!=null?x.shares:""} ${(x.sold||[]).join(", ")} · cash +${ils(x.cash_added_ils||0)}${x.tax_ils?` · est. tax ${ils(x.tax_ils)}`:""}</div>
+           <div class="muted" style="font-size:11px;margin-top:2px">Tracked book only — no brokerage order was placed.</div>`:"";
+      const px=e.trigger_price!=null?`at ${Number(e.trigger_price).toFixed(2)}${e.target_price!=null?` · target ${Number(e.target_price).toFixed(2)}`:""}`:"";
+      return `<div class="card" style="padding:10px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;gap:8px">
+          <b>${e.title||e.ticker}</b>
+          <span style="color:${o.c};font-size:12px;white-space:nowrap">${o.t}</span></div>
+        <div class="muted" style="font-size:12px;margin-top:2px">${when} · ${px}${e.notified?" · 🔔 notified":" · 🔕 not notified"}</div>
+        ${did}</div>`;}).join("");
+  }catch(e){box.innerHTML=`<div class="card bad">${e}</div>`;}
 }
 let RULES=[], RULE_FILTER="all";
 const RULE_META={
@@ -1446,7 +1481,20 @@ async function initNotifyState(){
   if(Notification.permission==="denied"){ _setNotifyState("blocked"); return; }
   try{
     const reg=await navigator.serviceWorker.ready;
-    const sub=await reg.pushManager.getSubscription();
+    let sub=await reg.pushManager.getSubscription();
+    // If permission is still granted but the subscription is gone, RE-CREATE it.
+    // This was the two-week notification outage: replacing the service worker
+    // (iw-v9 -> iw-v10 on 2026-07-18) dropped the browser subscription, the
+    // server pruned the dead row, and this branch just reported "off" and gave
+    // up. Nothing re-subscribed, so the silence was permanent and invisible --
+    // the app looked merely switched off rather than broken.
+    if(!sub && Notification.permission==="granted"){
+      try{
+        const {public_key}=await (await fetch("/api/v1/push/public-key")).json();
+        sub=await reg.pushManager.subscribe({userVisibleOnly:true, applicationServerKey:_urlB64ToUint8(public_key)});
+        console.info("push subscription was missing - re-created it");
+      }catch(e){ console.warn("push re-subscribe failed",e); }
+    }
     if(sub && Notification.permission==="granted"){
       _setNotifyState("on");
       // re-register (idempotent) and catch up on anything important since last open
