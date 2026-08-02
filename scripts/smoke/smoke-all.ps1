@@ -6,7 +6,13 @@
 
 $ErrorActionPreference = 'Continue'
 $BaseUrl = "https://investwise-pro-production.up.railway.app"
-$H = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+# NOT $H. PowerShell variable names are CASE-INSENSITIVE, so `$h = Api GET
+# '/api/v1/health-check'` in section 3 silently overwrote the auth headers with
+# the health-check response object. Every call after it died instantly at
+# parameter binding ("Cannot convert PSCustomObject to IDictionary") -- which the
+# old handler reported as "NO RESPONSE", implying a network fault that never
+# existed. Four wrong hypotheses came out of that one hidden error message.
+$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
 $pass = 0; $fail = 0; $skip = 0; $retried = 0
 # A run where calls 1-5 succeeded and everything after returned no HTTP status
 # at all turned out to be a Railway REDEPLOY draining the old container, not a
@@ -24,20 +30,39 @@ function Bad($m)  { Write-Host "  FAIL  $m" -ForegroundColor Red;    $script:fai
 function Skip($m) { Write-Host "  SKIP  $m" -ForegroundColor Yellow; $script:skip++ }
 function Sec($m)  { Write-Host "`n$m" -ForegroundColor Cyan }
 
+$script:callNo = 0
 function Api($method, $path, $tmo = 60) {
-    # One retry on a no-response failure. If the retry succeeds, the endpoint was
-    # never broken and the first attempt died on a stale connection -- reported
-    # explicitly so a transport problem is never mistaken for an app bug.
+    # Every failure prints its elapsed time and the FULL exception. Collapsing
+    # everything to "NO RESPONSE" hid the difference between a 60s server hang
+    # and an instant client-side socket error for several debugging rounds --
+    # and the same call sequence typed at the prompt succeeds every time, so the
+    # fault is in this script, not the API.
+    # Fail loudly if a later assignment ever clobbers the headers again. A
+    # PSCustomObject here means some variable collided with $ApiHeaders, and the
+    # resulting ParameterBindingException looks exactly like a network outage.
+    if ($ApiHeaders -isnot [hashtable]) {
+        Write-Host "  FATAL: `$ApiHeaders is a $($ApiHeaders.GetType().Name), not a hashtable - a variable collision clobbered it." -ForegroundColor Red
+        throw "ApiHeaders corrupted before $method $path"
+    }
     for ($i = 1; $i -le 2; $i++) {
+        $script:callNo++
+        $sw = [Diagnostics.Stopwatch]::StartNew()
         try {
-            $r = Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $H -TimeoutSec $tmo
-            if ($i -eq 2) { Write-Host "  (recovered on retry - transport, not the API)" -ForegroundColor DarkYellow; $script:retried++ }
+            $r = Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $ApiHeaders -TimeoutSec $tmo
+            $sw.Stop()
+            Write-Host ("   [call {0,2}] {1} {2}  {3:N2}s" -f $script:callNo, $method, $path, $sw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
+            if ($i -eq 2) { Write-Host "  (recovered on retry)" -ForegroundColor DarkYellow; $script:retried++ }
             return $r
         } catch {
+            $sw.Stop()
             $c = $_.Exception.Response.StatusCode.value__
-            if ($c) { Write-Host "  HTTP $c on $method $path" -ForegroundColor DarkRed; return $null }
+            Write-Host ("   [call {0,2}] {1} {2}  FAILED after {3:N2}s" -f $script:callNo, $method, $path, $sw.Elapsed.TotalSeconds) -ForegroundColor DarkRed
+            Write-Host "        TYPE : $($_.Exception.GetType().FullName)" -ForegroundColor DarkRed
+            Write-Host "        MSG  : $($_.Exception.Message)" -ForegroundColor DarkRed
+            if ($_.Exception.InnerException) { Write-Host "        INNER: $($_.Exception.InnerException.Message)" -ForegroundColor DarkRed }
+            if ($_.Exception.Status) { Write-Host "        STAT : $($_.Exception.Status)" -ForegroundColor DarkRed }
+            if ($c) { Write-Host "        HTTP : $c" -ForegroundColor DarkRed; return $null }
             if ($i -eq 1) { Start-Sleep -Milliseconds 800; continue }
-            Write-Host "  NO RESPONSE on $method $path (both attempts)" -ForegroundColor DarkRed
             return $null
         }
     }
@@ -54,7 +79,7 @@ $stable = 0
 for ($i = 1; $i -le 5; $i++) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try { Invoke-RestMethod "$BaseUrl/health" -TimeoutSec 10 | Out-Null
-          Invoke-RestMethod "$BaseUrl/health/ready" -Headers $H -TimeoutSec 10 | Out-Null
+          Invoke-RestMethod "$BaseUrl/health/ready" -Headers $ApiHeaders -TimeoutSec 10 | Out-Null
           $sw.Stop(); $stable++
           Write-Host "   probe $i OK ($([math]::Round($sw.Elapsed.TotalSeconds,2))s)" -ForegroundColor DarkGray }
     catch { $sw.Stop(); Write-Host "   probe $i FAILED" -ForegroundColor DarkRed }
@@ -96,13 +121,13 @@ if ($null -eq $port) { Skip "portfolio unreachable (NOT a pass)" } else {
 
 # ---------- PHASE 3 + 9: health score ----------
 Sec "3. Health score is measured, not placeholder (phases 3 + 9)"
-$h = Api GET '/api/v1/health-check'
-if ($null -eq $h) { Skip "health-check unreachable (NOT a pass)" } else {
-  Write-Host "   score $($h.wealth_health_score)  risk $($h.risk_score)  tax $($h.tax_efficiency_score)  spread $($h.diversification_score)  cash $($h.liquidity_score)" -ForegroundColor DarkGray
-  Write-Host "   avg vol $($h.avg_volatility_pct)%  vs budget $($h.volatility_cap_pct)%" -ForegroundColor DarkGray
-  if ($h.max_achievable -eq 100) { Ok "no hidden ceiling (thematic=60 constant removed)" } else { Bad "max_achievable = $($h.max_achievable)" }
-  if ($h.avg_volatility_pct -eq 15) { Bad "volatility is exactly 15% - placeholder still in use" } elseif ($h.avg_volatility_pct -gt 0) { Ok "volatility $($h.avg_volatility_pct)% derived from real instruments" } else { Skip "no volatility reported" }
-  if ($h.tax_efficiency_score -gt 85) { Ok "tax $($h.tax_efficiency_score) exceeds the old hard cap of 85" } else { Skip "tax $($h.tax_efficiency_score) - only meaningful if you have no unharvested losses" } }
+$health = Api GET '/api/v1/health-check'
+if ($null -eq $health) { Skip "health-check unreachable (NOT a pass)" } else {
+  Write-Host "   score $($health.wealth_health_score)  risk $($health.risk_score)  tax $($health.tax_efficiency_score)  spread $($health.diversification_score)  cash $($health.liquidity_score)" -ForegroundColor DarkGray
+  Write-Host "   avg vol $($health.avg_volatility_pct)%  vs budget $($health.volatility_cap_pct)%" -ForegroundColor DarkGray
+  if ($health.max_achievable -eq 100) { Ok "no hidden ceiling (thematic=60 constant removed)" } else { Bad "max_achievable = $($health.max_achievable)" }
+  if ($health.avg_volatility_pct -eq 15) { Bad "volatility is exactly 15% - placeholder still in use" } elseif ($health.avg_volatility_pct -gt 0) { Ok "volatility $($health.avg_volatility_pct)% derived from real instruments" } else { Skip "no volatility reported" }
+  if ($health.tax_efficiency_score -gt 85) { Ok "tax $($health.tax_efficiency_score) exceeds the old hard cap of 85" } else { Skip "tax $($health.tax_efficiency_score) - only meaningful if you have no unharvested losses" } }
 
 # ---------- PHASE 9: expected return ----------
 Sec "4. Expected return is grounded (phase 9)"
@@ -180,7 +205,7 @@ $diag = Api GET '/api/v1/adversary/diagnostics'
 if ($null -eq $diag) { Skip "diagnostics unreachable (NOT a pass)" } elseif ($diag.ok) { Ok "Gemini reachable (model $($diag.adversary_llm_model))" } else { Bad "Gemini failing: $($diag.error)" }
 $ai = Api GET '/api/v1/ai/portfolio-summary'
 if ($null -eq $ai) { Skip "ai summary unreachable" } elseif ($ai.llm) { Ok "portfolio summary generated" } else { Bad "summary failed - reason shown to user: '$($ai.error)'" }
-$ask = try { Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/ask" -Headers ($H + @{'Content-Type'='application/json'}) -Body (@{question="What is my biggest holding?"} | ConvertTo-Json) -TimeoutSec 60 -DisableKeepAlive } catch { $null }
+$ask = try { Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/ask" -Headers ($ApiHeaders + @{'Content-Type'='application/json'}) -Body (@{question="What is my biggest holding?"} | ConvertTo-Json) -TimeoutSec 60 -DisableKeepAlive } catch { $null }
 if ($null -eq $ask) { Skip "ask unreachable" } elseif ($ask.llm) { Ok "Ask InvestWise answered" } else { Bad "ask failed - reason shown to user: '$($ask.error)'" }
 
 Write-Host "`n===== $pass passed, $fail failed, $skip skipped =====" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
