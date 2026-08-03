@@ -46,6 +46,15 @@ BAD_SPEC = "BAD_SPEC"
 
 _MIN_OBSERVATIONS = 260  # ~1 trading year; below this, CAGR is noise
 
+# Overlays that were measured and did not hold up. Any consumer showing a
+# strategy built on one of these must show the caveat with it -- an engine that
+# quietly serves a known-broken rule is worse than one that has no rule at all.
+MEASURED_FAILURES = {
+    "drawdown_brake": ("Did not reduce drawdown when measured (TQQQ 2016-2026: "
+                       "83.7% vs 81.8% simply held) and failed out of sample "
+                       "(58.8% in-sample vs 3.2% out). Experimental only."),
+}
+
 CGT_RATE = 0.25          # Israel, individual, no long-term holding relief
 DEFAULT_COST_BPS = 5.0   # per traded leg, round-trip spread + commission
 
@@ -132,8 +141,20 @@ def align(series: dict[str, list[tuple[str, float]]]) -> tuple[list[str], dict[s
 # overlays -> a target-weight dict per day
 # --------------------------------------------------------------------------
 
-def _weights_or_off(on: np.ndarray, weights: dict[str, float], risk_off: str | None) -> list[dict]:
-    off = {risk_off: 1.0} if risk_off else {}
+def _weights_or_off(on: np.ndarray, weights: dict[str, float], risk_off: str | None,
+                    base: dict[str, float] | None = None) -> list[dict]:
+    """What the sleeve holds when the setup is not live.
+
+    Originally this fell back to cash, which quietly decided the answer: a swing
+    setup is only live perhaps 10-15% of the time, so parking the other 85% in
+    T-bills and then judging the result as a ten-year CAGR measures a savings
+    account with a strategy attached. A swing rule is an *overlay* -- it decides
+    between the aggressive instrument and the core holding, not between the
+    aggressive instrument and being out of the market. ``base`` is that core;
+    ``risk_off`` remains for strategies that genuinely should sit in cash when
+    their regime gate closes.
+    """
+    off = dict(base) if base else ({risk_off: 1.0} if risk_off else {})
     return [dict(weights) if bool(flag) else dict(off) for flag in on]
 
 
@@ -233,6 +254,100 @@ def _dual_momentum(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
     return out
 
 
+def _vol_target(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
+    """Scale exposure so realized risk stays roughly constant.
+
+    Leverage decay scales with variance, and variance clusters. Holding a fixed
+    3x through a volatility spike pays the largest possible penalty at the worst
+    possible moment. Targeting a constant risk level shrinks exposure exactly
+    when the penalty is biggest -- it attacks the decay term itself rather than
+    trying to time direction.
+    """
+    o = spec["overlay"]
+    tk = next(iter(spec["weights"]))
+    gate = px[o.get("gate_ticker") or tk]
+    look, target = int(o.get("vol_days", 20)), float(o.get("target_vol_pct", 20.0))
+    cap, floor = float(o.get("max_weight", 1.0)), float(o.get("min_weight", 0.0))
+    base = spec.get("base") or ({spec["risk_off"]: 1.0} if spec.get("risk_off") else {})
+    # Hysteresis. Recomputing the target weight daily and acting on every wobble
+    # produced 342 trades a year in testing -- at 25% CGT and a dealing spread
+    # that is a strategy whose costs eat its own edge. Only move when the target
+    # has drifted past a band.
+    band = float(o.get("rebalance_band", 0.15))
+    r = np.diff(gate) / gate[:-1]
+    out: list[dict] = []
+    held = None
+    for i in range(gate.size):
+        if i < look:
+            out.append(dict(base))
+            continue
+        rv = float(r[i - look:i].std(ddof=1)) * (TRADING_DAYS ** 0.5) * 100
+        w = cap if rv <= 0 else min(cap, max(floor, target / rv))
+        w = round(w, 2)
+        if held is not None and abs(w - held) < band:
+            w = held
+        held = w
+        tgt = {tk: w}
+        for bk, bw in base.items():          # remainder rides in the core, not cash
+            tgt[bk] = tgt.get(bk, 0.0) + bw * (1.0 - w)
+        out.append({k: v for k, v in tgt.items() if v > 0.005})
+    return out
+
+
+def _drawdown_brake(px: dict[str, np.ndarray], spec: dict) -> np.ndarray:
+    """Cut exposure once the drawdown from peak passes a limit; re-enter on recovery.
+
+    KEPT, BUT IT DOES NOT WORK -- see ``MEASURED_FAILURES``. The idea is sound
+    (a 3x fund's 80% drawdown is the point where people sell and never return,
+    so the backtested CAGR is unreachable in practice) but the implementation
+    cannot deliver it: by the time a 25% fall has registered you have already
+    taken the 25%, and re-entry on a bounce walks straight into the next leg
+    down. On TQQQ 2016-2026 it capped nothing (83.7% drawdown vs 81.8% simply
+    held) and split 58.8% in-sample against 3.2% out-of-sample.
+
+    Left in place so the failure stays visible and reproducible rather than
+    being rediscovered, and because a stop measured on entry price rather than
+    on peak may behave differently. Do not build a shipped strategy on it.
+    """
+    o = spec["overlay"]
+    base = px[o.get("gate_ticker") or next(iter(spec["weights"]))]
+    limit = float(o.get("max_drawdown_pct", 25.0)) / 100.0
+    recover = float(o.get("reenter_pct", 10.0)) / 100.0
+    on = np.zeros(base.shape, dtype=bool)
+    peak, trough, holding = base[0], base[0], True
+    for i, pxi in enumerate(base):
+        peak = max(peak, pxi)
+        if holding:
+            if pxi <= peak * (1.0 - limit):
+                holding, trough = False, pxi
+        else:
+            trough = min(trough, pxi)
+            if pxi >= trough * (1.0 + recover):
+                holding, peak = True, pxi
+        on[i] = holding
+    return on
+
+
+def _sector_momentum(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
+    """Hold the top-N of a universe on trailing return, equally weighted."""
+    o = spec["overlay"]
+    look, top_n = int(o.get("lookback_days", 126)), int(o.get("top_n", 3))
+    universe = [t for t in (o.get("universe") or []) if t in px]
+    safe = o.get("risk_off") or spec.get("risk_off")
+    base = spec.get("base") or ({safe: 1.0} if safe else {})
+    hold = int(o.get("hold_days", 21))         # rebalance cadence, not daily churn
+    n = len(next(iter(px.values())))
+    out, current = [], dict(base)
+    for i in range(n):
+        if i >= look and i % hold == 0:
+            rets = {t: px[t][i] / px[t][i - look] - 1.0 for t in universe}
+            winners = [t for t, v in sorted(rets.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+                       if v > 0]                # absolute-momentum veto
+            current = ({t: 1.0 / len(winners) for t in winners} if winners else dict(base))
+        out.append(dict(current))
+    return out
+
+
 def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
     """Target weights per day, or an abstention dict when the spec is unusable."""
     kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
@@ -243,11 +358,16 @@ def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
         return [dict(weights)] * len(next(iter(px.values())))
     if kind == "dual_momentum":
         return _dual_momentum(px, spec)
+    if kind == "sector_momentum":
+        return _sector_momentum(px, spec)
+    if kind == "vol_target":
+        return _vol_target(px, spec)
     fn = {"trend_filter": _trend_filter, "ma_cross": _ma_cross,
-          "donchian": _donchian, "rsi_pullback": _rsi_pullback}.get(kind)
+          "donchian": _donchian, "rsi_pullback": _rsi_pullback,
+          "drawdown_brake": _drawdown_brake}.get(kind)
     if fn is None:
         return _abstain(UNKNOWN_OVERLAY, f"no overlay named '{kind}'")
-    return _weights_or_off(fn(px, spec), weights, risk_off)
+    return _weights_or_off(fn(px, spec), weights, risk_off, spec.get("base"))
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +387,12 @@ def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
     shares: dict[str, float] = {}
     basis: dict[str, float] = {}
     entry_px: dict[str, float] = {}
+    entry_i: dict[str, int] = {}
+    # Per-round-trip results. A days-to-weeks strategy cannot be judged on CAGR
+    # alone: one deployed 12% of the time may have an excellent per-trade edge
+    # and simply be under-deployed, which is a sizing problem, not a bad rule.
+    trip_pnl: list[float] = []
+    trip_days: list[int] = []
     cash = 100.0
     values, tax_paid, traded_notional = [], 0.0, 0.0
     loss_bank, trades, wins, closed = 0.0, 0, 0, 0
@@ -306,11 +432,16 @@ def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
             trades += 1
             if shares[tk] * px[tk][i] < value * 0.005:             # round trip closed
                 closed += 1
-                if px[tk][i] > entry_px.get(tk, px[tk][i]):
+                ep = entry_px.get(tk, px[tk][i])
+                if px[tk][i] > ep:
                     wins += 1
+                if ep:
+                    trip_pnl.append((px[tk][i] / ep - 1.0) * 100.0)
+                trip_days.append(i - entry_i.get(tk, i))
                 shares.pop(tk, None)
                 basis.pop(tk, None)
                 entry_px.pop(tk, None)
+                entry_i.pop(tk, None)
 
         for tk, w in want.items():                                 # then buys
             tgt_val = w * value
@@ -326,13 +457,15 @@ def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
             basis[tk] = ((basis.get(tk, 0.0) * prev_sh + buy_sh * px[tk][i])
                          / (prev_sh + buy_sh)) if prev_sh + buy_sh else px[tk][i]
             entry_px.setdefault(tk, px[tk][i])
+            entry_i.setdefault(tk, i)
             shares[tk] = prev_sh + buy_sh
             cash -= spend
             traded_notional += spend
             trades += 1
 
     return {"values": values, "tax_paid": tax_paid, "trades": trades,
-            "traded_notional": traded_notional, "round_trips": closed, "wins": wins}
+            "traded_notional": traded_notional, "round_trips": closed, "wins": wins,
+            "trip_pnl": trip_pnl, "trip_days": trip_days}
 
 
 def _metrics(sim: dict, dates: list[str], bench: np.ndarray | None) -> dict:
@@ -354,6 +487,22 @@ def _metrics(sim: dict, dates: list[str], bench: np.ndarray | None) -> dict:
         "start": dates[0], "end": dates[-1], "observations": len(dates),
         "years": round(years, 2),
     }
+    # Per-trade view: expectancy is the average round trip, profit factor the
+    # ratio of gross wins to gross losses. Both survive a strategy being out of
+    # the market most of the time, which CAGR does not.
+    pnl = sim.get("trip_pnl") or []
+    if pnl:
+        w = [x for x in pnl if x > 0]
+        losses = [x for x in pnl if x <= 0]
+        gross_loss = abs(sum(losses))
+        out.update({
+            "expectancy_pct_per_trade": round(float(np.mean(pnl)), 2),
+            "avg_win_pct": round(float(np.mean(w)), 2) if w else None,
+            "avg_loss_pct": round(float(np.mean(losses)), 2) if losses else None,
+            "profit_factor": (round(sum(w) / gross_loss, 2) if gross_loss else None),
+            "avg_holding_days": (round(float(np.mean(sim["trip_days"])), 1)
+                                 if sim.get("trip_days") else None),
+        })
     if bench is not None and bench.size:
         b = cagr(list(bench)) * 100
         out["benchmark_cagr_pct"] = round(b, 2)
@@ -366,10 +515,31 @@ def _metrics(sim: dict, dates: list[str], bench: np.ndarray | None) -> dict:
 # public entry points
 # --------------------------------------------------------------------------
 
+def _exposure_stats(targets: list[dict], spec: dict) -> dict:
+    """How much of the time the aggressive sleeve was actually deployed.
+
+    A 4%/yr strategy that is in its instrument 12% of the time is a different
+    animal from a 4%/yr strategy that is always in. The first has a sizing
+    problem; the second has an edge problem.
+    """
+    sleeve = set(spec.get("weights") or {})
+    base = set(spec.get("base") or {})
+    aggressive = sleeve - base
+    if not aggressive or not targets:
+        return {}
+    active = sum(1 for t in targets if any(t.get(tk, 0.0) > 0.005 for tk in aggressive))
+    exposure = [sum(t.get(tk, 0.0) for tk in aggressive) for t in targets]
+    return {
+        "time_in_market_pct": round(100.0 * active / len(targets), 1),
+        "avg_sleeve_exposure_pct": round(100.0 * float(np.mean(exposure)), 1),
+        "base_when_flat": sorted(base) or None,
+    }
+
+
 def tickers_needed(spec: dict) -> list[str]:
     """Every symbol the spec references, so the caller knows what to fetch."""
     o = spec.get("overlay") or {}
-    names = set(spec.get("weights") or {})
+    names = set(spec.get("weights") or {}) | set(spec.get("base") or {})
     for key in ("gate_ticker", "signal_ticker", "risk_off"):
         if o.get(key):
             names.add(o[key])
@@ -404,6 +574,7 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
 
     sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate)
     out = _metrics(sim, dates, bench)
+    out.update(_exposure_stats(targets, spec))
 
     # Tax drag is the honest headline for a high-turnover strategy: the same
     # path re-run tax-free, differenced. Buy-and-hold defers CGT indefinitely;
@@ -418,6 +589,8 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
         "cgt_rate_pct": round(cgt_rate * 100, 1),
         "cost_bps": cost_bps,
         "overlay": (spec.get("overlay") or {}).get("kind", "buy_hold"),
+        "known_failure": MEASURED_FAILURES.get(
+            (spec.get("overlay") or {}).get("kind", "buy_hold")),
         "disclaimer": ("Backtested over the stated period on real closing prices, "
                        "net of 25% CGT and dealing costs. A backtest is one path "
                        "through one sample of history, not a forecast."),

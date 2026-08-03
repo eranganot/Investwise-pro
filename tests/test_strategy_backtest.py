@@ -237,3 +237,112 @@ def test_every_successful_result_carries_the_not_a_forecast_disclaimer():
     assert "not a forecast" in r["disclaimer"]
     assert r["start"] and r["end"] and r["observations"] > 0
     assert r["cgt_rate_pct"] == 25.0
+
+
+# ---------------------------------------------------------------- A2: overlays on a base
+
+def test_a_base_holding_is_held_instead_of_cash_when_the_setup_is_flat():
+    """The correction that mattered.
+
+    A swing setup is live a small fraction of the time. Parking the rest in
+    T-bills and judging the result as a ten-year CAGR measures a savings account
+    with a strategy attached; the sleeve should sit in the core holding.
+    """
+    rising = _compound(np.full(N, 0.0007))
+    S = {"AGG": _series(_crash_path()), "CORE": _series(rising), "BIL": _series(_FLAT)}
+    overlay = {"kind": "donchian", "gate_ticker": "AGG", "entry_days": 20, "exit_days": 10}
+    to_cash = bt.run(S, {"weights": {"AGG": 1.0}, "risk_off": "BIL", "overlay": overlay})
+    to_core = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0}, "overlay": overlay})
+    assert to_core["cagr_pct"] > to_cash["cagr_pct"]
+    assert to_core["base_when_flat"] == ["CORE"]
+
+
+def test_time_in_market_reflects_how_often_the_sleeve_is_deployed():
+    S = {"AGG": _series(_crash_path()), "CORE": _series(_UP)}
+    r = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                   "overlay": {"kind": "donchian", "gate_ticker": "AGG"}})
+    assert 0.0 < r["time_in_market_pct"] < 100.0
+
+
+def test_buy_and_hold_is_in_the_market_all_of_the_time():
+    S = {"AGG": _series(_UP), "CORE": _series(_FLAT)}
+    r = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                   "overlay": {"kind": "buy_hold"}})
+    assert r["time_in_market_pct"] == 100.0
+
+
+def test_per_trade_statistics_are_reported_for_a_strategy_that_round_trips():
+    S = {"AGG": _series(_crash_path()), "CORE": _series(_UP)}
+    r = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                   "overlay": {"kind": "donchian", "gate_ticker": "AGG"}})
+    assert r["round_trips"] > 0
+    assert r["avg_holding_days"] > 0
+    assert r["expectancy_pct_per_trade"] is not None
+    assert r["profit_factor"] is None or r["profit_factor"] > 0
+
+
+def test_vol_targeting_cuts_realized_volatility_versus_holding_the_instrument():
+    """Decay scales with variance, so shrinking exposure when volatility spikes
+    attacks the decay term rather than trying to time direction."""
+    rng = np.random.default_rng(11)
+    calm = rng.normal(0.0008, 0.006, N // 2)
+    wild = rng.normal(0.0008, 0.030, N - N // 2)
+    agg = _compound(np.concatenate([calm, wild]))
+    S = {"AGG": _series(agg), "CORE": _series(_FLAT)}
+    held = bt.run(S, {"weights": {"AGG": 1.0}})
+    targeted = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                          "overlay": {"kind": "vol_target", "gate_ticker": "AGG",
+                                      "vol_days": 20, "target_vol_pct": 15,
+                                      "max_weight": 1.0}})
+    assert targeted["volatility_pct"] < held["volatility_pct"]
+
+
+def test_a_wider_rebalance_band_trades_less():
+    """Acting on every daily wobble produced 342 trades a year in testing; at
+    25% CGT that is a strategy whose costs eat its own edge."""
+    S = {"AGG": _series(_crash_path()), "CORE": _series(_FLAT)}
+    spec = {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+            "overlay": {"kind": "vol_target", "gate_ticker": "AGG", "vol_days": 20,
+                        "target_vol_pct": 20, "max_weight": 1.0}}
+    tight = bt.run(S, {**spec, "overlay": {**spec["overlay"], "rebalance_band": 0.0}})
+    wide = bt.run(S, {**spec, "overlay": {**spec["overlay"], "rebalance_band": 0.30}})
+    assert wide["trades_per_year"] < tight["trades_per_year"]
+
+
+def test_the_drawdown_brake_steps_out_after_a_fall_and_returns_on_recovery():
+    S = {"AGG": _series(_crash_path()), "CORE": _series(_FLAT)}
+    r = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                   "overlay": {"kind": "drawdown_brake", "gate_ticker": "AGG",
+                               "max_drawdown_pct": 20, "reenter_pct": 10}})
+    assert r["ok"] and 0.0 < r["time_in_market_pct"] < 100.0
+
+
+def test_sector_momentum_holds_the_leaders_and_vetoes_a_falling_universe():
+    leader = _compound(np.full(N, 0.0010))
+    laggard = _compound(np.full(N, 0.0002))
+    falling = _compound(np.full(N, -0.0015))
+    S = {"A": _series(leader), "B": _series(laggard), "C": _series(falling),
+         "BIL": _series(_FLAT)}
+    r = bt.run(S, {"weights": {"A": 1.0}, "risk_off": "BIL",
+                   "overlay": {"kind": "sector_momentum", "universe": ["A", "B", "C"],
+                               "lookback_days": 126, "top_n": 1, "hold_days": 21,
+                               "risk_off": "BIL"}})
+    assert r["ok"]
+    assert r["cagr_pct"] > bt.run(S, {"weights": {"B": 1.0}})["cagr_pct"]
+
+
+def test_tickers_needed_includes_the_base_holding():
+    spec = {"weights": {"TQQQ": 1.0}, "base": {"QQQ": 1.0},
+            "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ"}}
+    assert bt.tickers_needed(spec) == ["QQQ", "TQQQ"]
+
+
+def test_a_known_failed_overlay_is_flagged_in_its_own_result():
+    """An engine that quietly serves a rule it has measured as broken is worse
+    than one with no rule at all."""
+    S = {"AGG": _series(_crash_path()), "CORE": _series(_FLAT)}
+    r = bt.run(S, {"weights": {"AGG": 1.0}, "base": {"CORE": 1.0},
+                   "overlay": {"kind": "drawdown_brake", "gate_ticker": "AGG"}})
+    assert r["known_failure"] and "out of sample" in r["known_failure"]
+    clean = bt.run(S, {"weights": {"AGG": 1.0}})
+    assert clean["known_failure"] is None
