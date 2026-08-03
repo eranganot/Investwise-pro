@@ -170,8 +170,20 @@ else {
         Skip "$($b.never_computed.Count) never computed - run this script with -Refresh, or wait for the 03:30 job"
     } else { Ok "every strategy has a stored result" }
 
-    if ($b.stale.Count -gt 0) { Skip "$($b.stale.Count) stale result(s): $($b.stale -join ', ')" }
-    elseif ($b.never_computed.Count -eq 0) { Ok "no stale results" }
+    # Distinguish "old" from "produced by a different engine". The second is the
+    # one that silently degrades every downstream check: fields the new engine
+    # adds are simply absent, which reads as "not measured" rather than
+    # "measured before this field existed".
+    $wrongEngine = @($b.strategies | Where-Object { $_.backtest -and $_.backtest.stale_reason -eq 'engine_version' })
+    $tooOld      = @($b.strategies | Where-Object { $_.backtest -and $_.backtest.stale_reason -eq 'age' })
+    if ($wrongEngine.Count -gt 0) {
+        $was = $wrongEngine[0].backtest.engine_version
+        $now = $wrongEngine[0].backtest.live_engine_version
+        Bad "$($wrongEngine.Count) result(s) computed by engine '$was' but the live engine is '$now'"
+        Write-Host "        -> POST /api/v1/strategies/backtests/refresh  (or re-run this script with -Refresh)" -ForegroundColor Yellow
+    }
+    if ($tooOld.Count -gt 0) { Skip "$($tooOld.Count) result(s) older than the freshness window - tonight's 03:30 job will fix it" }
+    if ($wrongEngine.Count -eq 0 -and $tooOld.Count -eq 0 -and $b.never_computed.Count -eq 0) { Ok "every result is fresh and from the live engine" }
 
     foreach ($st in $b.strategies) {
         $bt = $st.backtest
@@ -189,7 +201,12 @@ else {
         # Density, not row count, is what distinguishes real daily data from a
         # feed quietly serving monthly bars. Yahoo returns MONTHLY for
         # range=max, which a row count alone would read as a long history.
-        if ($null -eq $m.sessions_per_year) { Skip "$($st.id): no session density recorded" }
+        # Only meaningful on a row the live engine wrote; an older row simply
+        # predates the field, and saying so seven times buries the one real
+        # message (the engine version is stale).
+        if ($null -eq $m.sessions_per_year) {
+            if ($bt.stale_reason -ne 'engine_version') { Bad "$($st.id): no session density recorded" }
+        }
         elseif ($m.sessions_per_year -ge 200) { $script:dense++ }
         else { Bad "$($st.id): $($m.sessions_per_year) sessions/yr - that is not daily data" }
 
@@ -200,14 +217,20 @@ else {
                 Ok "$($st.id): $([math]::Round($obs/252,1))y window, capped by $($m.limiting_ticker) listing $($m.history_start_by_ticker.$($m.limiting_ticker))"
             } elseif ($m.history_capped_by_provider) {
                 Bad "$($st.id): only $obs sessions and no young fund to explain it - the feed is truncating"
-            } else { Skip "$($st.id): short window, cause not recorded" }
+            } elseif ($bt.stale_reason -ne 'engine_version') {
+                Bad "$($st.id): short window with no recorded cause"
+            }
         }
 
         $oos = $bt.robustness.out_of_sample
         if ($null -eq $oos) { Skip "$($st.id): no out-of-sample split stored" }
         elseif ($oos.verdict -eq 'likely overfitted') {
-            Write-Host ("        {0}: 'likely overfitted' - decayed {1} vs benchmark {2} across the split" -f `
-                $st.id, $oos.cagr_decay_pct, $oos.benchmark_decay_pct) -ForegroundColor Yellow
+            if ($null -eq $oos.benchmark_decay_pct) {
+                Write-Host "        $($st.id): 'likely overfitted' - but judged against zero, not the benchmark (old engine)" -ForegroundColor DarkYellow
+            } else {
+                Write-Host ("        {0}: 'likely overfitted' - decayed {1} pts vs the benchmark's {2} across the split" -f `
+                    $st.id, $oos.cagr_decay_pct, $oos.benchmark_decay_pct) -ForegroundColor Yellow
+            }
         }
     }
     $withNums = @($b.strategies | Where-Object { $_.backtest -and $_.backtest.ok })

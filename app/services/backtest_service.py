@@ -35,9 +35,20 @@ from app.services import strategy_catalog
 
 logger = logging.getLogger(__name__)
 
-# Bump when a change to the engine would alter a stored number. Rows written by
-# an older version are treated as stale regardless of their age.
-ENGINE_VERSION = "a2"
+# Bump when a change to the engine would alter a stored number OR add a field to
+# one. Rows written by an older version are stale regardless of their age.
+#
+# Missed once already: a2 gained sessions_per_year, limiting_ticker and a
+# benchmark-relative overfitting verdict without a bump, so rows computed by the
+# previous engine kept reporting stale=false and were served as current. Every
+# consumer then saw fields that were simply absent, which reads as "not
+# measured" rather than "measured by an engine that did not have this field".
+# The whole point of the version is that the two are distinguishable.
+#
+#   a2 -> a3: sessions_per_year, limiting_ticker, history_start_by_ticker,
+#             history_capped_by_provider, and out-of-sample verdicts judged
+#             against the benchmark's decay rather than against zero.
+ENGINE_VERSION = "a3"
 
 HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularity
 STALE_AFTER_DAYS = 7
@@ -129,6 +140,13 @@ def _is_stale(row: StrategyBacktest) -> bool:
 
 def _payload(row: StrategyBacktest) -> dict:
     return {
+        # Named explicitly so a consumer can say WHY a row is stale. "Older than
+        # a week" and "produced by a different engine" need different responses:
+        # the first waits for tonight's job, the second needs a recompute now.
+        "stale_reason": (None if not _is_stale(row) else
+                         "engine_version" if row.engine_version != ENGINE_VERSION
+                         else "age"),
+        "live_engine_version": ENGINE_VERSION,
         "ok": row.ok,
         "reason": row.reason or None,
         "detail": row.detail or None,

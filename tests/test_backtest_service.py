@@ -249,3 +249,41 @@ def test_the_applied_target_is_all_equity_not_a_permanent_cash_weight():
         assert legacy["target_allocation"] == {"Equities": 1.0}
         assert legacy["objective"] == "Grow"          # DB column is String(16)
         assert len(legacy["objective"]) <= 16
+
+
+@pytest.mark.asyncio
+async def test_a_stale_row_says_whether_it_is_old_or_from_another_engine():
+    """The two need different responses: age waits for tonight's job, a version
+    mismatch needs a recompute now. Conflating them cost a production run --
+    rows from the previous engine reported stale=false and were served as
+    current, so every missing field read as 'not measured'."""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+    from app.core.config import get_settings
+    from app.models.base import Base
+    import app.models  # noqa: F401
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            fresh = await svc.store(session, "btm_trend_soxl", {"ok": True, "cagr_pct": 43.4})
+            await session.commit()
+            got = (await svc.get_many(session, ["btm_trend_soxl"]))["btm_trend_soxl"]
+            assert got["stale"] is False and got["stale_reason"] is None
+            assert got["live_engine_version"] == svc.ENGINE_VERSION
+
+            fresh.engine_version = "a1"
+            await session.commit()
+            got = (await svc.get_many(session, ["btm_trend_soxl"]))["btm_trend_soxl"]
+            assert got["stale"] is True and got["stale_reason"] == "engine_version"
+
+            fresh.engine_version = svc.ENGINE_VERSION
+            fresh.computed_at = datetime.now(timezone.utc) - timedelta(days=svc.STALE_AFTER_DAYS + 1)
+            await session.commit()
+            got = (await svc.get_many(session, ["btm_trend_soxl"]))["btm_trend_soxl"]
+            assert got["stale"] is True and got["stale_reason"] == "age"
+    finally:
+        await eng.dispose()
