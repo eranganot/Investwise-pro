@@ -50,14 +50,16 @@ def test_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
-def test_the_plan_route_does_not_yet_advertise_the_new_goal():
-    """The Plan renderer reads basket as [ticker, weight] pairs and resolves ids
-    against services.strategies, so surfacing rule-based strategies there before
-    the UI understands them would draw malformed cards with dead buttons."""
+def test_the_existing_four_goals_are_untouched_by_the_fifth():
+    """Adding a family must not disturb the ones people already use."""
+    from app.services import strategies as legacy
     with TestClient(m.app) as c:
         body = c.get("/api/v1/strategies").json()
-        assert strategy_catalog.GOAL not in body["goals"]
-        assert strategy_catalog.GOAL not in body["by_goal"]
+        assert body["goals"][:4] == legacy.GOAL_ORDER
+        for g in legacy.GOAL_ORDER:
+            cards = body["by_goal"][g]
+            assert cards and all("profile" in s for s in cards)   # still derived
+            assert all(not s.get("measured") for s in cards)
         assert body["backtest_engine_version"]
 
 
@@ -175,3 +177,75 @@ def test_refresh_never_runs_inside_the_read_routes():
     import inspect
     for fn in (svc.get_many,):
         assert "measure(" not in inspect.getsource(fn)
+
+
+# ---------------------------------------------------------------- Phase C: presentation
+
+def test_the_plan_route_now_carries_the_fifth_goal():
+    with TestClient(m.app) as c:
+        body = c.get("/api/v1/strategies").json()
+        assert body["goals"][-1] == strategy_catalog.GOAL
+        cards = body["by_goal"][strategy_catalog.GOAL]
+        assert len(cards) == len(strategy_catalog.CATALOG)
+
+
+def test_cards_match_the_shape_the_existing_renderer_reads():
+    """The Plan tab reads basket as [ticker, weight] pairs and risk_tolerance as
+    the Low/Medium/High vocabulary. A card that does not match renders garbage
+    rather than failing loudly, so this is asserted rather than assumed."""
+    with TestClient(m.app) as c:
+        cards = c.get("/api/v1/strategies").json()["by_goal"][strategy_catalog.GOAL]
+        for s in cards:
+            assert s["risk_tolerance"] in {"Low", "Medium", "High"}
+            assert s["name"] and s["description"] and s["rule"]
+            for leg in s["basket"]:
+                assert len(leg) == 2 and isinstance(leg[0], str)
+                assert isinstance(leg[1], (int, float))
+            # Measured, not derived: the UI must read `backtest`, not `profile`.
+            assert s["measured"] is True
+            assert "profile" not in s
+
+
+def test_an_unmeasured_strategy_still_renders_rather_than_showing_a_blank():
+    with TestClient(m.app) as c:
+        cards = c.get("/api/v1/strategies").json()["by_goal"][strategy_catalog.GOAL]
+        assert all(s["backtest"] is None for s in cards)   # nothing computed in tests
+        assert all(s["name"] for s in cards)
+
+
+def test_the_rule_summary_describes_the_actual_mechanism():
+    """The description sells the idea; the rule line states what the code does,
+    so a card cannot imply a discipline it does not implement."""
+    by_id = {c["id"]: c for c in strategy_catalog.as_plan_cards()}
+    assert "200-day" in by_id["btm_trend_tqqq"]["rule"]
+    assert "oversold" in by_id["btm_swing_dip"]["rule"]
+    assert "20-day high" in by_id["btm_swing_breakout"]["rule"]
+    assert "volatility" in by_id["btm_vol_target_tqqq"]["rule"]
+    assert "Held throughout" in by_id["btm_factor_stack"]["rule"]
+
+
+def test_preview_resolves_a_rule_based_id_instead_of_dead_buttons():
+    with TestClient(m.app) as c:
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "TEVA", "market": "TASE", "asset_class": "Equities", "depth": 3,
+             "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 100,
+             "expected_return_pct": 7, "volatility_pct": 14}]})
+        r = c.get("/api/v1/strategies/btm_trend_tqqq/preview").json()
+        assert r["ok"] is True
+        assert r["diff"]["risk_tolerance"]["to"] == "High"
+
+
+def test_an_unknown_id_is_still_rejected():
+    with TestClient(m.app) as c:
+        assert c.get("/api/v1/strategies/not_a_strategy/preview").json()["ok"] is False
+
+
+def test_the_applied_target_is_all_equity_not_a_permanent_cash_weight():
+    """Time in T-bills is a transient state of the rule, not a target. Writing it
+    into target_allocation would make the allocation engine permanently demand
+    cash the strategy only wants sometimes."""
+    for sid in strategy_catalog.ids():
+        legacy = strategy_catalog.as_legacy_strategy(sid)
+        assert legacy["target_allocation"] == {"Equities": 1.0}
+        assert legacy["objective"] == "Grow"          # DB column is String(16)
+        assert len(legacy["objective"]) <= 16

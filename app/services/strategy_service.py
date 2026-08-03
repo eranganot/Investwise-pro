@@ -10,6 +10,7 @@ from app.providers.registry import guarded_quote
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import Market
 from app.services import strategies as cat
+from app.services import strategy_catalog
 from app.services.allocation_mix import current_mix
 from app.services.intake_service import (
     ensure_account, ensure_entity, list_positions, upsert_positions)
@@ -24,7 +25,9 @@ def _nav(rows) -> float:
 
 
 async def apply_strategy(session: AsyncSession, user: User, strategy_id: str) -> dict:
-    s = cat.get(strategy_id)
+    # Either catalog: static baskets live in `strategies`, rule-based ones in
+    # `strategy_catalog`. Adapting rather than forking keeps one apply path.
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
     # preset the plan
@@ -45,7 +48,9 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str) ->
 
 async def load_basket(session: AsyncSession, user: User, strategy_id: str,
                       total: float | None = None) -> dict:
-    s = cat.get(strategy_id)
+    # Either catalog: static baskets live in `strategies`, rule-based ones in
+    # `strategy_catalog`. Adapting rather than forking keeps one apply path.
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
     rows = await list_positions(session, user)

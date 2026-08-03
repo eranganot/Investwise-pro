@@ -78,6 +78,14 @@ def test_catalog_endpoint_includes_profiles():
         by_goal = c.get("/api/v1/strategies").json()["by_goal"]
         for goal, items in by_goal.items():
             for s in items:
+                if s.get("measured"):
+                    # A rule has no derivable profile -- its numbers come from a
+                    # backtest over real prices. Synthesising a lookup-table
+                    # profile for it would be inventing exactly the figure the
+                    # backtest exists to measure.
+                    assert "profile" not in s
+                    assert "backtest" in s
+                    continue
                 assert "profile" in s and s["profile"]["volatility_pct"] > 0
 
 

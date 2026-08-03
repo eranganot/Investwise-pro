@@ -27,14 +27,15 @@ async def strategies(session: AsyncSession = Depends(get_session)) -> dict:
     # theirs are *measured* by the nightly backtest and read from storage here.
     # This route never computes: a page load must not depend on a price provider.
     by_goal = {g: prof.with_profiles(v) for g, v in cat.by_goal().items()}
-    # The "Beat the Market" family is deliberately NOT merged in here yet. The
-    # Plan renderer reads `s.basket` as [ticker, weight] pairs, `s.risk_tolerance`
-    # and `s.profile`, and its buttons resolve ids against `services.strategies`
-    # -- so surfacing rule-based strategies through this route before the UI
-    # understands them would draw a tab of malformed cards with dead buttons.
-    # They are served from /strategies/backtests until the Plan UI can render a
-    # measured strategy properly.
-    return {"goals": cat.GOAL_ORDER, "by_goal": by_goal,
+    # The fifth family is rule-based, so its numbers are measured rather than
+    # derived. Cards are adapted to the shape the renderer already expects
+    # (risk_tolerance, [ticker, weight] baskets) and carry `measured: true` so
+    # the UI knows to read `backtest` instead of `profile`. A strategy with no
+    # stored result still renders -- carrying backtest: null, so the card can
+    # say "not measured yet" rather than drawing a blank where a number belongs.
+    measured = await backtest_service.get_many(session, strategy_catalog.ids())
+    by_goal[strategy_catalog.GOAL] = strategy_catalog.as_plan_cards(measured)
+    return {"goals": [*cat.GOAL_ORDER, strategy_catalog.GOAL], "by_goal": by_goal,
             "backtest_engine_version": backtest_service.ENGINE_VERSION}
 
 
@@ -79,7 +80,9 @@ async def refresh_backtests(only: str | None = None,
 async def preview(strategy_id: str, session: AsyncSession = Depends(get_session),
                   user: User = Depends(acting_user)) -> dict:
     """What changes if you apply this: objective, risk, target mix, plus trades."""
-    s = cat.get(strategy_id)
+    # Rule-based strategies live in their own catalog; resolve either, so the
+    # card's buttons work regardless of which family it came from.
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
     plan = await get_plan(session, user)

@@ -346,3 +346,47 @@ def test_a_known_failed_overlay_is_flagged_in_its_own_result():
     assert r["known_failure"] and "out of sample" in r["known_failure"]
     clean = bt.run(S, {"weights": {"AGG": 1.0}})
     assert clean["known_failure"] is None
+
+
+# ---------------------------------------------------------------- provenance
+
+def test_a_short_window_names_the_ticker_that_caused_it():
+    """A short span must be attributable. A young fund is fine; a truncated feed
+    is a bug, and the two are indistinguishable without this."""
+    young = _series(_UP)[600:]          # lists later than the rest
+    S = {"OLD": _series(_UP), "NEW": young}
+    r = bt.run(S, {"weights": {"OLD": 0.5, "NEW": 0.5}})
+    assert r["ok"]
+    assert r["limiting_ticker"] == "NEW"
+    assert r["history_capped_by_provider"] is False
+    assert r["history_start_by_ticker"]["NEW"] > r["history_start_by_ticker"]["OLD"]
+
+
+def test_series_that_all_start_together_blame_the_provider_window_not_a_ticker():
+    S = {"A": _series(_UP), "B": _series(_FLAT)}
+    r = bt.run(S, {"weights": {"A": 0.5, "B": 0.5}})
+    assert r["limiting_ticker"] is None
+    assert r["history_capped_by_provider"] is True
+
+
+def test_sessions_per_year_exposes_a_feed_serving_monthly_bars_as_daily():
+    """Yahoo returns MONTHLY bars for range=max; a caller counting rows would
+    otherwise treat 27 years of monthly data as a long daily history."""
+    daily = bt.run({"A": _series(_UP)}, {"weights": {"A": 1.0}})
+    assert 200 < daily["sessions_per_year"] < 300
+
+
+def test_the_overfitting_verdict_is_measured_against_the_benchmark_not_zero():
+    """Splitting at a bear market puts the downturn entirely in the test half,
+    so every strategy decays. Judging raw decay called honest strategies
+    overfitted for living through the same market as everything else."""
+    path = _crash_path()
+    S = {"A": _series(path), "BIL": _series(_FLAT)}
+    spec = {"weights": {"A": 1.0}}
+    with_bench = bt.out_of_sample(S, spec, split_date="2018-01-01", benchmark=_series(path))
+    assert with_bench["benchmark_decay_pct"] is not None
+    assert "relative to the benchmark" in with_bench["verdict_basis"]
+    # A strategy compared against itself decays identically -> nothing to explain.
+    assert with_bench["verdict"] == "holds up"
+    without = bt.out_of_sample(S, spec, split_date="2018-01-01")
+    assert without["verdict_basis"].startswith("raw decay")

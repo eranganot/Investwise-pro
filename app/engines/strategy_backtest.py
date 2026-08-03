@@ -560,6 +560,12 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     feed = dict(series)
     if benchmark:
         feed["__bench__"] = benchmark
+    # Which ticker's own inception date caps the window. Without this a short
+    # span is indistinguishable from a truncated feed -- and those need opposite
+    # responses: a young fund is fine, a truncated feed is a bug. AVUV listing in
+    # 2019 legitimately caps its basket at ~7y; the Yahoo ladder silently
+    # returning 5y for a decade request was a defect.
+    first_seen = {tk: min(d for d, _ in rows) for tk, rows in feed.items() if rows}
     dates, px = align(feed)
     if not dates:
         return _abstain(NO_OVERLAP, "the tickers share no common trading dates")
@@ -575,6 +581,21 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate)
     out = _metrics(sim, dates, bench)
     out.update(_exposure_stats(targets, spec))
+
+    starts = {k: v for k, v in first_seen.items() if k != "__bench__"}
+    earliest = min(starts.values()) if starts else None
+    # Only a ticker that starts materially LATER than the rest is limiting. When
+    # every series begins on the same day they are all simply hitting the
+    # provider's 10-year window, and naming one of them would invent a cause.
+    late = {tk: d for tk, d in starts.items() if earliest and d > earliest}
+    out["history_start_by_ticker"] = starts
+    out["limiting_ticker"] = max(late, key=late.get) if late else None
+    out["history_capped_by_provider"] = not late
+    # Sessions per year. Real daily data lands near 252; a feed quietly serving
+    # monthly bars (Yahoo does this for range=max) lands near 12, and would
+    # otherwise pass as a long history.
+    out["sessions_per_year"] = (round(out["observations"] / out["years"], 0)
+                                if out.get("years") else None)
 
     # Tax drag is the honest headline for a high-turnover strategy: the same
     # path re-run tax-free, differenced. Buy-and-hold defers CGT indefinitely;
@@ -612,13 +633,27 @@ def out_of_sample(series: dict[str, list[tuple[str, float]]], spec: dict, *,
 
     ins = run({tk: _slice(r, hi=split_date) for tk, r in series.items()}, spec, **kw)
     oos = run({tk: _slice(r, lo=split_date) for tk, r in series.items()}, spec, **kw)
-    verdict = None
+    verdict, decay, bench_decay = None, None, None
     if ins.get("ok") and oos.get("ok"):
         decay = ins["cagr_pct"] - oos["cagr_pct"]
-        verdict = ("holds up" if decay <= 3 else
-                   "weaker out of sample" if decay <= 10 else "likely overfitted")
+        # Measured against the BENCHMARK's decay over the same split, not
+        # against zero. Splitting at 2022 puts a bear market entirely in the
+        # test half, so every strategy -- including buy-and-hold -- scores worse
+        # after it. Judging raw decay called honest strategies overfitted for
+        # the crime of living through the same market as everything else.
+        if ins.get("benchmark_cagr_pct") is not None and oos.get("benchmark_cagr_pct") is not None:
+            bench_decay = ins["benchmark_cagr_pct"] - oos["benchmark_cagr_pct"]
+            relative = decay - bench_decay
+        else:
+            relative = decay
+        verdict = ("holds up" if relative <= 3 else
+                   "weaker out of sample" if relative <= 12 else "likely overfitted")
     return {"split_date": split_date, "in_sample": ins, "out_of_sample": oos,
-            "verdict": verdict}
+            "cagr_decay_pct": (round(decay, 2) if decay is not None else None),
+            "benchmark_decay_pct": (round(bench_decay, 2) if bench_decay is not None else None),
+            "verdict": verdict,
+            "verdict_basis": ("decay relative to the benchmark over the same split"
+                              if bench_decay is not None else "raw decay (no benchmark)")}
 
 
 def sweep(series: dict[str, list[tuple[str, float]]], spec: dict,

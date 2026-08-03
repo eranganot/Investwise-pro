@@ -151,3 +151,117 @@ def get(strategy_id: str) -> dict | None:
 
 def ids() -> list[str]:
     return [e["id"] for e in CATALOG]
+
+
+# --- Presentation ----------------------------------------------------------
+#
+# The Plan renderer was written for static baskets: it reads `risk_tolerance`,
+# `basket` as [ticker, weight] pairs and a `profile` of derived assumptions. A
+# rule-based strategy has no derived profile -- it has a *measured* one -- so it
+# is adapted to that shape here rather than the renderer growing a second code
+# path for every field.
+
+# Presentation risk label -> the vocabulary the existing cards already use.
+_RISK_TOLERANCE = {"Very high": "High", "High": "High",
+                   "Medium-high": "Medium", "Medium": "Medium"}
+
+
+def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
+    """Catalog entries in the shape the Plan tab renders, with measured numbers.
+
+    ``measured`` is keyed by strategy id (from ``backtest_service.get_many``).
+    A strategy with no stored result still returns a card -- it simply carries
+    ``backtest: None``, so the UI can say "not measured yet" instead of drawing
+    a blank where a number belongs.
+    """
+    measured = measured or {}
+    cards = []
+    for e in CATALOG:
+        weights = e.get("weights") or {}
+        cards.append({
+            "id": e["id"],
+            "goal": GOAL,
+            "name": e["name"],
+            "description": e["description"],
+            # Applying one of these sets a growth objective; the DB column is
+            # String(16) and would not hold the goal label itself.
+            "objective": "Grow",
+            "risk_tolerance": _RISK_TOLERANCE.get(e.get("risk", ""), "High"),
+            "risk_label": e.get("risk"),
+            "sleeve_pct": e.get("sleeve_pct"),
+            "horizon": e.get("horizon"),
+            "basket": sorted((tk, w) for tk, w in weights.items()),
+            "base_when_flat": sorted(e.get("base") or {}) or None,
+            "rule": _rule_summary(e),
+            "measured": True,
+            "backtest": measured.get(e["id"]),
+        })
+    return cards
+
+
+def _rule_summary(entry: dict) -> str:
+    """One line of plain language describing what the rule actually does.
+
+    The description sells the idea; this says the mechanism, so a card cannot
+    imply a discipline it does not implement.
+    """
+    o = entry.get("overlay") or {}
+    kind = o.get("kind", "buy_hold")
+    base = ", ".join(sorted(entry.get("base") or {})) or o.get("risk_off") or entry.get("risk_off") or "cash"
+    if kind == "buy_hold":
+        return "Held throughout; rebalanced back to target weights."
+    if kind == "trend_filter":
+        return (f"Holds the sleeve while {o.get('gate_ticker')} is above its "
+                f"{o.get('ma_days', 200)}-day average for {o.get('confirm_days', 1)} "
+                f"session(s); otherwise {base}.")
+    if kind == "rsi_pullback":
+        return (f"Buys when {o.get('signal_ticker') or o.get('gate_ticker')} is short-term "
+                f"oversold and {o.get('gate_ticker')} is above its {o.get('ma_days', 200)}-day; "
+                f"exits on the first close above its {o.get('exit_ma', 5)}-day. Otherwise {base}.")
+    if kind == "donchian":
+        return (f"Enters on a {o.get('entry_days', 20)}-day high, exits on a "
+                f"{o.get('exit_days', 10)}-day low. Otherwise {base}.")
+    if kind == "vol_target":
+        return (f"Scales the sleeve so realized volatility stays near "
+                f"{o.get('target_vol_pct')}%, rebalancing when the target moves more "
+                f"than {int(float(o.get('rebalance_band', 0.15)) * 100)} points. Remainder in {base}.")
+    if kind == "dual_momentum":
+        return (f"Each month holds whichever of {', '.join(o.get('universe') or [])} has the "
+                f"strongest {int(o.get('lookback_days', 252) / 21)}-month return, or {base} "
+                f"when none is rising.")
+    if kind == "sector_momentum":
+        return (f"Holds the top {o.get('top_n', 3)} of "
+                f"{', '.join(o.get('universe') or [])} on trailing return, or {base}.")
+    if kind == "ma_cross":
+        return (f"Holds while the {o.get('fast')}-day average is above the "
+                f"{o.get('slow')}-day; otherwise {base}.")
+    return f"Rule: {kind}."
+
+
+def as_legacy_strategy(strategy_id: str) -> dict | None:
+    """The shape ``strategy_service`` expects, so apply/preview/load-basket work.
+
+    Those helpers were written against ``services.strategies`` entries and read
+    ``objective``, ``risk_tolerance``, ``target_allocation``, ``basket`` and
+    ``preferred_depth``. Adapting here keeps one code path for applying a
+    strategy rather than forking it by catalog.
+
+    ``target_allocation`` is all-equity for every one of these: the rules move
+    between an aggressive instrument and a core holding, both equity. Time spent
+    in T-bills is a transient state of the rule, not a target the plan should
+    hold the book to -- writing it into the target would make the allocation
+    engine permanently demand a cash weight the strategy only wants sometimes.
+    """
+    e = _BY_ID.get(strategy_id)
+    if e is None:
+        return None
+    weights = e.get("weights") or {}
+    return {
+        "id": e["id"], "goal": GOAL, "name": e["name"],
+        "description": e["description"],
+        "objective": "Grow",
+        "risk_tolerance": _RISK_TOLERANCE.get(e.get("risk", ""), "High"),
+        "preferred_depth": 3,
+        "target_allocation": {"Equities": 1.0},
+        "basket": sorted((tk, w) for tk, w in weights.items()),
+    }
