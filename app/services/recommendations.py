@@ -770,6 +770,17 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("triggered trading-rule recommendations failed", exc_info=True)
         degraded.append("trading_rules")
 
+    # The active rule-based strategy changing its mind is the same class of event
+    # as a trading rule firing: a discipline the user chose, speaking. Acting
+    # late on it is the main reason a rule underperforms its own backtest.
+    try:
+        from app.services.strategy_signal_service import pending_signal_recs
+        recs += await pending_signal_recs(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("strategy signal recommendations failed", exc_info=True)
+        degraded.append("strategy_signals")
+    _tm.mark("strategy_signals")
+
     # Cash reconciliation runs HERE, after every agent has contributed -- not at
     # the point the redeploy card is built. Placing it earlier meant the filter
     # ran before _war_room_recs existed, so production showed "Redeploy ₪3,884"
@@ -817,6 +828,19 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     await resolve_rule(session, user, _hid[5:], "acknowledged")
                 except Exception:  # noqa: BLE001 -- never break Today over cleanup
                     logger.warning("could not self-heal rule %s", _hid, exc_info=False)
+        # A signal the user already dealt with must not stay pending, or it
+        # reappears every morning until it is acted on -- the exact nagging the
+        # flip-only design exists to avoid.
+        _hidden_sig = {r.get("id") for r in recs
+                       if str(r.get("id", "")).startswith("stratsig_")} & (dismissed | completed)
+        if _hidden_sig:
+            from app.services.strategy_signal_service import active_strategy_id, resolve_signal
+            try:
+                _sid = await active_strategy_id(session, user)
+                if _sid:
+                    await resolve_signal(session, user, _sid)
+            except Exception:  # noqa: BLE001 -- never break Today over cleanup
+                logger.warning("could not clear a handled strategy signal", exc_info=False)
         _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
         suppressed = _n - len(recs)

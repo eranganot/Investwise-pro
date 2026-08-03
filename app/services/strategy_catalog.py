@@ -265,3 +265,7 @@ def as_legacy_strategy(strategy_id: str) -> dict | None:
         "target_allocation": {"Equities": 1.0},
         "basket": sorted((tk, w) for tk, w in weights.items()),
     }
+
+
+# Public alias: the signal service needs the same one-line mechanism text.
+rule_summary = _rule_summary

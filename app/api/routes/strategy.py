@@ -123,3 +123,31 @@ async def load(strategy_id: str, req: LoadBasketRequest | None = None,
                user: User = Depends(acting_user)) -> dict:
     req = req or LoadBasketRequest()
     return await load_basket(session, user, strategy_id, total=req.total)
+
+
+@router.get("/strategies/signal")
+async def strategy_signal(session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """What the active rule-based strategy wants to hold today.
+
+    Read-only: evaluating here never records a flip. A GET that consumed the
+    signal would make "were you notified?" depend on whether you happened to
+    open this page, and the daily job would have nothing left to report.
+
+    Slow (it fetches recent closes for the strategy's tickers), so this is a
+    diagnostic rather than something the app polls.
+    """
+    from app.services import strategy_signal_service as sigs
+    return await sigs.peek_user(session, user)
+
+
+@router.post("/strategies/signal/ack",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def ack_strategy_signal(session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """Clear a pending flip once you have acted on it (or decided not to)."""
+    from app.services import strategy_signal_service as sigs
+    sid = await sigs.active_strategy_id(session, user)
+    if not sid:
+        return {"ok": False, "error": "no rule-based strategy is applied"}
+    return {"ok": await sigs.resolve_signal(session, user, sid), "strategy_id": sid}

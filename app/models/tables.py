@@ -415,3 +415,31 @@ class StrategyBacktest(Base, PKMixin, TimestampMixin):
     observations: Mapped[int] = mapped_column(Integer, default=0)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class StrategySignalState(Base, PKMixin, TimestampMixin):
+    """What the user's active rule-based strategy said it should hold, last time.
+
+    A trend or swing rule produces a target every single session, and almost
+    every session that target is the same as yesterday's. Only a *change* is
+    news, so the previous state has to be stored somewhere -- without it the
+    daily job either says nothing useful or notifies the user every day that
+    the rule still wants what it wanted yesterday.
+
+    Stores the target as a plain ticker->weight map rather than a rendered
+    sentence, so a change is detected by comparing what would be held, not by
+    diffing prose that might be reworded later.
+    """
+    __tablename__ = "strategy_signal_state"
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    strategy_id: Mapped[str] = mapped_column(String(64), index=True)
+    target: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    # The session the target is derived from -- so a stale price feed cannot be
+    # mistaken for a fresh signal.
+    as_of: Mapped[str] = mapped_column(String(10), default="")
+    # Set when the target changed, cleared once the user acts or dismisses. The
+    # card and the push both key off this rather than off the target itself.
+    flipped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    previous_target: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)

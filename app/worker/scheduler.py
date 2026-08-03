@@ -160,6 +160,19 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Backtest refresh job not scheduled.", exc_info=False)
 
+    # Evaluate the active rule-based strategy once a day, after the US close has
+    # settled into the daily feed. Hourly would not help: these rules read daily
+    # closes, so an intraday re-evaluation can only repeat itself or react to a
+    # bar that is not final yet.
+    try:
+        from app.services.strategy_signal_service import run_strategy_signals_blocking
+        _scheduler.add_job(_guarded("strategy_signals", run_strategy_signals_blocking),
+                           "cron", hour=6, minute=15, id="strategy_signals",
+                           misfire_grace_time=21600)
+        logger.info("Strategy signal evaluation scheduled (06:15 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Strategy signal job not scheduled.", exc_info=False)
+
     _scheduler.start()
     logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
 
