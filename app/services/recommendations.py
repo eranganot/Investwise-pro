@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,28 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
 
 def _is_actionable(rec: dict) -> bool:
     return ((rec.get("apply") or {}).get("kind") or "none") in _ACTIONABLE_KINDS
+
+
+class _Stopwatch:
+    """Per-agent timings for /recommendations.
+
+    The endpoint took 24.2s, then ~5s after the provider cache fix, and there
+    was no way to see WHICH of the ~10 agents was responsible -- so the next
+    step would have been another guess. Timings ship in the response so the cost
+    is attributable instead of inferred.
+    """
+
+    def __init__(self) -> None:
+        self.marks: dict[str, int] = {}
+        self._last = time.perf_counter()
+
+    def mark(self, name: str) -> None:
+        now = time.perf_counter()
+        self.marks[name] = int((now - self._last) * 1000)
+        self._last = now
+
+    def slowest(self, n: int = 3) -> list:
+        return sorted(self.marks.items(), key=lambda kv: kv[1], reverse=True)[:n]
 
 
 def _rid(*parts) -> str:
@@ -435,6 +458,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
 
 
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
+    _tm = _Stopwatch()
     rows = await list_positions(session, user)
     if not rows:
         return {"count": 0, "recommendations": [], "message": "Add holdings to get recommendations."}
@@ -652,30 +676,18 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     trimmed = {(r.get("apply") or {}).get("ticker") for r in recs
                if (r.get("apply") or {}).get("kind") == "trim"}
     recs += _holding_verdict_recs(rows, snap, cap, trimmed)
+    _tm.mark("holding_verdicts")
     recs += _hedge_recs(rows, snap)
+    _tm.mark("hedge")
     recs += _momentum_recs(rows, snap)
+    _tm.mark("momentum")
     recs += _income_cost_recs(pdicts, snap, objective)
+    _tm.mark("income_cost")
     # Surplus cash gets a sized, executable home. Emitted after the income agent
     # so _reconcile can drop the old advisory "Put idle cash to work" card when
     # this one fires -- two cards about the same shekels is what the reconcile
     # pass exists to prevent.
     _redeploy = _redeploy_cash_recs(rows, snap, plan, objective, cap, _cash_ils)
-    if _redeploy:
-        # Everything that spends the same idle cash must collapse into this one
-        # card. Live, Today showed "Redeploy ₪3,884", "Rebalance toward your
-        # target mix" AND "Add to SCHD — ₪7,899" simultaneously: three cards,
-        # one pot of money, two different sizes for the same SCHD buy.
-        _legs = {x["ticker"] for x in _redeploy[0]["apply"]["legs"]}
-        def _competes(r: dict) -> bool:
-            if r.get("id") == _rid("cashdrag"):
-                return True
-            _ap = r.get("apply") or {}
-            if _ap.get("kind") == "rebalance_to_objective":
-                return True
-            # A sized buy of a ticker this card already funds.
-            return _ap.get("kind") == "buy_funded" and _ap.get("ticker") in _legs
-        recs = [r for r in recs if not _competes(r)]
-        recs += _redeploy
     recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
     try:
         from app.services.performance_service import performance as _perf_fn
@@ -743,6 +755,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("war-room recommendations failed", exc_info=True)
         degraded.append("agent_signals")
+    _tm.mark("war_room")
 
     # Trading rules that have fired -> top-priority, user-defined actions.
     try:
@@ -751,6 +764,26 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("triggered trading-rule recommendations failed", exc_info=True)
         degraded.append("trading_rules")
+
+    # Cash reconciliation runs HERE, after every agent has contributed -- not at
+    # the point the redeploy card is built. Placing it earlier meant the filter
+    # ran before _war_room_recs existed, so production showed "Redeploy ₪3,884"
+    # (₪971 into SCHD) alongside "Add to SCHD — ₪7,899" and left the user to
+    # work out which one to follow. One pot of money, one card.
+    if _redeploy:
+        _legs = {x["ticker"] for x in _redeploy[0]["apply"]["legs"]}
+
+        def _competes(r: dict) -> bool:
+            if r.get("id") == _rid("cashdrag"):
+                return True
+            _ap = r.get("apply") or {}
+            if _ap.get("kind") == "rebalance_to_objective":
+                return True
+            # Any sized buy of a ticker the redeploy card already funds, whoever
+            # emitted it (war room, commodities, momentum...).
+            return _ap.get("kind") in ("buy_funded", "buy") and _ap.get("ticker") in _legs
+        recs = [r for r in recs if not _competes(r)]
+        recs += _redeploy
 
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
@@ -787,10 +820,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         done_count = _n - len(recs)
 
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
+    _tm.mark("reconcile_and_filter")
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
     bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
+    _tm.mark("backtest")
+    _ideas = _buy_ideas(snap)      # screener; timed separately, it hits providers
+    _tm.mark("buy_ideas")
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
             "market": market,
             # Honesty signals for the Today empty state: "nothing to do",
@@ -798,7 +835,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             "dismissed_count": suppressed,
             "completed_count": done_count,
             "degraded": degraded,
-            "buy_ideas": _buy_ideas(snap),
+            # Where the time actually went, per agent (ms). Cheap to compute and
+            # it turns "the endpoint is slow" into a specific culprit.
+            "timings_ms": {**_tm.marks, "slowest": _tm.slowest()},
+            "buy_ideas": _ideas,
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,
                                 "risk_implied_beta": bt.risk_implied_beta,
