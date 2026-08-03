@@ -136,7 +136,11 @@ def test_grounded_approved_signals_do_become_today_cards(monkeypatch):
     import app.main as m
     from app.api.routes import war_room as wr
 
-    async def fake_payload(session, user, positions=None):
+    # **_kw absorbs narrate= (and anything added later). The recommendations path
+    # passes narrate=False to skip the per-signal Gemini call that owned ~6.7s of
+    # the endpoint; a stub with a frozen signature would break on every such
+    # change without saying anything about the behaviour under test.
+    async def fake_payload(session, user, positions=None, **_kw):
         return {"grounded": True, "signal_basis": "stub", "sessions": [
             {"ticker": "MSFT", "outcome": "DISPLAYED", "outcome_label": "Growth",
              "action_type": "BUY", "title": "Buy MSFT (NASDAQ)",

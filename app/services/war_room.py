@@ -31,7 +31,19 @@ def _tax_say(opt) -> str:
     return "Net-after-tax computed" + (": " + ", ".join(bits) + "." if bits else ".")
 
 
-def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
+def build_war_room(observations, portfolio_tickers=None, settings=None, *,
+                   narrate: bool = True) -> dict:
+    """Run the agent pipeline over each observation.
+
+    ``narrate=False`` skips the optional Gemini prose. Measured on /recommendations:
+    the war room was 5.4s cold and 6.7s WARM while every other agent came in
+    under 50ms -- warm being slower is the tell, because the narrative is a live
+    LLM call per signal on the event loop, not cacheable provider data. It got
+    slower once Gemini billing was topped up, since the calls had previously
+    failed fast with 429. The Today cards never render this prose (they use
+    outcome_label, impact and confidence), so it is pure cost on that path. The
+    war-room view itself still asks for it.
+    """
     portfolio_tickers = portfolio_tickers or set()
     lag = LagEngine(settings)
     sm = StateMachine(risk=RiskEngine(settings, seed=7), tax=TaxEngine(settings),
@@ -120,7 +132,7 @@ def build_war_room(observations, portfolio_tickers=None, settings=None) -> dict:
         _nar = sm.adversary.narrate(
             [sm.adversary.examine_detected(det), sm.adversary.examine_vetted(vetted),
              sm.adversary.examine_optimized(optimized), sm.adversary.examine_ranked(ranked)],
-            context=display.title)
+            context=display.title) if narrate else None
         if _nar:
             t.append({"agent": "Adversary", "role": "Red-Team · AI narrative",
                       "says": _nar, "detail": {"source": "gemini"}})

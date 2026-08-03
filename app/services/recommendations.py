@@ -344,7 +344,12 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
     out: list[dict] = []
     try:
         from app.api.routes.war_room import _war_room_payload
-        payload = await _war_room_payload(session, user, rows)
+        # narrate=False: the Gemini prose is a war-room-view flourish and is
+        # never rendered on a Today card, but it cost 5.4-6.7s of the ~5s
+        # endpoint -- one live LLM call per signal, on the event loop, on a
+        # single-worker server. Measured: war_room 6726ms vs every other agent
+        # under 50ms.
+        payload = await _war_room_payload(session, user, rows, narrate=False)
     except Exception:  # noqa: BLE001
         logger.warning("war-room recommendations unavailable", exc_info=True)
         return out
@@ -1249,6 +1254,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
 
     total_gap = sum(g[1] for g in gaps)
     legs: list[dict] = []
+    unplaced: list[dict] = []
     remaining = spendable
     for cls, gap_ils, tw in gaps:
         if remaining < _fund.MIN_TRADE_ILS:
@@ -1281,6 +1287,31 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
                              "reason": f"you hold no {cls}; the plan targets {tw:.0%}",
                              "new_position": True})
                 remaining = round(remaining - amt, 2)
+            else:
+                # Nothing to buy for a class the plan wants but you don't hold
+                # and the screener can't fill. Record it -- the budget must not
+                # just evaporate into idle cash without explanation.
+                unplaced.append({"asset_class": cls, "amount_ils": round(min(budget, remaining), 2),
+                                 "reason": f"you hold no {cls} and no candidate was available"})
+
+    # Second pass: a leg that could not be placed left its share of the surplus
+    # unspent. Live, the Fixed Income leg was undeployable (plan targets 10%,
+    # nothing held, no screener pick), so ~1,940 stayed in cash while the card
+    # reported success -- 12% cash against a 3% floor. Push what is left into the
+    # classes that CAN absorb it, still respecting the single-name cap.
+    if remaining >= _fund.MIN_TRADE_ILS and legs:
+        topups = [x for x in legs if not x.get("new_position")]
+        for x in sorted(topups, key=lambda leg: weights.get(leg["ticker"], 0.0)):
+            if remaining < _fund.MIN_TRADE_ILS:
+                break
+            already = x["amount_ils"]
+            room = _fund.size_purchase(nav, weights.get(x["ticker"], 0.0), cap, cap) - already
+            extra = round(min(remaining, max(0.0, room)), 2)
+            if extra < _fund.MIN_TRADE_ILS:
+                continue
+            x["amount_ils"] = round(already + extra, 2)
+            x["reason"] += " (incl. budget reallocated from an unfillable class)"
+            remaining = round(remaining - extra, 2)
 
     if not legs:
         return []
@@ -1303,13 +1334,19 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
                    + (f" Adds {', '.join(new_names)} to fill a gap the plan needs."
                       if new_names else "")),
         "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
+                + [f"⚠ {_ils(u['amount_ils'])} could not be placed — {u['reason']}"
+                   for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]
                 + [f"Keep {_ils(kept)} in cash ({floor_pct:.0%} floor for {objective or 'Balanced'})",
                    "Accept executes every leg at live prices, funded entirely from cash",
                    "Tracked book only — no brokerage order is placed"]),
         "est_amount": deployed,
         "apply": {"kind": "redeploy_cash", "legs": legs},
         "meta": {"cash_before_ils": round(cash_ils, 2), "cash_after_ils": kept,
-                 "floor_pct": floor_pct},
+                 "floor_pct": floor_pct,
+                 # What the plan asked for but the book could not absorb. Silence
+                 # here is what let ~1,940 sit idle while the card read as a
+                 # complete answer.
+                 "unplaced": [u for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]},
     }]
 
 

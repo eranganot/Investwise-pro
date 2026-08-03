@@ -108,6 +108,35 @@ def test_cap_holds_even_when_the_snapshot_weights_are_missing():
     assert len(legs) < 2 or len(amounts) > 1 or "AMZN" not in [x["ticker"] for x in legs]
 
 
+def test_unfillable_class_budget_is_reallocated_not_left_idle():
+    """Live regression: ~1,940 stayed in cash while the card reported success.
+
+    A Grow plan targets 10% Fixed Income. Eran holds none and the screener had no
+    candidate, so that leg was dropped -- and its share of the surplus silently
+    evaporated, leaving 12% cash against a 3% floor.
+    """
+    out = _redeploy_cash_recs(_book(), _snap(NAV, WEIGHTS), None, "Grow", 0.40, 6473.0)
+    assert out, "expected a card"
+    card = out[0]
+    floor = fund.cash_floor_ils(NAV, "Grow", None)
+    leftover = float(card["meta"]["cash_after_ils"]) - floor
+    # Anything still parked above the floor must be under one trade's worth --
+    # otherwise the budget was dropped rather than reallocated.
+    assert leftover < fund.MIN_TRADE_ILS, (
+        f"{leftover:.0f} left idle above the floor - unfillable budget was not reallocated")
+
+
+def test_unplaceable_budget_is_reported_not_hidden():
+    """If the book genuinely cannot absorb it, say so on the card."""
+    out = _redeploy_cash_recs(_book(), _snap(NAV, WEIGHTS), None, "Grow", 0.40, 6473.0)
+    card = out[0]
+    assert "unplaced" in card["meta"]
+    for u in card["meta"]["unplaced"]:
+        assert u["asset_class"] and u["reason"]
+        assert any("could not be placed" in h for h in card["how"]), \
+            "an unplaceable amount must be visible in the card, not only in meta"
+
+
 def test_card_states_the_buffer_it_keeps():
     out = _redeploy_cash_recs(_book(), _snap(NAV, WEIGHTS), None, "Grow", 0.25, 6473.0)
     assert out, "expected a card for 30% cash against a 3% floor"

@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["war-room"])
 
 
-async def _war_room_payload(session: AsyncSession, user: User, positions=None) -> dict:
+async def _war_room_payload(session: AsyncSession, user: User, positions=None, *,
+                            narrate: bool = True) -> dict:
     """Run the agent pipeline over grounded signals and return the transcript.
 
     Signals come from real price history (spot vs. its own 50-day trend). The old
@@ -49,7 +50,8 @@ async def _war_room_payload(session: AsyncSession, user: User, positions=None) -
         observations, grounded = list(DEFAULT_OBSERVATIONS), False
 
     ps = plan_settings(await get_plan(session, user))
-    out = build_war_room(observations, portfolio_tickers=port_tickers, settings=ps)
+    out = build_war_room(observations, portfolio_tickers=port_tickers, settings=ps,
+                         narrate=narrate)
     out["grounded"] = grounded
     out["signal_basis"] = ("Live price history: each name's latest close against its own "
                            "50-day trend. Divergence is measured, not forecast."
