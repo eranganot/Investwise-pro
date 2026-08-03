@@ -147,6 +147,19 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Push notification jobs not scheduled.", exc_info=False)
 
+    # Strategy backtests: ten years of daily closes per ticker is far too much
+    # network to do inside a page load, so the numbers are precomputed and the
+    # route only ever reads stored rows. Nightly is ample -- one more session
+    # cannot move a ten-year CAGR, and a stale row renders as stale anyway.
+    try:
+        from app.services.backtest_service import run_backtest_refresh_blocking
+        _scheduler.add_job(_guarded("backtest_refresh", run_backtest_refresh_blocking),
+                           "cron", hour=3, minute=30, id="backtest_refresh",
+                           misfire_grace_time=21600)
+        logger.info("Strategy backtest refresh scheduled (03:30 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Backtest refresh job not scheduled.", exc_info=False)
+
     _scheduler.start()
     logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
 

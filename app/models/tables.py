@@ -380,3 +380,38 @@ class Contribution(Base, PKMixin, TimestampMixin):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True)
     note: Mapped[str] = mapped_column(String(200), default="")
+
+
+class StrategyBacktest(Base, PKMixin, TimestampMixin):
+    """One measured result per strategy, recomputed nightly and served from here.
+
+    Backtesting a strategy means pulling ten years of daily closes for every
+    ticker it references and simulating the rule over them. Doing that inside
+    the ``/strategies`` request would put a network fan-out on a page load and
+    make a strategy list depend on a price provider being up.
+
+    The row carries what produced it -- engine version, data source, the exact
+    date span and observation count -- so a figure on a card can always be
+    traced back to the run that produced it. ``computed_at`` is the freshness
+    check: a stale row renders as stale rather than passing itself off as a
+    current measurement, and a run that abstained stores its reason instead of
+    leaving the previous number in place to look like a fresh one.
+    """
+    __tablename__ = "strategy_backtests"
+    strategy_id: Mapped[str] = mapped_column(String(64), index=True, unique=True)
+    engine_version: Mapped[str] = mapped_column(String(16), default="")
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Populated when ok is False -- INSUFFICIENT_HISTORY, MISSING_TICKER, ...
+    reason: Mapped[str] = mapped_column(String(32), default="")
+    detail: Mapped[str] = mapped_column(String(255), default="")
+    # The whole measured payload (cagr, drawdown, per-trade stats, exposure).
+    metrics: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    # Parameter sensitivity + the fit/test split, so fragility travels with the
+    # headline number instead of being computed once and forgotten.
+    robustness: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    data_source: Mapped[str] = mapped_column(String(32), default="")
+    period_start: Mapped[str] = mapped_column(String(10), default="")
+    period_end: Mapped[str] = mapped_column(String(10), default="")
+    observations: Mapped[int] = mapped_column(Integer, default=0)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True)

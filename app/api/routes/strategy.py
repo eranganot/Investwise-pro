@@ -7,7 +7,9 @@ from app.api.deps import acting_user
 from app.core.auth import Role, require_role
 from app.core.database import get_session
 from app.models.tables import User
+from app.services import backtest_service
 from app.services import strategies as cat
+from app.services import strategy_catalog
 from app.services import strategy_profile as prof
 from app.services.allocation_mix import current_mix
 from app.services.intake_service import list_positions
@@ -18,11 +20,59 @@ router = APIRouter(prefix="/api/v1", tags=["strategy"])
 
 
 @router.get("/strategies")
-async def strategies() -> dict:
-    # Each strategy carries a computed profile (expected return, vol, drawdown,
-    # concentration) so the differences between look-alike baskets are visible.
+async def strategies(session: AsyncSession = Depends(get_session)) -> dict:
+    # Static baskets carry a computed profile (expected return, vol, drawdown,
+    # concentration) derived from a lookup table, so look-alike baskets are
+    # visibly different. Rule-based strategies cannot be described that way --
+    # theirs are *measured* by the nightly backtest and read from storage here.
+    # This route never computes: a page load must not depend on a price provider.
     by_goal = {g: prof.with_profiles(v) for g, v in cat.by_goal().items()}
-    return {"goals": cat.GOAL_ORDER, "by_goal": by_goal}
+    # The "Beat the Market" family is deliberately NOT merged in here yet. The
+    # Plan renderer reads `s.basket` as [ticker, weight] pairs, `s.risk_tolerance`
+    # and `s.profile`, and its buttons resolve ids against `services.strategies`
+    # -- so surfacing rule-based strategies through this route before the UI
+    # understands them would draw a tab of malformed cards with dead buttons.
+    # They are served from /strategies/backtests until the Plan UI can render a
+    # measured strategy properly.
+    return {"goals": cat.GOAL_ORDER, "by_goal": by_goal,
+            "backtest_engine_version": backtest_service.ENGINE_VERSION}
+
+
+@router.get("/strategies/backtests")
+async def backtests(session: AsyncSession = Depends(get_session)) -> dict:
+    """The Beat the Market family with its measured results. Never computes.
+
+    Baskets are emitted as [ticker, weight] pairs to match the shape the Plan
+    renderer already expects, so wiring the tab up is a UI change rather than a
+    contract change.
+    """
+    rows = await backtest_service.get_many(session, strategy_catalog.ids())
+    out = []
+    for entry in strategy_catalog.CATALOG:
+        out.append({**{k: v for k, v in entry.items()
+                       if k not in ("weights", "base", "risk_off", "overlay")},
+                    "goal": strategy_catalog.GOAL,
+                    "basket": sorted((tk, w) for tk, w in entry.get("weights", {}).items()),
+                    "base_when_flat": sorted(entry.get("base") or {}) or None,
+                    "backtest": rows.get(entry["id"])})
+    return {"goal": strategy_catalog.GOAL,
+            "engine_version": backtest_service.ENGINE_VERSION,
+            "strategies": out,
+            "never_computed": [i for i in strategy_catalog.ids() if i not in rows],
+            "stale": [k for k, v in rows.items() if v.get("stale")]}
+
+
+@router.post("/strategies/backtests/refresh",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def refresh_backtests(only: str | None = None,
+                            session: AsyncSession = Depends(get_session)) -> dict:
+    """Force a recompute (the nightly job does this at 03:30).
+
+    Synchronous and slow -- it fetches ten years of daily closes per ticker.
+    Exposed so a deploy does not have to wait until 03:30 for the first numbers.
+    """
+    ids = [s.strip() for s in only.split(",")] if only else None
+    return await backtest_service.refresh_all(session, only=ids)
 
 
 @router.get("/strategies/{strategy_id}/preview")
