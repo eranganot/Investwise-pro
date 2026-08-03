@@ -61,7 +61,17 @@ class YahooMarketDataProvider(MarketDataProvider):
 
     def get_history(self, ticker: str, days: int = 252) -> list[float]:
         sym = self.to_symbol(ticker)
-        rng = "1y" if days <= 260 else ("2y" if days <= 520 else "5y")
+        # The ladder used to stop at "5y", so any caller asking for a decade got
+        # five years and no warning -- fine for a 200-day trend, useless for
+        # backtesting a strategy across more than one market regime.
+        #
+        # Deliberately capped at "10y": with interval=1d, range=max silently
+        # returns MONTHLY bars (QQQ: 329 rows for 1999-2026 vs 2513 for 10y),
+        # which a caller counting "days" would happily mistake for 27 years of
+        # daily data and backtest against. 10y is the longest range Yahoo serves
+        # at true daily granularity.
+        rng = ("1y" if days <= 260 else "2y" if days <= 520 else "5y" if days <= 1300
+               else "10y")
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                f"?interval=1d&range={rng}")
         data = json.loads(_http_text(url))

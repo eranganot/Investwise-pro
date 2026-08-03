@@ -21,6 +21,7 @@ from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
     delete_position,
     get_cash, set_cash,
+    list_contributions, record_contribution, set_contributed, total_contributed,
     update_position,
     ensure_account, ensure_entity, list_positions, upsert_positions,
 )
@@ -137,6 +138,18 @@ async def get_portfolio(entity: str | None = None,
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
             "asset_class": (p.meta or {}).get("asset_class"),
         })
+    # "What you put in" is external money, not the book's current cost basis.
+    # The basis sum drifts for three reasons that are not deposits: it is
+    # FX-converted at TODAY's rate, a sale replaces the original basis with
+    # net-of-CGT proceeds (so taking a profit raised the figure), and fee swaps
+    # re-stamp basis at the live price. Reported live: ₪20,000 in, ₪20,790 shown.
+    # The contributions ledger is the only writer of this number now; the old
+    # estimate survives solely for users who have never recorded a deposit, so
+    # nobody is shown a confident "₪0 put in".
+    contributed = await total_contributed(session, user)
+    invested_source = "contributions" if contributed is not None else "cost_basis_estimate"
+    if contributed is not None:
+        invested_ils = contributed
     gain_ils = nav_ils - invested_ils
     return {
         "count": len(positions),
@@ -144,6 +157,7 @@ async def get_portfolio(entity: str | None = None,
         "nav_ils": round(nav_ils, 2),
         "nav_native": round(nav_native, 2),
         "invested_ils": round(invested_ils, 2),
+        "invested_source": invested_source,
         "gain_ils": round(gain_ils, 2),
         "gain_pct": (round(gain_ils / invested_ils * 100, 2) if invested_ils else None),
         "cash_ils": round(sum(o["value_ils"] for o in out
@@ -319,3 +333,36 @@ async def edit_position(position_id: str, body: EditPositionRequest,
             "quantity": float(row.quantity), "cost_basis": float(row.cost_basis),
             "current_price": float(row.current_price) if row.current_price is not None else None,
             "asset_class": (row.meta or {}).get("asset_class")}
+
+
+class ContributionRequest(BaseModel):
+    """Either an absolute total (``set``) or a signed movement (``adjust``)."""
+    amount_ils: float
+    mode: str = "adjust"          # adjust | set
+    note: str = ""
+
+
+@router.get("/portfolio/contributions")
+async def read_contributions(session: AsyncSession = Depends(get_session),
+                             user: User = Depends(acting_user)) -> dict:
+    total = await total_contributed(session, user)
+    return {"total_ils": total, "tracked": total is not None,
+            "entries": await list_contributions(session, user)}
+
+
+@router.post("/portfolio/contributions",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def write_contribution(body: ContributionRequest,
+                             session: AsyncSession = Depends(get_session),
+                             user: User = Depends(acting_user)) -> dict:
+    """Record money moving in or out of the account from outside.
+
+    Nothing in the trading path may call this: selling, trimming and swapping
+    rearrange money already inside the account and must leave "what you put in"
+    untouched. That conflation is what made a ₪20,000 deposit read as ₪20,790.
+    """
+    if body.mode == "set":
+        total = await set_contributed(session, user, body.amount_ils)
+    else:
+        total = await record_contribution(session, user, body.amount_ils, note=body.note)
+    return {"ok": True, "total_ils": total, "mode": body.mode}

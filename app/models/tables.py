@@ -350,3 +350,33 @@ class RuleEvent(Base, PKMixin, TimestampMixin):
     # until the user executes, so "nothing was done" stays legible as nothing.
     action: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Contribution(Base, PKMixin, TimestampMixin):
+    """External money in and out -- the only thing that changes "what you put in".
+
+    ``invested_ils`` used to be derived from the current book: the sum of every
+    position's ``cost_basis``, FX-converted at today's rate. That number moves
+    for reasons that are not deposits -- the shekel moves, a sale replaces an
+    original basis with net-of-CGT proceeds (so taking a profit *raises* "you
+    put in"), a fee swap re-stamps basis at the live price. Reported live:
+    ₪20,000 deposited, ₪20,790 displayed.
+
+    Trading rearranges money you already have; only a deposit or a withdrawal
+    changes how much of your own money is in the account. This ledger records
+    exactly those events and nothing else, so gain, gain % and the goal-gap
+    projection all rest on a figure that only you can change.
+
+    Deliberately user-scoped by email rather than hung off a position: a sale
+    deletes its position and cascades away its ``Transaction`` rows, which is
+    precisely how the old history got lost.
+    """
+    __tablename__ = "contributions"
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    # Signed, base-currency (ILS). Withdrawals are stored negative so the ledger
+    # sums directly and a withdrawal can never be double-counted as a deposit.
+    amount_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    kind: Mapped[str] = mapped_column(String(16), default="deposit")  # deposit|withdrawal
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True)
+    note: Mapped[str] = mapped_column(String(200), default="")

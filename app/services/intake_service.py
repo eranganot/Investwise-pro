@@ -13,7 +13,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.tables import Account, Entity, Position, User
+from app.models.tables import Account, Contribution, Entity, Position, User
 from app.schemas.intake import IntakePosition
 from app.schemas.lag import LagObservation
 
@@ -281,3 +281,62 @@ def position_to_observation(p: Position) -> LagObservation | None:
         expected_return_pct=m.get("expected_return_pct"),
         volatility_pct=m.get("volatility_pct"),
     )
+
+
+# --- Contributions: the only thing that changes "what you put in" -----------
+
+async def record_contribution(session: AsyncSession, user: User, amount_ils: float,
+                              *, note: str = "") -> float:
+    """Log external money in (positive) or out (negative). Returns the new total.
+
+    Trading only rearranges money that is already inside the account, so nothing
+    in the sell/trim/swap path may call this.
+    """
+    amount_ils = round(float(amount_ils or 0.0), 2)
+    if amount_ils == 0:
+        return await total_contributed(session, user)
+    session.add(Contribution(
+        subject=user.email, amount_ils=Decimal(str(amount_ils)),
+        kind="deposit" if amount_ils > 0 else "withdrawal", note=(note or "")[:200]))
+    await session.commit()
+    return await total_contributed(session, user)
+
+
+async def total_contributed(session: AsyncSession, user: User) -> float | None:
+    """Net external money contributed, or None when the user has never logged any.
+
+    None is not zero: a user who has never recorded a deposit should keep seeing
+    the legacy cost-basis estimate rather than a confident, wrong "₪0 put in".
+    """
+    res = await session.execute(
+        select(func.count(Contribution.id), func.sum(Contribution.amount_ils))
+        .where(Contribution.subject == user.email))
+    count, total = res.one()
+    return None if not count else round(float(total or 0.0), 2)
+
+
+async def list_contributions(session: AsyncSession, user: User) -> list[dict]:
+    res = await session.execute(
+        select(Contribution).where(Contribution.subject == user.email)
+        .order_by(Contribution.occurred_at.desc()))
+    return [{"id": str(c.id), "amount_ils": float(c.amount_ils), "kind": c.kind,
+             "occurred_at": c.occurred_at.isoformat() if c.occurred_at else None,
+             "note": c.note} for c in res.scalars().all()]
+
+
+async def set_contributed(session: AsyncSession, user: User, amount_ils: float) -> float:
+    """Replace the ledger with a single opening balance.
+
+    For the common case: you know you have put in ₪20,000 in total and do not
+    want to reconstruct every historical transfer.
+    """
+    amount_ils = round(float(amount_ils or 0.0), 2)
+    existing = await session.execute(
+        select(Contribution).where(Contribution.subject == user.email))
+    for row in existing.scalars().all():
+        await session.delete(row)
+    session.add(Contribution(
+        subject=user.email, amount_ils=Decimal(str(amount_ils)),
+        kind="deposit" if amount_ils >= 0 else "withdrawal", note="opening balance"))
+    await session.commit()
+    return amount_ils
