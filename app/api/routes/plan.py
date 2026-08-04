@@ -97,6 +97,12 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
                 "target_roi_pct": None, "target_roi_period": "yearly",
                 "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
+                # Which strategy is applied. The column has existed since
+                # 0007_plan_strategy and apply_strategy writes it, but this
+                # serializer never returned it -- so nothing outside
+                # /strategies/{id}/preview could tell which one was active, and
+                # applying one looked like a no-op from every other caller.
+                "strategy": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = _auto_target(nav, plan)
@@ -106,6 +112,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_roi_pct": plan.target_roi_pct, "target_roi_period": plan.target_roi_period or "yearly",
                 "target_yield_pct": plan.target_yield_pct, "target_yield_period": plan.target_yield_period or "yearly",
                 "preferred_depth": plan.preferred_depth,
+                "strategy": plan.strategy,
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]

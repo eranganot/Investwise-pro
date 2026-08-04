@@ -353,3 +353,30 @@ async def test_a_rule_triggered_with_no_card_is_healed_not_left_counting():
             assert rule.triggered is False, "an orphaned trigger must not keep counting"
     finally:
         await eng.dispose()
+
+
+def test_the_plan_endpoint_reports_which_strategy_is_applied():
+    """Applying a strategy looked like a no-op from everywhere except
+    /strategies/{id}/preview: the plans.strategy column has existed since
+    migration 0007 and apply_strategy writes it, but the /plan serializer never
+    returned it. A live smoke read `applied 'btm_trend_tqqq'` and then `no
+    strategy applied` one call later."""
+    import os
+    os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    from fastapi.testclient import TestClient
+    import app.main as m
+
+    with TestClient(m.app) as c:
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "V", "market": "NASDAQ", "asset_class": "Equities", "depth": 3,
+             "spot_price": 365, "listing_price": 365, "quantity": 10, "cost_basis": 300,
+             "expected_return_pct": 8, "volatility_pct": 20}]})
+        assert "strategy" in c.get("/api/v1/plan").json(), "the field must always be present"
+
+        r = c.post("/api/v1/strategies/btm_trend_tqqq/apply")
+        assert r.status_code == 200 and r.json().get("ok") is not False
+        assert c.get("/api/v1/plan").json()["strategy"] == "btm_trend_tqqq"
+
+        # A static basket resolves through the same path.
+        c.post("/api/v1/strategies/grow_quality/apply")
+        assert c.get("/api/v1/plan").json()["strategy"] == "grow_quality"
