@@ -13,6 +13,11 @@
 param(
     [int]$Lines = 500,
     [switch]$Trigger,
+    # Which call to provoke before reading the log. Defaults to the endpoint
+    # that was failing when this script was written; override to chase a
+    # different 500, e.g. -TriggerPath '/api/v1/strategies/backtests/refresh'
+    [string]$TriggerPath = "/api/v1/recommendations",
+    [ValidateSet('GET', 'POST')][string]$TriggerMethod = "GET",
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app"
 )
 
@@ -29,8 +34,8 @@ if (-not (Get-Command railway -ErrorAction SilentlyContinue)) {
 if ($Trigger) {
     # Provoke the 500 immediately before reading, so the entry is at the tail.
     $h = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
-    Write-Host "Triggering GET /api/v1/recommendations ..." -ForegroundColor Cyan
-    try { Invoke-RestMethod -Uri "$BaseUrl/api/v1/recommendations" -Headers $h -TimeoutSec 90 | Out-Null }
+    Write-Host "Triggering $TriggerMethod $TriggerPath ..." -ForegroundColor Cyan
+    try { Invoke-RestMethod -Method $TriggerMethod -Uri "$BaseUrl$TriggerPath" -Headers $h -TimeoutSec 900 | Out-Null }
     catch { Write-Host "  (it failed, as expected: $($_.Exception.Message))" -ForegroundColor DarkGray }
     Start-Sleep -Seconds 4
 }

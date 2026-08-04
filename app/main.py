@@ -54,6 +54,21 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS strategy VARCHAR(40)",
+                    # create_all builds missing TABLES but never adds a column
+                    # to one that already exists, so a model that gains a field
+                    # leaves production reading a schema it does not have.
+                    # strategy_backtests gained these in migration 0011 and the
+                    # deploy went out before the migration ran: every SELECT
+                    # raised UndefinedColumnError, which took out /strategies,
+                    # /strategies/backtests and the backtest refresh. Running
+                    # alembic by hand is the documented answer and it failed
+                    # twice -- once against the local sqlite URL in .env, once
+                    # on DNS, because Railway's DATABASE_URL names a private
+                    # host that does not resolve outside their network.
+                    "ALTER TABLE strategy_backtests ADD COLUMN IF NOT EXISTS "
+                    "last_error VARCHAR(255) DEFAULT ''",
+                    "ALTER TABLE strategy_backtests ADD COLUMN IF NOT EXISTS "
+                    "last_error_at TIMESTAMPTZ",
                 ):
                     try:
                         await conn.execute(text(ddl))

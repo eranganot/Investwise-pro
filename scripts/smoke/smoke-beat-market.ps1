@@ -148,9 +148,34 @@ else {
 
 if ($Refresh) {
     Sec "   forcing a recompute (slow - ~10y of daily closes per ticker)"
-    $r = try { Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/strategies/backtests/refresh" `
-            -Headers $ApiHeaders -TimeoutSec 600 } catch { $null }
-    if ($null -eq $r) { Bad "refresh failed" }
+    # Report WHY. "refresh failed" with the reason swallowed is what sent us
+    # chasing the wrong thing: a provider outage, an auth failure and a gateway
+    # timeout are three different problems that look identical from here.
+    $r = $null; $refreshErr = $null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $r = Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/strategies/backtests/refresh" `
+                -Headers $ApiHeaders -TimeoutSec 900
+    } catch {
+        $code = $null
+        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+        $body = ''
+        try {
+            $rs = $_.Exception.Response.GetResponseStream()
+            if ($rs) { $body = (New-Object IO.StreamReader($rs)).ReadToEnd() }
+        } catch {}
+        if ($body.Length -gt 300) { $body = $body.Substring(0, 300) }
+        $refreshErr = "HTTP $code after $([math]::Round($sw.Elapsed.TotalSeconds,1))s :: $($_.Exception.Message) :: $body"
+    }
+    $sw.Stop()
+    if ($null -eq $r) {
+        Bad "refresh failed - $refreshErr"
+        if ($sw.Elapsed.TotalSeconds -gt 100) {
+            Write-Host "        it ran $([math]::Round($sw.Elapsed.TotalSeconds))s before dying. This endpoint is synchronous and" -ForegroundColor Yellow
+            Write-Host "        fetches ~10y of daily closes for every ticker, so a gateway timeout is the likely" -ForegroundColor Yellow
+            Write-Host "        cause - the 03:30 job does the same work with no HTTP request waiting on it." -ForegroundColor Yellow
+        }
+    }
     elseif ($r.provider_outage) {
         Bad "every strategy failed to fetch prices - $($r.note)"
         Write-Host "        the circuit breaker opens for the whole history tier at once; wait and re-run" -ForegroundColor Yellow
