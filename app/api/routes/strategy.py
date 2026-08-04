@@ -36,7 +36,10 @@ async def strategies(session: AsyncSession = Depends(get_session)) -> dict:
     measured = await backtest_service.get_many(session, strategy_catalog.ids())
     by_goal[strategy_catalog.GOAL] = strategy_catalog.as_plan_cards(measured)
     return {"goals": [*cat.GOAL_ORDER, strategy_catalog.GOAL], "by_goal": by_goal,
-            "backtest_engine_version": backtest_service.ENGINE_VERSION}
+            "backtest_engine_version": backtest_service.ENGINE_VERSION,
+            # Not None means the measurements could not be read at all, which is
+            # a different thing from "nothing has been computed yet".
+            "backtest_store_error": backtest_service.store_unavailable}
 
 
 @router.get("/strategies/backtests")
@@ -58,6 +61,7 @@ async def backtests(session: AsyncSession = Depends(get_session)) -> dict:
                     "backtest": rows.get(entry["id"])})
     return {"goal": strategy_catalog.GOAL,
             "engine_version": backtest_service.ENGINE_VERSION,
+            "store_error": backtest_service.store_unavailable,
             "strategies": out,
             "never_computed": [i for i in strategy_catalog.ids() if i not in rows],
             "stale": [k for k, v in rows.items() if v.get("stale")]}

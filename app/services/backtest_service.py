@@ -183,14 +183,44 @@ def _payload(row: StrategyBacktest) -> dict:
     }
 
 
+# Set when the last read of the store failed, so a caller can tell "no backtests
+# have been computed yet" from "the store could not be read at all".
+store_unavailable: str | None = None
+
+
 async def get_many(session: AsyncSession, strategy_ids: list[str]) -> dict[str, dict]:
-    """Stored results keyed by strategy id. Never computes -- the route must not block."""
+    """Stored results keyed by strategy id. Never computes -- the route must not block.
+
+    Returns {} rather than raising when the table cannot be read. A strategy
+    LIST should not die because a nightly job's storage is behind: the four
+    original families need no backtest at all, and the measured ones can say
+    "not measured yet" perfectly well.
+
+    Observed in production: migration 0011 added last_error / last_error_at, the
+    deploy shipped before `alembic upgrade head` ran, and every SELECT here hit
+    an undefined column -- which took out GET /strategies and
+    /strategies/backtests entirely, and degraded the recommendations pipeline
+    through discipline_recs. A missing column in an optional side table should
+    never be able to do that.
+
+    The read runs in a SAVEPOINT so that on Postgres a failure here does not
+    abort the caller's transaction and take down everything after it.
+    """
+    global store_unavailable
     if not strategy_ids:
         return {}
-    rows = (await session.execute(
-        select(StrategyBacktest).where(StrategyBacktest.strategy_id.in_(strategy_ids))
-    )).scalars().all()
-    return {r.strategy_id: _payload(r) for r in rows}
+    try:
+        async with session.begin_nested():
+            rows = (await session.execute(
+                select(StrategyBacktest).where(StrategyBacktest.strategy_id.in_(strategy_ids))
+            )).scalars().all()
+        store_unavailable = None
+        return {r.strategy_id: _payload(r) for r in rows}
+    except Exception as e:  # noqa: BLE001
+        store_unavailable = f"{type(e).__name__}: {str(e)[:180]}"
+        logger.warning("backtest store unreadable; serving strategies without measurements: %s",
+                       store_unavailable, exc_info=False)
+        return {}
 
 
 async def refresh_all(session: AsyncSession, *, only: list[str] | None = None) -> dict:
