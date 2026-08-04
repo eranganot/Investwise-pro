@@ -81,12 +81,13 @@ async def refresh_backtests(only: str | None = None,
 
 
 @router.get("/strategies/{strategy_id}/preview")
-async def preview(strategy_id: str, session: AsyncSession = Depends(get_session),
+async def preview(strategy_id: str, sleeve_pct: float | None = None,
+                  session: AsyncSession = Depends(get_session),
                   user: User = Depends(acting_user)) -> dict:
     """What changes if you apply this: objective, risk, target mix, plus trades."""
     # Rule-based strategies live in their own catalog; resolve either, so the
     # card's buttons work regardless of which family it came from.
-    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
     plan = await get_plan(session, user)
@@ -112,13 +113,23 @@ async def apply_strategy_preview(session, user, s, plan, mix, nav) -> dict:
 
 
 @router.post("/strategies/{strategy_id}/apply", dependencies=[Depends(require_role(Role.ANALYST))])
-async def apply(strategy_id: str, session: AsyncSession = Depends(get_session),
+async def apply(strategy_id: str, sleeve_pct: float | None = None,
+                session: AsyncSession = Depends(get_session),
                 user: User = Depends(acting_user)) -> dict:
-    return await apply_strategy(session, user, strategy_id)
+    """Apply a strategy. ``sleeve_pct`` is how much of the book it governs.
+
+    Omitted, a rule-based strategy falls back to its catalog-suggested sleeve
+    rather than to 100%: putting an entire portfolio into a 3x fund because the
+    model basket says so in isolation is not a default anyone wants.
+    """
+    return await apply_strategy(session, user, strategy_id, sleeve_pct)
 
 
 class LoadBasketRequest(BaseModel):
     total: float | None = None
+    # None means "use the sleeve already applied, else the catalog default" --
+    # never 100%, which would quietly put the whole book in the aggressive leg.
+    sleeve_pct: float | None = None
 
 
 @router.post("/strategies/{strategy_id}/load-basket", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -126,7 +137,8 @@ async def load(strategy_id: str, req: LoadBasketRequest | None = None,
                session: AsyncSession = Depends(get_session),
                user: User = Depends(acting_user)) -> dict:
     req = req or LoadBasketRequest()
-    return await load_basket(session, user, strategy_id, total=req.total)
+    return await load_basket(session, user, strategy_id, total=req.total,
+                             sleeve_pct=req.sleeve_pct)
 
 
 @router.get("/strategies/signal")

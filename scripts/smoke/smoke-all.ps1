@@ -151,11 +151,55 @@ if ($null -eq $rules) { Skip "rules unreachable (NOT a pass)" } else {
 
 # ---------- PHASE 6 + 8: banner matches reality ----------
 Sec "6. Banner matches the cards (phases 6 + 8)"
-if ($null -eq $rules -or $null -eq $recs) { Skip "need both rules and recommendations (NOT a pass)" } else {
+# Re-read recommendations HERE, not the copy from section 1.
+#
+# Section 5 POSTs /rules/evaluate, which is what fires a rule ("newly triggered:
+# 1"). Comparing the section-1 snapshot against rules read after that evaluate
+# compared two different moments with a deliberate state change between them, so
+# a rule triggered by THIS SCRIPT read as a banner/card mismatch. It reported a
+# deadlock that did not exist, survived four attempted fixes to the app, and was
+# never reproducible by hand -- because reading both endpoints together, with no
+# evaluate in between, always agreed.
+# ORDER MATTERS, and both must be re-read here.
+#
+# /recommendations does not merely observe: when a rule's card is suppressed
+# (dismissed or already done), it RESOLVES that rule inside the same request, so
+# `triggered` flips to false during the call. Reading /rules first and
+# /recommendations second therefore compares a pre-heal rule list against a
+# post-heal card list -- which is what "banner 1 vs 0 cards" was, twice over.
+# First the section-1 snapshot was stale; then the rules list was.
+#
+# Read recommendations, let it settle whatever it is going to settle, and only
+# then ask what is still triggered.
+$recsNow = Api GET '/api/v1/recommendations' 90
+$rulesNow = (Api GET '/api/v1/rules').rules
+if ($null -eq $rulesNow -or $null -eq $recsNow) { Skip "need both rules and recommendations (NOT a pass)" } else {
+  $recs = $recsNow
+  $rules = $rulesNow
   $trig = @($rules | Where-Object { $_.triggered -and $_.active })
   $ruleCards = @($recs.recommendations | Where-Object { $_.dimension -eq 'rule' })
   Write-Host "   triggered: $(if ($trig.Count) { ($trig | ForEach-Object { $_.ticker }) -join ', ' } else { 'none' })" -ForegroundColor DarkGray
-  if ($trig.Count -eq $ruleCards.Count) { Ok "banner ($($trig.Count)) matches rule cards ($($ruleCards.Count)) - no deadlock" } else { Bad "banner $($trig.Count) vs $($ruleCards.Count) cards" } }
+  if ($trig.Count -eq $ruleCards.Count) { Ok "banner ($($trig.Count)) matches rule cards ($($ruleCards.Count)) - no deadlock" }
+  else {
+    Bad "banner $($trig.Count) vs $($ruleCards.Count) cards"
+    # Capture the paired state NOW. Every manual attempt to catch this landed on
+    # the wrong side of the 30-minute re-evaluation cycle, so the mismatch was
+    # never observed and the cause never established.
+    $rb = $recs.rule_banner
+    Write-Host "   --- diagnostic ---" -ForegroundColor Yellow
+    Write-Host "   rule_banner : $(if ($rb) { ($rb | ConvertTo-Json -Compress) } else { 'absent (old build)' })" -ForegroundColor Yellow
+    Write-Host "   degraded    : $(if ($recs.degraded) { $recs.degraded -join ',' } else { 'none' })" -ForegroundColor Yellow
+    Write-Host "   rule cards  : $(if ($ruleCards.Count) { ($ruleCards | ForEach-Object { $_.id }) -join ',' } else { 'none' })" -ForegroundColor Yellow
+    foreach ($t in $trig) {
+      $short = $t.id.Substring(0,8)
+      $inBanner = if ($rb -and $rb.triggered -contains $short) { 'yes' } else { 'no' }
+      $healed   = if ($rb -and $rb.healed -contains $short) { 'YES' } else { 'no' }
+      Write-Host "   $($t.ticker) $($t.rule_type) id=$short  seen-by-server=$inBanner  healed=$healed  suppressed?=$(if ($recs.dismissed_count) { $recs.dismissed_count } else { 0 }) dismissed / $(if ($recs.completed_count) { $recs.completed_count } else { 0 }) done" -ForegroundColor Yellow
+    }
+    Write-Host "   healed=YES means the server cleared it this call - it will re-fire" -ForegroundColor DarkGray
+    Write-Host "   within 30 min because the breach is still true. That is a standing-" -ForegroundColor DarkGray
+    Write-Host "   condition design question, not a stuck flag." -ForegroundColor DarkGray
+  } }
 
 # ---------- PHASE 2 + 5: audit trail ----------
 Sec "7. Rule audit trail (phases 2 + 5)"
@@ -173,8 +217,28 @@ if ($null -eq $recs -or $null -eq $port) { Skip "need recommendations + portfoli
   $w = @{}; foreach ($p in $port.positions) { $w[$p.ticker] = [double]$p.value_ils / [double]$port.nav_ils }
   $over = @($w.Keys | Where-Object { $w[$_] -ge $cap -and $_ -ne 'CASH' -and $cap -gt 0 })
   Write-Host "   at/over your $([math]::Round($cap*100,1))% cap: $(if ($over) { ($over | ForEach-Object { "$_ $([math]::Round($w[$_]*100,1))%" }) -join ', ' } else { 'none' })" -ForegroundColor DarkGray
+  # Work out whether a card SHOULD exist rather than guessing. "cash may be at
+  # the floor" was a hypothesis written into the script, and it was wrong: the
+  # book was at 12.3% cash against a 3% floor, so the absence of a card was a
+  # real finding being reported as an unrunnable check.
+  $floorPct = switch ($plan.objective) {
+    'Preserve' { 0.10 } 'Income' { 0.07 } 'Grow' { 0.03 } default { 0.05 }
+  }
+  $cashPct = if ($port.nav_ils) { [double]$port.cash_ils / [double]$port.nav_ils } else { 0 }
+  $spendable = [double]$port.cash_ils - ([double]$port.nav_ils * $floorPct)
+  Write-Host ("   cash {0:N2} = {1:P1} of NAV | {2} floor {3:P0} | spendable {4:N2}" -f `
+      $port.cash_ils, $cashPct, $plan.objective, $floorPct, $spendable) -ForegroundColor DarkGray
+
   $card = @($recs.recommendations | Where-Object { $_.apply.kind -eq 'redeploy_cash' })[0]
-  if ($null -eq $card) { Skip "no redeploy card (cash may be at the floor)" } else {
+  if ($null -eq $card) {
+    if ($spendable -lt 250) {
+      Ok "no redeploy card, and none is due (spendable $([math]::Round($spendable)) is under the 250 minimum)"
+    } else {
+      Bad "no redeploy card despite $([math]::Round($spendable)) spendable above the floor"
+      Write-Host "        Either the card was dismissed/done ($($recs.dismissed_count) / $($recs.completed_count))," -ForegroundColor Yellow
+      Write-Host "        or _reconcile dropped it because a rebalance already redeploys the same cash." -ForegroundColor Yellow
+    }
+  } else {
     Ok "card: $($card.title)"
     $legs = $card.apply.legs
     $legs | Format-Table ticker, amount_ils, reason -AutoSize | Out-String | Write-Host

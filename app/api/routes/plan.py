@@ -102,7 +102,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 # serializer never returned it -- so nothing outside
                 # /strategies/{id}/preview could tell which one was active, and
                 # applying one looked like a no-op from every other caller.
-                "strategy": None,
+                "strategy": None, "strategy_sleeve_pct": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = _auto_target(nav, plan)
@@ -113,6 +113,11 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_yield_pct": plan.target_yield_pct, "target_yield_period": plan.target_yield_period or "yearly",
                 "preferred_depth": plan.preferred_depth,
                 "strategy": plan.strategy,
+                # How much of the book that strategy governs. Serialising the id
+                # without the size repeats the bug that hid `strategy` itself:
+                # a field the app stores, writes and acts on, that no caller
+                # could read back.
+                "strategy_sleeve_pct": plan.strategy_sleeve_pct,
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]

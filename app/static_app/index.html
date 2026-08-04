@@ -1168,10 +1168,12 @@ async function loadStrategies(){
   const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${g}</button>`).join("");
   const list=(STRAT.by_goal[STGOAL]||[]).map(s=>`
     <div class="stcard">
-      <div style="display:flex;justify-content:space-between"><span class="nm">${s.name}</span><span class="rk">${s.risk_tolerance} risk</span></div>
+      <div style="display:flex;justify-content:space-between"><span class="nm">${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
-      ${stratProfile(s.profile)}
-      <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}</div>
+      ${s.measured?measuredProfile(s):stratProfile(s.profile)}
+      ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
+      ${s.measured?sleeveControl(s):""}
+      <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
         <button onclick="applyStrat('${s.id}')">Apply strategy</button>
@@ -1185,6 +1187,50 @@ async function loadStrategies(){
 // The four Grow strategies are all 100% equities by asset class, so the numbers
 // that actually separate them -- expected return, volatility, drawdown,
 // concentration -- are shown up front instead of a bare risk chip.
+// A rule-based strategy has no DERIVED profile -- its numbers are measured by
+// backtesting the rule over ten years of real closes. Same chip vocabulary as
+// the static cards so the two read alike, but every label says measured rather
+// than estimated, because they are not the same kind of claim.
+const SLEEVE={};                       // strategy id -> chosen %, per session
+function measuredProfile(s){
+  const bt=s.backtest;
+  if(!bt) return `<div class="stprof"><span class="stchip">Not measured yet</span>
+      <span class="stchip">next run 03:30</span></div>`;
+  if(!bt.ok) return `<div class="stprof"><span class="stchip warn">Couldn't measure — ${bt.reason||"unknown"}</span></div>`;
+  const m=bt.metrics||{}, chip=(l,v,t)=>`<span class="stchip ${t||''}">${l} <b>${v}</b></span>`;
+  const dd=m.max_drawdown_pct, dtone=dd>=60?'bad':dd>=35?'warn':'';
+  const vtone=m.volatility_pct>=40?'bad':m.volatility_pct>=22?'warn':'';
+  const ex=m.excess_cagr_pct, extone=ex>0?'':'warn';
+  const oos=(bt.robustness||{}).out_of_sample||{};
+  const p=bt.period||{};
+  return `<div class="stprof">
+    ${chip("Backtested","~"+m.cagr_pct+"%/yr")}
+    ${chip("Volatility","~"+m.volatility_pct+"%",vtone)}
+    ${chip("Worst drawdown","-"+m.max_drawdown_pct+"%",dtone)}
+    ${ex!=null?chip("vs S&P",(ex>0?"+":"")+ex+"%/yr",extone):""}
+    ${m.trades_per_year!=null?chip("Trades","~"+m.trades_per_year+"/yr"):""}
+    ${m.tax_drag_pct?chip("Tax drag","-"+m.tax_drag_pct+"%/yr",'warn'):""}
+    ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split">⚠ Likely overfitted</span>`:""}
+    ${oos.verdict==='holds up'?`<span class="stchip">Held up out of sample</span>`:""}
+  </div>
+  <div class="ds" style="font-size:11px;opacity:.7">Measured on real prices ${p.start||""}→${p.end||""} (${p.observations||0} sessions), net of 25% CGT and dealing costs. A backtest is one path through one sample of history, not a forecast.${bt.stale?" ⚠ These numbers are stale.":""}</div>`;
+}
+
+// How much of the book this strategy governs. Without it the only expressible
+// choice was all-or-nothing, which is not how anyone runs a leveraged sleeve.
+function sleeveControl(s){
+  const cur=SLEEVE[s.id]!=null?SLEEVE[s.id]:(s.sleeve_pct||20);
+  return `<div class="stsleeve" style="margin:8px 0">
+    <label style="font-size:12px;opacity:.85">Share of your portfolio:
+      <b id="sv_${s.id}">${cur}%</b>
+      <span style="opacity:.6">(suggested ${s.sleeve_default_pct||20}%)</span>
+    </label>
+    <input type="range" min="0" max="100" step="5" value="${cur}" style="width:100%"
+           oninput="SLEEVE['${s.id}']=+this.value;document.getElementById('sv_${s.id}').textContent=this.value+'%'">
+    <div class="ds" style="font-size:11px;opacity:.65">The rest stays in ${(s.base_when_flat||["your core holdings"]).join(", ")}. Apply and Load both use this number.</div>
+  </div>`;
+}
+
 function stratProfile(pf){
   if(!pf) return "";
   const chip=(label,val,tone)=>`<span class="stchip ${tone||''}">${label} <b>${val}</b></span>`;
@@ -1199,10 +1245,14 @@ function stratProfile(pf){
     ${pf.uses_leverage?`<span class="stchip bad">⚠ Uses leverage</span>`:""}
   </div>`;
 }
+// The slider is only real if every button honours it. Omitting it would let a
+// user set 20% and then apply 100% because the request never carried the number.
+function sleeveQS(id){ return SLEEVE[id]!=null?`?sleeve_pct=${SLEEVE[id]}`:""; }
+
 async function previewStrat(id,name){
   const o=$("stratOut"); o.style.display="block"; o.innerHTML="Checking what would change\u2026";
   o.scrollIntoView({behavior:"smooth",block:"center"});
-  try{const r=await(await fetch(`/api/v1/strategies/${id}/preview`)).json();
+  try{const r=await(await fetch(`/api/v1/strategies/${id}/preview${sleeveQS(id)}`)).json();
     if(!r.ok){o.innerHTML=`<span class="bad">${r.error||"Couldn't preview"}</span>`;return;}
     const d=r.diff, pf=r.strategy.profile;
     if(d.is_current){o.innerHTML=`<span class="ok">This is already your active strategy.</span>`;return;}
@@ -1221,7 +1271,7 @@ async function previewStrat(id,name){
 }
 async function applyStrat(id){
   const o=$("stratOut"); o.style.display="block"; o.innerHTML="Applying…"; o.scrollIntoView({behavior:"smooth",block:"center"});
-  try{const resp=await fetch(`/api/v1/strategies/${id}/apply`,{method:"POST"});
+  try{const resp=await fetch(`/api/v1/strategies/${id}/apply${sleeveQS(id)}`,{method:"POST"});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
     if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.error||resp.status}</span>`;return;}
@@ -1232,9 +1282,13 @@ async function applyStrat(id){
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 async function loadStratBasket(id,name){
-  if(!confirm(`Replace your current holdings with the "${name}" model basket?`))return;
+  const _pct=SLEEVE[id];
+  if(!confirm(_pct!=null
+      ? `Replace your current holdings with the "${name}" basket at ${_pct}% of your portfolio?`
+      : `Replace your current holdings with the "${name}" model basket?`))return;
   const o=$("stratOut"); o.style.display="block"; o.innerHTML="Loading basket & pricing…"; o.scrollIntoView({behavior:"smooth",block:"center"});
-  try{const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+  try{const _sl=SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{};
+    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(_sl)});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
     if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't load: ${r.error||resp.status}</span>`;return;}

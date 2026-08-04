@@ -54,6 +54,8 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS strategy VARCHAR(40)",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS "
+                    "strategy_sleeve_pct DOUBLE PRECISION",
                     # create_all builds missing TABLES but never adds a column
                     # to one that already exists, so a model that gains a field
                     # leaves production reading a schema it does not have.

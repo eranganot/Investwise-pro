@@ -14,7 +14,7 @@ from app.services import strategy_catalog
 from app.services.allocation_mix import current_mix
 from app.services.intake_service import (
     ensure_account, ensure_entity, list_positions, upsert_positions)
-from app.services.plan_service import upsert_plan
+from app.services.plan_service import get_plan, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot
 
 
@@ -24,15 +24,19 @@ def _nav(rows) -> float:
                              for p in rows])["nav"] if rows else 0.0
 
 
-async def apply_strategy(session: AsyncSession, user: User, strategy_id: str) -> dict:
+async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
+                         sleeve_pct: float | None = None) -> dict:
     # Either catalog: static baskets live in `strategies`, rule-based ones in
     # `strategy_catalog`. Adapting rather than forking keeps one apply path.
-    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
-    # preset the plan
+    # preset the plan. The sleeve is remembered so a later reload sizes the same
+    # way -- applying at 20% and reloading at 100% would silently quadruple the
+    # exposure the user chose.
     await upsert_plan(session, user, objective=s["objective"], risk_tolerance=s["risk_tolerance"],
-                      preferred_depth=s.get("preferred_depth"), strategy=strategy_id)
+                      preferred_depth=s.get("preferred_depth"), strategy=strategy_id,
+                      strategy_sleeve_pct=s.get("sleeve_pct"))
     await session.commit()
     # rebalance trades toward the strategy's target allocation
     rows = await list_positions(session, user)
@@ -47,10 +51,14 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str) ->
 
 
 async def load_basket(session: AsyncSession, user: User, strategy_id: str,
-                      total: float | None = None) -> dict:
+                      total: float | None = None, sleeve_pct: float | None = None) -> dict:
     # Either catalog: static baskets live in `strategies`, rule-based ones in
     # `strategy_catalog`. Adapting rather than forking keeps one apply path.
-    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id)
+    if sleeve_pct is None:
+        _plan = await get_plan(session, user)
+        if _plan is not None and getattr(_plan, "strategy", None) == strategy_id:
+            sleeve_pct = getattr(_plan, "strategy_sleeve_pct", None)
+    s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
     rows = await list_positions(session, user)

@@ -177,8 +177,14 @@ if ($Refresh) {
         }
     }
     elseif ($r.provider_outage) {
-        Bad "every strategy failed to fetch prices - $($r.note)"
-        Write-Host "        the circuit breaker opens for the whole history tier at once; wait and re-run" -ForegroundColor Yellow
+        # NOT a failure of this app. The recompute is optional -- the stored
+        # measurements are still valid and still served -- and the price
+        # provider throttles an IP that keeps asking for 10 years of daily bars,
+        # which is exactly what repeated -Refresh runs do. Calling that a FAIL
+        # made a healthy catalog look broken.
+        Skip "recompute could not run: the price provider is throttling. Stored measurements are unaffected."
+        Write-Host "        The 03:30 job does this work without an HTTP request driving it." -ForegroundColor DarkGray
+        Write-Host "        Only use -Refresh when you actually need numbers sooner." -ForegroundColor DarkGray
     }
     else { Ok "refresh: $($r.computed) computed, $($r.abstained) abstained (engine $($r.engine_version))" }
 }
@@ -314,6 +320,11 @@ else {
         # An abstention is correct behaviour, not a failure -- except a stale
         # feed, which means the signal would have described last week's market.
         if ($sg.reason -eq 'STALE_FEED') { Bad "signal refused: $($sg.detail)" }
+        elseif ($sg.reason -eq 'MISSING_TICKER') {
+            Skip "signal abstained - the price provider is throttling ($($sg.detail))"
+            Write-Host "        Correct behaviour: a signal from prices it could not fetch would be a guess." -ForegroundColor DarkGray
+            Write-Host "        Re-run in a few minutes, or let the 06:15 job evaluate it." -ForegroundColor DarkGray
+        }
         else { Skip "signal abstained: $($sg.reason) $($sg.detail)" }
     } else {
         Ok "signal evaluated as of $($sg.as_of): wants $($sg.describes)"

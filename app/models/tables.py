@@ -255,6 +255,12 @@ class Plan(Base, PKMixin, TimestampMixin):
     target_yield_period: Mapped[str] = mapped_column(String(12), default="yearly")
     preferred_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
     strategy: Mapped[str | None] = mapped_column(String(40), nullable=True)  # chosen strategy id
+    # How much of the book the applied strategy governs. A rule-based strategy
+    # is a SLEEVE, not the whole portfolio: applying "trend-filtered 3x Nasdaq"
+    # at 20% means a fifth of the book follows the rule and the rest stays in
+    # the core. Without this the only expressible choice was all-or-nothing,
+    # which is not how anyone sane runs a leveraged strategy.
+    strategy_sleeve_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 # --- Brokerage / aggregation (Phase 3.1 scaffold) ---------------------------

@@ -189,6 +189,7 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
             "risk_tolerance": _RISK_TOLERANCE.get(e.get("risk", ""), "High"),
             "risk_label": e.get("risk"),
             "sleeve_pct": e.get("sleeve_pct"),
+            "sleeve_default_pct": e.get("sleeve_pct"),
             "horizon": e.get("horizon"),
             "basket": sorted((tk, w) for tk, w in weights.items()),
             "base_when_flat": sorted(e.get("base") or {}) or None,
@@ -238,7 +239,34 @@ def _rule_summary(entry: dict) -> str:
     return f"Rule: {kind}."
 
 
-def as_legacy_strategy(strategy_id: str) -> dict | None:
+def sleeve_basket(strategy_id: str, sleeve_pct: float | None = None) -> list[list]:
+    """The basket scaled to a sleeve, with the remainder in the core holding.
+
+    A rule-based strategy is a sleeve, not a portfolio. Loading
+    "trend-filtered 3x Nasdaq" at 20% should buy a fifth of the book in TQQQ and
+    leave the rest in QQQ -- not put everything into a 3x fund because that is
+    what the model basket says in isolation.
+
+    Falls back to the catalog's suggested size, and to 100% only for a strategy
+    that has no core to fall back to (the unleveraged families), where the whole
+    allocation IS the strategy.
+    """
+    e = _BY_ID.get(strategy_id)
+    if e is None:
+        return []
+    weights = e.get("weights") or {}
+    base = e.get("base") or {}
+    pct = sleeve_pct if sleeve_pct is not None else e.get("sleeve_pct")
+    if not base or pct is None:
+        return sorted([tk, w] for tk, w in weights.items())
+    frac = max(0.0, min(1.0, float(pct) / 100.0))
+    out: dict[str, float] = {tk: w * frac for tk, w in weights.items()}
+    for tk, w in base.items():
+        out[tk] = out.get(tk, 0.0) + w * (1.0 - frac)
+    return sorted([tk, round(w, 4)] for tk, w in out.items() if w > 0.0005)
+
+
+def as_legacy_strategy(strategy_id: str, sleeve_pct: float | None = None) -> dict | None:
     """The shape ``strategy_service`` expects, so apply/preview/load-basket work.
 
     Those helpers were written against ``services.strategies`` entries and read
@@ -255,7 +283,6 @@ def as_legacy_strategy(strategy_id: str) -> dict | None:
     e = _BY_ID.get(strategy_id)
     if e is None:
         return None
-    weights = e.get("weights") or {}
     return {
         "id": e["id"], "goal": GOAL, "name": e["name"],
         "description": e["description"],
@@ -263,7 +290,8 @@ def as_legacy_strategy(strategy_id: str) -> dict | None:
         "risk_tolerance": _RISK_TOLERANCE.get(e.get("risk", ""), "High"),
         "preferred_depth": 3,
         "target_allocation": {"Equities": 1.0},
-        "basket": sorted((tk, w) for tk, w in weights.items()),
+        "basket": sleeve_basket(strategy_id, sleeve_pct),
+        "sleeve_pct": (sleeve_pct if sleeve_pct is not None else e.get("sleeve_pct")),
     }
 
 
