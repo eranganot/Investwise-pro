@@ -415,6 +415,12 @@ class StrategyBacktest(Base, PKMixin, TimestampMixin):
     observations: Mapped[int] = mapped_column(Integer, default=0)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True)
+    # A failed refresh is recorded WITHOUT discarding the last good measurement:
+    # "no longer measurable" and "the price feed was down for a minute" are
+    # different failures, and only the first justifies losing the numbers.
+    last_error: Mapped[str] = mapped_column(String(255), default="")
+    last_error_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class StrategySignalState(Base, PKMixin, TimestampMixin):

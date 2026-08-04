@@ -8,9 +8,14 @@ happens on a schedule and the route only ever reads a stored row.
 Three rules the storage layer enforces, all of them consequences of the same
 idea -- a number on a card must be traceable to the run that produced it:
 
-* A run that abstains **overwrites** the previous row with its reason. Leaving
-  the old metrics in place would let a figure that can no longer be reproduced
-  keep presenting itself as current.
+* A run that abstains records WHY, but does not destroy the previous
+  measurement. The first cut overwrote it, reasoning that a figure which can no
+  longer be reproduced should not present itself as current -- and then a single
+  provider hiccup wiped all seven measurements at once and left nothing. Those
+  are different failures: "this strategy is no longer measurable" versus "the
+  price feed was down for a minute". The row keeps its last good numbers, marks
+  the failed refresh, and reads as stale, so the UI can say "last measured on X,
+  refresh failing since Y" instead of showing a blank.
 * Every row carries ``engine_version``, the data source, the exact date span
   and the observation count. Bump the version and yesterday's rows are stale by
   definition rather than silently mixed with today's.
@@ -117,13 +122,24 @@ async def store(session: AsyncSession, strategy_id: str, result: dict) -> Strate
     row.ok = ok
     row.reason = "" if ok else str(result.get("reason") or "")[:32]
     row.detail = "" if ok else str(result.get("detail") or "")[:255]
-    row.metrics = {k: v for k, v in result.items() if k != "robustness"} if ok else {}
-    row.robustness = result.get("robustness") or {}
-    row.data_source = market_provider().name
-    row.period_start = str(result.get("start") or "")[:10]
-    row.period_end = str(result.get("end") or "")[:10]
-    row.observations = int(result.get("observations") or 0)
-    row.computed_at = datetime.now(timezone.utc)
+    if ok:
+        row.metrics = {k: v for k, v in result.items() if k != "robustness"}
+        row.robustness = result.get("robustness") or {}
+        row.last_error = ""
+        row.last_error_at = None
+    else:
+        # Keep the last good measurement. A transient provider failure must not
+        # be able to erase ten years of computed history -- the row goes stale
+        # and says why, which is recoverable; a wiped row is not.
+        row.last_error = f"{row.reason}: {row.detail}"[:255]
+        row.last_error_at = datetime.now(timezone.utc)
+    if ok:
+        row.data_source = market_provider().name
+        row.period_start = str(result.get("start") or "")[:10]
+        row.period_end = str(result.get("end") or "")[:10]
+    if ok:
+        row.observations = int(result.get("observations") or 0)
+        row.computed_at = datetime.now(timezone.utc)
     return row
 
 
@@ -151,6 +167,12 @@ def _payload(row: StrategyBacktest) -> dict:
         "reason": row.reason or None,
         "detail": row.detail or None,
         "metrics": row.metrics or {},
+        # A row can carry good numbers AND a failing refresh at the same time.
+        # Collapsing those into one "ok" hides the difference between "never
+        # measurable" and "measured, but the feed is down right now".
+        "last_error": row.last_error or None,
+        "last_error_at": (row.last_error_at.isoformat() if row.last_error_at else None),
+        "refresh_failing": bool(row.last_error),
         "robustness": row.robustness or {},
         "engine_version": row.engine_version,
         "data_source": row.data_source,
@@ -187,7 +209,17 @@ async def refresh_all(session: AsyncSession, *, only: list[str] | None = None) -
         else:
             failed += 1
     await session.commit()
-    return {"computed": done, "abstained": failed, "engine_version": ENGINE_VERSION}
+    # Every strategy failing on price history at once is one provider outage,
+    # not seven broken strategies -- and the resilience tier's circuit breaker
+    # makes that the normal shape of a bad minute, since it opens for the whole
+    # "history" tier at once. Saying so stops a run that should be retried from
+    # reading as a catalog that fell apart.
+    outage = bool(specs) and done == 0 and failed == len(specs)
+    return {"computed": done, "abstained": failed, "engine_version": ENGINE_VERSION,
+            "provider_outage": outage,
+            "note": ("every strategy failed to fetch prices - likely a provider "
+                     "outage or an open circuit breaker, not a catalog problem; "
+                     "previous measurements were kept" if outage else None)}
 
 
 async def _refresh_all_job() -> dict:

@@ -115,9 +115,11 @@ async def test_a_stored_result_is_served_back_with_its_provenance():
 
 
 @pytest.mark.asyncio
-async def test_an_abstention_replaces_the_previous_metrics_rather_than_hiding_behind_them():
-    """A figure that can no longer be reproduced must not keep presenting itself
-    as current just because the last run failed."""
+async def test_an_abstention_is_visible_without_pretending_the_row_is_healthy():
+    """The reason surfaces and ok flips false, but the last good measurement is
+    kept: erasing it meant one provider hiccup destroyed all seven at once. The
+    row reads "measured, refresh currently failing" rather than either lying
+    that it is fine or losing the numbers."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
     from sqlalchemy.pool import NullPool
     from app.core.config import get_settings
@@ -138,8 +140,9 @@ async def test_an_abstention_replaces_the_previous_metrics_rather_than_hiding_be
             await session.commit()
             got = (await svc.get_many(session, ["btm_swing_dip"]))["btm_swing_dip"]
         assert got["ok"] is False
-        assert got["metrics"] == {}
         assert got["reason"] == "MISSING_TICKER"
+        assert got["refresh_failing"] is True
+        assert got["metrics"]["cagr_pct"] == 15.64      # not erased
     finally:
         await eng.dispose()
 
@@ -285,5 +288,53 @@ async def test_a_stale_row_says_whether_it_is_old_or_from_another_engine():
             await session.commit()
             got = (await svc.get_many(session, ["btm_trend_soxl"]))["btm_trend_soxl"]
             assert got["stale"] is True and got["stale_reason"] == "age"
+    finally:
+        await eng.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refresh_does_not_erase_the_last_good_measurement():
+    """One provider hiccup abstained all seven strategies at once and left
+    nothing behind. "No longer measurable" and "the feed was down for a minute"
+    are different failures, and only the first justifies losing the numbers."""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+    from app.core.config import get_settings
+    from app.models.base import Base
+    import app.models  # noqa: F401
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            await svc.store(session, "btm_trend_tqqq", {
+                "ok": True, "cagr_pct": 32.9, "max_drawdown_pct": 62.7,
+                "start": "2016-08-03", "end": "2026-08-03", "observations": 2513})
+            await session.commit()
+
+            await svc.store(session, "btm_trend_tqqq", {
+                "ok": False, "reason": "MISSING_TICKER",
+                "detail": "no price history for QQQ, SPY, TQQQ"})
+            await session.commit()
+
+            row = (await svc.get_many(session, ["btm_trend_tqqq"]))["btm_trend_tqqq"]
+            # The measurement survives...
+            assert row["metrics"]["cagr_pct"] == 32.9
+            assert row["period"]["observations"] == 2513
+            # ...and the failure is visible rather than silent.
+            assert row["refresh_failing"] is True
+            assert "MISSING_TICKER" in row["last_error"]
+            assert row["last_error_at"]
+
+            # A later success clears the failure flag.
+            await svc.store(session, "btm_trend_tqqq", {
+                "ok": True, "cagr_pct": 33.1, "start": "2016-08-03",
+                "end": "2026-08-03", "observations": 2513})
+            await session.commit()
+            row = (await svc.get_many(session, ["btm_trend_tqqq"]))["btm_trend_tqqq"]
+            assert row["refresh_failing"] is False and row["last_error"] is None
+            assert row["metrics"]["cagr_pct"] == 33.1
     finally:
         await eng.dispose()

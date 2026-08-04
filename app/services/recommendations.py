@@ -861,7 +861,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # Guarded on the rules agent having succeeded. If it degraded, the absence
     # of cards says nothing about the rules and retiring them would destroy real
     # pending work over a transient provider failure.
-    rule_banner = {"triggered": [], "carded": [], "healed": []}
+    rule_banner = {"triggered": [], "carded": [], "healed": [], "skipped_reason": None}
+    if "trading_rules" in degraded:
+        # Say so, rather than leaving a silent no-op. A banner that disagrees
+        # with the cards while the rules agent is down looks identical to a
+        # reconciliation that ran and failed, and that ambiguity cost several
+        # wrong hypotheses about exactly this failure.
+        rule_banner["skipped_reason"] = (
+            "the trading-rules agent degraded, so missing cards say nothing "
+            "about the rules and nothing was retired")
     if "trading_rules" not in degraded:
         try:
             from app.services.rules_service import resolve_rule

@@ -151,6 +151,10 @@ if ($Refresh) {
     $r = try { Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/strategies/backtests/refresh" `
             -Headers $ApiHeaders -TimeoutSec 600 } catch { $null }
     if ($null -eq $r) { Bad "refresh failed" }
+    elseif ($r.provider_outage) {
+        Bad "every strategy failed to fetch prices - $($r.note)"
+        Write-Host "        the circuit breaker opens for the whole history tier at once; wait and re-run" -ForegroundColor Yellow
+    }
     else { Ok "refresh: $($r.computed) computed, $($r.abstained) abstained (engine $($r.engine_version))" }
 }
 
@@ -194,7 +198,17 @@ else {
     foreach ($st in $b.strategies) {
         $bt = $st.backtest
         if ($null -eq $bt) { continue }
-        if (-not $bt.ok) { Skip "$($st.id): abstained - $($bt.reason) $($bt.detail)"; continue }
+        if (-not $bt.ok) {
+            if ($bt.metrics -and $null -ne $bt.metrics.cagr_pct) {
+                # The measurement survived a failed refresh, which is the point:
+                # a provider hiccup must not erase ten years of computed history.
+                Ok "$($st.id): kept its last measurement through a failed refresh ($($bt.reason))"
+            } else {
+                Skip "$($st.id): abstained - $($bt.reason) $($bt.detail)"
+            }
+            continue
+        }
+        if ($bt.refresh_failing) { Skip "$($st.id): numbers are good but the refresh is failing - $($bt.last_error)" }
         $m = $bt.metrics
         if ($null -eq $m.cagr_pct) { Bad "$($st.id): stored result has no CAGR" ; continue }
         $obs = $bt.period.observations
@@ -297,17 +311,7 @@ else {
         } else { Ok "no pending flip, no card (correct - only a change is news)" }
         if ($recs.degraded -contains 'strategy_signals') { Bad "the strategy-signal agent failed inside Today" }
 
-        # The banner counted flags while the cards came from the pipeline -- two
-        # sources for one fact, and production showed "1 triggered" against 0
-        # cards, which no tap could clear.
-        $rb = $recs.rule_banner
-        if ($null -eq $rb) { Skip "no rule_banner in the response - the reconciliation has not deployed" }
-        else {
-            $ruleCards = @($recs.recommendations | Where-Object { $_.dimension -eq 'rule' })
-            if ($rb.carded.Count -eq $ruleCards.Count) { Ok "banner count matches the rule cards ($($ruleCards.Count))" }
-            else { Bad "banner says $($rb.carded.Count) carded but Today shows $($ruleCards.Count) rule cards" }
-            if ($rb.healed.Count -gt 0) { Ok "self-healed $($rb.healed.Count) orphaned trigger(s): $($rb.healed -join ', ')" }
-        }
+
 
         # PHASE E: the standing rules that keep the strategy working when you
         # are not looking. Offered, never armed automatically.
@@ -331,6 +335,39 @@ else {
             Ok "discipline already armed ($($armed.Count) rule(s)) - card correctly not repeated"
         } else {
             Skip "no discipline card - needs a stored backtest AND a held sleeve ticker"
+        }
+    }
+}
+
+# ---------- banner reconciliation (independent of any applied strategy) ----------
+Sec "14. Triggered-rules banner matches the cards"
+$recs2 = Api GET '/api/v1/recommendations' 90
+if ($null -eq $recs2) { Bad "recommendations unreachable" }
+else {
+    # `degraded` is the field that separates "no cards because nothing fired"
+    # from "no cards because the agent raised" -- the two look identical from
+    # outside and produced several wrong hypotheses about this exact failure.
+    if ($recs2.degraded -and $recs2.degraded.Count -gt 0) {
+        Bad "agents degraded: $($recs2.degraded -join ', ')"
+        Write-Host "        a degraded rules agent means missing cards say NOTHING about your rules" -ForegroundColor Yellow
+    } else { Ok "no agent degraded" }
+
+    $rb = $recs2.rule_banner
+    $ruleCards = @($recs2.recommendations | Where-Object { $_.dimension -eq 'rule' })
+    if ($null -eq $rb) { Bad "no rule_banner in the response - the reconciliation has not deployed" }
+    elseif ($rb.skipped_reason) { Skip "reconciliation skipped: $($rb.skipped_reason)" }
+    else {
+        Write-Host "        triggered: $(if ($rb.triggered.Count) { $rb.triggered -join ', ' } else { 'none' })" -ForegroundColor DarkGray
+        if ($rb.carded.Count -eq $ruleCards.Count) { Ok "banner ($($rb.carded.Count)) matches the rule cards ($($ruleCards.Count))" }
+        else { Bad "banner says $($rb.carded.Count) carded but Today shows $($ruleCards.Count) rule cards" }
+        if ($rb.healed.Count -gt 0) { Ok "healed $($rb.healed.Count) orphaned trigger(s): $($rb.healed -join ', ')" }
+        # The end state that matters: after this call, /rules must agree.
+        $rulesNow = (Api GET '/api/v1/rules').rules
+        $stillTrig = @($rulesNow | Where-Object { $_.active -and $_.triggered })
+        if ($stillTrig.Count -eq $ruleCards.Count) { Ok "/rules agrees after reconciliation ($($stillTrig.Count))" }
+        else {
+            Bad "$($stillTrig.Count) rule(s) still flagged triggered against $($ruleCards.Count) card(s): $(($stillTrig | ForEach-Object { $_.ticker }) -join ', ')"
+            Write-Host "        the reconciliation ran but did not clear them - check the server log for 'could not heal orphaned rule'" -ForegroundColor Yellow
         }
     }
 }
