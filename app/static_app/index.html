@@ -662,16 +662,30 @@ async function uploadCsv(){
 
 function rWord(s){return s>=80?"Strong":s>=60?"Healthy":s>=40?"Needs attention":"At risk";}
 function rCol(s){return s>=80?"#34d399":s>=60?"#3b82f6":s>=40?"#fbbf24":"#f87171";}
+// The banner used to count rules whose `triggered` flag was set, while the
+// cards came from the recommendations pipeline -- two sources for one fact.
+// They drifted (production showed "1 triggered" against 0 cards), and a banner
+// counting work with nothing to tap cannot be cleared by tapping anything.
+// It now counts only rules the server confirms produced a VISIBLE card, so the
+// two can no longer disagree. Both payloads arrive asynchronously, so each
+// re-renders on arrival; before the recommendations land we fall back to the
+// flags, which is the old behaviour and never worse than it.
+let RULES_PAYLOAD=null, REC_BANNER=null;
+function renderRuleBanner(){
+  const b=$("rulesAlert"); if(!b) return;
+  const rules=(RULES_PAYLOAD&&RULES_PAYLOAD.rules)||[];
+  const carded=(REC_BANNER&&Array.isArray(REC_BANNER.carded))?REC_BANNER.carded:null;
+  const trig=rules.filter(x=>x.active&&x.triggered
+    &&(carded===null||carded.includes(String(x.id).slice(0,8))));
+  if(trig.length){
+    b.textContent=`🔴 ${trig.length} trading rule${trig.length>1?'s':''} triggered: ${trig.map(x=>x.ticker).join(', ')} — tap to review`;
+    b.style.background="rgba(248,113,113,.12)"; b.style.border="1px solid #5b2230"; b.style.color="#f87171";
+    b.classList.remove("hide");
+  } else { b.classList.add("hide"); }
+}
 async function loadToday(){
   // Trading-rule alerts banner (top of Today)
-  try{const rr=await(await fetch("/api/v1/rules")).json();
-    const trig=(rr.rules||[]).filter(x=>x.active&&x.triggered); const b=$("rulesAlert");
-    if(b){ if(trig.length){
-        b.textContent=`🔴 ${trig.length} trading rule${trig.length>1?'s':''} triggered: ${trig.map(x=>x.ticker).join(', ')} — tap to review`;
-        b.style.background="rgba(248,113,113,.12)"; b.style.border="1px solid #5b2230"; b.style.color="#f87171";
-        b.classList.remove("hide");
-      } else { b.classList.add("hide"); } }
-  }catch(e){}
+  try{ RULES_PAYLOAD=await(await fetch("/api/v1/rules")).json(); renderRuleBanner(); }catch(e){}
   try{const h=await(await fetch("/api/v1/health-check")).json();
     if(h.wealth_health_score==null){show("setup");return;}
     const s=h.wealth_health_score;
@@ -681,6 +695,9 @@ async function loadToday(){
       .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
   }catch(e){}
   try{const r=await(await fetch("/api/v1/recommendations")).json();
+    // Which triggered rules actually produced a card. Re-render the banner now
+    // that the authoritative answer has arrived.
+    REC_BANNER=r.rule_banner||null; renderRuleBanner();
     const _sn=activeSnoozed();
     const all=r.recommendations||[];
     const recs=all.filter(o=>!_sn.has(o.id));

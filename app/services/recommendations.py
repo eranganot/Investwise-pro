@@ -849,6 +849,47 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         recs = [r for r in recs if r.get("id") not in completed]
         done_count = _n - len(recs)
 
+    # FINAL RECONCILIATION. The red banner counts rules whose `triggered` flag is
+    # set; the cards come from triggered_rule_recs. Two sources, so they can
+    # drift for any reason -- and every reason ends the same way: a banner
+    # counting work with nothing left to click, forever, because only a card can
+    # clear it. The heal above fixes the case where a card existed and was
+    # hidden. This catches every other case, whatever caused it, by asserting
+    # the invariant directly: a triggered rule with no visible card is a
+    # contradiction, so resolve it.
+    #
+    # Guarded on the rules agent having succeeded. If it degraded, the absence
+    # of cards says nothing about the rules and retiring them would destroy real
+    # pending work over a transient provider failure.
+    rule_banner = {"triggered": [], "carded": [], "healed": []}
+    if "trading_rules" not in degraded:
+        try:
+            from app.services.rules_service import resolve_rule
+            from sqlalchemy import select as _select
+
+            from app.models.tables import TradingRule as _TR
+            _live = (await session.scalars(
+                _select(_TR).where(_TR.subject == user.email, _TR.active.is_(True),
+                                   _TR.triggered.is_(True)))).all()
+            _carded = {str(r.get("id", ""))[5:] for r in recs
+                       if str(r.get("id", "")).startswith("rule_")}
+            for _r in _live:
+                _short = str(_r.id)[:8]
+                rule_banner["triggered"].append(_short)
+                if _short in _carded:
+                    rule_banner["carded"].append(_short)
+                    continue
+                try:
+                    await resolve_rule(session, user, _short, "acknowledged",
+                                       {"reason": "triggered with no visible card"})
+                    rule_banner["healed"].append(_short)
+                    logger.info("healed a rule triggered with no card: %s %s",
+                                _r.ticker, _short)
+                except Exception:  # noqa: BLE001 -- never break Today over cleanup
+                    logger.warning("could not heal orphaned rule %s", _short, exc_info=False)
+        except Exception:  # noqa: BLE001
+            logger.warning("rule banner reconciliation failed", exc_info=False)
+
     recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
     _tm.mark("reconcile_and_filter")
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
@@ -864,7 +905,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             # "you ignored everything" and "an agent failed" are three different things.
             "dismissed_count": suppressed,
             "completed_count": done_count,
-            "degraded": degraded,
+            "degraded": degraded, "rule_banner": rule_banner,
             # Where the time actually went, per agent (ms). Cheap to compute and
             # it turns "the endpoint is slow" into a specific culprit.
             "timings_ms": {**_tm.marks, "slowest": _tm.slowest()},

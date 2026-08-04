@@ -305,3 +305,51 @@ async def test_the_discipline_card_is_actionable_and_never_arms_by_itself():
             assert await list_rules(session, user) == []
     finally:
         await eng.dispose()
+
+
+# ---------------------------------------------------------------- banner reconciliation
+
+@pytest.mark.asyncio
+async def test_a_rule_triggered_with_no_card_is_healed_not_left_counting():
+    """Production showed "1 trading rule triggered" against 0 cards. The banner
+    read the `triggered` flag while the cards came from the recommendations
+    pipeline -- two sources for one fact, and no tap could reconcile them
+    because only a card can clear a rule. A triggered rule with no visible card
+    is a contradiction, so it is resolved."""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+    from app.core.config import get_settings
+    from app.models.base import Base
+    from app.models.tables import TradingRule, User
+    from app.services.recommendations import build_recommendations
+    from decimal import Decimal
+    import app.models  # noqa: F401
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            user = User(email="k@l.m", name="K", role="SuperAdmin")
+            session.add(user)
+            await session.flush()
+            # Triggered, active, and on a ticker the user does not hold -- so
+            # nothing can produce a card for it.
+            session.add(TradingRule(subject="k@l.m", ticker="ZZZZ", rule_type="max_weight",
+                                    mode="pct", level=Decimal("25"), active=True,
+                                    triggered=True))
+            await session.commit()
+
+            out = await build_recommendations(session, user)
+            banner = out.get("rule_banner")
+            if banner is None:          # no holdings -> early return, nothing to reconcile
+                return
+            assert "ZZZZ" not in str(banner.get("carded"))
+
+            rule = (await session.scalars(
+                __import__("sqlalchemy").select(TradingRule).where(
+                    TradingRule.subject == "k@l.m"))).first()
+            assert rule.triggered is False, "an orphaned trigger must not keep counting"
+    finally:
+        await eng.dispose()

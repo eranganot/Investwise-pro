@@ -12,7 +12,13 @@
 # Deliberately asserts nothing it cannot read. Where a value is not yet
 # populated the check SKIPs and says what to run -- a skip is not a pass.
 
-param([switch]$Refresh, [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
+param(
+    [switch]$Refresh,
+    # Applies a Beat the Market strategy so the signal and discipline checks can
+    # actually run. WRITES: it sets your plan's objective, risk tolerance and
+    # strategy. Everything else in this script is read-only.
+    [string]$ApplyStrategy = "",
+    [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
 
 $ErrorActionPreference = 'Continue'
 # Same fallback as smoke-all.ps1 so this runs with no setup. The key is already
@@ -243,10 +249,24 @@ else {
 
 # ---------- PHASE D: live signals ----------
 Sec "13. Live strategy signals - the rule speaks only when it changes its mind"
+if ($ApplyStrategy) {
+    Write-Host "   applying '$ApplyStrategy' (this WRITES to your plan)" -ForegroundColor Yellow
+    $ap = try { Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/strategies/$ApplyStrategy/apply" `
+            -Headers $ApiHeaders -TimeoutSec 120 } catch { $null }
+    if ($null -eq $ap) { Bad "could not apply '$ApplyStrategy'" }
+    elseif ($ap.ok -eq $false) { Bad "apply refused: $($ap.error)" }
+    else { Ok "applied '$ApplyStrategy'" }
+}
 $plan = Api GET '/api/v1/plan'
 $active = $plan.strategy
-if (-not $active) { Skip "no strategy applied - apply one from the Plan tab to exercise signals" }
-elseif ($active -notlike 'btm_*') { Skip "active strategy '$active' is a static basket, so there is no daily rule to evaluate" }
+if (-not $active) {
+    Bad "no strategy applied - signals and discipline cannot be exercised"
+    Write-Host "        -> re-run with:  -ApplyStrategy btm_trend_tqqq   (writes to your plan)" -ForegroundColor Yellow
+}
+elseif ($active -notlike 'btm_*') {
+    Skip "active strategy '$active' is a static basket, so there is no daily rule to evaluate"
+    Write-Host "        -> to exercise signals:  -ApplyStrategy btm_trend_tqqq" -ForegroundColor DarkGray
+}
 else {
     Ok "active rule-based strategy: $active"
     $sg = Api GET '/api/v1/strategies/signal'
@@ -276,6 +296,18 @@ else {
             Ok "the card admits the app is not acting for you"
         } else { Ok "no pending flip, no card (correct - only a change is news)" }
         if ($recs.degraded -contains 'strategy_signals') { Bad "the strategy-signal agent failed inside Today" }
+
+        # The banner counted flags while the cards came from the pipeline -- two
+        # sources for one fact, and production showed "1 triggered" against 0
+        # cards, which no tap could clear.
+        $rb = $recs.rule_banner
+        if ($null -eq $rb) { Skip "no rule_banner in the response - the reconciliation has not deployed" }
+        else {
+            $ruleCards = @($recs.recommendations | Where-Object { $_.dimension -eq 'rule' })
+            if ($rb.carded.Count -eq $ruleCards.Count) { Ok "banner count matches the rule cards ($($ruleCards.Count))" }
+            else { Bad "banner says $($rb.carded.Count) carded but Today shows $($ruleCards.Count) rule cards" }
+            if ($rb.healed.Count -gt 0) { Ok "self-healed $($rb.healed.Count) orphaned trigger(s): $($rb.healed -join ', ')" }
+        }
 
         # PHASE E: the standing rules that keep the strategy working when you
         # are not looking. Offered, never armed automatically.
