@@ -40,6 +40,26 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "buy_funded", "sell_position", "redeploy_cash"}
 
 
+def _agent_tx(session: AsyncSession):
+    """A SAVEPOINT around one agent, so its failure cannot kill the request.
+
+    Every "defensive" handler here catches an agent's failure, logs it, marks
+    the pipeline degraded and carries on with the SAME session. SQLite tolerates
+    that -- which is why the entire local suite was green -- but Postgres does
+    not: the first failed statement ABORTS the transaction, and every query
+    after it raises InFailedSQLTransactionError. Observed in production as a 500
+    from /recommendations, with load_dismissed dying on "current transaction is
+    aborted" long after the agent that actually broke.
+
+    The obvious repair, session.rollback(), is worse: rollback EXPIRES every
+    loaded ORM object, so the positions this function keeps using would each
+    trigger a lazy reload and raise MissingGreenlet instead. A savepoint undoes
+    only the failed agent's own statements and leaves both the outer transaction
+    and the identity map intact.
+    """
+    return session.begin_nested()
+
+
 def _is_actionable(rec: dict) -> bool:
     return ((rec.get("apply") or {}).get("kind") or "none") in _ACTIONABLE_KINDS
 
@@ -695,8 +715,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _redeploy = _redeploy_cash_recs(rows, snap, plan, objective, cap, _cash_ils)
     recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
     try:
-        from app.services.performance_service import performance as _perf_fn
-        recs += _benchmark_recs(await _perf_fn(session, user), objective)
+        async with _agent_tx(session):
+            from app.services.performance_service import performance as _perf_fn
+            recs += _benchmark_recs(await _perf_fn(session, user), objective)
     except Exception:  # noqa: BLE001 -- performance is best-effort, never break Today
         logger.warning("benchmark-lag recommendation failed", exc_info=True)
         degraded.append("performance")
@@ -756,7 +777,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
-        recs += await _war_room_recs(session, user, rows)
+        async with _agent_tx(session):
+            recs += await _war_room_recs(session, user, rows)
     except Exception:  # noqa: BLE001
         logger.warning("war-room recommendations failed", exc_info=True)
         degraded.append("agent_signals")
@@ -764,8 +786,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # Trading rules that have fired -> top-priority, user-defined actions.
     try:
-        from app.services.rules_service import triggered_rule_recs
-        recs += await triggered_rule_recs(session, user)
+        async with _agent_tx(session):
+            from app.services.rules_service import triggered_rule_recs
+            recs += await triggered_rule_recs(session, user)
     except Exception:  # noqa: BLE001
         logger.warning("triggered trading-rule recommendations failed", exc_info=True)
         degraded.append("trading_rules")
@@ -774,9 +797,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # as a trading rule firing: a discipline the user chose, speaking. Acting
     # late on it is the main reason a rule underperforms its own backtest.
     try:
-        from app.services.strategy_signal_service import discipline_recs, pending_signal_recs
-        recs += await pending_signal_recs(session, user)
-        recs += await discipline_recs(session, user)
+        async with _agent_tx(session):
+            from app.services.strategy_signal_service import discipline_recs, pending_signal_recs
+            recs += await pending_signal_recs(session, user)
+            recs += await discipline_recs(session, user)
     except Exception:  # noqa: BLE001
         logger.warning("strategy signal recommendations failed", exc_info=True)
         degraded.append("strategy_signals")
