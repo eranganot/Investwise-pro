@@ -774,8 +774,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # as a trading rule firing: a discipline the user chose, speaking. Acting
     # late on it is the main reason a rule underperforms its own backtest.
     try:
-        from app.services.strategy_signal_service import pending_signal_recs
+        from app.services.strategy_signal_service import discipline_recs, pending_signal_recs
         recs += await pending_signal_recs(session, user)
+        recs += await discipline_recs(session, user)
     except Exception:  # noqa: BLE001
         logger.warning("strategy signal recommendations failed", exc_info=True)
         degraded.append("strategy_signals")

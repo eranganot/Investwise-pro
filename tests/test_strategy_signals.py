@@ -137,7 +137,7 @@ async def test_a_pending_flip_becomes_one_card_that_says_no_order_is_placed():
             assert card["id"].startswith("stratsig_")
             assert "core holding" in card["action"]
             # The execution firewall, stated on the card itself.
-            assert any("No brokerage order is placed" in h for h in card["how"])
+            assert any("not moving anything for you" in h for h in card["how"])
             assert any("2026-08-03" in h for h in card["how"])
 
             # Cleared once acted on -- otherwise it reappears every morning.
@@ -171,5 +171,137 @@ async def test_no_card_when_the_applied_strategy_is_not_rule_based():
             await session.commit()
             assert await sig.active_strategy_id(session, user) is None
             assert await sig.pending_signal_recs(session, user) == []
+    finally:
+        await eng.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_signal_card_does_not_claim_the_app_will_act():
+    """It first carried apply.kind 'set_plan', whose handler reads spec['fields']
+    -- so Accept would have called upsert_plan() with nothing, moved no holding,
+    and still reported success."""
+    from app.services.recommendations import _ACTIONABLE_KINDS
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+    from datetime import datetime, timezone
+    from app.core.config import get_settings
+    from app.models.base import Base
+    from app.models.tables import Plan, StrategySignalState, User
+    import app.models  # noqa: F401
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            user = User(email="e@f.g", name="E", role="SuperAdmin")
+            session.add(user)
+            await session.flush()
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
+                             strategy="btm_swing_dip"))
+            session.add(StrategySignalState(
+                subject="e@f.g", strategy_id="btm_swing_dip",
+                target={"TQQQ": 1.0}, previous_target={"QQQ": 1.0},
+                as_of="2026-08-03", flipped_at=datetime.now(timezone.utc)))
+            await session.commit()
+            card = (await sig.pending_signal_recs(session, user))[0]
+            assert card["apply"]["kind"] not in _ACTIONABLE_KINDS
+            assert any("not moving anything for you" in h for h in card["how"])
+    finally:
+        await eng.dispose()
+
+
+# ---------------------------------------------------------------- Phase E: discipline
+
+def test_no_backtest_means_no_stop_rather_than_a_guessed_one():
+    """An invented stop level is worse than none: it looks calculated."""
+    from app.services import strategy_catalog as sc
+    assert sc.discipline_rules("btm_trend_tqqq", None) == []
+    assert sc.discipline_rules("btm_trend_tqqq", {"ok": True, "metrics": {}}) == []
+
+
+def test_stop_levels_are_derived_from_the_strategy_s_own_volatility():
+    """A trailing stop inside the strategy's ordinary noise is churn, not
+    discipline -- a 62%-vol basket cannot wear the same stop as a 15% one."""
+    from app.services import strategy_catalog as sc
+    wild = sc.discipline_rules("btm_trend_tqqq", {"ok": True, "metrics": {"volatility_pct": 60.0}})
+    calm = sc.discipline_rules("btm_trend_tqqq", {"ok": True, "metrics": {"volatility_pct": 18.0}})
+    wild_stop = next(r for r in wild if r["rule_type"] == "trailing_stop")["level"]
+    calm_stop = next(r for r in calm if r["rule_type"] == "trailing_stop")["level"]
+    assert wild_stop > calm_stop
+    assert 12.0 <= calm_stop <= 35.0 and 12.0 <= wild_stop <= 35.0
+    assert "measured" in next(r for r in wild if r["rule_type"] == "trailing_stop")["note"]
+
+
+def test_rules_target_the_aggressive_sleeve_not_the_core():
+    """A stop on the thing you fall back TO would exit you from safety."""
+    from app.services import strategy_catalog as sc
+    rules = sc.discipline_rules("btm_trend_tqqq", {"ok": True, "metrics": {"volatility_pct": 50.0}})
+    assert {r["ticker"] for r in rules} == {"TQQQ"}      # QQQ is the base
+
+
+def test_a_cap_is_skipped_when_the_book_is_already_over_it():
+    """Arming a cap the position already breaches fires it instantly, which
+    reads as the app deciding to sell rather than as a guard being set."""
+    from app.services import strategy_catalog as sc
+    measured = {"ok": True, "metrics": {"volatility_pct": 50.0}}
+    normal = sc.discipline_rules("btm_trend_tqqq", measured, {"TQQQ": 0.05})
+    over = sc.discipline_rules("btm_trend_tqqq", measured, {"TQQQ": 0.95})
+    assert any(r["rule_type"] == "max_weight" for r in normal)
+    assert not any(r["rule_type"] == "max_weight" for r in over)
+
+
+def test_a_static_basket_has_no_rule_based_discipline():
+    from app.services import strategy_catalog as sc
+    assert sc.discipline_rules("grow_quality", {"ok": True, "metrics": {"volatility_pct": 30.0}}) == []
+
+
+@pytest.mark.asyncio
+async def test_the_discipline_card_is_actionable_and_never_arms_by_itself():
+    from app.services.recommendations import _ACTIONABLE_KINDS
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import NullPool
+    from app.core.config import get_settings
+    from app.models.base import Base
+    from app.models.tables import Account, Entity, Plan, Position, User
+    from app.services import backtest_service as bsvc
+    from decimal import Decimal
+    import app.models  # noqa: F401
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with Session() as session:
+            user = User(email="g@h.i", name="G", role="SuperAdmin")
+            session.add(user)
+            await session.flush()
+            ent = Entity(user_id=user.id, name="Personal", entity_type="Personal")
+            session.add(ent)
+            await session.flush()
+            acc = Account(entity_id=ent.id, name="Main")
+            session.add(acc)
+            await session.flush()
+            session.add(Position(account_id=acc.id, ticker="TQQQ", market="NASDAQ",
+                                 quantity=Decimal("10"), cost_basis=Decimal("50"),
+                                 current_price=Decimal("60")))
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
+                             strategy="btm_trend_tqqq"))
+            await bsvc.store(session, "btm_trend_tqqq",
+                             {"ok": True, "cagr_pct": 32.9, "volatility_pct": 48.9})
+            await session.commit()
+
+            cards = await sig.discipline_recs(session, user)
+            assert len(cards) == 1
+            card = cards[0]
+            assert card["apply"]["kind"] == "create_rules"
+            assert card["apply"]["kind"] in _ACTIONABLE_KINDS   # Accept really arms them
+            assert all(r["ticker"] == "TQQQ" for r in card["apply"]["rules"])
+            assert any("no order is placed" in h for h in card["how"])
+            # Nothing was armed by merely producing the card.
+            from app.services.rules_service import list_rules
+            assert await list_rules(session, user) == []
     finally:
         await eng.dispose()

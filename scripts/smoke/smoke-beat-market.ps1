@@ -1,7 +1,7 @@
-# SMOKE - phases 10-15: contributions ledger + strategy backtests + the Plan tab.
+# SMOKE - the Beat the Market work (phases 10-17): contributions ledger + strategy backtests + the Plan tab.
 # READ-ONLY by default: nothing is bought, sold, dismissed or recorded.
 #
-#   .\scripts\smoke\smoke-phase10-15.ps1
+#   .\scripts\smoke\smoke-beat-market.ps1
 #
 # Uses AGENT_API_KEY (same fallback as smoke-all.ps1). Override with
 #   $env:IW_AGENT_KEY = '<key>'   if you rotate it.
@@ -269,13 +269,37 @@ else {
         elseif ($sigCards.Count -gt 0) {
             Ok "strategy signal card is on Today"
             foreach ($sc in $sigCards) {
-                if ($sc.how -join ' ' -notmatch 'No brokerage order is placed') {
-                    Bad "$($sc.id): card does not state that no order is placed"
+                if ($sc.how -join ' ' -notmatch 'not moving anything for you') {
+                    Bad "$($sc.id): card does not state that the app is not acting"
                 }
             }
-            Ok "the card states plainly that no brokerage order is placed"
+            Ok "the card admits the app is not acting for you"
         } else { Ok "no pending flip, no card (correct - only a change is news)" }
         if ($recs.degraded -contains 'strategy_signals') { Bad "the strategy-signal agent failed inside Today" }
+
+        # PHASE E: the standing rules that keep the strategy working when you
+        # are not looking. Offered, never armed automatically.
+        $disc = @($recs.recommendations | Where-Object { $_.id -like 'stratrules_*' })
+        $rules = Api GET '/api/v1/rules'
+        $armed = @($rules.rules | Where-Object { $_.note -like '*trailing stop*' -or $_.note -like '*sleeve*' })
+        if ($disc.Count -gt 0) {
+            Ok "discipline card offered: $($disc[0].action)"
+            if ($disc[0].apply.kind -ne 'create_rules') { Bad "the discipline card cannot actually arm anything" }
+            else { Ok "Accept would really arm them (create_rules)" }
+            foreach ($r in $disc[0].apply.rules) {
+                if ($r.level -le 0) { Bad "$($r.ticker) $($r.rule_type): level is $($r.level)" }
+                # Derived from the strategy's measured volatility, so a round
+                # number would mean the derivation was skipped.
+                if ($r.rule_type -eq 'trailing_stop' -and ($r.level -lt 12 -or $r.level -gt 35)) {
+                    Bad "$($r.ticker) trailing stop at $($r.level)% is outside the derived band"
+                }
+            }
+            Ok "every offered rule carries a derived, in-band level"
+        } elseif ($armed.Count -gt 0) {
+            Ok "discipline already armed ($($armed.Count) rule(s)) - card correctly not repeated"
+        } else {
+            Skip "no discipline card - needs a stored backtest AND a held sleeve ticker"
+        }
     }
 }
 

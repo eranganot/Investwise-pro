@@ -30,6 +30,7 @@ from app.core.config import get_settings
 from app.engines import strategy_backtest as bt
 from app.models.tables import Plan, StrategySignalState, User
 from app.services import strategy_catalog
+from app.services.intake_service import list_positions
 from app.services.backtest_service import _fetch
 
 logger = logging.getLogger(__name__)
@@ -189,12 +190,83 @@ async def pending_signal_recs(session: AsyncSession, user: User) -> list[dict]:
         "why": entry.get("rule") or strategy_catalog.rule_summary(entry),
         "impact": ("This is the discipline you chose firing. Acting late is the main "
                    "reason a rule underperforms its own backtest."),
-        "apply": {"kind": "set_plan", "strategy": sid},
+        # Guidance, deliberately. The first version carried
+        # {"kind": "set_plan", "strategy": sid}, but that handler reads
+        # spec["fields"] -- so Accept would have called upsert_plan() with
+        # nothing, changed no holding, and still reported success. Claiming an
+        # edit that did not happen is the exact failure the actionable/guidance
+        # split was introduced to kill. Moving a sleeve honestly means sizing
+        # and funding real trades; until that exists this card says what to do
+        # and admits the app is not doing it.
+        "apply": {"kind": "none", "strategy": sid},
         "how": [
             f"Signal derived from closes up to {row.as_of}.",
-            "No brokerage order is placed — mirror the change at your broker.",
-            "Ignore leaves your book alone and records that you declined.",
+            "The app is not moving anything for you — place the change at your broker "
+            "and mirror it in Holdings.",
+            "Mark as done once you have acted; Ignore records that you declined.",
         ],
+    }]
+
+
+async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
+    """Offer the standing rules that make the applied strategy survivable.
+
+    The gap between a strategy's backtested return and its lived one is mostly
+    the days the rule was not followed. These keep firing when the user is not
+    looking -- but they are OFFERED, never armed automatically: a stop the user
+    did not choose is a stop that surprises them into a sale.
+
+    Skipped entirely when the strategy has no stored backtest, because the
+    levels are derived from its measured volatility. An invented stop is worse
+    than none: it looks calculated.
+    """
+    sid = await active_strategy_id(session, user)
+    if not sid:
+        return []
+    from app.services.backtest_service import get_many
+    from app.services.rules_service import list_rules
+
+    measured = (await get_many(session, [sid])).get(sid)
+    if not measured or not measured.get("ok"):
+        return []
+    rows = await list_positions(session, user)
+    nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows) or 1.0
+    weights = {(p.ticker or "").upper(): float(p.quantity) * float(p.current_price or 0) / nav
+               for p in rows}
+    held = {(p.ticker or "").upper() for p in rows}
+
+    specs = strategy_catalog.discipline_rules(sid, measured, weights)
+    # Only for tickers actually held: a stop on something you do not own is
+    # noise, and it would sit armed and never fire.
+    specs = [r for r in specs if r["ticker"].upper() in held]
+    if not specs:
+        return []
+    existing = {(r["ticker"].upper(), r["rule_type"]) for r in await list_rules(session, user)}
+    specs = [r for r in specs if (r["ticker"].upper(), r["rule_type"]) not in existing]
+    if not specs:
+        return []
+
+    entry = strategy_catalog.get(sid) or {}
+    vol = (measured.get("metrics") or {}).get("volatility_pct")
+    lines = ", ".join(f"{r['rule_type'].replace('_', ' ')} on {r['ticker']} at {r['level']:g}%"
+                      for r in specs)
+    return [{
+        "id": f"stratrules_{sid[:12]}",
+        "dimension": "strategy",
+        "severity": "MEDIUM",
+        "title": f"Arm the discipline for {entry.get('name', sid)}",
+        "action": f"Set {lines}.",
+        "why": (f"This strategy measured {vol:.0f}% annual volatility. The levels are "
+                f"derived from that, not picked round, so they sit outside its "
+                f"ordinary noise instead of firing on a quiet Tuesday."),
+        "impact": ("A strategy is a rule you intend to follow, and the gap between its "
+                   "backtested return and your real one is mostly the days you did not. "
+                   "These keep working when you are not looking."),
+        "apply": {"kind": "create_rules", "rules": specs},
+        "how": ["Accept arms these as trading rules — you can edit or remove any of them "
+                "under Trading rules.",
+                "They raise an alert and a Today to-do when they fire; no order is placed.",
+                "Ignore leaves your book and your rules untouched."],
     }]
 
 

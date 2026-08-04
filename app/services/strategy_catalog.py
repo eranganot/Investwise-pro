@@ -269,3 +269,63 @@ def as_legacy_strategy(strategy_id: str) -> dict | None:
 
 # Public alias: the signal service needs the same one-line mechanism text.
 rule_summary = _rule_summary
+
+
+# --- Discipline -------------------------------------------------------------
+
+def discipline_rules(strategy_id: str, measured: dict | None = None,
+                     holdings: dict[str, float] | None = None) -> list[dict]:
+    """Trading rules that make a strategy survivable, sized from its own backtest.
+
+    A strategy is a rule you intend to follow, and the gap between the
+    backtested number and the lived one is almost entirely the days you did not
+    follow it. These are the standing orders that keep firing when you are not
+    looking.
+
+    Levels come from the strategy's MEASURED volatility and drawdown, not from a
+    round number: a trailing stop that would have fired constantly during the
+    backtest is not discipline, it is churn. With no stored backtest this
+    returns nothing rather than guessing -- an invented stop level is worse than
+    no stop, because it looks like it was calculated.
+
+    ``holdings`` maps ticker -> current weight, used to skip a cap the book is
+    already inside.
+    """
+    entry = _BY_ID.get(strategy_id)
+    if entry is None:
+        return []
+    metrics = ((measured or {}).get("metrics") or {}) if measured else {}
+    vol = metrics.get("volatility_pct")
+    if not vol:
+        return []
+
+    aggressive = sorted(set(entry.get("weights") or {}) - set(entry.get("base") or {}))
+    if not aggressive:
+        return []
+
+    # A trailing stop must sit outside the strategy's ordinary noise or it exits
+    # on a Tuesday. Roughly a third of annual volatility approximates a large
+    # move without being a crash; clamped so a very calm or very wild basket
+    # still gets a usable level.
+    trail = max(12.0, min(35.0, round(float(vol) / 3.0)))
+    out = []
+    for tk in aggressive:
+        out.append({
+            "ticker": tk, "rule_type": "trailing_stop", "mode": "pct", "level": trail,
+            "note": (f"{entry['name']}: {trail:.0f}% trailing stop, ~1/3 of the "
+                     f"strategy's measured {float(vol):.0f}% volatility"),
+        })
+    # A sleeve that grows unchecked stops being a sleeve. The cap is the
+    # strategy's own suggested size plus room to run.
+    sleeve = entry.get("sleeve_pct")
+    if sleeve:
+        cap = min(90.0, round(float(sleeve) * 1.5))
+        for tk in aggressive:
+            if holdings and (holdings.get(tk, 0.0) * 100) > cap:
+                continue          # already over: a cap here would fire instantly
+            out.append({
+                "ticker": tk, "rule_type": "max_weight", "mode": "pct", "level": cap,
+                "note": (f"{entry['name']}: keep the sleeve near its suggested "
+                         f"{sleeve}% (cap {cap:.0f}%)"),
+            })
+    return out
