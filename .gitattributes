@@ -1,0 +1,27 @@
+# Line-ending policy.
+#
+# Without this every PowerShell script showed up as a whole-file rewrite in
+# `git diff` -- 192 changed lines for a file nobody had touched -- because the
+# scripts are written CRLF on Windows while git had stored them LF. That noise
+# is worse than cosmetic: a real one-line change is invisible inside it, and it
+# is part of why `git add -A` is banned in this repo.
+#
+# Text files are normalised to LF in the repository. PowerShell and batch files
+# are checked out CRLF, which is what the Windows shells expect.
+
+* text=auto eol=lf
+
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
