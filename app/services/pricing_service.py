@@ -90,10 +90,20 @@ async def _kv_set(session, key: str, value: str) -> None:
         session.add(KVSetting(key=key, value=value))
 
 
-async def refresh_all_positions(session) -> dict:
-    """Reprice every position, and judge whether each quote is actually current.
+async def refresh_all_positions(session, positions=None) -> dict:
+    """Reprice positions, and judge whether each quote is actually current.
 
-    Returns {updated, failed, skipped, repaired, stale, by_source, stale_tickers}.
+    ``positions`` defaults to every position in the database (the scheduled job).
+    A caller that has already scoped rows to one user passes them in, so the
+    manual refresh endpoint shares THIS implementation instead of keeping its own
+    copy. It used to keep its own, and that copy had neither the cash guard nor
+    the freshness check -- so a manual refresh happily repriced the synthetic
+    CASH row as Pathward Financial and wrote a delisted holding's frozen price
+    straight back in. One reprice path, or the fixes only apply to whichever one
+    you happen to call.
+
+    Returns {updated, failed, skipped_cash, repaired_cash, stale, by_source,
+    stale_tickers, prices, errors}.
 
     A quote that has not traded inside the freshness window is **not** written as
     a current price. The position keeps the number it already had and is flagged
@@ -103,10 +113,13 @@ async def refresh_all_positions(session) -> dict:
     """
     primary = market_provider()
     yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
-    positions = list((await session.scalars(select(Position))).all())
+    if positions is None:
+        positions = list((await session.scalars(select(Position))).all())
     by_source: dict[str, int] = {}
     updated = failed = skipped = repaired = stale = 0
     stale_tickers: list[dict] = []
+    prices: list[dict] = []
+    errors: list[dict] = []
     quote_cache: dict[str, tuple] = {}  # ticker -> (price, source) or (None, None)
     now = datetime.now(timezone.utc)
 
@@ -139,6 +152,7 @@ async def refresh_all_positions(session) -> dict:
         q, used = quote_cache[tk]
         if q is None:
             failed += 1
+            errors.append({"ticker": tk, "error": "no quote from any provider"})
             continue
 
         state, as_of, aged = quote_freshness(q, now)
@@ -171,6 +185,9 @@ async def refresh_all_positions(session) -> dict:
             p.meta = meta
             stale += 1
             stale_tickers.append({"ticker": tk, "as_of": as_of, "trading_days": aged})
+            prices.append({"ticker": tk, "price": float(p.current_price or 0),
+                           "currency": q.currency, "as_of": as_of, "source": used,
+                           "stale": True, "not_written": True})
             continue
         meta.pop("price_stale", None)
         meta.pop("price_stale_days", None)
@@ -178,6 +195,9 @@ async def refresh_all_positions(session) -> dict:
         p.meta = meta
         by_source[used] = by_source.get(used, 0) + 1
         updated += 1
+        prices.append({"ticker": tk, "price": q.price, "currency": q.currency,
+                       "as_of": meta["price_as_of"], "source": used,
+                       "stale": False, "freshness": state})
 
     if by_source:
         dominant = max(by_source, key=by_source.get)
@@ -191,7 +211,8 @@ async def refresh_all_positions(session) -> dict:
                        stale, ", ".join(f"{x['ticker']}@{x['as_of']}" for x in stale_tickers))
     return {"updated": updated, "failed": failed, "skipped_cash": skipped,
             "repaired_cash": repaired, "stale": stale,
-            "stale_tickers": stale_tickers, "by_source": by_source}
+            "stale_tickers": stale_tickers, "by_source": by_source,
+            "prices": prices, "errors": errors}
 
 
 async def _refresh_all() -> dict:

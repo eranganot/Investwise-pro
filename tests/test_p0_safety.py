@@ -173,6 +173,62 @@ async def test_a_primary_with_no_trade_time_is_cross_checked_against_yahoo(monke
     assert float(rows["DEAD"].current_price) == pytest.approx(210.9)
 
 
+@pytest.mark.asyncio
+async def test_the_manual_refresh_endpoint_shares_the_guarded_implementation(monkeypatch):
+    """Found live, by the smoke run, on the very first production check.
+
+    POST /portfolio/refresh-prices carried its own copy of the reprice loop, and
+    the copy had NEITHER the cash guard NOR the freshness check. So a manual
+    refresh:
+      * repriced the synthetic CASH row against NASDAQ:CASH (Pathward Financial,
+        ~$73) and stamped it USD -- the phase-1 bug, which was only ever fixed in
+        the scheduled job; and
+      * wrote a delisted holding's 425-day-old price back in as current.
+    Two implementations of one job means a fix lands on whichever one you call.
+    """
+    stale_at = datetime.now(timezone.utc) - timedelta(days=400)
+
+    def _quote(tk):
+        if tk.upper() == "CASH":          # the real listed ticker, not your shekels
+            return Quote(ticker="CASH", market="NASDAQ", price=73.4, currency="USD",
+                         as_of=datetime.now(timezone.utc).isoformat(),
+                         as_of_source="market")
+        if tk.upper() == "COW":
+            return _q(stale_at, "market", price=39.87)
+        return _q(datetime.now(timezone.utc), "market", price=50.0)
+
+    monkeypatch.setattr(ps, "market_provider", lambda: NS(name="yahoo"))
+    monkeypatch.setattr(ps, "guarded_quote", _quote)
+
+    eng, Session = _session()
+    try:
+        async with Session() as s:
+            user = await _book(s, "manual_refresh_probe@example.com",
+                               [_pos("COW", 30, 210.9), _pos("MSFT", 10, 50.0)])
+            await set_cash(s, user, 640.0)
+            rows = await list_positions(s, user)
+            res = await ps.refresh_all_positions(s, positions=rows)
+            after = {p.ticker: p for p in await list_positions(s, user)}
+            cash_after = await get_cash(s, user)
+    finally:
+        await eng.dispose()
+
+    # Cash is ILS-native: 1 unit = 1 shekel, never quoted, never FX-converted.
+    assert res["skipped_cash"] == 1
+    assert cash_after == pytest.approx(640.0)
+    assert float(after["CASH"].current_price) == 1.0
+    assert after["CASH"].meta.get("price_currency") == "ILS"
+
+    # And the delisted holding is still not accepted as current.
+    assert res["stale"] == 1
+    assert float(after["COW"].current_price) == pytest.approx(210.9)
+    assert after["COW"].meta["price_stale"] is True
+
+    # The response tells the caller what it refused to write.
+    assert [x["ticker"] for x in res["stale_tickers"]] == ["COW"]
+    assert res["prices"] and res["errors"] == []
+
+
 # --------------------------------------------------------------------------- #
 # P0.1 — a sleeve coexists with the book; only "replace" may destroy it
 # --------------------------------------------------------------------------- #

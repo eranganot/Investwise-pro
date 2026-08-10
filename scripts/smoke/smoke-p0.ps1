@@ -84,7 +84,13 @@ else {
     if ($dryFund.mode -eq 'fund') { Ok "default mode for '$Strategy' is 'fund', not 'replace'" }
     else { Bad "default mode for '$Strategy' is '$($dryFund.mode)' - the destructive path is one click away again" }
 
-    if ($dryFund.dry_run -ne $true) { Bad "dry_run was requested but the response does not say dry_run:true" }
+    if ($dryFund.ok -eq $false) {
+        # An abstention writes nothing by definition, so dry_run is moot on that
+        # branch -- asserting it there just manufactured a FAIL next to a PASS
+        # saying the abstention was correct.
+        Ok "dry_run moot: it abstained, so there was nothing to write"
+    }
+    elseif ($dryFund.dry_run -ne $true) { Bad "dry_run was requested but the response does not say dry_run:true" }
     else { Ok "dry_run acknowledged - nothing was written" }
 
     if ($dryFund.ok -eq $false) {
@@ -129,22 +135,33 @@ elseif ($dryRepl.ok -eq $false) { Skip "replace preview refused: $($dryRepl.erro
 elseif ($null -eq $dryRepl.removing) {
     Bad "replace preview does not list what it would delete - the confirm would say 'your current holdings' again"
 }
+elseif ($null -eq $pf) {
+    # Ordering matters: computing $missing from a null $pf yields an empty list,
+    # which reads as "nothing omitted" and PASSES on missing data. That exact
+    # shape of false pass is why every check now SKIPs or FAILs on a null payload.
+    Skip "portfolio unreachable, cannot compare the deletion list against the book"
+}
 else {
     $held = @($pf.positions | Where-Object { $_.ticker -ne 'CASH' })
     $named = @($dryRepl.removing | ForEach-Object { $_.ticker })
     $missing = @($held | Where-Object { $named -notcontains $_.ticker })
-    if ($null -eq $pf) { Skip "portfolio unreachable, cannot compare the deletion list against the book" }
-    elseif ($missing.Count -gt 0) { Bad "replace preview omits $(($missing | ForEach-Object { $_.ticker }) -join ', ') from what it would delete" }
+    if ($missing.Count -gt 0) { Bad "replace preview omits $(($missing | ForEach-Object { $_.ticker }) -join ', ') from what it would delete" }
     else { Ok "replace names every holding it would delete ($($named.Count)), worth $([math]::Round($dryRepl.removing_value_ils))" }
     if ($dryRepl.removing.Count -gt 0 -and ($dryRepl.removing | Where-Object { $null -eq $_.value_ils }).Count -gt 0) {
         Bad "a deletion line has no value - the confirm must show what each position is worth"
     }
 }
 
-if ($Execute) {
+if ($Execute -and $null -eq $pf) {
+    # Without a before-snapshot there is nothing to compare the after-state
+    # against, so "every holding survived" could only ever be a guess.
+    Bad "-Execute requested but /portfolio was unreachable - refusing to write without a before-snapshot"
+}
+elseif ($Execute) {
     Sec "P0.1  executing the funding plan for real (WRITES to your tracked book)"
     $before = @{}
     foreach ($p in @($pf.positions)) { $before[$p.ticker] = [double]$p.quantity }
+    if ($before.Count -eq 0) { Bad "before-snapshot is empty - cannot verify anything survived" }
     $run = Api POST "/api/v1/strategies/$Strategy/load-basket" @{ mode = 'fund' } 180
     if ($null -eq $run) { Bad "fund execution unreachable" }
     elseif ($run.ok -eq $false) { Skip "fund abstained (correct if unfundable): $($run.reason)" }
@@ -172,7 +189,10 @@ if ($Execute) {
 # =========================================================================== #
 Sec "P0.2  a kept measurement must render as numbers, not 'Couldn't measure'"
 # =========================================================================== #
-$bt = Api GET '/api/v1/strategies/backtests' 120
+# NOTE the $null: this Api() takes ($method, $path, $body, $tmo), unlike the one
+# in smoke-beat-market.ps1 which is ($method, $path, $tmo). Writing
+# `Api GET '<path>' 120` here silently sends 120 as the request BODY.
+$bt = Api GET '/api/v1/strategies/backtests' $null 120
 if ($null -eq $bt) { Bad "/strategies/backtests unreachable" }
 elseif (@($bt.strategies).Count -eq 0) { Bad "catalog is empty" }
 else {
@@ -253,6 +273,12 @@ else {
                     }
                 }
             }
+        } elseif ($unknown.Count -eq $equities.Count) {
+            # Zero stale positions means NOTHING when nothing has been examined
+            # yet. Reporting PASS here would be the exact false-reassurance this
+            # phase exists to remove -- and it sat next to two FAILs saying the
+            # opposite on the very first live run.
+            Skip "stale_positions is 0, but no holding has been examined yet - that is 'unknown', not 'clean'"
         } else {
             Ok "nothing is currently stale (and the check is live, not absent)"
         }
@@ -283,8 +309,16 @@ else {
             foreach ($h in @($sugg)) { $count += @($h.rules).Count }
         }
         if ($count -eq 0) {
-            if ($cards.Count -eq 0) { Ok "nothing to suggest and no card - consistent (every rule type is already armed)" }
-            else { Bad "a 'ready to arm' card is showing but the suggester has nothing to suggest" }
+            if ($cards.Count -gt 0) { Bad "a 'ready to arm' card is showing but the suggester has nothing to suggest" }
+            else {
+                # Consistent, but NOT proof that P0.4 works: with nothing to
+                # suggest, the card was never asked to render. Two claims, kept
+                # apart, because collapsing them turns an unexercised path into a
+                # green tick.
+                Ok "no phantom card: the suggester is empty and Today agrees"
+                Skip "P0.4's card was not exercised - every rule type on every holding is already armed"
+                Write-Host "        -> to exercise it: delete one rule in Holdings > Rules, reload Today" -ForegroundColor DarkGray
+            }
         }
         elseif ($cards.Count -eq 0) {
             Bad "$count suggested rule(s) exist but none reached Today - they are still buried on the Rules page"
@@ -319,7 +353,19 @@ if ($SkipChain) {
 
 Write-Host "`n`n===== CHAINING: smoke-e2e.ps1 (everything before P0) =====" -ForegroundColor Magenta
 $here = $PSScriptRoot
-$childOut = & "$here\smoke-e2e.ps1" -BaseUrl $BaseUrl 2>&1 | Tee-Object -Variable _tee | Out-String
+# Run the child in a SUB-PROCESS and capture its stdout.
+#
+# Calling it in-process with `& script 2>&1` does not work: the smoke scripts
+# report through Write-Host, which goes to the information stream (6), not the
+# success stream. `2>&1` only redirects errors, so the output printed to the
+# console while $childOut stayed empty -- and the tally regex then found nothing
+# and reported "result unknown". A sub-process writes to real stdout, which the
+# pipeline does capture, so this cannot silently regress the same way.
+# Colour is lost in the relay; correctness is worth more than colour here.
+$psExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+$childOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File "$here\smoke-e2e.ps1" `
+    -BaseUrl $BaseUrl 2>&1 | Out-String
+Write-Host $childOut
 
 # Parse the child tallies rather than trusting an exit code the child never sets.
 # If they cannot be read, that is a FAIL: an unreadable result is not a pass.

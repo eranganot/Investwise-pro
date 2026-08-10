@@ -3,6 +3,51 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0 build)._
 _Seeded from git history + prior transcripts._
 
+## ✅ LIVE DATA INCIDENT — RESOLVED same session (2026-08-10)
+
+**Repaired.** `POST /portfolio/cash {"amount_ils": 642.19, "mode": "set"}` →
+`nav_ils 21,406.18`, `cash_ils 642.19`, CASH row back to `current_price 1.0 /
+ILS`. **`gain_pct` came back at exactly 7.03%**, the same figure the pre-incident
+smoke reported, which is the evidence that nothing beyond the cash row was
+touched. Only `current_price` and `meta` had been overwritten; `quantity` — the
+true shekel balance — was intact throughout.
+
+Kept below because the *cause* is a class of bug this repo has now hit twice.
+
+**What happened: the production CASH row was corrupted and NAV inflated ~9x.**
+
+Cause: `POST /api/v1/portfolio/refresh-prices` kept its **own copy** of the
+reprice loop, separate from `pricing_service.refresh_all_positions`. That copy
+had neither the cash guard nor the freshness check — so it quoted the synthetic
+`CASH` row against the real NASDAQ ticker CASH (Pathward Financial, ~$73) and
+stamped `price_currency: USD`. This is **exactly the phase-1 bug** (₪1,934 →
+₪521,904), which was only ever fixed in the scheduled job. Two implementations of
+one job, so the fix landed on whichever one you happened to call.
+
+Observed: the P0 smoke priced a 20% sleeve at **₪37,650** (NAV ≈ ₪188k) where the
+run 20 minutes earlier said **₪4,281** (NAV ≈ ₪21.4k). The refresh reported
+`updated: 6` — six positions, and the book only holds five plus cash.
+
+Observed on the row itself: `quantity 642.19, current_price 86.85, currency USD`
+— ₪642 of shekels valued as 642 shares of a US bank stock, then FX-multiplied
+again. 642.19 x 86.85 x FX = the ~₪167k of phantom NAV.
+
+**The lesson, which is bigger than the bug:** a guard is only as good as the
+number of code paths that call it. Phase 1 fixed cash-as-a-stock in
+`refresh_all_positions` and *stopped there* — nobody checked whether anything
+else repriced. Both duplicates have to be found, or the fix is conditional on
+which button the user presses. Same shape as the P0.3 finding itself.
+
+Fixed in the tree: the endpoint now delegates to `refresh_all_positions`
+(cash guard + freshness + self-heal) instead of carrying its own loop, and
+`tests/test_p0_safety.py::test_the_manual_refresh_endpoint_shares_the_guarded_implementation`
+locks it down. Once deployed, any refresh also self-heals a corrupted row via
+`repair_cash_row`.
+
+Still worth doing: **grep for any other place that writes `current_price`** —
+broker sync, CSV intake, `add_holding`, `update_position`. This audit has not
+been done.
+
 ## ⛔ UNCOMMITTED — read this first (2026-08-10)
 
 **The whole P0 safety batch from `BEAT_MARKET_NEXT_PLAN.md` is written, tested and
@@ -117,6 +162,7 @@ All five originally-reported issues confirmed fixed against production: cash car
 Phase 13's second pass reallocates an *unfillable class's* budget, but it is gated on `if remaining >= MIN_TRADE_ILS and legs:` — with zero legs there is nothing to reallocate into, so the card vanishes rather than under-deploying. Seen live: NAV 22,006, cash 2,589 (11.8%) vs a 3% floor → spendable ₪1,929; the Equities share of ₪551 split across four holdings = ₪138 each, all under the ₪250 minimum → no legs → no card, while ₪1,929 sits idle. **Fix:** when no leg clears the minimum, concentrate the budget into the single best candidate instead of splitting it thin.
 
 ## Corrections worth remembering
+- **A guard protects the path it is on, not the behaviour.** Phase 1 fixed cash-being-quoted-as-NASDAQ:CASH in `refresh_all_positions` and stopped there. `POST /portfolio/refresh-prices` had its own copy of the same loop with no guard, so on 2026-08-10 the identical bug fired again from the manual button and inflated NAV ~9x. When fixing a data-integrity bug, **find every writer of that field first** — the fix is otherwise conditional on which code path the user happens to hit. (Still unaudited: broker sync, CSV intake, `add_holding`, `update_position`.)
 - **The AMZN "cap breach" was not a bug.** `risk_tolerance: High` sets `concentration_cap` to 0.40, so AMZN at 29% is within limits — `diversification_score: 100` proves it (that score can only be 100 when `max_weight <= cap`). A smoke test hardcoding 0.25 manufactured the false alarm. Read caps from `/api/v1/plan`, never assume 0.25.
 - **Gemini outages were billing, not code**: HTTP 429 "prepayment credits are depleted". `gemini_generate` swallows every exception identically, so a two-minute billing fix looked like a permanent outage. Surfacing the error class is still an open improvement.
 - **Smoke tests must not pass on missing data.** A check reported "no competing cash cards" when the API had timed out and returned null. Every check now SKIPs or FAILs on a null payload.
@@ -135,6 +181,7 @@ Phase 13's second pass reallocates an *unfillable class's* budget, but it is gat
 5. Broker integration — see `BROKER_INTEGRATION_PLAN.md` (unstarted; confirm it's still the next initiative — it has been "next" and unstarted for 3 weeks).
 
 ## Pending QA / open questions
+- **P0 safety batch (2026-08-10):** `qa/QA-2026-08-10-p0-safety.md` on the Pixel 9 — 8 sections, ~10 min. Pre-flight matters here: the SW went `iw-v13`→`iw-v14`, so close/reopen the installed app once, and force `POST /api/v1/portfolio/refresh-prices` before section 4 or no holding will carry `price_freshness` yet. Automated half: `.\scripts\smoke\smoke-p0.ps1` (read-only; `-Execute` writes).
 - **5-issue batch (phases 1–11):** ✅ verified live 2026-08-03 via `smoke-all.ps1` — see "Verified live" above. Only the notification subscription remains.
 - **Alignment batch (Phases 0–5, 2026-07-18):** ⚠️ **still unrun on the Pixel 9 after two weeks**, and the SW has since moved `iw-v10`→`iw-v11`, so the update path in the original checklist is stale. Check: cash set/adjust + pinned Cash row + Cash slice in donut; a buy card shows sizing + "How it's funded" legs and executes; Mark-as-done vs Ignore land in separate restore lists; war-room cards match Today; strategy "What changes?" preview renders; no stale shell after SW `iw-v11`. **Decide whether this is still worth running standalone or is subsumed by the 08-03 smoke pass.**
 - **Notification ↔ Today alignment (2026-07-12):** `qa/QA-2026-07-12-notification-alignment.md` on the Pixel 9 — blocked on the same "enable notifications on the device" step as Next #1; do them together.

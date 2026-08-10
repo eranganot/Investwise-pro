@@ -63,6 +63,7 @@ $files = @(
     'tests/test_p0_today_cards.py',
     'scripts/smoke/smoke-p0.ps1',
     'scripts/deploy/ship-p0.ps1',
+    'qa/QA-2026-08-10-p0-safety.md',
     'STATUS.md'
 )
 foreach ($f in $files) {
@@ -87,7 +88,12 @@ if ($unstaged) {
 
 # ------------------------------------------------------------- 3. commit
 Step "3. Commit (-F, never a here-string)"
-if (-not (Test-Path 'COMMIT_MSG.txt')) { Die "COMMIT_MSG.txt is missing" }
+if (-not (Test-Path 'COMMIT_MSG.txt')) {
+    # This script consumes the message file on a successful push, so a missing
+    # one usually means the previous run WORKED and this is a second commit.
+    Write-Host "  Check 'git log --oneline -3' - the earlier batch may already be pushed." -ForegroundColor Yellow
+    Die "COMMIT_MSG.txt is missing. Write one describing THIS commit, then re-run."
+}
 git commit -F COMMIT_MSG.txt
 if ($LASTEXITCODE -ne 0) { Die "commit failed" }
 git log --oneline -1

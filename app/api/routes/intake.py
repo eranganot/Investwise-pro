@@ -7,15 +7,12 @@ from pydantic import BaseModel, Field
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from decimal import Decimal
-
 from app.api.deps import acting_user
 from app.core.auth import Role, require_role
 from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
-from app.providers.live import YahooMarketDataProvider
 from app.services.performance_service import performance
 from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
@@ -221,49 +218,30 @@ async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(ge
 @router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])
 async def refresh_prices(session: AsyncSession = Depends(get_session),
                          user: User = Depends(acting_user)) -> dict:
-    """Update each holding's current_price from the live market provider."""
+    """Update each holding's current_price from the live market provider.
+
+    Delegates to ``pricing_service.refresh_all_positions``. It used to carry its
+    own copy of that loop, and the copy had neither the cash guard nor the
+    freshness check: a manual refresh repriced the synthetic CASH row against
+    NASDAQ:CASH (Pathward Financial) and stamped it USD -- the exact bug phase 1
+    fixed in the scheduled job and only there -- and wrote a delisted holding's
+    425-day-old price back in as current. Two implementations of one job means a
+    fix lands on whichever one you happen to call.
+    """
+    from app.services.pricing_service import refresh_all_positions
     rows = await list_positions(session, user)
-    prices, errors = [], []
-    primary = market_provider()
-    # Keyless fallback: if the configured provider can't price a ticker (e.g. FMP
-    # key missing/expired/over-quota, or a deprecated endpoint), use Yahoo so a
-    # manual refresh never silently leaves every price stale.
-    yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
-    by_source: dict[str, int] = {}
-    for p in rows:
-        q, used, last_err = None, None, None
-        try:
-            q = guarded_quote(p.ticker)
-            used = primary.name
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-        if q is None and yahoo is not None:
-            try:
-                q = yahoo.get_quote(p.ticker)
-                used = yahoo.name
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-        if q is None:
-            errors.append({"ticker": p.ticker, "error": str(last_err)[:160]})
-            continue
-        p.current_price = Decimal(str(q.price))
-        p.meta = {**(p.meta or {}), "price_as_of": q.as_of, "price_source": used,
-                  "price_currency": q.currency}
-        by_source[used] = by_source.get(used, 0) + 1
-        prices.append({"ticker": p.ticker, "price": q.price, "currency": q.currency,
-                       "as_of": q.as_of, "source": used})
-    if by_source:
-        from app.models.tables import KVSetting
-        dominant = max(by_source, key=by_source.get)
-        row = await session.get(KVSetting, "last_price_source")
-        if row:
-            row.value = dominant
-        else:
-            session.add(KVSetting(key="last_price_source", value=dominant))
-    await session.commit()
-    src = "+".join(sorted(by_source)) if by_source else primary.name
-    return {"source": src, "updated": len(prices), "failed": len(errors),
-            "by_source": by_source, "prices": prices, "errors": errors}
+    res = await refresh_all_positions(session, positions=rows)
+    by_source = res.get("by_source") or {}
+    src = "+".join(sorted(by_source)) if by_source else market_provider().name
+    return {"source": src, "updated": res["updated"], "failed": res["failed"],
+            "by_source": by_source,
+            "prices": res.get("prices") or [], "errors": res.get("errors") or [],
+            # Newly visible, and the whole point: what was NOT accepted as current,
+            # and what was healed back to its ILS-native invariant.
+            "stale": res.get("stale", 0),
+            "stale_tickers": res.get("stale_tickers") or [],
+            "skipped_cash": res.get("skipped_cash", 0),
+            "repaired_cash": res.get("repaired_cash", 0)}
 
 
 @router.post("/portfolio/risk", dependencies=[Depends(require_role(Role.ANALYST))])
