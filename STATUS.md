@@ -3,6 +3,44 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0 build)._
 _Seeded from git history + prior transcripts._
 
+## 🚧 P3 — step 1 of 3 done (green), 2 and 3 to go (2026-08-10)
+
+`app/engines/regime.py` + `tests/test_p3_regime.py` — **10 passed, ruff clean.**
+**Inert**: nothing imports it yet, so it changes no behaviour.
+
+Landed on its own deliberately. P3 is the highest-risk phase in the plan
+("changes what every strategy does"), so the pure engine — which can be tested in
+isolation and cannot affect anything — goes in first, and the wiring follows
+against a known-good foundation.
+
+*Note for the next session:* the sandbox VM was down for this entire build, so
+every line of this was written without executing anything and verified by Eran
+running the suite. It passed 10/10 first time. That loop works; it is not a
+reason to slow down, only a reason to keep tests tight and land things in
+inert-first order.
+
+**Decisions taken this session — do not re-litigate:**
+
+| # | Decision |
+|---|---|
+| Gate enablement | **Measure both, ship OFF.** Every strategy is backtested with and without the gate and the card shows both numbers, but the gate does not act until Eran turns it on per strategy. Nothing changes what the money does until a human has compared them — the only version that cannot quietly curve-fit itself on. |
+| "Improves" | **Shallower max drawdown at no worse than −1%/yr CAGR.** Judges the gate on the job it is for. CAGR-alone would reject a filter doing exactly what it was built to do. |
+| Volatility input | **Realized vol from SPY closes**, not `^VIX`. No new provider, and identical in both paths — which is the whole constraint. |
+
+**Still to build (P3.2 / P3.3):** the `strategy_backtest` gate, the live call from
+`strategy_signal_service`, `tickers_needed()` extended so the fetcher gets
+SPY/QQQ/IWM, storing gated + ungated metrics side by side, the card showing both,
+and relabelling the Markets futures regime as a display-only cross-check.
+**Needs a structural test proving live and backtest call the same function** —
+that is the entire point of option (b).
+
+**Verified:** 10/10 on the dev machine, ruff clean. The thresholds
+(`VOL_HIGH_PCTL` 80, score cutoffs ±0.35) behave as intended on the synthetic
+rising/falling series — steady advance scores 0.95 → `risk_on`, steady decline
+−1.2 → `risk_off`. They have **not** been exercised against ten years of real
+closes; that happens in P3.2, and the gated-vs-ungated comparison is what will
+show whether they are set sensibly.
+
 ## ⛔ P2 — WRITTEN, NOT YET RUN (2026-08-10)
 
 Presentation only — no engine, no money path. The sandbox VM was down for the

@@ -342,6 +342,26 @@ else {
 }
 
 # =========================================================================== #
+Sec "P0  YOU must check these - an HTTP call cannot see rendering"
+Write-Host @"
+  Full list: qa/QA-2026-08-10-p0-safety.md. The five that matter most:
+
+    [ ] Plan tab: the button on a Beat the Market card reads
+        "Fund this sleeve", NOT "Load this basket".
+
+    [ ] Tapping it shows a plan and does NOT buy anything. Cancel, then
+        check Holdings - unchanged.
+
+    [ ] "Replace book with this basket" lists every holding it would
+        delete, by name and value, before you confirm. Then cancel.
+
+    [ ] Holdings: COW shows an amber "price frozen" badge and
+        "price from 2025-06-11", NOT a confident 0.0%.
+
+    [ ] Today: the COW card is guidance, with no button that writes it off.
+        NAV still includes it.
+"@ -ForegroundColor Gray
+
 Write-Host "`n===== P0: $pass passed, $fail failed, $skip skipped =====" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($skip -gt 0) { Write-Host "A SKIP is not a PASS - it means the check could not run." -ForegroundColor DarkYellow }
 

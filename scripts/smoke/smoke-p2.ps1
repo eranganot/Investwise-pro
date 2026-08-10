@@ -80,9 +80,28 @@ else {
     else { Ok "every card is flagged measured" }
 }
 
-Write-Host "`n  NOTE: the two CSS fixes (goal tabs scroll instead of wrapping;" -ForegroundColor DarkGray
-Write-Host "  'VERY HIGH RISK' on one line) are rendering and cannot be checked over" -ForegroundColor DarkGray
-Write-Host "  HTTP. They are on the Pixel QA list." -ForegroundColor DarkGray
+Sec "P2  YOU must check these - an HTTP call cannot see rendering"
+Write-Host @"
+  On the phone, Plan tab (close and reopen the installed app first - the service
+  worker moved to iw-v16, and the old shell shows none of this):
+
+    [ ] The five goal tabs sit on ONE line and scroll sideways.
+        Fail: "Beat the Market" sits on a second row, looking like a
+        separate control rather than a fifth tab.
+
+    [ ] "VERY HIGH RISK" on a card header is on ONE line.
+        Fail: it wraps to two, so the header reads as two fragments.
+
+    [ ] Every Beat the Market card shows a Style chip and a Horizon chip
+        alongside Backtested / Volatility / Worst drawdown.
+        Fail: chips missing, or every card says the same Style.
+
+    [ ] The leveraged cards (TQQQ, SOXL) show the amber leverage warning.
+
+    [ ] No card anywhere says "Est. return" - measured cards say "Backtested".
+        This is the one that matters: an estimate wearing a measurement's
+        label is the confusion this whole family exists to avoid.
+"@ -ForegroundColor Gray
 
 # =========================================================================== #
 Write-Host "`n===== P2: $pass passed, $fail failed, $skip skipped =====" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

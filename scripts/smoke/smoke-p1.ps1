@@ -169,6 +169,28 @@ else {
 }
 
 # =========================================================================== #
+Sec "P1  YOU must check these - an HTTP call cannot see rendering"
+Write-Host @"
+  On the phone, Plan tab:
+
+    [ ] Set the sleeve slider to 20%, tap "What changes?".
+        It lists what to BUY and how it is funded (what to sell, shares,
+        estimated tax) - not just a target-mix table.
+        Fail: an empty or near-empty rebalance list, which is the "applying
+        reads as a no-op" complaint P1 exists to fix.
+
+    [ ] Move the slider to 60% and tap it again. The numbers MOVE.
+        Fail: identical output at both sizes.
+
+    [ ] Tap "Apply strategy". It names the cap it armed, e.g.
+        "Armed a 20% cap on TQQQ", and says a cap is not a target.
+
+    [ ] Holdings > Rules: exactly ONE max_weight rule on TQQQ, at the
+        sleeve size. Fail: two caps at different levels (20% and 30%).
+
+    [ ] Today: the discipline card no longer offers a max-weight rule.
+"@ -ForegroundColor Gray
+
 Write-Host "`n===== P1: $pass passed, $fail failed, $skip skipped =====" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($skip -gt 0) { Write-Host "A SKIP is not a PASS - it means the check could not run." -ForegroundColor DarkYellow }
 
