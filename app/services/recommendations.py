@@ -572,15 +572,44 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _note = ("" if not _held_for_strategy else
                  f" {', '.join(_held_for_strategy)} is left alone: your plan holds it "
                  f"on purpose, and a tax saving is not a reason to sell your strategy.")
+
+        # Severity by MATERIALITY, and never CRITICAL.
+        #
+        # This was `"CRITICAL" if save > 0 else "MEDIUM"`, so a 12 shekel saving
+        # on a 21,405 shekel book -- 0.06% -- was flagged Important and sorted
+        # above everything. CRITICAL is what a firing stop-loss gets (see _SEV);
+        # an optional tax optimisation is not in that class, and putting it there
+        # invites a careless tap on a card that sells an entire position.
+        #
+        # The threshold is the app's own materiality unit rather than a number
+        # picked here: MIN_TRADE_ILS is what it already considers "too small to
+        # be worth the friction". A saving below that is, by the app's own
+        # standard, not worth shouting about.
+        from app.services.funding_service import MIN_TRADE_ILS as _MIN_TRADE
+        _sell_value = sum(float(r.current_price or 0) * float(r.quantity)
+                          for r in rows if r.ticker in losers)
+        if save >= _MIN_TRADE:
+            _sev = "HIGH"
+        elif save >= _MIN_TRADE / 5:
+            _sev = "MEDIUM"
+        else:
+            _sev = "LOW"
+        # Say what it costs, not only what it saves. Selling 2,001 to save 12 is
+        # a decision the user should be able to see the shape of.
+        _cost_note = ("" if _sev != "LOW" or not _sell_value else
+                      f" Worth weighing: that means selling {_ils(_sell_value)} of "
+                      f"holdings to save {_ils(save)}, and giving up the position "
+                      f"for the wash-sale window.")
         recs.append({"id": _rid("tax"), "dimension": "tax",
-                     "severity": "CRITICAL" if save > 0 else "MEDIUM",
-                     "title": "Harvest a tax loss",
+                     "severity": _sev,
+                     "title": ("Harvest a tax loss" if _sev != "LOW"
+                               else f"A small tax loss to harvest ({_ils(save)})"),
                      "why": "You hold position(s) below what you paid \u2014 selling now realizes a loss you can "
                             "use to offset taxable gains before year-end." + _note,
                      "action": f"Sell your losing position(s) ({', '.join(losers)}) to realize the loss "
                                f"and save about {_ils(save)} in tax this year.",
                      "impact": f"Lowers this year's tax bill by about {_ils(save)}; you can re-buy after the "
-                               f"wash-sale window if you still want the exposure.",
+                               f"wash-sale window if you still want the exposure." + _cost_note,
                      "how": ["Sell the position(s) currently below what you paid",
                              "The realized loss offsets taxable gains, lowering your tax bill",
                              "If you still believe in them, re-buy after the wash-sale window"],
