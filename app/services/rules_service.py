@@ -493,8 +493,25 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
         .order_by(TradingRule.created_at.desc()))).all()
     idx = await _positions_index(session, user) if rules else {}
     out = []
+    _retired_now = False
     for r in rules:
         pos = idx.get(r.ticker.upper())
+
+        # Retire at READ time, not only inside evaluate_user.
+        #
+        # I fixed this in the evaluator first -- twice -- and both times the
+        # Rules tab still showed "armed" rules on TQQQ, META and AMZN, because
+        # evaluate_user runs in the 30-minute price job and the tab renders from
+        # the DB. Exactly the lesson written down for the max_weight latch, and
+        # not applied here: a screen that must be self-consistent has to
+        # reconcile when it renders.
+        if pos is None and r.active and r.ticker.upper() != "CASH":
+            r.active = False
+            r.triggered = False
+            if not (r.note or "").startswith("retired:"):
+                r.note = f"retired: {r.ticker} is no longer in your portfolio"[:160]
+            _retired_now = True
+
         cur = pos["price"] if pos else None
         hit, _title, _action, target = _evaluate(
             r, pos["price"], pos["cost"], pos["weight_pct"]) if pos else (False, "", "", None)
@@ -528,6 +545,8 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
                     "breached_now": bool(hit),
                     "target": target,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
+    if _retired_now:
+        await session.commit()
     return out
 
 

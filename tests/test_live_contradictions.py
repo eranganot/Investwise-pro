@@ -238,3 +238,32 @@ def test_tax_harvest_never_targets_the_strategy_sleeve():
     i_excl = src.index("_held_for_strategy")
     i_save = src.index('harvest[0]["estimated_annual_tax_savings_currency"]')
     assert i_excl < i_save, "the sleeve must be excluded before the saving is quoted"
+
+@pytest.mark.asyncio
+async def test_list_rules_retires_on_read_not_only_in_the_price_job():
+    """Fixed in the evaluator TWICE, and the Rules tab still showed "armed"
+    rules on TQQQ, META and AMZN both times -- because evaluate_user runs in the
+    30-minute price job while the tab renders from the DB.
+
+    Same lesson as the max_weight latch, not applied here the first time: a
+    screen that must be self-consistent has to reconcile when it renders.
+    """
+    eng, Session = _session()
+    try:
+        async with Session() as s:
+            user = await _book(s, "retire_on_read@example.com",
+                               [_pos("MSFT", 10, 100.0, 100.0)])
+            await rs.create_rule(s, user, ticker="AMZN", rule_type="stop_loss",
+                                 mode="price", level=222.58)
+            await rs.create_rule(s, user, ticker="MSFT", rule_type="stop_loss",
+                                 mode="price", level=80.0)
+            # NO evaluate_user call -- straight to the read path the tab uses.
+            listed = {r["ticker"]: r for r in await rs.list_rules(s, user)}
+            again = {r["ticker"]: r for r in await rs.list_rules(s, user)}
+    finally:
+        await eng.dispose()
+
+    assert listed["AMZN"]["active"] is False, "an unheld position's rule must retire on read"
+    assert "no longer in your portfolio" in (listed["AMZN"]["note"] or "")
+    assert listed["MSFT"]["active"] is True, "a held position keeps its rules"
+    assert again["AMZN"]["active"] is False, "and it stays retired"
