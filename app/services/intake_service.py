@@ -123,6 +123,20 @@ async def update_position(
     row = (await session.execute(q)).scalars().first()
     if row is None:
         return None
+
+    # The cash row is ILS-native: 1 unit = 1 shekel, price and basis pinned at
+    # 1.0. Only `quantity` is the balance. This is the last writer of
+    # current_price that had no guard -- the audit after the 2026-08-10 incident
+    # found the reprice path (fixed by sharing one implementation) and this one.
+    # Nothing in the UI reaches it, but the API does, and "no UI path" is not a
+    # guarantee. Editing the balance still works; mispricing it does not.
+    if is_cash_position(row.ticker, row.meta if isinstance(row.meta, dict) else None):
+        if quantity is not None:
+            row.quantity = Decimal(str(round(max(0.0, float(quantity)), 2)))
+        repair_cash_row(row)
+        await session.commit()
+        return row
+
     if ticker:
         row.ticker = ticker
     if market:

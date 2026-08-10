@@ -47,14 +47,25 @@ _US_LARGE = {"QQQ", "SPY", "IVV", "DIA"}
 # stock's 32% volatility and reported as "Concentrated". The app recommends
 # these tickers in its own catalog; it should know what they are.
 _FACTOR = {"MTUM", "QUAL", "AVUV", "VTV", "VUG", "VBR", "VB", "IWF", "IWD",
-           "SIZE", "VLUE", "AVDV", "DFAC"}
+           "SIZE", "VLUE", "AVDV", "DFAC",
+           # IWM is a broad small-cap index, and P3 made the app reference it
+           # directly as a regime breadth member -- so the app was measuring
+           # breadth with an index it classified as a single stock. Sits with VB
+           # rather than in _BROAD: small-cap carries more volatility than a
+           # total-market fund.
+           "IWM"}
 _DIVIDEND = {"SCHD", "VIG", "VYM", "DVY", "NOBL"}
 _OPTION_INCOME = {"JEPI", "JEPQ", "QYLD"}
 _BONDS = {"BND", "AGG", "BNDX"}
 _SHORT_BOND = {"SHY", "BIL", "SGOV", "SHV"}
 _TIPS = {"TIP", "VTIP", "SCHP"}
 _HY_BOND = {"HYG", "JNK"}
-_COMMODITY = {"DBC", "IAU", "GLD", "SLV", "DBA", "PDBC", "USO", "GLDM"}
+# COW is the iPath livestock ETN -- a commodity, and delisted. It was falling
+# through to "single_name", so a ₪2.1k commodity position was risk-scored as a
+# 32%-volatility individual stock. Correcting it lowers the book's weighted
+# volatility slightly, which RAISES the risk score: the previous number was
+# pessimistic by artefact, not by measurement.
+_COMMODITY = {"DBC", "IAU", "GLD", "SLV", "DBA", "PDBC", "USO", "GLDM", "COW"}
 _MIN_VOL = {"USMV", "SPLV"}
 
 
