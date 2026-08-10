@@ -3,34 +3,46 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0-P3)._
 _Seeded from git history + prior transcripts._
 
-## 🚧 P4 — parts 1 and 3 written and green, NOT YET SHIPPED (2026-08-10)
+## ✅ P4 — COMPLETE (all three parts), tests green, NOT YET SHIPPED (2026-08-10)
 
-`strategy_signal` entry/exit rules + the sleeve-drift card. **10 P4 tests green,
-full suite 551 passed, ruff clean.** Notifications (P4.2) are a separate deploy.
+Entry/exit rules, the sleeve-drift card, and notifications. **Full suite 570
+passed, ruff clean.** This finishes `BEAT_MARKET_NEXT_PLAN.md`.
 
 **Decisions taken this session — do not re-litigate:**
 
 | # | Decision |
 |---|---|
-| Rule shape | **One strategy-linked rule**, not discrete `ma_above`/`rsi_below`/`breakout` types. Those would put a second copy of SMA/RSI/Donchian in `rules_service` beside the engine's — the duplication that caused the reprice-loop and regime bugs. A test asserts `rules_service` contains no indicator maths. |
-| Stats | Rules carry the strategy's **measured** win rate / avg hold / expectancy. No stored backtest → no rule offered, rather than describing trades nobody counted. |
-| Entry sizing | An exit executes a full exit; an **entry stays advisory** — size is a funding decision, and inventing one would be the app choosing how much of the book to commit. |
-| Drift Accept | **Executes when the sleeve is held; refuses a cold start.** A 20-point gap at 0% held is not drift, it is never having funded it. Rejected a per-Accept NAV cap: it would make the card say one thing and the app do another, and pay CGT twice for one allocation. |
-| P4.2 | **Deferred.** Push has been the flakiest surface here — subscriptions sat at 0 for weeks and the 07:00 digest has never been confirmed arriving. Four new triggers on an unverified pipe means debugging two things at once. |
+| Rule shape | **One strategy-linked rule**, not discrete `ma_above`/`rsi_below` types. Those would put a second copy of SMA/RSI/Donchian in `rules_service` beside the engine's — the duplication that caused the reprice-loop and regime bugs. A test asserts `rules_service` contains no indicator maths. |
+| Stats | Rules carry the strategy's **measured** win rate / avg hold / expectancy. No backtest → no rule offered. |
+| Entry sizing | Exits execute a full exit; **entries stay advisory** — size is a funding decision. |
+| Drift Accept | **Executes when the sleeve is held; refuses a cold start** and routes to "Fund this sleeve". |
+| Push limits | **Per trigger, not per message.** Card ids are content hashes, so an id-keyed dedupe lets a re-rounded number push again. |
+| `rules_available` | **`None`, not a long window.** A card that must never push live should be *impossible* to push. Digest only. |
 
-**Schema:** `trading_rules.strategy_id VARCHAR(40) NULL` — migration 0013 plus the
-startup self-heal DDL, because `create_all` never adds a column to an existing
-table and hand-running alembic against this deploy has failed twice.
+**Rules on positions no longer held are now retired** (`active = False`, history
+kept). Previously only a rule that had already latched `triggered` was retired,
+so TQQQ/META/AMZN each carried up to four "armed" rules for positions not in the
+book. A stale AMZN stop at 222.58 would have gone live the instant the position
+was re-bought — more dangerous than no stop.
 
-**P4.2 triggers, for when it ships:** signal flip → immediate; armed rule fires →
-immediate; sleeve drift beyond ±5pts → at most daily; new rules available →
-**weekly, inside the 07:00 digest**, never live (suggestions regenerate as prices
-move, and that is the push that gets notifications switched off entirely).
+**Still open:** the Pixel pass. Four of P4's checks are phone-only, and three of
+them are the notification cadence — the one thing no HTTP call can verify.
+`smoke-p4.ps1` lists them.
 
-**Unverified:** nothing has run against production yet. `smoke-p4.ps1` is written
-and chains p3 → p2 → p1 → p0 → e2e. Your book holds no TQQQ against a chosen
-20%, so the **cold-start** path is the one that will exercise first — expect the
-card to refuse to execute and point at "Fund this sleeve".
+### Three bugs this batch that only the live screen could show
+Worth recording, because 570 green tests found none of them:
+
+1. **Tax harvest offered to sell the strategy sleeve** — SOXL, with a cap armed
+   on it to keep it, for a ₪12 saving. Two agents, opposite instructions, same
+   position, same screen.
+2. **A ₪12 saving was severity CRITICAL** — the level reserved for a firing
+   stop-loss — so it sorted above everything with an "Important" badge.
+3. **A cap that corrected itself kept nagging** — and `execution_plan` correctly
+   returned `None`, so it was guidance with nothing to press. A nag no user
+   action could clear.
+
+All three were agents individually correct, disagreeing with each other. A green
+suite says every agent works; only the rendered page shows whether they agree.
 
 ## ✅ P3 — SHIPPED AND VERIFIED LIVE (2026-08-10)
 

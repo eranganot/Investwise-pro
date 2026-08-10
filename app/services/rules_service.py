@@ -13,6 +13,7 @@ and tells you so plainly, so you can mirror the trade at your broker.
 """
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import RuleEvent, TradingRule, User
 from app.services.portfolio_analytics import compute_snapshot, load_positions
+
+logger = logging.getLogger(__name__)
 
 RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
               "price_below", "buy_dip", "max_weight", "strategy_signal"}
@@ -188,6 +191,7 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
     newly = []
+    retired: list[dict] = []
     _flips: dict[str, dict | None] = {}
     for r in rules:
         if r.rule_type == "strategy_signal":
@@ -221,13 +225,35 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
             continue
         pos = idx.get(r.ticker.upper())
         if not pos:
-            # The thing this rule watches is no longer a tradeable holding —
-            # sold, or (for CASH) never one to begin with. Retire it instead of
-            # skipping, which would leave a latched `triggered` flag counting
-            # toward the banner forever with no card able to clear it.
-            if r.triggered or r.ticker.upper() == "CASH":
-                r.triggered = False
+            # The thing this rule watches is no longer a tradeable holding --
+            # sold, or (for CASH) never one to begin with. Retire it.
+            #
+            # This used to retire ONLY a rule that had already latched
+            # `triggered`, so an un-fired rule on a sold position stayed armed
+            # forever. Seen live: TQQQ, META and AMZN each carrying up to four
+            # "armed" rules for positions that were not in the book at all.
+            #
+            # That is worse than clutter. A stop-loss on AMZN at 222.58, set
+            # months ago against a price that has moved since, sits dormant and
+            # then goes live the instant the position is re-bought -- firing at a
+            # level nobody chose for today's market. A stale stop that reanimates
+            # is more dangerous than no stop.
+            #
+            # Retired, not deleted: `active = False` stops evaluation and takes it
+            # out of the armed list, while the rule and its RuleEvent history
+            # survive so nothing the user configured vanishes silently. They can
+            # re-arm it or delete it.
+            if r.active:
                 r.active = False
+                r.triggered = False
+                _reason = ("cash is not a tradeable holding" if r.ticker.upper() == "CASH"
+                           else f"retired: {r.ticker} is no longer in your portfolio")
+                if not (r.note or "").startswith("retired:") and r.ticker.upper() != "CASH":
+                    r.note = _reason[:160]
+                retired.append({"id": str(r.id), "ticker": r.ticker,
+                                "rule_type": r.rule_type, "reason": _reason})
+            elif r.triggered:
+                r.triggered = False
             continue
         cur, cost, w = pos["price"], pos["cost"], pos["weight_pct"]
         if r.rule_type == "trailing_stop" and cur > 0:
@@ -273,6 +299,9 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     for n in newly:
         n["event_id"] = str(n["event"].id)
         n.pop("event", None)
+    if retired:
+        logger.info("retired %d rule(s) on positions no longer held: %s", len(retired),
+                    ", ".join(f"{r['ticker']} {r['rule_type']}" for r in retired))
     return newly
 
 

@@ -968,9 +968,31 @@ const RULE_META={
 };
 const _DCOLOR={red:"var(--red)",green:"var(--green)",blue:"#60a5fa",amber:"var(--amber)"};
 function _ruleStatus(x){return x.triggered?"triggered":(x.active?"armed":"paused");}
+// Distance to trigger, measured in the rule's OWN unit.
+//
+// This always used current_price, so a max_weight rule compared SOXL's $137.61
+// against a 10%-of-portfolio cap and reported "-93% to trigger" for a position
+// sitting at 9.7% of a 10% cap. The API now says which quantity each rule
+// watches (`current` + `unit`); this reads it instead of assuming price.
+//
+// For a weight cap the honest distance is in POINTS of portfolio, not percent of
+// a price: 9.7% against a 10% cap is 0.3 points away, and calling that "3%"
+// would be a percentage of a percentage.
 function _ruleDist(x){
-  if(x.current_price==null||x.target==null||!Number(x.current_price)) return null;
-  return (Number(x.target)-Number(x.current_price))/Number(x.current_price)*100;
+  const cur = (x.current!=null) ? Number(x.current) : Number(x.current_price);
+  if(cur==null||isNaN(cur)||!cur) return null;
+  if(x.unit==="pct_of_portfolio"){
+    if(x.level==null) return null;
+    return Number(x.level)-cur;            // points of portfolio, signed
+  }
+  if(x.unit==="signal") return null;       // no distance: it fires on a signal
+  if(x.target==null) return null;
+  return (Number(x.target)-cur)/cur*100;
+}
+function _ruleDistLabel(x,p){
+  if(x.unit==="pct_of_portfolio")
+    return `${Number(x.current).toFixed(1)}% of book, cap ${Number(x.level).toFixed(0)}% — ${p>0?p.toFixed(1)+" pts of room":"over by "+Math.abs(p).toFixed(1)+" pts"}`;
+  return `${p>0?"+":""}${p.toFixed(0)}% to trigger`;
 }
 function holdSeg(which){
   document.querySelectorAll('#holdSeg button').forEach(b=>b.classList.toggle('on',b.dataset.seg===which));
@@ -1023,11 +1045,23 @@ function renderRules(){
       const badge=`<span class="rbadge rb-${m.cls}">${m.icon} ${blabel}</span>`;
       const lvl=`<span class="rlvl">→ ${tgt}</span>`;
       let mid;
-      if(x.triggered){ mid=`<span class="rtrigtxt">🔴 Triggered${now?` · now ${Number(now.current_price).toFixed(2)}`:""}</span>`; }
+      if(x.triggered){
+        // `triggered` is a LATCH. Say so when the condition has since cleared,
+        // instead of implying a live breach the numbers contradict.
+        const stale = x.breached_now===false;
+        mid=`<span class="rtrigtxt">${stale?"🟠":"🔴"} ${stale?"Fired earlier — now back inside":"Triggered"}${now?` · now ${Number(now.current_price).toFixed(2)}`:""}</span>`;
+      }
       else if(x._dupe){ mid=`<span class="rdupe">⧉ duplicate of another rule — remove</span>`; }
+      else if(!x.active){ mid=`<span class="rdist"><div class="dtxt">retired — ${x.ticker} is not in your portfolio</div></span>`; }
+      else if(x.unit==="signal"){ mid=`<span class="rdist"><div class="dtxt">waits for the ${x.strategy_id||"strategy"} signal</div></span>`; }
       else if(x._dist!=null){
-        const p=x._dist, ap=Math.abs(p), w=Math.max(4,Math.min(100,100-ap*4));
-        mid=`<span class="rdist"><div class="dtrack"><div class="dfill" style="width:${w}%;background:${_DCOLOR[m.cls]}"></div></div><div class="dtxt">${p>0?"+":""}${p.toFixed(0)}% to trigger</div></span>`;
+        const p=x._dist, ap=Math.abs(p);
+        // A weight cap's room is in points of portfolio, so scale the bar to the
+        // cap itself rather than to a percent-of-price.
+        const w=(x.unit==="pct_of_portfolio")
+          ? Math.max(4,Math.min(100,100-(ap/Math.max(1,Number(x.level)))*100))
+          : Math.max(4,Math.min(100,100-ap*4));
+        mid=`<span class="rdist"><div class="dtrack"><div class="dfill" style="width:${w}%;background:${_DCOLOR[m.cls]}"></div></div><div class="dtxt">${_ruleDistLabel(x,p)}</div></span>`;
       } else { mid=`<span class="rdist"><div class="dtxt">armed</div></span>`; }
       const acts=x._dupe
         ? `<span class="racts"><button class="del" title="Delete duplicate" onclick="deleteRule('${x.id}')">✕</button></span>`

@@ -955,7 +955,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                 "Review every funding leg and its tax, then confirm",
                                 "No brokerage order is placed either way"],
                         "est_amount": round(_amount, 2),
-                        "meta": {"chosen_pct": round(_target_pct, 1),
+                        "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                                  "actual_pct": round(_actual_pct, 1), "cold_start": True},
                     })
                     continue
@@ -985,7 +985,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                               if _over else
                               {"kind": "fund_sleeve", "strategy_id": _plan_sid,
                                "sleeve_pct": _chosen}),
-                    "meta": {"chosen_pct": round(_target_pct, 1),
+                    "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
                 })
     except Exception:  # noqa: BLE001

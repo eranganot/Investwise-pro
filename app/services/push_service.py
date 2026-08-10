@@ -208,6 +208,90 @@ async def send_test(session: AsyncSession, subject: str) -> int:
 # --------------------------------------------------------------------------- #
 # Triggers
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# P4.2 - four triggers, four rate limits
+# --------------------------------------------------------------------------- #
+#
+# The limits are per TRIGGER, not per message. That distinction is the whole
+# design: recommendation ids are content hashes, so a drift card whose amount
+# moves from 3,300 to 3,362 is a NEW id and would slip past an id-keyed dedupe
+# and push again. Nothing about the situation changed; only the rounding did.
+#
+#   signal flip      immediate  - rare, and acting late is the main reason a
+#                                 rule underperforms its own backtest
+#   rule fired       immediate  - the user armed it; silence would be worse
+#   sleeve drift     daily      - drifts a little every day and says the same
+#                                 thing each time
+#   rules available  NEVER live - suggestions regenerate as prices move, so a
+#                                 live push here is the one that gets
+#                                 notifications switched off entirely. Weekly,
+#                                 inside the 07:00 digest.
+#
+# TRIGGER_NEVER_LIVE is deliberately not "a very long window": a card that must
+# never fire a live push should be impossible to push, not merely unlikely.
+TRIGGER_IMMEDIATE = 0
+TRIGGER_DAILY = 24
+TRIGGER_NEVER_LIVE = None
+
+_TRIGGER_RULES: tuple[tuple[str, str, int | None], ...] = (
+    # (trigger name, how to spot it, rate limit in hours)
+    ("rules_available", "ready to arm", TRIGGER_NEVER_LIVE),
+    ("sleeve_drift", "has drifted to", TRIGGER_DAILY),
+    ("sleeve_coldstart", "hold none of it", TRIGGER_DAILY),
+)
+
+
+def classify_trigger(rec: dict) -> tuple[str, int | None]:
+    """(trigger, rate_limit_hours) for one card. Falls back to the old behaviour.
+
+    Keyed on stable properties -- the card's dimension and a phrase from its
+    title -- rather than its id, which changes whenever a number in it does.
+    """
+    title = str(rec.get("title") or "")
+    rid = str(rec.get("id") or "")
+    if rid.startswith("rule_"):
+        return ("rule_fired", TRIGGER_IMMEDIATE)
+    if rid.startswith("stratsig_"):
+        return ("signal_flip", TRIGGER_IMMEDIATE)
+    for name, needle, limit in _TRIGGER_RULES:
+        if needle in title:
+            return (name, limit)
+    # Everything else keeps the pre-existing behaviour: the global dedupe window.
+    return ("recommendation", get_settings().push_dedupe_days * 24)
+
+
+async def _seen_within(session: AsyncSession, subject: str, signature: str,
+                       hours: int) -> bool:
+    """Has this TRIGGER fired for this subject inside the window?"""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(0, hours))
+    row = await session.scalar(
+        select(NotifiedEvent).where(
+            NotifiedEvent.subject == subject,
+            NotifiedEvent.signature == signature,
+            NotifiedEvent.created_at >= cutoff,
+        )
+    )
+    return row is not None
+
+
+def trigger_signature(trigger: str, rec: dict) -> str:
+    """Stable per-trigger key.
+
+    For a rate-limited trigger this must NOT include anything that moves, or the
+    limit never bites. `rule_fired` keeps the rule id, because two different
+    rules firing are two different events the user needs to hear about.
+    """
+    if trigger == "rule_fired":
+        return f"trigger:rule_fired:{rec.get('rule_id') or rec.get('id')}"
+    if trigger == "recommendation":
+        return f"rec:{rec.get('id')}"
+    # Drift and cold-start are about ONE sleeve, so key on the ticker if the card
+    # names one, else on the trigger alone.
+    meta = rec.get("meta") or {}
+    tk = meta.get("ticker") or ""
+    return f"trigger:{trigger}:{tk}" if tk else f"trigger:{trigger}"
+
+
 def _sev_set() -> set[str]:
     return {x.strip().upper() for x in get_settings().push_notify_severities.split(",") if x.strip()}
 
@@ -235,13 +319,25 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
         for r in built.get("recommendations", []):
             if sent >= max_sends:
                 break
-            if r.get("severity", "").upper() not in sev:
+            trigger, limit = classify_trigger(r)
+            # A card whose trigger is never-live is skipped regardless of
+            # severity: the digest carries it instead.
+            if limit is None:
                 continue
-            sig = f"rec:{r.get('id')}"
-            if await _seen(session, subject, sig):
+            # The four P4.2 triggers carry their own urgency and bypass the
+            # severity filter -- a fired rule the user armed themselves is worth
+            # a push even at MEDIUM, and drift is MEDIUM by design.
+            if trigger == "recommendation" and r.get("severity", "").upper() not in sev:
                 continue
+            sig = trigger_signature(trigger, r)
+            if limit > 0 and await _seen_within(session, subject, sig, limit):
+                continue
+            if limit == 0 and await _seen(session, subject, sig):
+                continue      # immediate still means once per event, not per run
+            icon = {"rule_fired": "\u26a1", "signal_flip": "\U0001f504",
+                    "sleeve_drift": "\u2696\ufe0f", "sleeve_coldstart": "\u2696\ufe0f"}.get(trigger, "\U0001f4a1")
             sent += await send_to_subject(
-                session, subject, f"💡 {r.get('title', 'New recommendation')}",
+                session, subject, f"{icon} {r.get('title', 'New recommendation')}",
                 r.get("action") or "Open InvestWise to review.", url="/app/", tag=sig)
             await _mark(session, subject, sig)
     except Exception:  # noqa: BLE001
@@ -318,6 +414,20 @@ async def send_digest(session: AsyncSession, user: User) -> dict:
         text = (d.get("digest") or "Your weekly summary is ready.").strip()
     except Exception:  # noqa: BLE001
         text = "Your weekly summary is ready."
+    # The never-live triggers ride here instead. Suggestions regenerate as prices
+    # move, so pushing them the moment they appear is the notification that gets
+    # notifications switched off; once a week, in something the user already
+    # opens, is the honest cadence.
+    try:
+        from app.services.recommendations import build_recommendations
+        _built = await build_recommendations(session, user)
+        _waiting = [r for r in _built.get("recommendations", [])
+                    if classify_trigger(r)[1] is None]
+        if _waiting:
+            text += ("\n\n" + "; ".join(str(r.get("title")) for r in _waiting[:3])
+                     + " \u2014 waiting in the app.")
+    except Exception:  # noqa: BLE001
+        logger.warning("digest could not append pending suggestions", exc_info=False)
     n = await send_to_subject(session, subject, "📋 Your wealth digest", text[:300],
                               url="/app/", tag="digest", category="info")
     await _mark(session, subject, sig)

@@ -3,7 +3,7 @@
 #   .\scripts\smoke\smoke-p4.ps1              # then chains p3 -> p2 -> p1 -> p0 -> e2e
 #   .\scripts\smoke\smoke-p4.ps1 -SkipChain   # P4's own checks only
 #
-# Read-only. Notifications (P4.2) are NOT in this deploy - see STATUS.
+# Read-only. Includes P4.2 (notifications): four triggers, four rate limits.
 #
 # ASCII ONLY - PowerShell 5.1 reads .ps1 as Windows-1252 without a BOM, and a
 # backtick inside a double-quoted string is an escape character.
@@ -139,6 +139,31 @@ if ($null -eq $recs -or $null -eq $pf -or $null -eq $plan) {
 }
 
 # =========================================================================== #
+Sec "P4.2  notifications: four triggers, four rate limits"
+# =========================================================================== #
+$push = Api GET '/api/v1/push/status'
+if ($null -eq $push) { Skip "/push/status unreachable - notification wiring cannot be assessed" }
+else {
+    if ($push.subscriptions -gt 0) { Ok "$($push.subscriptions) push subscription(s) registered" }
+    else {
+        Skip "no push subscription - nothing can arrive until notifications are enabled on the Pixel"
+        Write-Host "        This is a device action, not a code defect." -ForegroundColor DarkGray
+    }
+    if ($push.scheduler -and $push.scheduler.scheduler_running) {
+        $jids = @($push.scheduler.jobs | ForEach-Object { $_.id })
+        if ($jids -contains 'push_digest') { Ok "push_digest registered - the weekly triggers ride here" }
+        else { Bad "push_digest NOT registered - 'rules ready to arm' would never be delivered at all" }
+    } else { Bad "scheduler not running - no trigger can fire" }
+}
+
+# The never-live guarantee, checked against the actual card on Today.
+if ($null -ne $recs) {
+    $arm = @($recs.recommendations | Where-Object { $_.title -like '*ready to arm*' })
+    if ($arm.Count -eq 0) { Skip "no 'ready to arm' card right now, so the never-live rule is not exercised" }
+    else { Ok "a 'ready to arm' card exists - it must reach you only via the digest, never as a live push" }
+}
+
+# =========================================================================== #
 Sec "P4  YOU must check these - an HTTP call cannot see rendering"
 Write-Host @"
   On the phone, Today:
@@ -157,7 +182,21 @@ Write-Host @"
     [ ] Once the sleeve IS funded, the same card becomes a real rebalance
         with an Accept that names its funding legs first.
 
-  NOT in this deploy: notifications (P4.2). Nothing should push yet.
+  Notifications (P4.2) - the part only a phone can confirm:
+
+    [ ] Arm an entry/exit rule, then wait for it to fire. You get ONE push,
+        immediately. Fail: silence, or a repeat every 30 minutes.
+
+    [ ] The sleeve drift push arrives at most once a day, even though the
+        card re-renders with slightly different numbers each time.
+        Fail: a push every time the amount rounds differently.
+
+    [ ] "N protective rules ready to arm" NEVER arrives as a live push.
+        It should appear only inside the 07:00 digest, once a week.
+        Fail: a live push - that is the one that makes people switch
+        notifications off entirely.
+
+    [ ] The 07:00 digest mentions anything waiting in the app.
 "@ -ForegroundColor Gray
 
 Write-Host "`n===== P4: $pass passed, $fail failed, $skip skipped =====" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
