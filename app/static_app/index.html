@@ -1052,7 +1052,7 @@ function renderRules(){
         mid=`<span class="rtrigtxt">${stale?"🟠":"🔴"} ${stale?"Fired earlier — now back inside":"Triggered"}${now?` · now ${Number(now.current_price).toFixed(2)}`:""}</span>`;
       }
       else if(x._dupe){ mid=`<span class="rdupe">⧉ duplicate of another rule — remove</span>`; }
-      else if(!x.active){ mid=`<span class="rdist"><div class="dtxt">retired — ${x.ticker} is not in your portfolio</div></span>`; }
+      else if(!x.active){ mid=`<span class="rdist"><div class="dtxt">paused</div></span>`; }
       else if(x.unit==="signal"){ mid=`<span class="rdist"><div class="dtxt">waits for the ${x.strategy_id||"strategy"} signal</div></span>`; }
       else if(x._dist!=null){
         const p=x._dist, ap=Math.abs(p);

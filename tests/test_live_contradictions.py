@@ -180,45 +180,37 @@ def test_a_max_weight_rule_reports_a_weight_not_a_price():
 
 
 @pytest.mark.asyncio
-async def test_rules_on_a_position_you_no_longer_hold_are_retired():
-    """Live: TQQQ, META and AMZN each carried up to four rules marked "armed",
-    for positions not in the book at all.
+async def test_rules_on_a_position_you_no_longer_hold_are_deleted():
+    """Asked for three times: if the holding is gone, the rule goes.
 
-    Worse than clutter. A stop-loss on AMZN at 222.58, set months ago against a
-    price that has moved since, sits dormant and goes live the instant the
-    position is re-bought -- firing at a level nobody chose for today's market.
-    A stale stop that reanimates is more dangerous than no stop.
+    Two earlier attempts only *retired* them (active=False) and left them in the
+    list, which is not what "remove" means -- the Rules tab still showed four
+    "retired" rows each for TQQQ, META and AMZN.
 
-    Retirement is `active = False`, not deletion: the rule and its history
-    survive, so nothing the user configured vanishes silently.
+    Deleting is also the safer end state. A stop-loss on AMZN at 222.58, set
+    months ago against a price that has moved since, would otherwise sit dormant
+    and go live the instant the position is re-bought, firing at a level nobody
+    chose for today's market. Gone means you set a fresh one.
     """
     eng, Session = _session()
     try:
         async with Session() as s:
-            user = await _book(s, "retire_probe@example.com",
+            user = await _book(s, "purge_probe@example.com",
                                [_pos("MSFT", 10, 100.0, 100.0)])
-            # A rule on something held, and rules on things long gone.
-            keep = await rs.create_rule(s, user, ticker="MSFT", rule_type="stop_loss",
-                                        mode="price", level=80.0)
-            gone_stop = await rs.create_rule(s, user, ticker="AMZN", rule_type="stop_loss",
-                                             mode="price", level=222.58)
-            gone_cap = await rs.create_rule(s, user, ticker="META", rule_type="max_weight",
-                                            mode="pct", level=35.0)
-            assert gone_stop.active and gone_cap.active
+            await rs.create_rule(s, user, ticker="MSFT", rule_type="stop_loss",
+                                 mode="price", level=80.0)
+            await rs.create_rule(s, user, ticker="AMZN", rule_type="stop_loss",
+                                 mode="price", level=222.58)
+            await rs.create_rule(s, user, ticker="META", rule_type="max_weight",
+                                 mode="pct", level=35.0)
 
-            await rs.evaluate_user(s, user)
-            listed = {(r["ticker"], r["rule_type"]): r for r in await rs.list_rules(s, user)}
+            removed = await rs.purge_orphan_rules(s, user)
+            listed = await rs.list_rules(s, user)
     finally:
         await eng.dispose()
 
-    assert listed[("MSFT", "stop_loss")]["active"] is True, "a held position keeps its rules"
-    for key in (("AMZN", "stop_loss"), ("META", "max_weight")):
-        assert listed[key]["active"] is False, f"{key} should be retired"
-        assert listed[key]["triggered"] is False
-        assert "no longer in your portfolio" in (listed[key]["note"] or "")
-    # Retired, not deleted: still listable, so the user can re-arm or remove.
-    assert len(listed) == 3
-    assert keep is not None
+    assert {r["ticker"] for r in removed} == {"AMZN", "META"}
+    assert [r["ticker"] for r in listed] == ["MSFT"], "only live rules remain"
 
 
 def test_tax_harvest_never_targets_the_strategy_sleeve():
@@ -263,7 +255,32 @@ async def test_list_rules_retires_on_read_not_only_in_the_price_job():
     finally:
         await eng.dispose()
 
-    assert listed["AMZN"]["active"] is False, "an unheld position's rule must retire on read"
-    assert "no longer in your portfolio" in (listed["AMZN"]["note"] or "")
+    assert "AMZN" not in listed, "a rule on an unheld position must be DELETED, not listed"
     assert listed["MSFT"]["active"] is True, "a held position keeps its rules"
-    assert again["AMZN"]["active"] is False, "and it stays retired"
+    assert "AMZN" not in again, "and it stays gone"
+
+@pytest.mark.asyncio
+async def test_a_purge_never_runs_against_an_empty_book():
+    """The guard that matters. An empty book and a failed position read are
+    indistinguishable from inside rules_service, and wiping every rule on a
+    transient database hiccup is unrecoverable. With no holdings, do nothing.
+    """
+    eng, Session = _session()
+    try:
+        async with Session() as s:
+            user = await ensure_user(s, "purge_guard@example.com")
+            entity = await ensure_entity(s, user, "Personal", "Personal")
+            await ensure_account(s, entity, "Main")
+            await s.commit()
+            # Rules, but not a single holding.
+            await rs.create_rule(s, user, ticker="AMZN", rule_type="stop_loss",
+                                 mode="price", level=222.58)
+            await rs.create_rule(s, user, ticker="META", rule_type="max_weight",
+                                 mode="pct", level=35.0)
+            removed = await rs.purge_orphan_rules(s, user)
+            still = await rs.list_rules(s, user)
+    finally:
+        await eng.dispose()
+
+    assert removed == [], "an empty index must delete nothing"
+    assert len(still) == 2, "the rules must survive an empty/failed position read"

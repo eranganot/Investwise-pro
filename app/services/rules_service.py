@@ -78,6 +78,49 @@ async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]
     return out
 
 
+async def purge_orphan_rules(session: AsyncSession, user: User,
+                             idx: dict[str, dict] | None = None) -> list[dict]:
+    """DELETE rules for tickers that are not in the portfolio.
+
+    Asked for explicitly and repeatedly: if the holding is gone, the rule goes.
+    Earlier versions only retired them (active=False) and left them listed, which
+    is not what "remove" means.
+
+    A stale rule is not merely clutter. A stop-loss on AMZN at 222.58, set months
+    ago against a price that has moved since, sits dormant and goes live the
+    instant the position is re-bought -- firing at a level nobody chose for
+    today's market. Deleting is also what makes re-buying safe: you get to set a
+    fresh level instead of inheriting an old one.
+
+    THE GUARD THAT MATTERS: nothing is deleted when the position index is empty.
+    An empty book and a failed position read are indistinguishable from here, and
+    wiping every rule on a transient database hiccup is unrecoverable. With no
+    holdings, this does nothing at all.
+
+    Called from both the read path and the evaluator, because a fix that only
+    runs in the 30-minute price job leaves the screen wrong in between -- the
+    mistake made twice before this.
+    """
+    if idx is None:
+        idx = await _positions_index(session, user)
+    if not idx:
+        return []
+    held = set(idx)
+    rules = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email))).all()
+    gone = [r for r in rules if r.ticker.upper() not in held]
+    if not gone:
+        return []
+    removed = [{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
+                "level": r.level} for r in gone]
+    for r in gone:
+        await session.delete(r)
+    await session.commit()
+    logger.info("deleted %d rule(s) for tickers no longer held: %s", len(removed),
+                ", ".join(f"{r['ticker']} {r['rule_type']}" for r in removed))
+    return removed
+
+
 # --------------------------------------------------------------------------- #
 # Execution plans — what a triggered rule would actually do
 # --------------------------------------------------------------------------- #
@@ -187,6 +230,9 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     """Update peaks, latch newly-triggered rules, optionally push. Returns the
     list of rules that newly triggered this run."""
     idx = await _positions_index(session, user)
+    # Delete rules for holdings that are gone before evaluating anything, so a
+    # sold position can never fire a rule set against a price it no longer has.
+    await purge_orphan_rules(session, user, idx)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
@@ -492,12 +538,20 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
         select(TradingRule).where(TradingRule.subject == user.email)
         .order_by(TradingRule.created_at.desc()))).all()
     idx = await _positions_index(session, user) if rules else {}
+    # Remove rules for holdings that are gone, at READ time -- not only inside
+    # evaluate_user, which runs in the 30-minute price job and left the Rules tab
+    # showing them in between. Guarded: a purge never runs against an empty
+    # index. Self-healing on a read follows the existing precedent -- Today's
+    # banner reconciliation already resolves orphaned rules on a GET.
+    if rules and idx:
+        _purged = await purge_orphan_rules(session, user, idx)
+        if _purged:
+            rules = [r for r in rules if str(r.id) not in {x["id"] for x in _purged}]
     out = []
-    _retired_now = False
     for r in rules:
         pos = idx.get(r.ticker.upper())
 
-        # Retire at READ time, not only inside evaluate_user.
+        # Legacy safety net for a rule whose ticker vanished mid-request.
         #
         # I fixed this in the evaluator first -- twice -- and both times the
         # Rules tab still showed "armed" rules on TQQQ, META and AMZN, because
@@ -510,7 +564,7 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
             r.triggered = False
             if not (r.note or "").startswith("retired:"):
                 r.note = f"retired: {r.ticker} is no longer in your portfolio"[:160]
-            _retired_now = True
+            pass
 
         cur = pos["price"] if pos else None
         hit, _title, _action, target = _evaluate(
@@ -545,8 +599,6 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
                     "breached_now": bool(hit),
                     "target": target,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
-    if _retired_now:
-        await session.commit()
     return out
 
 
