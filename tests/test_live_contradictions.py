@@ -144,6 +144,41 @@ def test_a_trivial_tax_saving_is_not_flagged_important():
     assert "_cost_note" in code
 
 
+def test_the_cost_note_is_ils_normalised():
+    """Shipped and caught on the screen: the note read "selling ₪667 of holdings"
+    for a position worth ₪2,001. current_price x quantity is the position's
+    NATIVE currency — $87.21 x 7.673 = $669 — printed with a shekel sign.
+
+    The snapshot's weights are already FX-converted, so the value comes from
+    there. Same class as the two FX bugs this app has already been bitten by.
+    """
+    import inspect
+
+    from app.services import recommendations as rr
+    src = inspect.getsource(rr.build_recommendations)
+    tax = src[src.index("# 2) Tax-loss harvesting"):src.index("# 3) Rebalance")]
+    code = "\n".join(ln.split("#", 1)[0] for ln in tax.splitlines())
+    assert "_sell_value" in code
+    assert "exposure_ticker" in code, "the sell value must come from the FX-normalised snapshot"
+    assert "float(r.current_price or 0) * float(r.quantity)" not in code
+
+
+def test_a_max_weight_rule_reports_a_weight_not_a_price():
+    """Live: the Rules tab rendered "Max weight 10% -> 10.00 ... now 137.61" —
+    SOXL's dollar price against a percent-of-portfolio cap. It reads as a
+    thirteenfold breach when the position is at 9.7% of a 10% cap. The number
+    was never wrong, it was never comparable.
+    """
+    import inspect
+
+    from app.services import rules_service as rsvc
+    src = inspect.getsource(rsvc.list_rules)
+    assert '"unit"' in src and '"current"' in src
+    assert "pct_of_portfolio" in src
+    # And the latch must be distinguishable from a live breach.
+    assert '"breached_now"' in src
+
+
 def test_tax_harvest_never_targets_the_strategy_sleeve():
     """Live: the card offered to sell SOXL -- the aggressive leg of the applied
     strategy, with a max_weight cap armed on it -- to save 12 shekels of tax.

@@ -379,9 +379,26 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                                   TradingRule.triggered.is_(True)))).all()
     idx = await _positions_index(session, user) if rules else {}
     out = []
+    _cleared = False
     for r in rules:
         pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0}
-        _, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"])
+        hit, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"])
+
+        # A standing condition that is no longer true must not still have a card.
+        #
+        # This discarded `hit` and rendered a card purely from the latched flag,
+        # so a cap that fired at 10.2% and drifted back to 9.7% kept telling the
+        # user to "consider trimming SOXL back toward your 10% cap" -- while
+        # execution_plan correctly returned None, leaving guidance with nothing
+        # to press. Clearing it in `evaluate_user` alone was not enough: that
+        # runs in the 30-minute job, so Today stayed wrong in between.
+        #
+        # Cleared here too, where the index is already loaded, so the screen is
+        # self-consistent the moment it renders rather than eventually.
+        if not hit and r.rule_type in ("price_above", "price_below", "max_weight"):
+            r.triggered = False
+            _cleared = True
+            continue
         plan = execution_plan(r, pos)
         price = float(pos.get("price") or 0)
         if plan:
@@ -404,6 +421,10 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                     "rule_id": str(r.id),
                     "apply": {**(plan or {"kind": "none"}), "rule_id": str(r.id)},
                     "how": how})
+    if _cleared:
+        # Persist the re-arm, or the next render latches it all over again and
+        # the card flickers back on every second load.
+        await session.commit()
     return out
 
 
@@ -446,12 +467,37 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
     for r in rules:
         pos = idx.get(r.ticker.upper())
         cur = pos["price"] if pos else None
-        _, _title, _action, target = _evaluate(
+        hit, _title, _action, target = _evaluate(
             r, pos["price"], pos["cost"], pos["weight_pct"]) if pos else (False, "", "", None)
+
+        # Report the quantity the rule ACTUALLY watches, and its unit.
+        #
+        # This returned `current_price` for every rule type, so a max_weight rule
+        # rendered as "now 137.61 -> 10.00": SOXL's dollar price against a
+        # percent-of-portfolio cap. Two different quantities on one row, and it
+        # reads as a thirteenfold breach when the position is at 9.7% of a 10%
+        # cap. The number was never wrong, it was never comparable.
+        if r.rule_type == "max_weight":
+            current, unit = ((pos["weight_pct"] if pos else None), "pct_of_portfolio")
+        elif r.rule_type == "strategy_signal":
+            current, unit = (None, "signal")
+        else:
+            current, unit = (cur, "price")
+
         out.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
                     "mode": r.mode, "level": r.level, "note": r.note,
+                    "strategy_id": r.strategy_id,
                     "active": r.active, "triggered": r.triggered,
-                    "current_price": cur, "target": target,
+                    "current_price": cur,
+                    "current": current, "unit": unit,
+                    # `triggered` is a LATCH -- it stays set until the user deals
+                    # with it. `breached_now` is whether the condition is true
+                    # this second. A cap that fired at 10.2% and drifted back to
+                    # 9.7% is triggered=True, breached_now=False, and showing only
+                    # the first makes the app look like it is nagging about
+                    # nothing.
+                    "breached_now": bool(hit),
+                    "target": target,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
     return out
 

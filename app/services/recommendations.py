@@ -586,8 +586,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # be worth the friction". A saving below that is, by the app's own
         # standard, not worth shouting about.
         from app.services.funding_service import MIN_TRADE_ILS as _MIN_TRADE
-        _sell_value = sum(float(r.current_price or 0) * float(r.quantity)
-                          for r in rows if r.ticker in losers)
+        # ILS-normalized, from the snapshot. Multiplying current_price by
+        # quantity gives the position's NATIVE currency: VXUS at $87.21 x 7.673
+        # is $669, and printing that as "₪667" is the FX class of error this
+        # app has been bitten by twice. The snapshot's weights are already
+        # FX-converted, so derive from those.
+        _sell_value = sum((snap.get("exposure_ticker") or {}).get(t, 0.0) * nav
+                          for t in losers)
         if save >= _MIN_TRADE:
             _sev = "HIGH"
         elif save >= _MIN_TRADE / 5:
