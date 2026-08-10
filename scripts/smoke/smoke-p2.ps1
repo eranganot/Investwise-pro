@@ -76,7 +76,12 @@ else {
     } else { Ok "no measured card carries a derived expected return" }
 
     $notMeasured = @($cards | Where-Object { $_.measured -ne $true })
-    if ($notMeasured.Count -gt 0) { Bad "$($notMeasured.Count) card(s) not flagged measured, so the UI would read `profile` instead of `backtest`" }
+    # No backticks in a double-quoted string: PowerShell reads them as escape
+    # characters, so a markdown habit like `profile` becomes an escape sequence
+    # and the parser unwinds through the whole rest of the file. That is what the
+    # first live run of this script did -- 12 cascading "missing closing" errors,
+    # none of them at the real fault.
+    if ($notMeasured.Count -gt 0) { Bad "$($notMeasured.Count) card(s) not flagged measured, so the UI would read 'profile' instead of 'backtest'" }
     else { Ok "every card is flagged measured" }
 }
 

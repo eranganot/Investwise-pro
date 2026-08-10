@@ -1,58 +1,65 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-10 by Claude (Beat-the-Market P0 build)._
+_Last updated: 2026-08-10 by Claude (Beat-the-Market P0-P3)._
 _Seeded from git history + prior transcripts._
 
-## ✅ P3 — COMPLETE, tests green, NOT YET SHIPPED (2026-08-10)
+## ✅ P3 — SHIPPED AND VERIFIED LIVE (2026-08-10)
 
+`smoke-p3.ps1 -Refresh`: **11 passed, 0 failed, 0 skipped.** All seven strategies
+recomputed both ways against ten years of real closes.
+
+### The answer: the gate does not earn its place on any strategy
+
+| strategy | CAGR | max DD | verdict |
+|---|---|---|---|
+| btm_vol_target_tqqq | −1.71 | **−8.32** | cost 1.7%/yr — just over the limit |
+| btm_dual_momentum | −2.68 | **−8.88** | cost 2.7%/yr |
+| btm_swing_breakout | −3.07 | **−11.57** | cost 3.1%/yr |
+| btm_trend_tqqq | −3.01 | −1.69 | cost 3.0%/yr for almost no shelter |
+| btm_trend_soxl | −5.67 | −1.06 | cost 5.7%/yr for almost no shelter |
+| btm_swing_dip | −0.08 | 0.00 | the gate barely touches it |
+| btm_factor_stack | −5.85 | 0.00 | pure cost, zero drawdown benefit |
+
+**Exactly as the tests predicted.** The two trend strategies already gate on a
+200-day average, so the regime proxy agrees with them and adds cost without
+shelter. The factor stack has no timing rule to agree with, so the gate is pure
+drag. That is a real result, not a failure.
+
+**But three of these deserve a human look, and that is why the gate ships off.**
+`vol_target` buys **8.3 points of drawdown for 1.71%/yr**, `dual_momentum` 8.9
+for 2.68%/yr, `swing_breakout` 11.6 for 3.07%/yr. The −1%/yr limit is a
+threshold *chosen*, not discovered — on a 3x leveraged sleeve, 8 points of
+drawdown for under 2%/yr is arguably a trade worth taking. The criterion did its
+job mechanically; whether `vol_target` in particular should be switched on is
+Eran's call, and the numbers to make it are now on the table.
+
+### Cross-check working
+Price-derived regime read `risk_on` (trend up, vol 14.4% at the 65th percentile,
+breadth 1.0) while the futures cross-check **disagreed** — and the response said
+so rather than showing two numbers and leaving it to be noticed. Markets and the
+live signal returned the same state, confirming one function feeds both.
+
+### What it is
 `app/engines/regime.py`, the gate in `strategy_backtest`, the live read in
-`strategy_signal_service`, and the Markets cross-check. **26 P3 tests green,
-ruff clean**, plus 60 green across every module P3.2 touched.
-
-**The gate is measured on every strategy and enabled on none.** P3 changes what
-the app *knows*, not what it *does*, until you look at the numbers and decide.
+`strategy_signal_service`, and the Markets cross-check. **26 P3 tests green**,
+full suite **534 passed / 0 failed**, ruff clean.
 
 **Decisions taken this session — do not re-litigate:**
 
 | # | Decision |
 |---|---|
 | Gate enablement | **Measure both, ship OFF.** Auto-enabling whatever measured better would be selecting on one sample of history — exactly what the overfitting flag exists to catch. |
-| "Improves" | **Shallower max drawdown at no worse than −1%/yr CAGR.** A regime filter trades a little return for a lot less drawdown, and that trade *is* the product. CAGR-alone rejects a filter doing its job; drawdown-alone blesses one that refuses to invest. |
+| "Improves" | **Shallower max drawdown at no worse than −1%/yr CAGR.** CAGR-alone rejects a filter doing its job; drawdown-alone blesses one that refuses to invest. |
 | Volatility input | **Realized vol from SPY closes**, not `^VIX`. No new provider, and computable identically in both paths — the whole constraint. |
 
-**A result worth knowing, found while writing the tests.** On a plainly falling
-market the gate changes *nothing* on `btm_trend_tqqq` — and that is correct.
-The strategy already gates on QQQ vs its 200-day and the regime proxy is built
-from the same idea, so they agree and the gated run is identical. A regime
-overlay is only worth switching on where it **disagrees** with the rule already
-in place: QQQ holding its trend while SPY and IWM roll over, i.e. narrow
-late-cycle breadth. A test constructs exactly that case, and there the gate
-bites. **Expect the live comparison to show little improvement across most of
-this family for the same reason** — that would be a real result, not a failure.
+**Not done:** the Plan card does not *render* the gated-vs-ungated numbers. The
+data reaches the client under `backtest.robustness.regime`; `smoke-p3.ps1` prints
+the table instead, which is enough to make the enable decision. A small
+P2-shaped follow-up — and the natural place to add a per-strategy toggle.
 
-**Before this can be judged:** the 03:30 job must rerun so every strategy carries
-a gated-vs-ungated comparison, or run `smoke-p3.ps1 -Refresh` (slow — ~10y of
-daily closes per ticker). The thresholds (`VOL_HIGH_PCTL` 80, score cutoffs
-±0.35) have only ever been exercised against synthetic straight lines; the live
-comparison across seven strategies is what shows whether they are set sensibly
-or whether the gate spends 2018 sitting in the core for no reason.
+## ✅ P2 — SHIPPED AND VERIFIED LIVE (2026-08-10)
 
-**Not done:** the card does not yet *render* the gated-vs-ungated numbers — the
-data reaches the client under `backtest.robustness.regime`, but the Plan tab
-ignores it. `smoke-p3.ps1` prints the table instead, which is enough to make the
-enable decision. Rendering it is a small P2-shaped follow-up.
-
-## ⛔ P2 — WRITTEN, NOT YET RUN (2026-08-10)
-
-Presentation only — no engine, no money path. The sandbox VM was down for the
-whole build, so **nothing has been executed**: no pytest, no ruff, and
-`index.html` was edited with no `node --check`.
-
-```
-python -m pytest -q
-python -m ruff check app
-.\scripts\deploy\ship-p2.ps1
-```
+Presentation only — no engine, no money path. Shipped as `7792a06`.
 
 - **Style + Horizon chips** on the measured cards. Horizon was already in the
   catalog and simply never rendered; Style is derived from the basket exactly as

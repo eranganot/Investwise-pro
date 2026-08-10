@@ -19,7 +19,7 @@ $plan = Api GET '/api/v1/plan'
 if ($null -eq $plan) { Write-Host "API unreachable - stop." -ForegroundColor Red; return }
 $roi = $plan.portfolio_expected_roi_pct
 Write-Host "   portfolio_expected_roi_pct = $roi   target = $($plan.roi_annual_target_pct)   on_track = $($plan.roi_on_track)" -ForegroundColor DarkGray
-if ($null -eq $roi) { Bad "expected ROI is null" } elseif ($roi -gt 0) { Ok "expected ROI is $roi%/yr (was ~0 from the `or 0.0` fallback)" } else { Bad "still $roi%/yr - the character fallback is not being applied" }
+if ($null -eq $roi) { Bad "expected ROI is null" } elseif ($roi -gt 0) { Ok "expected ROI is $roi%/yr (was ~0 from the 'or 0.0' fallback)" } else { Bad "still $roi%/yr - the character fallback is not being applied" }
 # ~30% cash at 3% plus equities at 7-9.5% should land roughly 5-9%/yr.
 if ($roi -ge 3 -and $roi -le 12) { Ok "plausible for a 30%-cash equity book" } else { Skip "review: $roi%/yr is outside the expected 3-12 band" }
 
