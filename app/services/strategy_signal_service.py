@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.engines import regime as rg
 from app.engines import strategy_backtest as bt
 from app.models.tables import Plan, StrategySignalState, User
 from app.services import strategy_catalog
@@ -86,9 +87,22 @@ def evaluate(strategy_id: str, series: dict) -> dict:
     targets = bt.targets_for(px, spec)
     if isinstance(targets, dict):
         return targets
+
+    # Today's regime, from the SAME function the backtest gates on -- the last
+    # element of the identical computation, not a parallel one. This is the whole
+    # point of deriving the regime from prices: if the live read and the measured
+    # numbers came from different rules, the card would stop describing what runs.
+    #
+    # Reported, NOT applied. The gate ships off everywhere until the gated and
+    # ungated backtests have been compared by a human, so the target below is
+    # unchanged by whatever the regime says.
+    regime = rg.latest(px)
+    regime["applied"] = False
+
     target = {k: round(v, 4) for k, v in (targets[-1] or {}).items() if v > 0.005}
     return {"ok": True, "target": target, "as_of": latest,
             "describes": _describe(target, entry),
+            "regime": regime,
             "strategy_name": entry.get("name")}
 
 
@@ -113,7 +127,10 @@ async def evaluate_user(session: AsyncSession, user: User) -> dict:
     if not sid:
         return {"ok": False, "reason": "NO_RULE_STRATEGY"}
     spec = strategy_catalog.backtestable(only=[sid])[0]
-    series, missing = _fetch(bt.tickers_needed(spec))
+    series, missing = _fetch(bt.tickers_needed(spec, regime_gate=True))
+    # The regime indexes are observational for now, so losing one degrades the
+    # regime read rather than silencing the strategy signal entirely.
+    missing = [tk for tk in missing if tk in bt.tickers_needed(spec)]
     if missing:
         return {"ok": False, "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
 
@@ -155,7 +172,10 @@ async def peek_user(session: AsyncSession, user: User) -> dict:
     if not sid:
         return {"ok": False, "reason": "NO_RULE_STRATEGY"}
     spec = strategy_catalog.backtestable(only=[sid])[0]
-    series, missing = _fetch(bt.tickers_needed(spec))
+    series, missing = _fetch(bt.tickers_needed(spec, regime_gate=True))
+    # The regime indexes are observational for now, so losing one degrades the
+    # regime read rather than silencing the strategy signal entirely.
+    missing = [tk for tk in missing if tk in bt.tickers_needed(spec)]
     if missing:
         return {"ok": False, "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
     res = evaluate(sid, series)

@@ -59,6 +59,11 @@ HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularit
 STALE_AFTER_DAYS = 7
 OOS_SPLIT = "2022-01-01"     # the only real bear market these instruments have seen
 
+# What of the gated run is worth storing next to the headline. The full metrics
+# dict again would double the row for numbers nobody compares.
+_REGIME_KEYS = ("ok", "cagr_pct", "volatility_pct", "max_drawdown_pct",
+                "excess_cagr_pct", "trades_per_year", "observations")
+
 
 def _fetch(tickers: list[str]) -> tuple[dict, list[str]]:
     """Price history per ticker; the second element is what could not be fetched."""
@@ -79,7 +84,12 @@ def _fetch(tickers: list[str]) -> tuple[dict, list[str]]:
 def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     """Run one strategy end to end: fetch, backtest, and probe its fragility."""
     bench_tk = benchmark_ticker or get_settings().benchmark_ticker
-    needed = bt.tickers_needed(spec)
+    # Fetch the regime indexes too, and hand the SAME series to both runs, so the
+    # gated and ungated numbers share one date window and the comparison is
+    # apples to apples. (In practice SPY/QQQ/IWM all outlive the strategy
+    # tickers, so including them does not move the ungated window -- a test
+    # asserts the two runs agree on `observations` rather than trusting that.)
+    needed = bt.tickers_needed(spec, regime_gate=True)
     series, missing = _fetch(sorted(set(needed) | {bench_tk}))
     if missing:
         return {"ok": False, "reason": bt.MISSING_TICKER,
@@ -105,6 +115,24 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
                                            benchmark=bench)
         except Exception:  # noqa: BLE001
             logger.warning("backtest: sweep failed for %s", spec.get("id"), exc_info=False)
+    # Does a regime gate improve this strategy? Measured, reported, and NOT
+    # switched on: the gate ships off everywhere until a human has compared the
+    # two numbers. Auto-enabling whatever measured better would be selecting on
+    # one sample of history, which is what the overfitting flag exists to catch.
+    try:
+        gated = bt.run(series, spec, benchmark=bench, regime_gate=True)
+        robustness["regime"] = {
+            "verdict": bt.gate_verdict(result, gated),
+            "gated": ({k: v for k, v in gated.items() if k in _REGIME_KEYS}
+                      if gated.get("ok") else
+                      {"ok": False, "reason": gated.get("reason"),
+                       "detail": gated.get("detail")}),
+            "enabled": False,
+        }
+    except Exception:  # noqa: BLE001
+        logger.warning("backtest: regime comparison failed for %s", spec.get("id"),
+                       exc_info=False)
+
     result["robustness"] = robustness
     return result
 

@@ -3,43 +3,44 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0 build)._
 _Seeded from git history + prior transcripts._
 
-## 🚧 P3 — step 1 of 3 done (green), 2 and 3 to go (2026-08-10)
+## ✅ P3 — COMPLETE, tests green, NOT YET SHIPPED (2026-08-10)
 
-`app/engines/regime.py` + `tests/test_p3_regime.py` — **10 passed, ruff clean.**
-**Inert**: nothing imports it yet, so it changes no behaviour.
+`app/engines/regime.py`, the gate in `strategy_backtest`, the live read in
+`strategy_signal_service`, and the Markets cross-check. **26 P3 tests green,
+ruff clean**, plus 60 green across every module P3.2 touched.
 
-Landed on its own deliberately. P3 is the highest-risk phase in the plan
-("changes what every strategy does"), so the pure engine — which can be tested in
-isolation and cannot affect anything — goes in first, and the wiring follows
-against a known-good foundation.
-
-*Note for the next session:* the sandbox VM was down for this entire build, so
-every line of this was written without executing anything and verified by Eran
-running the suite. It passed 10/10 first time. That loop works; it is not a
-reason to slow down, only a reason to keep tests tight and land things in
-inert-first order.
+**The gate is measured on every strategy and enabled on none.** P3 changes what
+the app *knows*, not what it *does*, until you look at the numbers and decide.
 
 **Decisions taken this session — do not re-litigate:**
 
 | # | Decision |
 |---|---|
-| Gate enablement | **Measure both, ship OFF.** Every strategy is backtested with and without the gate and the card shows both numbers, but the gate does not act until Eran turns it on per strategy. Nothing changes what the money does until a human has compared them — the only version that cannot quietly curve-fit itself on. |
-| "Improves" | **Shallower max drawdown at no worse than −1%/yr CAGR.** Judges the gate on the job it is for. CAGR-alone would reject a filter doing exactly what it was built to do. |
-| Volatility input | **Realized vol from SPY closes**, not `^VIX`. No new provider, and identical in both paths — which is the whole constraint. |
+| Gate enablement | **Measure both, ship OFF.** Auto-enabling whatever measured better would be selecting on one sample of history — exactly what the overfitting flag exists to catch. |
+| "Improves" | **Shallower max drawdown at no worse than −1%/yr CAGR.** A regime filter trades a little return for a lot less drawdown, and that trade *is* the product. CAGR-alone rejects a filter doing its job; drawdown-alone blesses one that refuses to invest. |
+| Volatility input | **Realized vol from SPY closes**, not `^VIX`. No new provider, and computable identically in both paths — the whole constraint. |
 
-**Still to build (P3.2 / P3.3):** the `strategy_backtest` gate, the live call from
-`strategy_signal_service`, `tickers_needed()` extended so the fetcher gets
-SPY/QQQ/IWM, storing gated + ungated metrics side by side, the card showing both,
-and relabelling the Markets futures regime as a display-only cross-check.
-**Needs a structural test proving live and backtest call the same function** —
-that is the entire point of option (b).
+**A result worth knowing, found while writing the tests.** On a plainly falling
+market the gate changes *nothing* on `btm_trend_tqqq` — and that is correct.
+The strategy already gates on QQQ vs its 200-day and the regime proxy is built
+from the same idea, so they agree and the gated run is identical. A regime
+overlay is only worth switching on where it **disagrees** with the rule already
+in place: QQQ holding its trend while SPY and IWM roll over, i.e. narrow
+late-cycle breadth. A test constructs exactly that case, and there the gate
+bites. **Expect the live comparison to show little improvement across most of
+this family for the same reason** — that would be a real result, not a failure.
 
-**Verified:** 10/10 on the dev machine, ruff clean. The thresholds
-(`VOL_HIGH_PCTL` 80, score cutoffs ±0.35) behave as intended on the synthetic
-rising/falling series — steady advance scores 0.95 → `risk_on`, steady decline
-−1.2 → `risk_off`. They have **not** been exercised against ten years of real
-closes; that happens in P3.2, and the gated-vs-ungated comparison is what will
-show whether they are set sensibly.
+**Before this can be judged:** the 03:30 job must rerun so every strategy carries
+a gated-vs-ungated comparison, or run `smoke-p3.ps1 -Refresh` (slow — ~10y of
+daily closes per ticker). The thresholds (`VOL_HIGH_PCTL` 80, score cutoffs
+±0.35) have only ever been exercised against synthetic straight lines; the live
+comparison across seven strategies is what shows whether they are set sensibly
+or whether the gate spends 2018 sitting in the core for no reason.
+
+**Not done:** the card does not yet *render* the gated-vs-ungated numbers — the
+data reaches the client under `backtest.robustness.regime`, but the Plan tab
+ignores it. `smoke-p3.ps1` prints the table instead, which is enough to make the
+enable decision. Rendering it is a small P2-shaped follow-up.
 
 ## ⛔ P2 — WRITTEN, NOT YET RUN (2026-08-10)
 

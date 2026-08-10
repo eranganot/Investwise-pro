@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from app.engines import regime as rg
+
 from app.engines.performance import cagr, max_drawdown
 
 TRADING_DAYS = 252
@@ -54,6 +56,13 @@ MEASURED_FAILURES = {
                        "83.7% vs 81.8% simply held) and failed out of sample "
                        "(58.8% in-sample vs 3.2% out). Experimental only."),
 }
+
+# How much annual return the regime gate may give up before it stops being
+# worth having. Decided: the gate's job is sitting out the bad stretches, so it
+# is judged on drawdown -- but a filter that costs more than a point a year is
+# buying that shelter too dearly. Judging on CAGR alone would reject a gate doing
+# exactly what it was built to do.
+MAX_CAGR_GIVEUP_PCT = 1.0
 
 CGT_RATE = 0.25          # Israel, individual, no long-term holding relief
 DEFAULT_COST_BPS = 5.0   # per traded leg, round-trip spread + commission
@@ -536,8 +545,13 @@ def _exposure_stats(targets: list[dict], spec: dict) -> dict:
     }
 
 
-def tickers_needed(spec: dict) -> list[str]:
-    """Every symbol the spec references, so the caller knows what to fetch."""
+def tickers_needed(spec: dict, *, regime_gate: bool = False) -> list[str]:
+    """Every symbol the spec references, so the caller knows what to fetch.
+
+    With ``regime_gate`` the regime proxy's own indexes are included. They must
+    be fetched or the run abstains -- silently skipping the gate would produce a
+    number labelled "gated" that was not.
+    """
     o = spec.get("overlay") or {}
     names = set(spec.get("weights") or {}) | set(spec.get("base") or {})
     for key in ("gate_ticker", "signal_ticker", "risk_off"):
@@ -546,14 +560,65 @@ def tickers_needed(spec: dict) -> list[str]:
     names.update(o.get("universe") or [])
     if spec.get("risk_off"):
         names.add(spec["risk_off"])
+    if regime_gate:
+        names.update(rg.tickers_needed())
     return sorted(names)
+
+
+def _apply_regime_gate(targets: list[dict], allow, spec: dict) -> list[dict]:
+    """On days the regime blocks, hold what the strategy holds when it is flat.
+
+    Applied AFTER the overlay has decided its targets, so it composes with every
+    overlay kind rather than each one needing to know about regimes. The fallback
+    is the same one the overlay itself uses when its setup is not live: the core
+    holding, else the declared risk-off instrument, else nothing.
+    """
+    off = dict(spec.get("base") or {})
+    if not off and spec.get("risk_off"):
+        off = {spec["risk_off"]: 1.0}
+    return [dict(t) if bool(a) else dict(off) for t, a in zip(targets, allow)]
+
+
+def gate_verdict(ungated: dict, gated: dict) -> dict:
+    """Did the regime gate earn its place on this strategy?
+
+    Criterion (decided, not discovered): a shallower max drawdown at no worse
+    than ``MAX_CAGR_GIVEUP_PCT`` of annual return. A regime filter almost always
+    trades a little CAGR for a lot less drawdown -- that trade IS the product, so
+    judging on CAGR alone would reject a gate doing its job. Judging on drawdown
+    alone would bless one that simply refuses to invest.
+
+    Returns the verdict AND both deltas, so the card can show the trade rather
+    than only the conclusion.
+    """
+    if not (ungated.get("ok") and gated.get("ok")):
+        return {"comparable": False,
+                "reason": "one of the two runs abstained, so they cannot be compared"}
+    d_cagr = round(gated["cagr_pct"] - ungated["cagr_pct"], 2)
+    d_dd = round(gated["max_drawdown_pct"] - ungated["max_drawdown_pct"], 2)
+    shallower = d_dd < 0
+    affordable = d_cagr >= -MAX_CAGR_GIVEUP_PCT
+    improves = bool(shallower and affordable)
+    if improves:
+        why = (f"drawdown {abs(d_dd):.1f} points shallower for "
+               f"{('+' if d_cagr >= 0 else '')}{d_cagr:.1f}%/yr")
+    elif not shallower:
+        why = f"drawdown was not reduced ({d_dd:+.1f} points)"
+    else:
+        why = (f"drawdown {abs(d_dd):.1f} points shallower, but it cost "
+               f"{abs(d_cagr):.1f}%/yr -- more than the {MAX_CAGR_GIVEUP_PCT:.0f}%/yr limit")
+    return {"comparable": True, "improves": improves, "why": why,
+            "cagr_delta_pct": d_cagr, "max_drawdown_delta_pct": d_dd,
+            "cagr_giveup_limit_pct": MAX_CAGR_GIVEUP_PCT,
+            "observations_match": ungated.get("observations") == gated.get("observations")}
 
 
 def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
         benchmark: list[tuple[str, float]] | None = None,
-        cgt_rate: float = CGT_RATE, cost_bps: float = DEFAULT_COST_BPS) -> dict:
+        cgt_rate: float = CGT_RATE, cost_bps: float = DEFAULT_COST_BPS,
+        regime_gate: bool = False) -> dict:
     """Backtest one spec. Returns measured metrics, or abstains with a reason."""
-    missing = [tk for tk in tickers_needed(spec) if tk not in series]
+    missing = [tk for tk in tickers_needed(spec, regime_gate=regime_gate) if tk not in series]
     if missing:
         return _abstain(MISSING_TICKER, f"no price history for {', '.join(missing)}")
 
@@ -577,6 +642,10 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     targets = targets_for(px, spec)
     if isinstance(targets, dict):        # an abstention leaked through
         return targets
+    if regime_gate:
+        # The SAME function the live read calls -- see app/engines/regime.py. If
+        # these two ever diverge the card's numbers stop describing what runs.
+        targets = _apply_regime_gate(targets, rg.gate(px), spec)
 
     sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate)
     out = _metrics(sim, dates, bench)
@@ -610,6 +679,7 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
         "cgt_rate_pct": round(cgt_rate * 100, 1),
         "cost_bps": cost_bps,
         "overlay": (spec.get("overlay") or {}).get("kind", "buy_hold"),
+        "regime_gated": bool(regime_gate),
         "known_failure": MEASURED_FAILURES.get(
             (spec.get("overlay") or {}).get("kind", "buy_hold")),
         "disclaimer": ("Backtested over the stated period on real closing prices, "
