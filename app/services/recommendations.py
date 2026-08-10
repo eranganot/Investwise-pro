@@ -31,13 +31,18 @@ CLASS_ETF = {"Equities": "VTI", "Fixed Income": "BND", "Cash": "BIL",
 
 _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
+# How far the sleeve may wander from the size you chose before Today says so.
+# Wide enough that ordinary price movement does not nag; narrow enough that a
+# sleeve quietly becoming something else gets noticed.
+SLEEVE_DRIFT_BAND_PCT = 5.0
+
 # Apply kinds that genuinely mutate holdings/plan/rules. Anything else is advice
 # the app can't execute for you -- Accept on those used to fall through every
 # branch, report "Done -- applied." and silently dismiss the card, so guidance
 # looked like it had been carried out when nothing had happened.
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
-                     "buy_funded", "sell_position", "redeploy_cash"}
+                     "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve"}
 
 
 def _agent_tx(session: AsyncSession):
@@ -849,6 +854,87 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("strategy signal recommendations failed", exc_info=True)
         degraded.append("strategy_signals")
     _tm.mark("strategy_signals")
+
+    # Sleeve drift: you chose a size, the market moved you off it.
+    #
+    # DECIDED, and the distinction matters more than the card: Accept executes
+    # the funded rebalance when you ALREADY HOLD some of the sleeve, and refuses
+    # when you hold none of it. The +/-5 point band fires at 0% against a chosen
+    # 20% too -- but a 20-point gap is not drift, it is never having funded the
+    # sleeve, and one tap taking a book from nothing to a fifth in a 3x fund is
+    # a different decision from topping up. That one routes to "Fund this
+    # sleeve", which shows the whole plan.
+    try:
+        from app.services.strategy_service import sleeve_targets
+        _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
+        _chosen = getattr(plan, "strategy_sleeve_pct", None) if plan is not None else None
+        _targets = sleeve_targets(_plan_sid, _chosen) if _plan_sid else {}
+        if _targets and nav:
+            _weights = snap.get("exposure_ticker") or {}
+            for _tk, _w in sorted(_targets.items()):
+                _tk = _tk.upper()
+                _target_pct = _w * 100.0
+                _actual_pct = (_weights.get(_tk, 0.0) or 0.0) * 100.0
+                _gap = _target_pct - _actual_pct
+                if abs(_gap) < SLEEVE_DRIFT_BAND_PCT:
+                    continue
+                _held = _actual_pct > 0.05
+                _amount = abs(_gap) / 100.0 * nav
+                _cold = not _held and _gap > 0
+                if _cold:
+                    recs.append({
+                        "id": _rid("sleeve_coldstart", _tk), "dimension": "strategy",
+                        "severity": "MEDIUM",
+                        "title": f"You chose a {_target_pct:.0f}% {_tk} sleeve and hold none of it",
+                        "why": (f"Your plan says {_target_pct:.0f}% of the book in {_tk}; "
+                                f"you hold nothing. That is not drift -- the sleeve has "
+                                f"never been funded."),
+                        "action": ("Use \u201cFund this sleeve\u201d on the Plan tab. It shows "
+                                   "which positions would be sold, for how much, and the "
+                                   "estimated tax, before anything happens."),
+                        "impact": (f"Closing it means moving about {_ils(_amount)} into {_tk}. "
+                                   f"Starting a position is a different decision from "
+                                   f"correcting a drift, so this card will not do it in one tap."),
+                        "how": ["Plan tab \u2192 the strategy card \u2192 Fund this sleeve",
+                                "Review every funding leg and its tax, then confirm",
+                                "No brokerage order is placed either way"],
+                        "est_amount": round(_amount, 2),
+                        "meta": {"chosen_pct": round(_target_pct, 1),
+                                 "actual_pct": round(_actual_pct, 1), "cold_start": True},
+                    })
+                    continue
+                _over = _gap < 0
+                recs.append({
+                    "id": _rid("sleeve_drift", _tk), "dimension": "strategy",
+                    "severity": "MEDIUM",
+                    "title": (f"{_tk} has drifted to {_actual_pct:.0f}% of a "
+                              f"{_target_pct:.0f}% sleeve"),
+                    "why": (f"You chose {_target_pct:.0f}%. The market has moved you to "
+                            f"{_actual_pct:.0f}%, which is "
+                            f"{abs(_gap):.0f} points {'above' if _over else 'below'} it."),
+                    "action": ((f"Trim about {_ils(_amount)} of {_tk} back to your "
+                                f"{_target_pct:.0f}% sleeve.") if _over else
+                               (f"Add about {_ils(_amount)} of {_tk} to get back to your "
+                                f"{_target_pct:.0f}% sleeve.")),
+                    "impact": ("Puts the sleeve back at the size you chose. Accept executes "
+                               "this against your tracked book; no brokerage order is placed."),
+                    "how": [f"Accept rebalances {_tk} toward {_target_pct:.0f}%",
+                            "Every funding leg and its estimated tax is named first",
+                            "The real trade is yours to place at your broker"],
+                    "est_amount": round(_amount, 2),
+                    "apply": ({"kind": "trim", "ticker": _tk,
+                               "shares": max(1, int(_amount / max(
+                                   1e-9, next((float(r.current_price or 0) for r in rows
+                                               if (r.ticker or "").upper() == _tk), 0) or 1e-9)))}
+                              if _over else
+                              {"kind": "fund_sleeve", "strategy_id": _plan_sid,
+                               "sleeve_pct": _chosen}),
+                    "meta": {"chosen_pct": round(_target_pct, 1),
+                             "actual_pct": round(_actual_pct, 1), "cold_start": False},
+                })
+    except Exception:  # noqa: BLE001
+        logger.warning("sleeve-drift recommendation failed", exc_info=True)
+        degraded.append("sleeve_drift")
 
     # Protective rules that are suggested but not yet armed ARE "what to do now"
     # by this app's own definition, so they belong on Today. They were reachable
@@ -1819,6 +1905,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = await _apply_buy_funded(session, user, spec)
     elif kind == "redeploy_cash":
         detail = await _apply_redeploy_cash(session, user, spec)
+    elif kind == "fund_sleeve":
+        # Reuses the P0.1 funding path, so there is ONE implementation of "raise
+        # this much and buy the sleeve" rather than a second that could size it
+        # differently from the button on the Plan tab.
+        from app.services.strategy_service import load_basket
+        detail = await load_basket(session, user, spec["strategy_id"],
+                                   sleeve_pct=spec.get("sleeve_pct"), mode="fund")
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")

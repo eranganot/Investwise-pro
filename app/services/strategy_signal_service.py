@@ -258,6 +258,12 @@ async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
     # Only for tickers actually held: a stop on something you do not own is
     # noise, and it would sit armed and never fire.
     specs = [r for r in specs if r["ticker"].upper() in held]
+    # Entry/exit rules are the exception: an ENTRY rule on a ticker you do not
+    # hold yet is exactly the point -- it is how you find out the strategy wants
+    # in. Exits still require the position.
+    for r in strategy_catalog.signal_rules(sid, measured):
+        if r["mode"] == "entry" or r["ticker"].upper() in held:
+            specs.append(r)
     if not specs:
         return []
     existing = {(r["ticker"].upper(), r["rule_type"]) for r in await list_rules(session, user)}
@@ -267,8 +273,14 @@ async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
 
     entry = strategy_catalog.get(sid) or {}
     vol = (measured.get("metrics") or {}).get("volatility_pct")
-    lines = ", ".join(f"{r['rule_type'].replace('_', ' ')} on {r['ticker']} at {r['level']:g}%"
-                      for r in specs)
+    def _line(r):
+        if r["rule_type"] == "strategy_signal":
+            return f"{r['mode']} on {r['ticker']} when the strategy signals it"
+        return f"{r['rule_type'].replace('_', ' ')} on {r['ticker']} at {r['level']:g}%"
+    lines = ", ".join(_line(r) for r in specs)
+    # The measured per-trade record, carried so an armed entry/exit rule is not
+    # an opinion. Only present when the strategy has a stored backtest.
+    _stats = next((r.get("stats") for r in specs if r.get("stats")), None)
     return [{
         "id": f"stratrules_{sid[:12]}",
         "dimension": "strategy",
@@ -281,7 +293,11 @@ async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
         "impact": ("A strategy is a rule you intend to follow, and the gap between its "
                    "backtested return and your real one is mostly the days you did not. "
                    "These keep working when you are not looking."),
-        "apply": {"kind": "create_rules", "rules": specs},
+        "apply": {"kind": "create_rules", "rules": [
+            {k: v for k, v in r.items()
+             if k in ("ticker", "rule_type", "mode", "level", "note", "strategy_id")}
+            for r in specs]},
+        "stats": _stats,
         "how": ["Accept arms these as trading rules — you can edit or remove any of them "
                 "under Trading rules.",
                 "They raise an alert and a Today to-do when they fire; no order is placed.",

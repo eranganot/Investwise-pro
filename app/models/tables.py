@@ -319,10 +319,16 @@ class TradingRule(Base, PKMixin, TimestampMixin):
     __tablename__ = "trading_rules"
     subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
     ticker: Mapped[str] = mapped_column(String(32), index=True)
-    # stop_loss | take_profit | trailing_stop | price_above | price_below | buy_dip | max_weight
+    # stop_loss | take_profit | trailing_stop | price_above | price_below
+    # | buy_dip | max_weight | strategy_signal
     rule_type: Mapped[str] = mapped_column(String(24))
-    mode: Mapped[str] = mapped_column(String(8), default="pct")     # pct | price
+    mode: Mapped[str] = mapped_column(String(8), default="pct")     # pct | price | entry | exit
     level: Mapped[float] = mapped_column(Float)
+    # Which strategy a `strategy_signal` rule follows, pinned at arm time.
+    # Without pinning, changing the applied strategy would silently repoint every
+    # armed entry/exit rule at a different set of trades -- the user would still
+    # see "TQQQ entry" and be following something they never agreed to.
+    strategy_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     peak_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # trailing-stop high-water
     note: Mapped[str | None] = mapped_column(String(160), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

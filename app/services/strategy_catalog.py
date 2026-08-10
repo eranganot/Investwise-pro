@@ -358,6 +358,71 @@ def discipline_rules(strategy_id: str, measured: dict | None = None) -> list[dic
             "note": (f"{entry['name']}: {trail:.0f}% trailing stop, ~1/3 of the "
                      f"strategy's measured {float(vol):.0f}% volatility"),
         })
+    # A take-profit only where the strategy's own measured drawdown says a
+    # round trip is worth banking. Sized from the same volatility as the stop,
+    # so the two are consistent rather than one derived and one guessed.
+    dd = metrics.get("max_drawdown_pct")
+    if dd and float(dd) >= 40.0:
+        tp = max(20.0, min(80.0, round(float(vol) * 1.2)))
+        for tk in aggressive:
+            out.append({
+                "ticker": tk, "rule_type": "take_profit", "mode": "pct", "level": tp,
+                "note": (f"{entry['name']}: bank a {tp:.0f}% gain. This basket's "
+                         f"measured worst drawdown is {float(dd):.0f}%, so a round "
+                         f"trip is worth taking off the table."),
+            })
+
     # No max_weight here -- applying the strategy arms the sleeve cap at the size
     # the user actually chose. See the docstring.
+    return out
+
+
+def signal_rules(strategy_id: str, measured: dict | None = None) -> list[dict]:
+    """Entry and exit rules that ARE the strategy's signal, not a guess at it.
+
+    Every level in `discipline_rules` is a protective band around a position.
+    These are different: they are the strategy's own entry and exit, surfaced as
+    armable rules so they get an audit trail, an alert, and an on/off switch.
+
+    They carry the strategy's MEASURED per-trade statistics -- win rate, average
+    hold, expectancy -- because an armed rule that cannot say how it performed is
+    an opinion wearing a rule's clothes. With no stored backtest this returns
+    nothing rather than describing trades nobody counted.
+    """
+    entry = _BY_ID.get(strategy_id)
+    if entry is None:
+        return []
+    m = ((measured or {}).get("metrics") or {}) if measured else {}
+    if not m.get("trades_per_year"):
+        return []
+    aggressive = sorted(set(entry.get("weights") or {}) - set(entry.get("base") or {}))
+    if not aggressive:
+        return []
+
+    stats = {k: m.get(k) for k in ("win_rate_pct", "expectancy_pct_per_trade",
+                                   "avg_holding_days", "profit_factor",
+                                   "trades_per_year")
+             if m.get(k) is not None}
+    if not stats.get("win_rate_pct"):
+        return []                       # nothing measured worth quoting
+
+    mechanism = _rule_summary(entry)
+    out = []
+    for tk in aggressive:
+        for side, verb in (("entry", "Buy"), ("exit", "Exit")):
+            out.append({
+                "ticker": tk, "rule_type": "strategy_signal", "mode": side,
+                "level": 0.0, "strategy_id": strategy_id,
+                "note": f"{entry['name']}: {verb.lower()} when the strategy says so.",
+                "mechanism": mechanism,
+                "stats": stats,
+                "why": (f"{verb} on the rule you already chose, rather than on the "
+                        f"day you happen to look. Measured over the backtest: "
+                        f"{stats['win_rate_pct']:.0f}% of round trips profitable"
+                        + (f", average hold {stats['avg_holding_days']:.0f} days"
+                           if stats.get("avg_holding_days") else "")
+                        + (f", expectancy {stats['expectancy_pct_per_trade']:+.2f}% per trade"
+                           if stats.get("expectancy_pct_per_trade") is not None else "")
+                        + "."),
+            })
     return out

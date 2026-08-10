@@ -71,6 +71,9 @@ async def lifespan(app: FastAPI):
                     "last_error VARCHAR(255) DEFAULT ''",
                     "ALTER TABLE strategy_backtests ADD COLUMN IF NOT EXISTS "
                     "last_error_at TIMESTAMPTZ",
+                    # P4: strategy_signal rules pin the strategy they follow.
+                    "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
+                    "strategy_id VARCHAR(40)",
                 ):
                     try:
                         await conn.execute(text(ddl))

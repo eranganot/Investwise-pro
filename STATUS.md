@@ -3,6 +3,35 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0-P3)._
 _Seeded from git history + prior transcripts._
 
+## 🚧 P4 — parts 1 and 3 written and green, NOT YET SHIPPED (2026-08-10)
+
+`strategy_signal` entry/exit rules + the sleeve-drift card. **10 P4 tests green,
+full suite 551 passed, ruff clean.** Notifications (P4.2) are a separate deploy.
+
+**Decisions taken this session — do not re-litigate:**
+
+| # | Decision |
+|---|---|
+| Rule shape | **One strategy-linked rule**, not discrete `ma_above`/`rsi_below`/`breakout` types. Those would put a second copy of SMA/RSI/Donchian in `rules_service` beside the engine's — the duplication that caused the reprice-loop and regime bugs. A test asserts `rules_service` contains no indicator maths. |
+| Stats | Rules carry the strategy's **measured** win rate / avg hold / expectancy. No stored backtest → no rule offered, rather than describing trades nobody counted. |
+| Entry sizing | An exit executes a full exit; an **entry stays advisory** — size is a funding decision, and inventing one would be the app choosing how much of the book to commit. |
+| Drift Accept | **Executes when the sleeve is held; refuses a cold start.** A 20-point gap at 0% held is not drift, it is never having funded it. Rejected a per-Accept NAV cap: it would make the card say one thing and the app do another, and pay CGT twice for one allocation. |
+| P4.2 | **Deferred.** Push has been the flakiest surface here — subscriptions sat at 0 for weeks and the 07:00 digest has never been confirmed arriving. Four new triggers on an unverified pipe means debugging two things at once. |
+
+**Schema:** `trading_rules.strategy_id VARCHAR(40) NULL` — migration 0013 plus the
+startup self-heal DDL, because `create_all` never adds a column to an existing
+table and hand-running alembic against this deploy has failed twice.
+
+**P4.2 triggers, for when it ships:** signal flip → immediate; armed rule fires →
+immediate; sleeve drift beyond ±5pts → at most daily; new rules available →
+**weekly, inside the 07:00 digest**, never live (suggestions regenerate as prices
+move, and that is the push that gets notifications switched off entirely).
+
+**Unverified:** nothing has run against production yet. `smoke-p4.ps1` is written
+and chains p3 → p2 → p1 → p0 → e2e. Your book holds no TQQQ against a chosen
+20%, so the **cold-start** path is the one that will exercise first — expect the
+card to refuse to execute and point at "Fund this sleeve".
+
 ## ✅ P3 — SHIPPED AND VERIFIED LIVE (2026-08-10)
 
 `smoke-p3.ps1 -Refresh`: **11 passed, 0 failed, 0 skipped.** All seven strategies

@@ -24,11 +24,27 @@ from app.models.tables import RuleEvent, TradingRule, User
 from app.services.portfolio_analytics import compute_snapshot, load_positions
 
 RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
-              "price_below", "buy_dip", "max_weight"}
+              "price_below", "buy_dip", "max_weight", "strategy_signal"}
+
+# An entry/exit rule is a SUBSCRIPTION to one strategy's own signal, not a
+# reimplementation of it.
+#
+# The alternative was discrete indicator rules -- ma_above, rsi_below,
+# breakout_high -- which would mean a second copy of SMA/RSI/Donchian living
+# here alongside the backtest engine's. Two implementations of one job is what
+# produced the duplicated reprice loop (which corrupted a live cash row) and the
+# futures-vs-proxy regime split. It would also make the promised per-rule
+# statistics describe something that was never measured.
+#
+# So these rules fire off the flip `strategy_signal_service` already records,
+# which comes from the same `targets_for()` the backtest ran. One signal, one
+# source of truth, and the rule adds what a rule is for: arm/disarm, an audit
+# trail, and a notification.
+_SIGNAL_MODES = ("entry", "exit")
 
 _SEV = {"stop_loss": "CRITICAL", "trailing_stop": "CRITICAL", "max_weight": "HIGH",
         "take_profit": "HIGH", "buy_dip": "HIGH", "price_above": "MEDIUM",
-        "price_below": "MEDIUM"}
+        "price_below": "MEDIUM", "strategy_signal": "HIGH"}
 
 
 def _now():
@@ -75,6 +91,15 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
     if qty <= 0:
         return None
     rt = rule.rule_type
+    if rt == "strategy_signal":
+        # An exit is a full exit -- the strategy no longer wants the sleeve at
+        # all. An entry has no unambiguous size here (that is a funding
+        # decision, and funding is what "Fund this sleeve" is for), so it stays
+        # advisory rather than inventing one.
+        if rule.mode == "exit":
+            return {"kind": "sell_position", "ticker": rule.ticker.upper(),
+                    "shares": round(qty, 6), "rule_type": rt}
+        return None
     if rt in ("stop_loss", "trailing_stop", "take_profit"):
         return {"kind": "sell_position", "ticker": rule.ticker.upper(),
                 "shares": round(qty, 6), "rule_type": rt}
@@ -125,6 +150,36 @@ def _evaluate(rule: TradingRule, cur: float, cost: float, weight: float) -> tupl
     return (False, "", "", None)
 
 
+async def _signal_flip(session: AsyncSession, user: User, strategy_id: str) -> dict | None:
+    """The flip `strategy_signal_service` has already recorded, if one is open.
+
+    Read, never derive. The signal is evaluated once, by the 06:15 job, against
+    the same targets_for() the backtest ran; a rule that recomputed it here would
+    be a second implementation that could disagree with both.
+    """
+    from app.models.tables import StrategySignalState
+    row = (await session.execute(
+        select(StrategySignalState).where(
+            StrategySignalState.subject == user.email,
+            StrategySignalState.strategy_id == strategy_id))).scalar_one_or_none()
+    if row is None or row.flipped_at is None:
+        return None
+    return {"target": row.target or {}, "previous": row.previous_target or {},
+            "as_of": row.as_of}
+
+
+def _signal_side(flip: dict, ticker: str) -> str | None:
+    """Did the sleeve just turn ON (entry) or OFF (exit) for this ticker?"""
+    tk = ticker.upper()
+    now_in = float((flip.get("target") or {}).get(tk, 0.0)) > 0.005
+    was_in = float((flip.get("previous") or {}).get(tk, 0.0)) > 0.005
+    if now_in and not was_in:
+        return "entry"
+    if was_in and not now_in:
+        return "exit"
+    return None
+
+
 async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = False) -> list[dict]:
     """Update peaks, latch newly-triggered rules, optionally push. Returns the
     list of rules that newly triggered this run."""
@@ -133,7 +188,37 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
     newly = []
+    _flips: dict[str, dict | None] = {}
     for r in rules:
+        if r.rule_type == "strategy_signal":
+            sid = r.strategy_id
+            if not sid:
+                continue
+            if sid not in _flips:
+                _flips[sid] = await _signal_flip(session, user, sid)
+            flip = _flips[sid]
+            side = _signal_side(flip, r.ticker) if flip else None
+            if side == r.mode and not r.triggered:
+                r.triggered = True
+                r.last_triggered_at = _now()
+                pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0,
+                                                    "qty": 0, "weight_pct": 0}
+                verb = "wants in" if side == "entry" else "wants out"
+                title = f"\U0001f4c8 {r.ticker} {verb}" if side == "entry" else f"\U0001f4c9 {r.ticker} {verb}"
+                action = (f"Your {sid} rule flipped to {side}: it now wants "
+                          f"{', '.join(f'{k} {round(v * 100)}%' for k, v in sorted((flip.get('target') or {}).items())) or 'no position'}.")
+                event = RuleEvent(
+                    subject=user.email, rule_id=str(r.id), ticker=r.ticker,
+                    rule_type=r.rule_type, trigger_price=pos["price"],
+                    target_price=None, title=title, outcome="triggered",
+                    action={"plan": execution_plan(r, pos) or {}, "side": side,
+                            "strategy_id": sid},
+                )
+                session.add(event)
+                newly.append({"id": str(r.id), "ticker": r.ticker,
+                              "rule_type": r.rule_type, "title": title,
+                              "action": action, "event": event})
+            continue
         pos = idx.get(r.ticker.upper())
         if not pos:
             # The thing this rule watches is no longer a tradeable holding —
@@ -314,16 +399,27 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
 # CRUD
 # --------------------------------------------------------------------------- #
 async def create_rule(session: AsyncSession, user: User, *, ticker: str, rule_type: str,
-                      mode: str, level: float, note: str | None = None) -> TradingRule:
+                      mode: str, level: float, note: str | None = None,
+                      strategy_id: str | None = None) -> TradingRule:
     if rule_type not in RULE_TYPES:
         raise ValueError(f"unknown rule_type '{rule_type}'")
-    mode = "price" if mode == "price" else "pct"
-    if rule_type in ("price_above", "price_below"):
-        mode = "price"
-    if rule_type in ("trailing_stop", "max_weight"):
-        mode = "pct"
+    if rule_type == "strategy_signal":
+        # Pinned at arm time. An unpinned rule would follow whatever strategy
+        # happened to be applied later, which is not what anyone armed.
+        if not strategy_id:
+            raise ValueError("a strategy_signal rule must name the strategy it follows")
+        if mode not in _SIGNAL_MODES:
+            raise ValueError(f"strategy_signal mode must be one of {_SIGNAL_MODES}")
+        level = 0.0          # the signal is the trigger; there is no level
+    else:
+        mode = "price" if mode == "price" else "pct"
+        if rule_type in ("price_above", "price_below"):
+            mode = "price"
+        if rule_type in ("trailing_stop", "max_weight"):
+            mode = "pct"
     rule = TradingRule(subject=user.email, ticker=ticker.strip().upper(),
-                       rule_type=rule_type, mode=mode, level=float(level), note=note)
+                       rule_type=rule_type, mode=mode, level=float(level), note=note,
+                       strategy_id=strategy_id)
     session.add(rule)
     await session.commit()
     return rule
