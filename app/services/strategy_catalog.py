@@ -301,8 +301,7 @@ rule_summary = _rule_summary
 
 # --- Discipline -------------------------------------------------------------
 
-def discipline_rules(strategy_id: str, measured: dict | None = None,
-                     holdings: dict[str, float] | None = None) -> list[dict]:
+def discipline_rules(strategy_id: str, measured: dict | None = None) -> list[dict]:
     """Trading rules that make a strategy survivable, sized from its own backtest.
 
     A strategy is a rule you intend to follow, and the gap between the
@@ -316,8 +315,12 @@ def discipline_rules(strategy_id: str, measured: dict | None = None,
     returns nothing rather than guessing -- an invented stop level is worse than
     no stop, because it looks like it was calculated.
 
-    ``holdings`` maps ticker -> current weight, used to skip a cap the book is
-    already inside.
+    The sleeve **cap** used to live here too, at ``sleeve_pct * 1.5``. It moved:
+    applying a strategy now arms a ``max_weight`` at the sleeve size itself
+    (``strategy_service._arm_sleeve_cap``), because a cap suggested at 30% when
+    the slider says 20% is not the number the user chose. Emitting one here as
+    well would put two ``max_weight`` rules on the same ticker at two different
+    levels, which the Rules UI correctly reports as duplicates.
     """
     entry = _BY_ID.get(strategy_id)
     if entry is None:
@@ -343,17 +346,6 @@ def discipline_rules(strategy_id: str, measured: dict | None = None,
             "note": (f"{entry['name']}: {trail:.0f}% trailing stop, ~1/3 of the "
                      f"strategy's measured {float(vol):.0f}% volatility"),
         })
-    # A sleeve that grows unchecked stops being a sleeve. The cap is the
-    # strategy's own suggested size plus room to run.
-    sleeve = entry.get("sleeve_pct")
-    if sleeve:
-        cap = min(90.0, round(float(sleeve) * 1.5))
-        for tk in aggressive:
-            if holdings and (holdings.get(tk, 0.0) * 100) > cap:
-                continue          # already over: a cap here would fire instantly
-            out.append({
-                "ticker": tk, "rule_type": "max_weight", "mode": "pct", "level": cap,
-                "note": (f"{entry['name']}: keep the sleeve near its suggested "
-                         f"{sleeve}% (cap {cap:.0f}%)"),
-            })
+    # No max_weight here -- applying the strategy arms the sleeve cap at the size
+    # the user actually chose. See the docstring.
     return out

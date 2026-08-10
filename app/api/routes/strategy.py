@@ -93,22 +93,49 @@ async def preview(strategy_id: str, sleeve_pct: float | None = None,
     plan = await get_plan(session, user)
     rows = await list_positions(session, user)
     mix, nav = current_mix(rows)
-    result = await apply_strategy_preview(session, user, s, plan, mix, nav)
+    result = await apply_strategy_preview(session, user, s, plan, mix, nav,
+                                          strategy_id=strategy_id, sleeve_pct=sleeve_pct)
     return {"ok": True, **result}
 
 
-async def apply_strategy_preview(session, user, s, plan, mix, nav) -> dict:
+async def apply_strategy_preview(session, user, s, plan, mix, nav, *,
+                                 strategy_id: str | None = None,
+                                 sleeve_pct: float | None = None) -> dict:
     from app.engines.allocation_engine import AllocationEngine
     actions = []
     if nav > 0:
         report = AllocationEngine().compute(target_allocation=s["target_allocation"],
                                             current_allocation=mix, nav=nav)
         actions = [a.model_dump() for a in report.rebalance_actions]
+
+    # For a rule-based strategy the asset-class actions are the wrong answer and
+    # usually an empty one: the book is already ~88% equities against a 100%
+    # target, so "what changes?" showed nothing and applying read as a no-op.
+    # What the user is actually asking is "what do I need to get rid of?" -- so
+    # show the funding plan. Reuses the sleeve sizing from P0.1 rather than
+    # growing a second implementation that can disagree with the button.
+    funding = None
+    sleeve_cap = None
+    if strategy_id and strategy_catalog.get(strategy_id) is not None:
+        from app.services.strategy_service import load_basket, sleeve_targets
+        try:
+            funding = await load_basket(session, user, strategy_id,
+                                        sleeve_pct=sleeve_pct, mode="fund", dry_run=True)
+        except Exception:  # noqa: BLE001 -- a preview must never break the Plan page
+            funding = None
+        _t = sleeve_targets(strategy_id, sleeve_pct if sleeve_pct is not None
+                            else s.get("sleeve_pct"))
+        sleeve_cap = [{"ticker": tk, "level_pct": round(w * 100, 1)}
+                      for tk, w in sorted(_t.items()) if w > 0]
+
     return {
         "strategy": {**s, "profile": prof.profile(s)},
         "diff": prof.diff_against_plan(s, plan, mix),
         "nav": round(nav, 2),
         "rebalance_actions": actions,
+        # What applying would arm, and what funding it would cost. Both read-only.
+        "sleeve_cap": sleeve_cap,
+        "funding": funding,
     }
 
 

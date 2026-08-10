@@ -241,15 +241,18 @@ def test_rules_target_the_aggressive_sleeve_not_the_core():
     assert {r["ticker"] for r in rules} == {"TQQQ"}      # QQQ is the base
 
 
-def test_a_cap_is_skipped_when_the_book_is_already_over_it():
-    """Arming a cap the position already breaches fires it instantly, which
-    reads as the app deciding to sell rather than as a guard being set."""
+def test_the_sleeve_cap_no_longer_comes_from_here():
+    """P1.1 moved it. It used to be suggested at sleeve_pct * 1.5 -- so a slider
+    set to 20% produced a 30% cap, which is not the number the user chose. The
+    cap is now armed at apply time, at the sleeve size itself
+    (``strategy_service._arm_sleeve_cap``). Emitting one here as well would put
+    two max_weight rules on one ticker at two different levels, which the Rules
+    UI correctly reports as duplicates."""
     from app.services import strategy_catalog as sc
     measured = {"ok": True, "metrics": {"volatility_pct": 50.0}}
-    normal = sc.discipline_rules("btm_trend_tqqq", measured, {"TQQQ": 0.05})
-    over = sc.discipline_rules("btm_trend_tqqq", measured, {"TQQQ": 0.95})
-    assert any(r["rule_type"] == "max_weight" for r in normal)
-    assert not any(r["rule_type"] == "max_weight" for r in over)
+    rules = sc.discipline_rules("btm_trend_tqqq", measured)
+    assert rules, "the trailing stop must survive"
+    assert not any(r["rule_type"] == "max_weight" for r in rules)
 
 
 def test_a_static_basket_has_no_rule_based_discipline():

@@ -77,6 +77,66 @@ def _nav(rows) -> float:
     return _snapshot(rows)["nav"] if rows else 0.0
 
 
+async def _arm_sleeve_cap(session: AsyncSession, user: User, strategy_id: str,
+                          sleeve_pct: float | None) -> list[dict]:
+    """Arm one ``max_weight`` per aggressive ticker, at the sleeve size.
+
+    Why this exists: ``as_legacy_strategy`` hardcodes ``{"Equities": 1.0}`` for
+    every strategy in this family, so ``sleeve_pct`` only ever changed the
+    *basket*. Applying at 20% and at 90% wrote an identical plan -- the sleeve
+    was a number the app collected and then ignored. Asset-class allocation
+    cannot express it either: TQQQ and QQQ are both Equities.
+
+    So the sleeve becomes a rule. It is a real, continuously enforced ceiling
+    that shows up in the Rules UI and fires when breached.
+
+    Idempotent by design: applying twice must re-level the existing cap, never
+    stack a second one on the same ticker. It deliberately re-levels a cap the
+    user set by hand too -- two max_weight rules on one ticker at two levels is
+    the ambiguity this replaces -- and the return value says which it did, so
+    the caller can tell them.
+    """
+    if strategy_catalog.get(strategy_id) is None:
+        return []                       # static families are portfolios, not sleeves
+    targets = sleeve_targets(strategy_id, sleeve_pct)
+    if not targets:
+        return []
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+    name = (strategy_catalog.get(strategy_id) or {}).get("name", strategy_id)
+    existing = {(r.ticker or "").upper(): r for r in (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.rule_type == "max_weight"))).all()}
+    out: list[dict] = []
+    for tk, weight in sorted(targets.items()):
+        tk = tk.upper()
+        level = round(float(weight) * 100.0, 1)
+        if level <= 0:
+            # A 0% cap is breached by any holding at all, so it would fire the
+            # instant it is armed. "I want none of this" is a decision to act on,
+            # not a rule to spring on someone.
+            continue
+        note = (f"{name}: the sleeve you chose. Caps {tk} at {level:g}% of the book "
+                f"-- it does not make the rebalancer aim for it.")
+        row = existing.get(tk)
+        if row is not None:
+            was = float(row.level)
+            row.level = float(level)
+            row.note = note
+            row.active = True
+            row.triggered = False
+            out.append({"ticker": tk, "level": level, "previous_level": was,
+                        "action": "relevelled" if was != level else "unchanged"})
+        else:
+            session.add(TradingRule(subject=user.email, ticker=tk, rule_type="max_weight",
+                                    mode="pct", level=float(level), note=note))
+            out.append({"ticker": tk, "level": level, "previous_level": None,
+                        "action": "armed"})
+    await session.commit()
+    return out
+
+
 async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                          sleeve_pct: float | None = None) -> dict:
     # Either catalog: static baskets live in `strategies`, rule-based ones in
@@ -91,6 +151,8 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                       preferred_depth=s.get("preferred_depth"), strategy=strategy_id,
                       strategy_sleeve_pct=s.get("sleeve_pct"))
     await session.commit()
+    # The sleeve stops being decorative here: it becomes an enforced ceiling.
+    caps = await _arm_sleeve_cap(session, user, strategy_id, s.get("sleeve_pct"))
     # rebalance trades toward the strategy's target allocation
     rows = await list_positions(session, user)
     nav = _nav(rows)
@@ -100,7 +162,15 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
         report = AllocationEngine().compute(target_allocation=s["target_allocation"],
                                             current_allocation=mix, nav=nav)
         actions = [a.model_dump() for a in report.rebalance_actions]
-    return {"ok": True, "strategy": s, "nav": round(nav, 2), "rebalance_actions": actions}
+    return {"ok": True, "strategy": s, "nav": round(nav, 2), "rebalance_actions": actions,
+            "sleeve_caps": caps,
+            # Said out loud because it is the honest limit of option (a): the cap
+            # stops the sleeve growing past the chosen size, it does not grow the
+            # book INTO it. Funding is what does that.
+            "sleeve_cap_note": (
+                "This caps the sleeve at the size you chose; it does not make the "
+                "rebalancer aim for it. Use 'Fund this sleeve' to grow into it."
+            ) if caps else None}
 
 
 # --------------------------------------------------------------------------- #

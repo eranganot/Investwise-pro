@@ -230,12 +230,11 @@ async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
     if not measured or not measured.get("ok"):
         return []
     rows = await list_positions(session, user)
-    nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows) or 1.0
-    weights = {(p.ticker or "").upper(): float(p.quantity) * float(p.current_price or 0) / nav
-               for p in rows}
     held = {(p.ticker or "").upper() for p in rows}
 
-    specs = strategy_catalog.discipline_rules(sid, measured, weights)
+    # No weights needed any more: the sleeve cap moved to apply-time, where it is
+    # armed at the size the slider says rather than suggested at 1.5x it.
+    specs = strategy_catalog.discipline_rules(sid, measured)
     # Only for tickers actually held: a stop on something you do not own is
     # noise, and it would sit armed and never fire.
     specs = [r for r in specs if r["ticker"].upper() in held]

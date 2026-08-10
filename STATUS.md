@@ -3,6 +3,73 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0 build)._
 _Seeded from git history + prior transcripts._
 
+## ⛔ P1 — WRITTEN, NOT YET RUN (2026-08-10)
+
+The sandbox VM was down for this build, so **nothing in P1 has been executed** —
+no pytest, no ruff, and `index.html` was edited **without a `node --check`**.
+
+```
+python -m pytest -q
+python -m ruff check app
+.\scripts\deploy\ship-p1.ps1
+```
+
+What it does (decisions taken this session, do not re-litigate):
+
+- **P1.1** — applying a rule-based strategy arms a `max_weight` on the aggressive
+  ticker **at the sleeve size**. Idempotent: a second apply re-levels rather than
+  stacking. A 0% sleeve arms nothing (a 0 cap fires the instant it exists).
+  **Decided: this replaces the old suggestion** — `discipline_rules` no longer
+  emits a `max_weight` at `sleeve_pct × 1.5`, because 30% is not the number a
+  slider set to 20% shows, and two caps on one ticker is what the Rules UI
+  flags as a duplicate. `discipline_rules` lost its `holdings` argument with it.
+- **P1.2** — "What changes?" shows the **funding plan** (what to sell, for how
+  much, est. CGT, what gets bought) plus the cap that applying would arm. It
+  calls `load_basket(mode="fund", dry_run=True)`, so there is one sizing
+  implementation and the preview cannot drift from the button.
+
+Risks specific to this batch, in the order I'd check them:
+
+1. **`index.html` is unverified** — ~35 lines added to `previewStrat` and
+   `applyStrat` with no JS syntax check. `ship-p1.ps1` pauses on the diffstat;
+   expect roughly **+35/−6**. If the Plan tab goes blank after deploy, that is
+   this.
+2. **`_arm_sleeve_cap` re-levels a max_weight the user set by hand**, not just
+   one it armed itself. That is deliberate (one cap per ticker), and the response
+   reports `previous_level`, but it is a write to something the user chose.
+3. **The preview now does provider work** — `dry_run` funding prices the sleeve.
+   `/strategies/{id}/preview` was previously cheap. Watch its latency.
+4. **`test_p1_sleeve.py` asserts `grow_quality` exists** as a static strategy id.
+
+## ✅ P0 SAFETY BATCH — SHIPPED AND VERIFIED LIVE (2026-08-10)
+
+Two commits: the batch itself, then `116a439` for the reprice-path incident found
+by running the smoke against production. **`smoke-p0.ps1`: 13 passed, 0 failed,
+3 skipped.**
+
+The evidence that P0.3 actually works, from the live refresh:
+
+```
+updated: 4          (was 6 - cash is skipped, COW is refused)
+stale: 1
+stale_tickers: COW @ 2025-06-11T13:56:15, trading_days 303
+skipped_cash: 1     repaired_cash: 0
+COW: stale=True, not_written=True        <- the frozen price was NOT written
+```
+
+and from `/portfolio`: `stale_positions (1)`, `stale_value_ils 2109` — COW still
+counted in NAV, flagged, and surfacing on Today as **guidance** with no
+executable apply. Every other holding reads `freshness=fresh`.
+
+The three skips are all honest and none hides a defect:
+`-Execute` not run (read-only by design); no strategy is currently in the
+kept-metrics state, so P0.2's path cannot be exercised; and every rule type on
+every holding is already armed, so P0.4's card had nothing to render. To
+exercise the last one: delete one rule in Holdings > Rules and reload Today.
+
+Still open from P0: the Pixel 9 pass (`qa/QA-2026-08-10-p0-safety.md`) and one
+`-Execute` run to prove the write path.
+
 ## ✅ LIVE DATA INCIDENT — RESOLVED same session (2026-08-10)
 
 **Repaired.** `POST /portfolio/cash {"amount_ils": 642.19, "mode": "set"}` →
@@ -48,20 +115,12 @@ Still worth doing: **grep for any other place that writes `current_price`** —
 broker sync, CSV intake, `add_holding`, `update_position`. This audit has not
 been done.
 
-## ⛔ UNCOMMITTED — read this first (2026-08-10)
+## P0 — what shipped, and the bug the suite caught
 
-**The whole P0 safety batch from `BEAT_MARKET_NEXT_PLAN.md` is written, tested and
-sitting in the working tree, uncommitted.** The sandbox VM died mid-session, so
-everything was verified on the dev machine instead.
-
-**Suite: `1 failed, 492 passed` → the failure was a real bug, now fixed. Re-run to confirm green:**
-
-```
-cd C:\dev\Investwise-pro
-python -m pytest -q
-python -m ruff check app          # NOT `app tests` — CI lints app only (.github/workflows/ci.yml)
-git status                        # confirm only the files listed below changed
-```
+Suite was `494 passed`, `ruff check app` clean, before each push.
+Note for future runs: CI lints **`app` only** (`.github/workflows/ci.yml`), not
+`tests` — `ruff check app tests` surfaces 26 pre-existing errors in test files
+that have never been gated. Worth cleaning up and widening the gate, separately.
 
 **The bug the suite caught — worth remembering.** `_fund_sleeve` gated its
 abstention on `shortfall_ils >= MIN_TRADE_ILS`. On a ₪1,000 book with no cash and
@@ -75,12 +134,7 @@ chosen one (below that, the integer percentage the user was looking at cannot
 change). The refusal now names the sleeve that *would* work
 (`achievable_sleeve_pct`), so it is actionable rather than just "no".
 
-*Note:* `ruff check app tests` surfaces 26 pre-existing lint errors in `tests/`
-(unused imports, ambiguous `l`), 10 auto-fixable. CI has never gated on them.
-Worth cleaning up and widening the gate — but **not** in this deploy, which ships
-P0 alone.
-
-Files changed (nothing else was touched):
+Files changed across the two P0 commits:
 
 | File | Phase | What changed |
 |---|---|---|
@@ -97,9 +151,9 @@ Files changed (nothing else was touched):
 | `tests/test_p0_today_cards.py` | new | suggestions card is one card + arms real rules + stops returning; stale card is guidance; NAV names its untrusted part |
 | `scripts/smoke/smoke-p0.ps1` | new | P0's own checks, read-only by default (`-Execute` to really fund), then chains `smoke-e2e.ps1` into one combined verdict |
 
-**Still unverified after the green suite** — tests cover these paths only partly, so check them on the live smoke run:
+**Still unverified after the live smoke:**
 
-1. **FMP `timestamp`** — the field name comes from the API docs, not from an observed response. If FMP doesn't return it, freshness silently falls back to the Yahoo cross-check (which is why that cross-check exists), but the FMP path itself would be untested. Confirm against a real production response.
+1. **FMP `timestamp`** — ✅ moot in practice, ⚠️ still untested. The live refresh reported `source: yahoo` for all four updates, so **production is running the Yahoo path**, and the cross-check never had to fire. The FMP `timestamp` field name (taken from the docs, never observed) remains unverified — it only matters if the primary provider is switched back to FMP.
 2. **Cash arithmetic in `_execute_funded_sleeve`** — `cash_new = cash − from_cash + leftover` is exercised by the happy path; the **unspent-leg branch** (an unpriceable ticker leaves money over) is not covered by any test.
 3. **`upsert_positions` overwrites `meta` wholesale** for an existing row, so buying into a ticker that carried `price_stale` would drop the flag. Funding blends into the existing row directly instead of upserting, so this *should* be avoided — but there's no test proving it.
 4. **`tests/test_p0_today_cards.py` matches cards by title**, because `_rid` returns a content hash. Edit the card wording and those tests go red for the wrong reason.

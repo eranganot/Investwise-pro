@@ -1271,11 +1271,35 @@ async function previewStrat(id,name){
     if(d.risk_tolerance.changes) rows.push(`Risk tolerance: <b>${d.risk_tolerance.from||"—"}</b> → <b>${d.risk_tolerance.to}</b>`);
     const mix=(d.mix_changes||[]).map(m=>`<li>${m.asset_class}: ${m.from_pct}% → <b>${m.to_pct}%</b></li>`).join("");
     const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~${ils(a.estimated_trade_value_currency)}</li>`).join("");
+    // For a rule-based strategy the asset-class actions are the wrong answer and
+    // usually an empty one -- the book is already ~88% equities against a 100%
+    // target. What's really being asked is "what do I need to get rid of?", so
+    // lead with the cap that gets armed and the funding it would take.
+    const cap=(r.sleeve_cap||[]).map(c=>`<b>${c.ticker}</b> capped at <b>${c.level_pct}%</b> of your book`).join(", ");
+    const f=r.funding;
+    let fundBlock="";
+    if(f&&f.ok===false){
+      fundBlock=`<div style="margin:6px 0"><b>Funding it:</b> <span class="bad">${f.reason||f.error||""}</span></div>`;
+    }else if(f&&f.nothing_to_do){
+      fundBlock=`<div class="ok" style="margin:6px 0">You already hold this sleeve at its target — nothing to buy.</div>`;
+    }else if(f&&f.buys&&f.buys.length){
+      const buys=f.buys.map(b=>`<li>Buy ~₪${Math.round(b.buy_ils).toLocaleString()} of <b>${b.ticker}</b> (target ${b.target_pct}%; you hold ₪${Math.round(b.held_ils).toLocaleString()} today)</li>`).join("");
+      const sells=((f.funding||{}).sells||[]).map(s=>`<li>Sell ${s.shares} <b>${s.ticker}</b> — ₪${Math.round(s.value_ils).toLocaleString()}, est. tax ₪${Math.round(s.tax_ils).toLocaleString()}<div class="muted" style="font-size:11px">${s.reason||""}</div></li>`).join("");
+      const fromCash=(f.funding||{}).from_cash_ils;
+      fundBlock=`<div style="margin:6px 0"><b>What it would take to get there:</b><ul>${buys}</ul></div>`
+        + `<div style="margin:6px 0">Paid for by:<ul>`
+        + (fromCash?`<li>₪${Math.round(fromCash).toLocaleString()} from cash</li>`:"")
+        + (sells||(fromCash?"":"<li>nothing to sell</li>"))
+        + `</ul></div>`;
+    }
     o.innerHTML=`<b>Applying "${name}" would change:</b>`
       + (rows.length?`<div style="margin:6px 0">${rows.join("<br>")}</div>`:`<div class="muted" style="margin:6px 0">No change to objective or risk tolerance.</div>`)
+      + (cap?`<div style="margin:6px 0">Arms a standing cap: ${cap}.<div class="muted" style="font-size:11px">This caps the sleeve; it does not make the rebalancer aim for it. "Fund this sleeve" is what grows you into it.</div></div>`:"")
+      + fundBlock
       + (mix?`<div style="margin:6px 0">Target mix shifts to:<ul>${mix}</ul></div>`:"")
       + `<div class="stprof" style="margin:6px 0">${stratProfile(pf).replace('<div class="stprof">','').replace(/<\/div>$/,'')}</div>`
-      + (acts?`<div style="margin-top:6px">Rebalancing trades it would suggest:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Your current mix already matches — no trades needed.</div>`)
+      + (acts?`<div style="margin-top:6px">Rebalancing trades it would suggest:<ul>${acts}</ul></div>`:(cap?"":`<div class="muted" style="margin-top:6px">Your current mix already matches — no trades needed.</div>`))
+      + `<div class="muted" style="font-size:11px;margin-top:6px">Nothing above has happened yet — this is a preview.</div>`
       + `<div style="margin-top:8px"><button onclick="applyStrat('${id}')">Apply this strategy</button></div>`;
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
@@ -1286,9 +1310,18 @@ async function applyStrat(id){
     const r=await resp.json();
     if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.error||resp.status}</span>`;return;}
     const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()}</li>`).join("");
+    // Applying used to be indistinguishable at 20% and at 90%, because the sleeve
+    // only ever changed the basket. It now arms a real, enforced ceiling -- so say
+    // which ticker, at what level, and stay honest that a cap is not a target.
+    const caps=(r.sleeve_caps||[]).map(c=>{
+      const verb=c.action==="armed"?"Armed":(c.action==="relevelled"?`Moved from ${c.previous_level}% to`:"Left at");
+      return `<li>${verb} a <b>${c.level}%</b> cap on <b>${c.ticker}</b></li>`;}).join("");
     o.innerHTML=`<span class="ok">✓ Applied <b>${r.strategy.name}</b></span> — your plan is now objective <b>${r.strategy.objective}</b>, <b>${r.strategy.risk_tolerance}</b> risk.`+
-      (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Already aligned with this strategy \u2014 no trades needed.</div>`);
-    loadPlan();
+      (caps?`<div style="margin-top:6px">Standing rules:<ul>${caps}</ul>`
+            + `<div class="muted" style="font-size:11px">${r.sleeve_cap_note||""}</div></div>`:"")+
+      (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Already aligned with this strategy \u2014 no trades needed.</div>`)+
+      (caps?`<div style="margin-top:8px"><button class="load" onclick="fundStratSleeve('${id}','${(r.strategy.name||'').replace(/'/g,"")}')">Now fund this sleeve</button></div>`:"");
+    loadPlan(); if(typeof loadRules==="function") loadRules();
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 // Two very different actions used to sit one click apart under near-identical
