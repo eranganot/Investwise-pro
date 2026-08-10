@@ -44,8 +44,13 @@ function Api($method, $path, $tmo = 90) {
 
 function MaxWeightRules($ticker) {
     $r = Api GET '/api/v1/rules'
-    if ($null -eq $r) { return $null }
-    return @($r.rules | Where-Object { $_.rule_type -eq 'max_weight' -and $_.ticker -eq $ticker })
+    if ($null -eq $r) { return $null }      # $null means UNREACHABLE, only ever that
+    # The leading comma is load-bearing. PowerShell unrolls a returned empty array
+    # into $null, so `return @()` from a function is indistinguishable from a
+    # failed call -- which is exactly how "no cap armed yet" got reported as
+    # "/rules unreachable". Wrapping in a single-element outer array stops the
+    # unroll, so an empty result stays an empty array.
+    return ,@($r.rules | Where-Object { $_.rule_type -eq 'max_weight' -and $_.ticker -eq $ticker })
 }
 
 Write-Host "Smoke: P1 sleeve enforcement  ($BaseUrl)" -ForegroundColor White
@@ -97,8 +102,8 @@ else {
     # A preview must not arm anything.
     $rulesAfter = MaxWeightRules 'TQQQ'
     if ($null -eq $rulesBefore -or $null -eq $rulesAfter) { Skip "/rules unreachable, cannot prove the preview wrote nothing" }
-    elseif ($rulesAfter.Count -ne $rulesBefore.Count) { Bad "previewing changed your rules ($($rulesBefore.Count) -> $($rulesAfter.Count))" }
-    else { Ok "previewing armed nothing ($($rulesAfter.Count) max_weight rule(s) on TQQQ, unchanged)" }
+    elseif (@($rulesAfter).Count -ne @($rulesBefore).Count) { Bad "previewing changed your rules ($(@($rulesBefore).Count) -> $(@($rulesAfter).Count))" }
+    else { Ok "previewing armed nothing ($(@($rulesAfter).Count) max_weight rule(s) on TQQQ, unchanged)" }
 }
 
 # =========================================================================== #
@@ -119,8 +124,8 @@ if ($Apply) {
 
         $now = MaxWeightRules 'TQQQ'
         if ($null -eq $now) { Skip "/rules unreachable after apply" }
-        elseif ($now.Count -eq 0) { Bad "apply reported a cap but /rules has no max_weight on TQQQ" }
-        elseif ($now.Count -gt 1) {
+        elseif (@($now).Count -eq 0) { Bad "apply reported a cap but /rules has no max_weight on TQQQ" }
+        elseif (@($now).Count -gt 1) {
             Bad "$($now.Count) max_weight rules on TQQQ at $((@($now) | ForEach-Object { "$($_.level)%" }) -join ', ') - the duplicate P1 was meant to remove"
         }
         else {
@@ -134,17 +139,17 @@ if ($Apply) {
                 -Headers $ApiHeaders -TimeoutSec 120 } catch { $null }
         $twice = MaxWeightRules 'TQQQ'
         if ($null -eq $twice) { Skip "/rules unreachable after the second apply" }
-        elseif ($twice.Count -eq 1) { Ok "applying twice re-levels rather than stacking a second cap" }
-        else { Bad "applying twice left $($twice.Count) caps on TQQQ" }
+        elseif (@($twice).Count -eq 1) { Ok "applying twice re-levels rather than stacking a second cap" }
+        else { Bad "applying twice left $(@($twice).Count) caps on TQQQ" }
     }
 } else {
     Skip "apply not run (read-only). Re-run with -Apply to verify the cap is really armed."
     $now = MaxWeightRules 'TQQQ'
     if ($null -eq $now) { Skip "/rules unreachable" }
-    elseif ($now.Count -gt 1) {
-        Bad "$($now.Count) max_weight rules already on TQQQ - duplicates from the old sleeve*1.5 suggestion?"
+    elseif (@($now).Count -gt 1) {
+        Bad "$(@($now).Count) max_weight rules already on TQQQ - duplicates from the old sleeve*1.5 suggestion?"
     }
-    elseif ($now.Count -eq 1) { Ok "one existing max_weight on TQQQ, at $($now[0].level)%" }
+    elseif (@($now).Count -eq 1) { Ok "one existing max_weight on TQQQ, at $($now[0].level)%" }
     else { Skip "no max_weight on TQQQ yet - apply the strategy to arm one" }
 }
 

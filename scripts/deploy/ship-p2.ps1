@@ -50,6 +50,23 @@ foreach ($f in $files) {
 Write-Host "`nStaged:" -ForegroundColor Gray
 git diff --cached --stat
 
+# Nothing staged means every file already matches HEAD -- almost always because
+# a previous run of this script pushed and then consumed COMMIT_MSG.txt. Say so
+# here rather than failing two steps later with "COMMIT_MSG.txt is missing",
+# which reads like a different problem entirely.
+if (-not (git diff --cached --name-only)) {
+    Write-Host "`nNothing staged: every P2 file already matches HEAD." -ForegroundColor Yellow
+    Write-Host "This almost certainly means P2 is ALREADY PUSHED - check:" -ForegroundColor Yellow
+    Write-Host "  git log --oneline -3" -ForegroundColor Gray
+    $stillDirty = git diff --name-only
+    if ($stillDirty) {
+        Write-Host "`nStill uncommitted, but NOT in this phase's file list:" -ForegroundColor Yellow
+        $stillDirty | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+        Write-Host "If any of those belong in a commit, add them to `$files or commit separately." -ForegroundColor Gray
+    }
+    Die "nothing to commit"
+}
+
 Write-Host "`nindex.html should be roughly +12/-3 (CSS + three chips)." -ForegroundColor Yellow
 Write-Host "Hundreds of deletions means the mount truncated it: git checkout -- it." -ForegroundColor Yellow
 Start-Sleep -Seconds 4
