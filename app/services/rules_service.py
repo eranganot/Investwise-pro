@@ -247,8 +247,20 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
             session.add(event)
             newly.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
                           "title": title, "action": action, "event": event})
-        elif not hit and r.triggered and r.rule_type in ("price_above", "price_below"):
-            r.triggered = False  # transient alerts re-arm when condition clears
+        elif not hit and r.triggered and r.rule_type in ("price_above", "price_below",
+                                                         "max_weight"):
+            # Standing conditions re-arm the moment they stop being true.
+            #
+            # max_weight was missing here, and it is the one that matters most:
+            # a cap fires at 10.2%, the position drifts back to 9.7% on its own,
+            # and Today keeps saying "SOXL is 10% of your portfolio - consider
+            # trimming" about a breach that has already corrected itself. Worse,
+            # `execution_plan` correctly returns None once the weight is back
+            # under the cap, so the card degrades to guidance with no action --
+            # a nag the user cannot clear by doing anything.
+            #
+            # Seen live on SOXL at 9.66% against a 10% cap.
+            r.triggered = False
     await session.commit()
 
     if notify and newly:

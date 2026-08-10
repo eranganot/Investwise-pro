@@ -549,14 +549,35 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     harvest = [o for o in tx["opportunities"] if o["trigger"] == "CAPITAL_LOSS_HARVESTING"]
     if harvest:
         losers = [r.ticker for r in rows if float(r.current_price or 0) < float(r.cost_basis)]
-        save = harvest[0]["estimated_annual_tax_savings_currency"]
+        # Never harvest the sleeve the plan says to hold.
+        #
+        # Observed live: this card offered to sell SOXL -- the aggressive leg of
+        # the applied btm_trend_soxl strategy, with a max_weight cap armed on it
+        # by P1 -- to realize a 12 shekel tax saving. Two agents giving opposite
+        # instructions about the same position on the same screen. The tax engine
+        # has no idea the position is held on purpose, and a 12 shekel tail
+        # should not wag a strategy dog.
+        try:
+            from app.services.strategy_service import sleeve_targets
+            _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
+            _sleeve = {t.upper() for t in sleeve_targets(
+                _plan_sid, getattr(plan, "strategy_sleeve_pct", None))} if _plan_sid else set()
+        except Exception:  # noqa: BLE001
+            _sleeve = set()
+        _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _sleeve})
+        losers = [t for t in losers if (t or "").upper() not in _sleeve]
+        save = harvest[0]["estimated_annual_tax_savings_currency"] if losers else 0.0
+
+    if harvest and losers:
+        _note = ("" if not _held_for_strategy else
+                 f" {', '.join(_held_for_strategy)} is left alone: your plan holds it "
+                 f"on purpose, and a tax saving is not a reason to sell your strategy.")
         recs.append({"id": _rid("tax"), "dimension": "tax",
                      "severity": "CRITICAL" if save > 0 else "MEDIUM",
                      "title": "Harvest a tax loss",
-                     "why": "You hold position(s) below what you paid — selling now realizes a loss you can "
-                            "use to offset taxable gains before year-end.",
-                     "action": f"Sell your losing position(s)"
-                               f"{' (' + ', '.join(losers) + ')' if losers else ''} to realize the loss "
+                     "why": "You hold position(s) below what you paid \u2014 selling now realizes a loss you can "
+                            "use to offset taxable gains before year-end." + _note,
+                     "action": f"Sell your losing position(s) ({', '.join(losers)}) to realize the loss "
                                f"and save about {_ils(save)} in tax this year.",
                      "impact": f"Lowers this year's tax bill by about {_ils(save)}; you can re-buy after the "
                                f"wash-sale window if you still want the exposure.",
@@ -566,9 +587,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                      "est_amount": save,
                      "apply": {"kind": "sell_losers", "tickers": losers}})
         recs[-1]["audit_trail"] = audit_for("tax",
-            raw_data={"losing_tickers": losers, "estimated_annual_tax_savings": round(save, 2)},
+            raw_data={"losing_tickers": losers, "excluded_strategy_sleeve": _held_for_strategy,
+                      "estimated_annual_tax_savings": round(save, 2)},
             formulas=[
-                f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"₪{save:,.0f}")])
+                f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"\u20aa{save:,.0f}")])
 
     # 3) Rebalance toward the plan's objective
     mix, _ = current_mix(rows)
