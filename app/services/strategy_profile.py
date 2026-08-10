@@ -25,6 +25,7 @@ _CLASS_ASSUMPTIONS = {
     "sector_equity": (9.0, 24.0),     # SMH, sector ETFs
     "single_name": (9.5, 32.0),       # NVDA, MSFT, ...
     "leveraged": (12.0, 55.0),        # TQQQ and other geared funds
+    "factor_equity": (7.5, 17.0),     # MTUM, QUAL, AVUV -- diversified, tilted
     "dividend_equity": (7.0, 14.0),   # SCHD, VIG, VYM
     "option_income": (6.5, 12.0),     # JEPI
     "bond": (3.5, 6.0),               # BND, AGG
@@ -41,6 +42,12 @@ _BROAD = {"VTI", "VT", "ITOT", "VOO"}
 _INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG"}
 _SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB"}
 _US_LARGE = {"QQQ", "SPY", "IVV", "DIA"}
+# Factor ETFs. Absent from every bucket, these fell through to "single_name" --
+# so the Factor Stack, three broadly diversified funds, was modelled at a single
+# stock's 32% volatility and reported as "Concentrated". The app recommends
+# these tickers in its own catalog; it should know what they are.
+_FACTOR = {"MTUM", "QUAL", "AVUV", "VTV", "VUG", "VBR", "VB", "IWF", "IWD",
+           "SIZE", "VLUE", "AVDV", "DFAC"}
 _DIVIDEND = {"SCHD", "VIG", "VYM", "DVY", "NOBL"}
 _OPTION_INCOME = {"JEPI", "JEPQ", "QYLD"}
 _BONDS = {"BND", "AGG", "BNDX"}
@@ -63,6 +70,8 @@ def _character(ticker: str) -> str:
         return "us_large"
     if t in _SECTOR:
         return "sector_equity"
+    if t in _FACTOR:
+        return "factor_equity"
     if t in _DIVIDEND:
         return "dividend_equity"
     if t in _OPTION_INCOME:
@@ -117,6 +126,10 @@ def profile(strategy: dict) -> dict:
     leverage = False
     single_name_weight = 0.0
     top_weight = 0.0
+    # The largest weight held in a CONCENTRATED instrument. A 40% line matters
+    # for concentration when it is one company or a geared fund; the same 40% in
+    # a diversified factor ETF is just an allocation.
+    concentrated_top = 0.0
     class_mix: dict[str, float] = {}
     for tk, w in weights:
         ch = _character(tk)
@@ -130,6 +143,8 @@ def profile(strategy: dict) -> dict:
             leverage = True
         if ch == "single_name":
             single_name_weight += w
+        if ch in ("single_name", "leveraged"):
+            concentrated_top = max(concentrated_top, w)
         top_weight = max(top_weight, w)
         class_mix[ch] = class_mix.get(ch, 0.0) + w
 
@@ -144,7 +159,11 @@ def profile(strategy: dict) -> dict:
     horizon = ("10+ years" if volatility >= 20 else
                "7-10 years" if volatility >= 14 else
                "3-7 years" if volatility >= 8 else "1-3 years")
-    if single_name_weight >= 0.5 or top_weight >= 0.30:
+    # Was `top_weight >= 0.30`, which called ANY three-line basket concentrated
+    # regardless of what the lines held -- so a momentum/quality/small-value stack
+    # read exactly like a 100% TQQQ sleeve, and the Style chip said the same word
+    # on every card. A chip that never varies is a label, not a derivation.
+    if single_name_weight >= 0.5 or concentrated_top >= 0.30:
         conc = "Concentrated"
     elif n_eff >= 5:
         conc = "Broadly diversified"

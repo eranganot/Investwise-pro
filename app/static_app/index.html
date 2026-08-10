@@ -167,12 +167,19 @@
   .databanner{border-radius:10px;padding:8px 12px;font-size:12.5px;font-weight:600;margin-bottom:12px}
   .databanner.live{background:rgba(52,211,153,.12);border:1px solid #1f4d3a;color:#34d399}
   .databanner.illustrative{background:rgba(251,191,36,.12);border:1px solid #5b4a1f;color:#fbbf24}
-  .stgoal{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-  .stgoal button{background:var(--card2);color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:12px;font-weight:600;cursor:pointer}
+  /* Five goal tabs no longer fit on a phone. Wrapping dropped "Beat the Market"
+     onto its own line under the other four, which read as a separate control
+     rather than a fifth tab. Scroll sideways instead. */
+  .stgoal{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:10px;scrollbar-width:none}
+  .stgoal::-webkit-scrollbar{display:none}
+  .stgoal button{flex:0 0 auto;white-space:nowrap;background:var(--card2);color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:12px;font-weight:600;cursor:pointer}
+  @media (max-width:400px){ .stgoal button{padding:6px 10px;font-size:11.5px} }
   .stgoal button.on{color:var(--ink);border-color:var(--blue);background:var(--soft)}
   .stcard{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px;background:var(--bg)}
   .stcard.sel{border-color:var(--blue)}
-  .stcard .nm{font-weight:700} .stcard .rk{font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:.04em}
+  /* "VERY HIGH RISK" broke across two lines, so the card header read as two
+     stacked fragments. It is a label, not prose -- keep it on one line. */
+  .stcard .nm{font-weight:700} .stcard .rk{font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
   .stcard .ds{color:var(--mut);font-size:12.5px;margin:4px 0 8px}
   .stcard .bk{font-size:11px;color:var(--mut)}
   .stcard .acts{display:flex;gap:8px;margin-top:8px}
@@ -1220,6 +1227,9 @@ function measuredProfile(s){
     ${ex!=null?chip("vs S&P",(ex>0?"+":"")+ex+"%/yr",extone):""}
     ${m.trades_per_year!=null?chip("Trades","~"+m.trades_per_year+"/yr"):""}
     ${m.tax_drag_pct?chip("Tax drag","-"+m.tax_drag_pct+"%/yr",'warn'):""}
+    ${s.style?chip("Style",s.style):""}
+    ${s.horizon?`<span class="stchip" title="${s.horizon}">Horizon <b>${String(s.horizon).split(";")[0]}</b></span>`:""}
+    ${s.uses_leverage?`<span class="stchip bad">⚠ Uses leverage</span>`:""}
     ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split">⚠ Likely overfitted</span>`:""}
     ${oos.verdict==='holds up'?`<span class="stchip">Held up out of sample</span>`:""}
   </div>

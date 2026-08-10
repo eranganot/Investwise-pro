@@ -174,10 +174,19 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
     ``backtest: None``, so the UI can say "not measured yet" instead of drawing
     a blank where a number belongs.
     """
+    from app.services import strategy_profile as _prof
+
     measured = measured or {}
     cards = []
     for e in CATALOG:
         weights = e.get("weights") or {}
+        # Style and leverage come from the basket, exactly as the static families
+        # derive theirs -- they are structural facts about what is held, not
+        # forecasts, so they are safe to show next to MEASURED returns. The
+        # derived return/vol from the same call are deliberately NOT used here:
+        # these cards report what the rule actually did, and mixing an estimate
+        # in among measurements is the confusion this family exists to avoid.
+        _p = _prof.profile({"basket": sorted((tk, w) for tk, w in weights.items())}) or {}
         cards.append({
             "id": e["id"],
             "goal": GOAL,
@@ -191,6 +200,9 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
             "sleeve_pct": e.get("sleeve_pct"),
             "sleeve_default_pct": e.get("sleeve_pct"),
             "horizon": e.get("horizon"),
+            # Structural, derived from the basket -- see the comment above.
+            "style": _p.get("concentration"),
+            "uses_leverage": _p.get("uses_leverage", False),
             "basket": sorted((tk, w) for tk, w in weights.items()),
             "base_when_flat": sorted(e.get("base") or {}) or None,
             "rule": _rule_summary(e),
