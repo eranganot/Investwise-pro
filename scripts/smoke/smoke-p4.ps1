@@ -118,7 +118,18 @@ if ($null -eq $recs -or $null -eq $pf -or $null -eq $plan) {
             } else { Ok "states plainly that no brokerage order is placed" }
         }
         else {
-            Ok "no drift card - the sleeve is inside its band (or the strategy has no sleeve)"
+            # /recommendations returns only the top 12 by severity, so "no card"
+            # and "the card exists but sorted below the cutoff" look identical
+            # from here. A MEDIUM drift card on a busy Today is exactly the case
+            # that gets truncated -- reporting PASS would be passing on missing
+            # data, which is the rule this script opens by quoting.
+            $shown = @($recs.recommendations).Count
+            if ($recs.count -gt $shown) {
+                Skip "no drift card in the top $shown of $($recs.count) - it may exist below the cutoff, which is not the same as absent"
+                Write-Host "        -> check Today on the phone, or dismiss a card and re-run" -ForegroundColor DarkGray
+            } else {
+                Ok "no drift card, and nothing was truncated - the sleeve really is inside its band"
+            }
         }
 
         if ($cold.Count -gt 0 -and $drift.Count -gt 0) {

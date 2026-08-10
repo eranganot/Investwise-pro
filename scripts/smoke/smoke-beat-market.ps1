@@ -359,6 +359,15 @@ else {
             if ($disc[0].apply.kind -ne 'create_rules') { Bad "the discipline card cannot actually arm anything" }
             else { Ok "Accept would really arm them (create_rules)" }
             foreach ($r in $disc[0].apply.rules) {
+                # A strategy_signal (entry/exit) rule has NO level by design: the
+                # strategy's own signal is the trigger, so there is nothing to
+                # derive from volatility. Demanding a level here reported two
+                # failures against rules that were correct.
+                if ($r.rule_type -eq 'strategy_signal') {
+                    if (-not $r.strategy_id) { Bad "$($r.ticker) entry/exit rule does not pin a strategy" }
+                    if ($r.mode -notin @('entry','exit')) { Bad "$($r.ticker) strategy_signal has mode '$($r.mode)'" }
+                    continue
+                }
                 if ($r.level -le 0) { Bad "$($r.ticker) $($r.rule_type): level is $($r.level)" }
                 # Derived from the strategy's measured volatility, so a round
                 # number would mean the derivation was skipped.
@@ -366,7 +375,7 @@ else {
                     Bad "$($r.ticker) trailing stop at $($r.level)% is outside the derived band"
                 }
             }
-            Ok "every offered rule carries a derived, in-band level"
+            Ok "every level-based rule carries a derived, in-band level; entry/exit rules pin their strategy"
         } elseif ($armed.Count -gt 0) {
             Ok "discipline already armed ($($armed.Count) rule(s)) - card correctly not repeated"
         } else {
