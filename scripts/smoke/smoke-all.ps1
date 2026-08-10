@@ -177,7 +177,12 @@ if ($null -eq $rulesNow -or $null -eq $recsNow) { Skip "need both rules and reco
   $recs = $recsNow
   $rules = $rulesNow
   $trig = @($rules | Where-Object { $_.triggered -and $_.active })
-  $ruleCards = @($recs.recommendations | Where-Object { $_.dimension -eq 'rule' })
+  # Count the SAME population the server reconciles: it tracks fired rules by a
+  # `rule_<id>` card id, not by dimension. Comparing a dimension-based count
+  # against the server's id-based banner compares two different sets, and worked
+  # only while nothing else used dimension 'rule'. The moment a suggestions card
+  # did, this reported a mismatch that did not exist.
+  $ruleCards = @($recs.recommendations | Where-Object { $_.id -like 'rule_*' })
   Write-Host "   triggered: $(if ($trig.Count) { ($trig | ForEach-Object { $_.ticker }) -join ', ' } else { 'none' })" -ForegroundColor DarkGray
   if ($trig.Count -eq $ruleCards.Count) { Ok "banner ($($trig.Count)) matches rule cards ($($ruleCards.Count)) - no deadlock" }
   else {

@@ -868,7 +868,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _names = sorted({r["ticker"] for r in _flat})
             _lines = [f"{r['ticker']}: {r.get('label') or r['rule_type']}" for r in _flat[:8]]
             recs.append({
-                "id": _rid("rules_suggested"), "dimension": "rule", "severity": "MEDIUM",
+                # NOT dimension "rule". That is reserved for a TradingRule that
+                # has actually FIRED -- the server tracks those by a `rule_<id>`
+                # card id, and the banner reconciliation counts them. This card
+                # is a suggestion, nothing has fired, and labelling it "rule"
+                # made it count toward "N rules triggered" while the server
+                # correctly ignored it: banner 1, cards 2, and a FAIL in three
+                # separate smoke sections.
+                "id": _rid("rules_suggested"), "dimension": "discipline", "severity": "MEDIUM",
                 "title": (f"{len(_flat)} protective rules ready to arm"
                           if len(_flat) > 1 else "1 protective rule ready to arm"),
                 "why": ("Every level below is derived from the holding's own realized "

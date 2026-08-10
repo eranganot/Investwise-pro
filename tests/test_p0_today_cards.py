@@ -72,6 +72,15 @@ def test_suggested_rules_reach_today_as_one_card():
             assert spec["ticker"] and spec["rule_type"]
             assert spec["level"] is not None
 
+        # Regression: this card must NOT claim dimension "rule". That is reserved
+        # for a TradingRule that has actually FIRED — the server reconciles those
+        # by a `rule_<id>` card id and the banner counts them. Labelling a mere
+        # suggestion "rule" made it count toward "N rules triggered" while the
+        # server correctly ignored it: banner said 1, Today showed 2, and three
+        # separate smoke sections failed on a mismatch that did not exist.
+        assert card["dimension"] != "rule"
+        assert not card["id"].startswith("rule_")
+
 
 def test_arming_from_today_creates_real_rules_and_the_card_stops_coming_back():
     with TestClient(app) as c:

@@ -389,7 +389,12 @@ else {
     } else { Ok "no agent degraded" }
 
     $rb = $recs2.rule_banner
-    $ruleCards = @($recs2.recommendations | Where-Object { $_.dimension -eq 'rule' })
+    # Count the SAME population the server reconciles: it tracks fired rules by a
+    # `rule_<id>` card id, not by dimension. Comparing a dimension-based count
+    # against the server's id-based banner compares two different sets, and worked
+    # only while nothing else used dimension 'rule'. The moment a suggestions card
+    # did, this reported a mismatch that did not exist.
+    $ruleCards = @($recs2.recommendations | Where-Object { $_.id -like 'rule_*' })
     if ($null -eq $rb) { Bad "no rule_banner in the response - the reconciliation has not deployed" }
     elseif ($rb.skipped_reason) { Skip "reconciliation skipped: $($rb.skipped_reason)" }
     else {
