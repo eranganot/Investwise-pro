@@ -137,6 +137,13 @@ async def get_portfolio(entity: str | None = None,
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
             "asset_class": (p.meta or {}).get("asset_class"),
+            # A frozen price counts in NAV exactly like a live one, so the row
+            # has to say which it is. Without this, "this holding did not move"
+            # and "this holding has no market any more" look identical.
+            "price_as_of": (p.meta or {}).get("price_as_of"),
+            "price_stale": bool((p.meta or {}).get("price_stale")),
+            "price_freshness": (p.meta or {}).get("price_freshness"),
+            "price_stale_days": (p.meta or {}).get("price_stale_days"),
         })
     # "What you put in" is external money, not the book's current cost basis.
     # The basis sum drifts for three reasons that are not deposits: it is
@@ -163,6 +170,14 @@ async def get_portfolio(entity: str | None = None,
         "cash_ils": round(sum(o["value_ils"] for o in out
                               if (o["asset_class"] or "").lower() == "cash"
                               or (o["ticker"] or "").upper() == "CASH"), 2),
+        # Which part of NAV is built on a price nothing has traded against. NAV
+        # still includes it — writing a holding down to zero is not the app's
+        # call — but every consumer of this number can now say what it rests on.
+        "stale_positions": [
+            {"ticker": o["ticker"], "value_ils": o["value_ils"],
+             "price_as_of": o["price_as_of"], "trading_days": o["price_stale_days"]}
+            for o in out if o["price_stale"]],
+        "stale_value_ils": round(sum(o["value_ils"] for o in out if o["price_stale"]), 2),
         "positions": out,
     }
 

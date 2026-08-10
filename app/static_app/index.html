@@ -1107,8 +1107,12 @@ async function loadHoldings(){
         <button class="del" title="Edit cash" onclick="openCash()">✎</button></div></div>`;
       const up=(h.current_price||0)>=h.cost_basis;
       const chg=h.cost_basis?((h.current_price-h.cost_basis)/h.cost_basis*100):0;
-      return `<div class="row"><div><div class="nm">${h.ticker}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
-        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div><div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div></div>
+      // A holding with no trades behind its price must not show a confident
+      // "0.0% since you bought" — that reads as "it didn't move" when the truth
+      // is "there is no market here any more".
+      const _stale=!!h.price_stale, _asOf=(h.price_as_of||"").slice(0,10);
+      return `<div class="row"${_stale?' style="border-left:3px solid #f59e0b"':''}><div><div class="nm">${h.ticker}${_stale?' <span class="rk" style="color:var(--amber)">⚠ price frozen</span>':''}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div>`}</div>
         <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
@@ -1177,7 +1181,9 @@ async function loadStrategies(){
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
         <button onclick="applyStrat('${s.id}')">Apply strategy</button>
-        <button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Load this basket</button>
+        ${s.measured
+          ? `<button class="load" onclick="fundStratSleeve('${s.id}','${s.name.replace(/'/g,'')}')">⚡ Fund this sleeve</button>`
+          : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`}
       </div>
     </div>`).join("");
   $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>`
@@ -1196,8 +1202,12 @@ function measuredProfile(s){
   const bt=s.backtest;
   if(!bt) return `<div class="stprof"><span class="stchip">Not measured yet</span>
       <span class="stchip">next run 03:30</span></div>`;
-  if(!bt.ok) return `<div class="stprof"><span class="stchip warn">Couldn't measure — ${bt.reason||"unknown"}</span></div>`;
   const m=bt.metrics||{}, chip=(l,v,t)=>`<span class="stchip ${t||''}">${l} <b>${v}</b></span>`;
+  // A row can carry good numbers AND a failing refresh at once: the store
+  // deliberately KEEPS the last good measurement through a failed refresh, so
+  // reading `ok` alone turned a measured card into "Couldn't measure". Only
+  // claim we couldn't measure when nothing has ever been measured.
+  if(m.cagr_pct==null) return `<div class="stprof"><span class="stchip warn">Couldn't measure — ${bt.reason||bt.last_error||"unknown"}</span></div>`;
   const dd=m.max_drawdown_pct, dtone=dd>=60?'bad':dd>=35?'warn':'';
   const vtone=m.volatility_pct>=40?'bad':m.volatility_pct>=22?'warn':'';
   const ex=m.excess_cagr_pct, extone=ex>0?'':'warn';
@@ -1213,7 +1223,7 @@ function measuredProfile(s){
     ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split">⚠ Likely overfitted</span>`:""}
     ${oos.verdict==='holds up'?`<span class="stchip">Held up out of sample</span>`:""}
   </div>
-  <div class="ds" style="font-size:11px;opacity:.7">Measured on real prices ${p.start||""}→${p.end||""} (${p.observations||0} sessions), net of 25% CGT and dealing costs. A backtest is one path through one sample of history, not a forecast.${bt.stale?" ⚠ These numbers are stale.":""}</div>`;
+  <div class="ds" style="font-size:11px;opacity:.7">Measured on real prices ${p.start||""}→${p.end||""} (${p.observations||0} sessions), net of 25% CGT and dealing costs. A backtest is one path through one sample of history, not a forecast.${bt.stale?" ⚠ These numbers are stale.":""}${(!bt.ok||bt.refresh_failing)?` ⚠ Refresh has been failing since ${(bt.last_error_at||"").slice(0,10)||"recently"} (${bt.reason||bt.last_error||"unknown"}) — the figures above are the last good measurement${bt.computed_at?`, from ${bt.computed_at.slice(0,10)}`:""}.`:""}</div>`;
 }
 
 // How much of the book this strategy governs. Without it the only expressible
@@ -1281,18 +1291,81 @@ async function applyStrat(id){
     loadPlan();
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
+// Two very different actions used to sit one click apart under near-identical
+// wording. Replacing the book DELETES every holding, so it now shows exactly
+// what it would destroy — by name and by value — before anything is written.
 async function loadStratBasket(id,name){
-  const _pct=SLEEVE[id];
-  if(!confirm(_pct!=null
-      ? `Replace your current holdings with the "${name}" basket at ${_pct}% of your portfolio?`
-      : `Replace your current holdings with the "${name}" model basket?`))return;
-  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Loading basket & pricing…"; o.scrollIntoView({behavior:"smooth",block:"center"});
-  try{const _sl=SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{};
-    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(_sl)});
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Checking what this would replace…"; o.scrollIntoView({behavior:"smooth",block:"center"});
+  const body=Object.assign({mode:"replace",dry_run:true},SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{});
+  try{
+    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't preview: ${r.error||resp.status}</span>`;return;}
+    const gone=(r.removing||[]).map(x=>`<li>${x.ticker} — ₪${Math.round(x.value_ils).toLocaleString()}</li>`).join("");
+    o.innerHTML=`<b>Replace your whole book with the "${name}" basket?</b>`
+      + (gone?`<div style="margin:6px 0">This <b class="bad">deletes</b> every holding below (₪${Math.round(r.removing_value_ils).toLocaleString()} in total):<ul>${gone}</ul></div>`
+             :`<div class="muted" style="margin:6px 0">You have no holdings to delete.</div>`)
+      + `<div style="margin:6px 0">and installs: ${(r.loaded||[]).map(x=>x.ticker+" ~₪"+Math.round(x.value).toLocaleString()).join(" · ")}</div>`
+      + `<div class="muted" style="font-size:11px">${r.broker_note||""}</div>`
+      + `<div style="margin-top:8px"><button class="load" onclick="loadStratBasketConfirm('${id}','${name.replace(/'/g,"")}')">Yes, replace my holdings</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`;
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
+async function loadStratBasketConfirm(id,name){
+  const o=$("stratOut"); o.innerHTML="Replacing holdings & pricing…";
+  const body=Object.assign({mode:"replace"},SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{});
+  try{
+    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
     if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't load: ${r.error||resp.status}</span>`;return;}
     o.innerHTML=`Loaded <b>${r.count}</b> holdings (~₪${Math.round(r.budget).toLocaleString()}): `+r.loaded.map(x=>x.ticker).join(", ")+". Go to Today to see it.";
+  }catch(e){o.innerHTML=String(e);}
+}
+// A sleeve coexists with the rest of the book. Funding raises only the
+// shortfall — spendable cash first, then the worst-fitting holdings — and names
+// every leg and its tax cost before selling anything.
+async function fundStratSleeve(id,name){
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Working out how to fund this sleeve…"; o.scrollIntoView({behavior:"smooth",block:"center"});
+  const body=Object.assign({mode:"fund",dry_run:true},SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{});
+  try{
+    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){
+      o.innerHTML=`<b>Can't fund "${name}" at this size.</b><div style="margin:6px 0">${r.reason||r.error||resp.status}</div>`
+        + ((r.funding&&r.funding.sells||[]).length?`<div class="muted" style="font-size:11px">Even selling ${(r.funding.sells).map(s=>s.shares+" "+s.ticker).join(", ")} wouldn't cover it.</div>`:"");
+      return;}
+    if(r.nothing_to_do){o.innerHTML=`<span class="ok">✓ ${r.message}</span>`;return;}
+    const f=r.funding||{};
+    const buys=(r.buys||[]).map(b=>`<li>Buy ~₪${Math.round(b.buy_ils).toLocaleString()} of <b>${b.ticker}</b> (target ${b.target_pct}% of your book; you hold ₪${Math.round(b.held_ils).toLocaleString()} today)</li>`).join("");
+    const sells=(f.sells||[]).map(s=>`<li>Sell ${s.shares} <b>${s.ticker}</b> — ₪${Math.round(s.value_ils).toLocaleString()}, est. tax ₪${Math.round(s.tax_ils).toLocaleString()}<div class="muted" style="font-size:11px">${s.reason||""}</div></li>`).join("");
+    o.innerHTML=`<b>Fund the "${name}" sleeve — ₪${Math.round(r.amount_ils).toLocaleString()}</b>`
+      + `<div style="margin:6px 0">${buys?`<ul>${buys}</ul>`:""}</div>`
+      + `<div style="margin:6px 0">How it's funded:<ul>`
+      + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_floor_ils).toLocaleString()} floor intact)</li>`:"")
+      + (sells||"")
+      + `</ul>${f.tax_ils?`Estimated tax on the sales: <b>₪${Math.round(f.tax_ils).toLocaleString()}</b>.`:""}</div>`
+      + `<div class="ok" style="font-size:12px">Every other holding is left untouched.</div>`
+      + `<div class="muted" style="font-size:11px">${r.broker_note||""}</div>`
+      + `<div style="margin-top:8px"><button class="load" onclick="fundStratSleeveConfirm('${id}','${name.replace(/'/g,"")}')">Fund it</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`;
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
+async function fundStratSleeveConfirm(id,name){
+  const o=$("stratOut"); o.innerHTML="Funding the sleeve…";
+  const body=Object.assign({mode:"fund"},SLEEVE[id]!=null?{sleeve_pct:SLEEVE[id]}:{});
+  try{
+    const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't fund: ${r.reason||r.error||resp.status}</span>`;return;}
+    const bought=(r.bought||[]).map(b=>`${b.ticker} ~₪${Math.round(b.amount_ils).toLocaleString()}`).join(", ")||"nothing";
+    const sold=(r.sold||[]).map(s=>`${s.shares} ${s.ticker}`).join(", ");
+    o.innerHTML=`<span class="ok">✓ Funded the "${name}" sleeve.</span>`
+      + `<div style="margin:6px 0">Bought ${bought}.${sold?` Sold ${sold}.`:""}${r.tax_ils?` Estimated tax ₪${Math.round(r.tax_ils).toLocaleString()}.`:""}</div>`
+      + ((r.skipped||[]).length?`<div class="bad" style="font-size:12px">Skipped: ${(r.skipped).map(s=>s.ticker+" ("+s.reason+")").join(", ")}</div>`:"")
+      + `<div class="muted" style="font-size:11px">${r.broker_note||""}</div>`;
+    loadHoldings&&loadHoldings();
   }catch(e){o.innerHTML=String(e);}
 }
 let PLAN_NAV=0;

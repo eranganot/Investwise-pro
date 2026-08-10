@@ -775,6 +775,50 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("cash-floor recommendation failed", exc_info=True)
         degraded.append("cash_floor")
 
+    # A price nothing has traded against is not a price. The 30-minute refresh
+    # "succeeds" every time on a delisted instrument, so the holding looks
+    # healthy while its frozen number is counted in NAV -- and therefore in the
+    # gain, the allocation mix, the concentration caps and every recommendation
+    # sized against NAV. Surfacing it is GUIDANCE, never an automatic write-off:
+    # delisted, merged and renamed all look identical from here, and deciding a
+    # holding is worthless is not the app's call.
+    try:
+        _weights = snap.get("exposure_ticker") or {}
+        for _p in rows:
+            _m = _p.meta if isinstance(_p.meta, dict) else {}
+            if not _m.get("price_stale"):
+                continue
+            _tk = _p.ticker
+            _as_of = str(_m.get("price_as_of") or "")[:10] or "an unknown date"
+            _days = _m.get("price_stale_days")
+            _w = _weights.get(_tk, 0.0) or 0.0
+            _val = _w * nav
+            _aged = f"{_days} trading days" if _days else "well over a week"
+            recs.append({
+                "id": _rid("stale_price", _tk), "dimension": "data", "severity": "HIGH",
+                "title": f"{_tk} has not traded since {_as_of}",
+                "why": (f"Quotes for {_tk} still come back successfully, but the last actual "
+                        f"trade was {_as_of} — {_aged} ago. A price with no trades behind it "
+                        f"is a leftover, not a market price, and it looks exactly like a "
+                        f"holding that simply did not move."),
+                "action": (f"Check what happened to {_tk} — delisted, merged, or renamed — then "
+                           f"update or remove the holding. InvestWise will not write it off for "
+                           f"you, because it cannot tell which of those it is."),
+                "impact": (f"{_ils(_val)} ({_w:.0%} of your book) is currently valued at that "
+                           f"frozen price, so your gain, allocation mix and anything sized "
+                           f"against NAV all rest partly on it."),
+                "how": [f"Look up {_tk} at your broker or the exchange",
+                        "If it was delisted or bought out, record the actual proceeds as cash",
+                        "If it was renamed, edit the holding to the new ticker",
+                        "Until then its price is held at the last real trade, not refreshed"],
+                "est_amount": round(_val, 2),
+                "meta": {"price_as_of": _m.get("price_as_of"),
+                         "trading_days": _days, "value_ils": round(_val, 2)},
+            })
+    except Exception:  # noqa: BLE001
+        logger.warning("stale-price recommendations failed", exc_info=True)
+        degraded.append("stale_prices")
+
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
         async with _agent_tx(session):
@@ -805,6 +849,45 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("strategy signal recommendations failed", exc_info=True)
         degraded.append("strategy_signals")
     _tm.mark("strategy_signals")
+
+    # Protective rules that are suggested but not yet armed ARE "what to do now"
+    # by this app's own definition, so they belong on Today. They were reachable
+    # only through GET /rules/suggestions, which feeds a panel on a
+    # settings-shaped page -- found only by someone already looking for it. One
+    # card summarising the set, never one card per rule.
+    try:
+        async with _agent_tx(session):
+            from app.services.rules_service import suggest_rules_for_holdings
+            _sugg = await suggest_rules_for_holdings(session, user)
+        _flat = [{**r, "ticker": r.get("ticker") or h["ticker"]}
+                 for h in (_sugg or []) for r in (h.get("rules") or [])]
+        if _flat:
+            _specs = [{"ticker": r["ticker"], "rule_type": r["rule_type"],
+                       "mode": r.get("mode", "pct"), "level": r["level"],
+                       "note": r.get("why")} for r in _flat]
+            _names = sorted({r["ticker"] for r in _flat})
+            _lines = [f"{r['ticker']}: {r.get('label') or r['rule_type']}" for r in _flat[:8]]
+            recs.append({
+                "id": _rid("rules_suggested"), "dimension": "rule", "severity": "MEDIUM",
+                "title": (f"{len(_flat)} protective rules ready to arm"
+                          if len(_flat) > 1 else "1 protective rule ready to arm"),
+                "why": ("Every level below is derived from the holding's own realized "
+                        "volatility, not a round number — a stop inside the noise is churn, "
+                        "not discipline. Unarmed, none of them does anything."),
+                "action": (f"Arm {len(_flat)} suggested rule(s) across "
+                           f"{', '.join(_names)}. Accept arms all of them at once; "
+                           f"the Rules tab lets you fine-tune or add them one by one."),
+                "impact": ("Each rule then watches its holding on every price refresh and "
+                           "raises an alert plus a Today card when it fires."),
+                "how": _lines + ["Accept arms all of these as real trading rules",
+                                 "No brokerage order is placed — a firing is an alert, "
+                                 "and acting on it is yours to do"],
+                "apply": {"kind": "create_rules", "rules": _specs},
+                "meta": {"count": len(_flat), "tickers": _names},
+            })
+    except Exception:  # noqa: BLE001
+        logger.warning("suggested-rule recommendations failed", exc_info=True)
+        degraded.append("rule_suggestions")
 
     # Cash reconciliation runs HERE, after every agent has contributed -- not at
     # the point the redeploy card is built. Placing it earlier meant the filter

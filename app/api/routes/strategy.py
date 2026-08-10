@@ -130,6 +130,16 @@ class LoadBasketRequest(BaseModel):
     # None means "use the sleeve already applied, else the catalog default" --
     # never 100%, which would quietly put the whole book in the aggressive leg.
     sleeve_pct: float | None = None
+    # "fund" raises only the sleeve's shortfall and leaves every other holding
+    # alone; "replace" deletes the book and installs the model basket. None picks
+    # the right default per family: rule-based strategies are sleeves, the four
+    # static families are model portfolios. Callers must be explicit to destroy
+    # anything they were not defaulted into.
+    mode: str | None = None
+    # Compute and return the plan without writing. The confirm dialog uses this,
+    # so "Fund this sleeve" can name every leg and its tax cost before anything
+    # is sold.
+    dry_run: bool = False
 
 
 @router.post("/strategies/{strategy_id}/load-basket", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -138,7 +148,8 @@ async def load(strategy_id: str, req: LoadBasketRequest | None = None,
                user: User = Depends(acting_user)) -> dict:
     req = req or LoadBasketRequest()
     return await load_basket(session, user, strategy_id, total=req.total,
-                             sleeve_pct=req.sleeve_pct)
+                             sleeve_pct=req.sleeve_pct, mode=req.mode,
+                             dry_run=req.dry_run)
 
 
 @router.get("/strategies/signal")

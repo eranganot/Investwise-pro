@@ -57,7 +57,8 @@ class YahooMarketDataProvider(MarketDataProvider):
         ts = meta.get("regularMarketTime")
         as_of = (datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else _now())
         return Quote(ticker=sym, market=str(meta.get("fullExchangeName") or meta.get("exchangeName") or "US"),
-                     price=round(float(price), 4), currency=str(meta.get("currency") or "USD"), as_of=as_of)
+                     price=round(float(price), 4), currency=str(meta.get("currency") or "USD"),
+                     as_of=as_of, as_of_source=("market" if ts else "request"))
 
     def get_history(self, ticker: str, days: int = 252) -> list[float]:
         sym = self.to_symbol(ticker)
@@ -207,8 +208,22 @@ class FMPMarketDataProvider(MarketDataProvider):
         price = q.get("price", q.get("previousClose"))
         if price is None:
             raise ValueError(f"no price for '{ticker}'")
+        # FMP reports the venue's last-trade epoch. Stamping `_now()` instead --
+        # which this did -- makes every quote look freshly traded, so a delisted
+        # instrument whose last print was 14 months ago is indistinguishable from
+        # one that traded a second ago. Use the real timestamp when it's there,
+        # and say so; fall back to "request" rather than pretending.
+        ts = q.get("timestamp")
+        as_of, src = _now(), "request"
+        try:
+            if ts is not None and float(ts) > 0:
+                as_of = datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
+                src = "market"
+        except (TypeError, ValueError, OSError, OverflowError):
+            as_of, src = _now(), "request"
         return Quote(ticker=sym, market=str(q.get("exchange") or "US"),
-                     price=round(float(price), 4), currency="USD", as_of=_now())
+                     price=round(float(price), 4), currency="USD",
+                     as_of=as_of, as_of_source=src)
 
     def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
         sym = self.to_symbol(ticker)
