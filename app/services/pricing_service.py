@@ -117,6 +117,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
         positions = list((await session.scalars(select(Position))).all())
     by_source: dict[str, int] = {}
     updated = failed = skipped = repaired = stale = 0
+    unknown_from_primary = 0
     stale_tickers: list[dict] = []
     prices: list[dict] = []
     errors: list[dict] = []
@@ -160,6 +161,12 @@ async def refresh_all_positions(session, positions=None) -> dict:
         # stamps "now" on every quote can never look stale). Cross-check against
         # Yahoo, which does -- once per ticker, alongside the fallback we already
         # hold. Without this the whole check silently never fires in production.
+        if state == "unknown":
+            # The primary gave no venue timestamp. Say so once per run rather
+            # than silently leaning on the cross-check: if this fires for every
+            # ticker, the primary cannot support a freshness check at all and
+            # the whole guard rests on Yahoo being reachable.
+            unknown_from_primary += 1
         if state == "unknown" and yahoo is not None:
             key = f"__asof__{tk}"
             if key not in quote_cache:
@@ -209,7 +216,13 @@ async def refresh_all_positions(session, positions=None) -> dict:
     if stale_tickers:
         logger.warning("%d holding(s) have not traded inside the freshness window: %s",
                        stale, ", ".join(f"{x['ticker']}@{x['as_of']}" for x in stale_tickers))
+    if unknown_from_primary and updated:
+        logger.warning(
+            "%s supplied no venue timestamp for %d quote(s); freshness fell back to "
+            "the Yahoo cross-check. If this is every ticker, the primary cannot "
+            "support a staleness check on its own.", primary.name, unknown_from_primary)
     return {"updated": updated, "failed": failed, "skipped_cash": skipped,
+            "unknown_from_primary": unknown_from_primary,
             "repaired_cash": repaired, "stale": stale,
             "stale_tickers": stale_tickers, "by_source": by_source,
             "prices": prices, "errors": errors}

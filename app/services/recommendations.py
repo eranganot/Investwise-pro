@@ -1624,6 +1624,30 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
                 unplaced.append({"asset_class": cls, "amount_ils": round(min(budget, remaining), 2),
                                  "reason": f"you hold no {cls} and no candidate was available"})
 
+    # Split thin, every leg can land under the minimum and the card vanishes --
+    # reporting nothing to do while the cash sits idle. Seen live: NAV 22,006,
+    # spendable 1,929, the equities share divided four ways at ~138 each, all
+    # below the 250 minimum, so no legs and no card.
+    #
+    # Concentrating is the honest fallback: one trade that clears the minimum
+    # beats four that do not, and it still respects the single-name cap.
+    if not legs and remaining >= _fund.MIN_TRADE_ILS:
+        best = None
+        for cls, gap_ils, tw in gaps:
+            for p in (held_by_class.get(cls) or []):
+                room = _fund.size_purchase(nav, weights.get(p.ticker, 0.0), cap, cap)
+                amt = round(min(remaining, room), 2)
+                if amt >= _fund.MIN_TRADE_ILS and (best is None or amt > best["amount_ils"]):
+                    best = {"ticker": p.ticker, "amount_ils": amt, "asset_class": cls,
+                            "reason": (f"{cls} is {mix.get(cls, 0.0):.0%} vs a {tw:.0%} target; "
+                                       f"split across your holdings every leg would be under "
+                                       f"the {_fund.MIN_TRADE_ILS:,.0f} minimum, so this "
+                                       f"concentrates it into one trade"),
+                            "concentrated": True}
+        if best:
+            legs.append(best)
+            remaining = round(remaining - best["amount_ils"], 2)
+
     # Second pass: a leg that could not be placed left its share of the surplus
     # unspent. Live, the Fixed Income leg was undeployable (plan targets 10%,
     # nothing held, no screener pick), so ~1,940 stayed in cash while the card

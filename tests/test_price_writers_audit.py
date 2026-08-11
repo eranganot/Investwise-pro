@@ -133,8 +133,14 @@ def test_a_delisted_commodity_etn_is_priced_as_a_commodity():
 @pytest.mark.asyncio
 async def test_upsert_never_writes_a_price_onto_an_existing_cash_row():
     """`upsert_positions` overwrites price and meta wholesale for a row it
-    matches by ticker. Nothing should ever hand it a CASH line, but the audit
-    checks rather than assumes."""
+    matches by ticker, so a CASH line would reprice the balance -- the
+    2026-08-10 incident through a third door.
+
+    This test previously DOCUMENTED the gap and said "if this assertion ever
+    flips, add the guard here". It flipped when the guard went in, which is the
+    documentation-test earning its keep: it named the next place to look instead
+    of leaving the hole to be rediscovered.
+    """
     eng, Session = _session()
     try:
         async with Session() as s:
@@ -143,23 +149,18 @@ async def test_upsert_never_writes_a_price_onto_an_existing_cash_row():
             account = await ensure_account(s, entity, "Main")
             await s.commit()
             await set_cash(s, user, 1000.0)
-            rows = {p.ticker.upper(): p for p in await list_positions(s, user)}
-            before = float(rows["CASH"].current_price)
-            # Simulate the accident directly: a buy leg named CASH.
             await upsert_positions(s, account, [IntakePosition(
                 ticker="CASH", market=Market.NASDAQ, depth=1, spot_price=86.85,
-                listing_price=86.85, quantity=5, cost_basis=86.85,
+                listing_price=86.85, quantity=1500, cost_basis=86.85,
                 asset_class="Equities")])
             await s.commit()
             after = {p.ticker.upper(): p for p in await list_positions(s, user)}
+            balance = await get_cash(s, user)
     finally:
         await eng.dispose()
 
-    assert before == 1.0
-    # Documents the CURRENT behaviour honestly: upsert has no cash guard, so if a
-    # caller ever passes CASH it corrupts the row. No caller does today, and the
-    # test exists so that changing becomes a deliberate act rather than a
-    # surprise. If this assertion ever flips, add the guard to upsert_positions.
-    assert float(after["CASH"].current_price) == pytest.approx(86.85), (
-        "upsert_positions still has no cash guard - if a caller now passes CASH, "
-        "guard it there too")
+    assert float(after["CASH"].current_price) == 1.0, "cash stays ILS-native"
+    assert float(after["CASH"].cost_basis) == 1.0
+    assert after["CASH"].meta.get("price_currency") == "ILS"
+    # The quantity IS the balance, so an upsert may still change it.
+    assert balance == pytest.approx(1500.0)

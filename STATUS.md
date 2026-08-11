@@ -3,6 +3,80 @@
 _Last updated: 2026-08-10 by Claude (Beat-the-Market P0-P3)._
 _Seeded from git history + prior transcripts._
 
+## 📋 BACKLOG — everything still open (2026-08-10)
+
+`BEAT_MARKET_NEXT_PLAN.md` is **done**: P0, P1, P2, P3, P4 all shipped. This is
+what is left, in the order I would do it.
+
+### Blocking "verified" — nothing below matters until these
+1. **Pixel QA across P0-P4.** `qa/QA-2026-08-10-p0-safety.md` plus the
+   "YOU must check these" block in each `smoke-p*.ps1`. Rendering and
+   notification cadence cannot be checked over HTTP, and **three of this
+   session's worst bugs were found only by looking at the screen** while 570
+   tests stayed green.
+2. **Notifications on the Pixel + confirm the 07:00 digest arrives.** Open since
+   2026-07-18. Until `subscriptions >= 1`, P4.2 is unproven — the triggers are
+   unit-tested, the *cadence* is not.
+3. **`smoke-p0.ps1 -Execute`** — the funding write path has never run live.
+
+### Security, and overdue
+4. **Rotate `AGENT_API_KEY`.** It is hardcoded in **12 committed smoke scripts**,
+   in 162 commits of history, and has been pasted into chat transcripts
+   repeatedly (including throughout this session). Rotating means editing those
+   12 files; do both together or the smokes break. Flagged as "next" since
+   2026-08-03 and still open.
+5. **Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway.** DB-generated
+   today, so a DB reset invalidates every push subscription at once.
+
+### Done since the backlog was written (2026-08-10)
+- **6. Regime gate on `vol_target`** — **decided: leave off.** It is measured on
+  all seven strategies and enabled on none; that is a complete answer. Revisit
+  only if the numbers change. Not a decision that was blocking anything.
+- **7. Sub-minimum trims** — a cap has no tolerance band, so MSFT 0.2 points over
+  its 20% cap produced a ₪43 trim against a ₪250 minimum. Now advisory below the
+  minimum; the card still says the cap is breached.
+- **8. `upsert_positions` cash guard** — the last unguarded door to the cash row,
+  now closed. The documentation-test that flagged it flipped when the guard went
+  in, which is exactly what it was for.
+- **9. FMP `timestamp`** — still unexercised in production (Yahoo is primary), so
+  instead of claiming it works the failure mode is now loud: the count of quotes
+  with no venue timestamp is returned and logged. Both response shapes are pinned
+  by a test.
+- **10. Redeploy card vanishing** — when every leg lands under the minimum it now
+  concentrates into the single best candidate rather than producing no card while
+  cash sits idle.
+
+### Product, from the plan's own backlog
+11. **Per-ticker allocation targets** (P1.1 option b) — only if the max-weight
+    cap proves insufficient. Touches the rebalancing every family depends on.
+12. **Multiple concurrent sleeves.** `plans.strategy` is a single `VARCHAR(40)`;
+    sleeves should compose (20% trend + 15% factor + 65% core). Needs a
+    `plan_sleeves` table and touches apply, preview, funding, signals and
+    discipline rules.
+13. **War-room strategy debate.** Structural absence, not a bug — the war room
+    has no concept of a strategy. Also the slowest agent; would need
+    `narrate=False`.
+14. **Render the gated-vs-ungated regime numbers on the Plan card**, with a
+    per-strategy gate toggle. The data already reaches the client under
+    `backtest.robustness.regime`; only `smoke-p3.ps1` prints it.
+
+### Engineering hygiene
+15. **Offload blocking provider I/O to a thread pool.** `/recommendations` makes
+    synchronous calls inside `async def` on a single uvicorn worker, so one
+    request blocks every other. Shaving latency further is the wrong fix.
+16. **Widen the lint gate to `tests/`.** CI runs `ruff check app` only; `tests/`
+    carries 26 pre-existing errors, 10 auto-fixable.
+17. **Fold `ship-p0/p1/p2.ps1` into one `ship-phase.ps1 -Files ...`.** Four
+    near-identical scripts now. This session lost an afternoon to a *duplicated
+    reprice loop*; the same lesson applies to tooling.
+18. **`.gitignore`** `investwise.db`, `.claude/`, `scripts/railway-error.log` —
+    noise on every `git status`, and noise is where a real modified file hides.
+
+### The next initiative
+19. **Broker integration** — `BROKER_INTEGRATION_PLAN.md`, unstarted and carried
+    as "next" for over three weeks. Worth deciding whether it is actually next
+    or should be dropped from the top of the list.
+
 ## ✅ P4 — COMPLETE (all three parts), tests green, NOT YET SHIPPED (2026-08-10)
 
 Entry/exit rules, the sleeve-drift card, and notifications. **Full suite 570

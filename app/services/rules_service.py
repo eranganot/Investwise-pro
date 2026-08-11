@@ -71,10 +71,14 @@ async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]
         # true 1.0, any such rule "crashed" and fired.
         if tk == "CASH":
             continue
+        _w = weights.get(p["ticker"], 0) or 0
         out[tk] = {"price": float(p.get("current_price") or 0),
                    "cost": float(p.get("cost_basis") or 0),
                    "qty": float(p.get("quantity") or 0),
-                   "weight_pct": round((weights.get(p["ticker"], 0) or 0) * 100, 1)}
+                   "weight_pct": round(_w * 100, 1),
+                   # FX-normalised, from the snapshot -- price x quantity would be
+                   # the position's native currency.
+                   "value_ils": _w * float(snap.get("nav") or 0.0)}
     return out
 
 
@@ -153,8 +157,18 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
         weight = float(pos.get("weight_pct") or 0.0)
         if weight <= float(rule.level) or weight <= 0:
             return None
-        shares = round(qty * (weight - float(rule.level)) / weight, 6)
+        over = (weight - float(rule.level)) / weight
+        shares = round(qty * over, 6)
         if shares <= 0:
+            return None
+        # A cap has no tolerance band, so a position 0.2 points over its 20% cap
+        # produces a trim worth ~43 shekels -- below MIN_TRADE_ILS, which is the
+        # app's own definition of "not worth the friction". Seen live on MSFT.
+        # Stay advisory rather than proposing a trade the app would refuse to
+        # propose anywhere else.
+        from app.services.funding_service import MIN_TRADE_ILS
+        value_ils = float(pos.get("value_ils") or 0.0)
+        if value_ils and value_ils * over < MIN_TRADE_ILS:
             return None
         return {"kind": "trim", "ticker": rule.ticker.upper(),
                 "shares": shares, "rule_type": rt}

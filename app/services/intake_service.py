@@ -51,6 +51,23 @@ async def upsert_positions(
         )).scalars().all()
     }
     for ip in positions:
+        # Cash is ILS-native: 1 unit = 1 shekel, price and basis pinned at 1.0.
+        # This function overwrites price and meta wholesale, so a caller passing
+        # a CASH line would reprice the balance as whatever it supplied -- the
+        # 2026-08-10 incident, through a third door. No caller does this today;
+        # the guard is here so that "no caller does" stops being load-bearing.
+        if is_cash_position(ip.ticker, {"asset_class": ip.asset_class}):
+            row = existing.get(ip.ticker)
+            if row is None:
+                session.add(Position(
+                    account_id=account.id, ticker="CASH", market="TASE",
+                    quantity=Decimal(str(round(float(ip.quantity), 2))),
+                    cost_basis=Decimal("1"), current_price=Decimal("1"),
+                    lifecycle_stage="ACTIVE", meta=dict(CASH_META)))
+            else:
+                row.quantity = Decimal(str(round(float(ip.quantity), 2)))
+                repair_cash_row(row)
+            continue
         meta = {
             "depth": ip.depth,
             "spot_price": ip.spot_price,
