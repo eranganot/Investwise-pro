@@ -55,7 +55,9 @@ def test_the_existing_four_goals_are_untouched_by_the_fifth():
     from app.services import strategies as legacy
     with TestClient(m.app) as c:
         body = c.get("/api/v1/strategies").json()
-        assert body["goals"][:4] == legacy.GOAL_ORDER
+        # Beat the Market now LEADS, so the four legacy goals follow it. Their
+        # relative order, and everything about their cards, is unchanged.
+        assert body["goals"][1:] == legacy.GOAL_ORDER
         for g in legacy.GOAL_ORDER:
             cards = body["by_goal"][g]
             assert cards and all("profile" in s for s in cards)   # still derived
@@ -187,7 +189,7 @@ def test_refresh_never_runs_inside_the_read_routes():
 def test_the_plan_route_now_carries_the_fifth_goal():
     with TestClient(m.app) as c:
         body = c.get("/api/v1/strategies").json()
-        assert body["goals"][-1] == strategy_catalog.GOAL
+        assert body["goals"][0] == strategy_catalog.GOAL
         cards = body["by_goal"][strategy_catalog.GOAL]
         assert len(cards) == len(strategy_catalog.CATALOG)
 

@@ -35,7 +35,10 @@ async def strategies(session: AsyncSession = Depends(get_session)) -> dict:
     # say "not measured yet" rather than drawing a blank where a number belongs.
     measured = await backtest_service.get_many(session, strategy_catalog.ids())
     by_goal[strategy_catalog.GOAL] = strategy_catalog.as_plan_cards(measured)
-    return {"goals": [*cat.GOAL_ORDER, strategy_catalog.GOAL], "by_goal": by_goal,
+    # Beat the Market leads. It is the family this app is actually for -- the
+    # four static goals are the conservative baseline, not the headline -- and
+    # goals[0] is what the Plan tab opens on.
+    return {"goals": [strategy_catalog.GOAL, *cat.GOAL_ORDER], "by_goal": by_goal,
             "backtest_engine_version": backtest_service.ENGINE_VERSION,
             # Not None means the measurements could not be read at all, which is
             # a different thing from "nothing has been computed yet".

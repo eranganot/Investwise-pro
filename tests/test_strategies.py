@@ -15,8 +15,12 @@ def test_catalog_grouped_by_goal():
 def test_strategies_endpoint():
     with TestClient(app) as c:
         r = c.get("/api/v1/strategies").json()
-        assert r["goals"][0] == "Grow"
+        # Beat the Market leads: it is the family this app is for, and goals[0]
+        # is the tab the Plan page opens on.
+        assert r["goals"][0] == "Beat the Market"
+        assert r["goals"][1:] == ["Grow", "Balanced", "Income", "Preserve"]
         assert any(s["id"] == "grow_ai_semis" for s in r["by_goal"]["Grow"])
+        assert r["by_goal"]["Beat the Market"], "the lead tab must not be empty"
 
 
 def test_apply_presets_plan_and_returns_rebalance():

@@ -177,6 +177,9 @@
   .stgoal button.on{color:var(--ink);border-color:var(--blue);background:var(--soft)}
   .stcard{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px;background:var(--bg)}
   .stcard.sel{border-color:var(--blue)}
+  /* The applied strategy, unmistakable at a glance. */
+  .stcard.mine{border-color:var(--blue);background:var(--soft)}
+  .stmine{font-size:10px;font-weight:800;color:var(--blue);letter-spacing:.06em;white-space:nowrap}
   /* "VERY HIGH RISK" broke across two lines, so the card header read as two
      stacked fragments. It is a label, not prose -- keep it on one line. */
   .stcard .nm{font-weight:700} .stcard .rk{font-size:11px;color:var(--amber);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
@@ -1206,14 +1209,44 @@ async function delHolding(ticker,market){
     loadHoldings();
   }catch(e){alert(e.message||e);}
 }
-let STRAT=null, STGOAL=null;
+let STRAT=null, STGOAL=null, MYPLAN=null;
+// Which strategy is actually applied, and where it lives.
+//
+// There is exactly ONE: plans.strategy is a single column. Applying a Beat the
+// Market strategy also sets the plan's OBJECTIVE (to Grow), which is why the
+// Grow tab can feel like "yours" too -- it is your objective, not a second
+// strategy. Both are labelled now, differently, so the difference is visible.
+function _appliedId(){ return MYPLAN && MYPLAN.strategy ? MYPLAN.strategy : null; }
+function _goalOf(id){
+  if(!id||!STRAT) return null;
+  for(const g of STRAT.goals){ if((STRAT.by_goal[g]||[]).some(s=>s.id===id)) return g; }
+  return null;
+}
 async function loadStrategies(){
   if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
-  STGOAL=STGOAL||STRAT.goals[0];
-  const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${g}</button>`).join("");
+  try{ MYPLAN=await(await fetch("/api/v1/plan")).json(); }catch(e){ MYPLAN=null; }
+  const applied=_appliedId(), appliedGoal=_goalOf(applied);
+  // Open on the tab holding your strategy, else on the first tab.
+  STGOAL=STGOAL||appliedGoal||STRAT.goals[0];
+  const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${g===appliedGoal?"\u2713 ":""}${g}</button>`).join("");
+
+  // One unambiguous line: what you are running, and what it set.
+  let banner="";
+  if(MYPLAN){
+    const card=applied?(STRAT.by_goal[appliedGoal]||[]).find(s=>s.id===applied):null;
+    const sleeve=MYPLAN.strategy_sleeve_pct;
+    banner = applied
+      ? `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
+           <div class="nm">Your strategy: ${card?card.name:applied}</div>
+           <div class="mk">${appliedGoal||""}${sleeve!=null?` \u00b7 ${sleeve}% sleeve`:""} \u00b7 objective <b>${MYPLAN.objective||"\u2014"}</b> \u00b7 ${MYPLAN.risk_tolerance||"\u2014"} risk</div>
+           <div class="mk" style="opacity:.7;margin-top:3px">One strategy applies at a time. "${MYPLAN.objective||""}" is the objective it set, not a second strategy.</div>
+         </div>`
+      : `<div class="card muted" style="margin-bottom:10px">No strategy applied yet \u2014 your plan is objective <b>${MYPLAN.objective||"\u2014"}</b>, ${MYPLAN.risk_tolerance||"\u2014"} risk. Apply one below to make it yours.</div>`;
+  }
+
   const list=(STRAT.by_goal[STGOAL]||[]).map(s=>`
-    <div class="stcard">
-      <div style="display:flex;justify-content:space-between"><span class="nm">${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
+    <div class="stcard${s.id===applied?" mine":""}">
+      <div style="display:flex;justify-content:space-between"><span class="nm">${s.id===applied?'<span class="stmine">\u2713 YOUR STRATEGY</span> ':""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
       ${s.measured?measuredProfile(s):stratProfile(s.profile)}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
@@ -1227,7 +1260,7 @@ async function loadStrategies(){
           : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`}
       </div>
     </div>`).join("");
-  $("stratBox").innerHTML=`<div class="stgoal">${tabs}</div>`
+  $("stratBox").innerHTML=banner+`<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list;
 }
