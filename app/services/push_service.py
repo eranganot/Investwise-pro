@@ -230,6 +230,12 @@ async def send_test(session: AsyncSession, subject: str) -> int:
 # TRIGGER_NEVER_LIVE is deliberately not "a very long window": a card that must
 # never fire a live push should be impossible to push, not merely unlikely.
 TRIGGER_IMMEDIATE = 0
+# A fired rule is urgent the first time and noise the fifth. TRIGGER_IMMEDIATE
+# means "no rate limit at all", which is how one cap breach reached the user
+# every few hours. Hysteresis stops the rule flapping; this floor means that
+# even if some future condition flaps anyway, it can interrupt at most twice a
+# day. A different rule firing is a different signature and is unaffected.
+TRIGGER_RULE_REPEAT = 12
 TRIGGER_DAILY = 24
 TRIGGER_NEVER_LIVE = None
 
@@ -250,7 +256,7 @@ def classify_trigger(rec: dict) -> tuple[str, int | None]:
     title = str(rec.get("title") or "")
     rid = str(rec.get("id") or "")
     if rid.startswith("rule_"):
-        return ("rule_fired", TRIGGER_IMMEDIATE)
+        return ("rule_fired", TRIGGER_RULE_REPEAT)
     if rid.startswith("stratsig_"):
         return ("signal_flip", TRIGGER_IMMEDIATE)
     for name, needle, limit in _TRIGGER_RULES:

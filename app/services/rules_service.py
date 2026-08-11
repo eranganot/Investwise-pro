@@ -50,6 +50,39 @@ _SEV = {"stop_loss": "CRITICAL", "trailing_stop": "CRITICAL", "max_weight": "HIG
         "price_below": "MEDIUM", "strategy_signal": "HIGH"}
 
 
+# How far a standing condition must move back INSIDE its limit before the rule
+# re-arms.
+#
+# Without a band, a position hovering at 20.2% against a 20% cap re-arms the
+# moment it ticks to 19.9% and fires again on the next tick up: a notification
+# every few hours about a breach worth ~43 shekels.
+#
+# Latching forever was the first bug; re-arming on the very next tick is its
+# opposite, and both reach the user as a rule that will not stop talking. The
+# band is what makes the difference -- clear on a real move, not on noise.
+#
+# 2.5% of the level, floored at half a point, so a 20% cap re-arms at 19.5% and
+# a 500 price alert re-arms at 487.50.
+def rearm_threshold(level: float) -> float:
+    """The value a standing condition must clear to re-arm, in the rule's unit."""
+    lvl = abs(float(level))
+    return lvl - max(0.5, lvl * 0.025)
+
+
+def clears_with_margin(rule, cur: float, weight: float) -> bool:
+    """True when the condition is not merely false, but false by a margin."""
+    rt = getattr(rule, "rule_type", None)
+    lvl = abs(float(getattr(rule, "level", 0) or 0))
+    if rt == "max_weight":
+        return float(weight) <= rearm_threshold(lvl)
+    if rt == "price_above":
+        return float(cur) <= rearm_threshold(lvl)
+    if rt == "price_below":
+        # Mirror image: the price must rise clearly ABOVE the alert to re-arm.
+        return float(cur) >= lvl + max(0.5, lvl * 0.025)
+    return True
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -324,17 +357,23 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
             r.last_triggered_at = _now()
             # One row per firing: this is the record that survives the card being
             # accepted, ignored or regenerated.
+            _plan = execution_plan(r, pos)
             event = RuleEvent(
                 subject=user.email, rule_id=str(r.id), ticker=r.ticker,
                 rule_type=r.rule_type, trigger_price=cur, target_price=target,
                 title=title, outcome="triggered",
-                action={"plan": execution_plan(r, pos) or {}},
+                action={"plan": _plan or {}},
             )
             session.add(event)
             newly.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
-                          "title": title, "action": action, "event": event})
-        elif not hit and r.triggered and r.rule_type in ("price_above", "price_below",
-                                                         "max_weight"):
+                          "title": title, "action": action, "event": event,
+                          # Whether there is a trade behind the firing. A cap
+                          # breached by 0.2 points produces a sub-minimum trim
+                          # and no plan -- worth a card, not an interruption.
+                          "actionable": bool(_plan)})
+        elif (not hit and r.triggered
+                and r.rule_type in ("price_above", "price_below", "max_weight")
+                and clears_with_margin(r, cur, w)):
             # Standing conditions re-arm the moment they stop being true.
             #
             # max_weight was missing here, and it is the one that matters most:
@@ -350,11 +389,35 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     await session.commit()
 
     if notify and newly:
+        # ONE governed push path.
+        #
+        # This called send_to_subject directly, with no dedupe and no rate limit,
+        # while P4.2 built exactly that machinery for every other trigger. Two
+        # notification paths, one governed and one not -- the same shape as the
+        # duplicated reprice loop that mispriced the cash row. The fix is not a
+        # second limiter here; it is routing this through the existing one.
+        #
+        # And nothing is pushed that has no action behind it: a cap breached by
+        # 0.2 points is a trim the app itself declines to propose, so waking the
+        # user for it is the sub-minimum tax card again, in a form he cannot
+        # dismiss. It still records a RuleEvent and still shows a card.
         from app.services import push_service
         for n in newly:
+            if not n.get("actionable", True):
+                logger.info("rule %s %s fired with no actionable trade; card only, no push",
+                            n["ticker"], n["rule_type"])
+                continue
+            trigger, hours = push_service.classify_trigger(
+                {"id": f"rule_{n['id']}", "rule_id": n["id"], "title": n["title"]})
+            sig = push_service.trigger_signature(trigger, {"rule_id": n["id"]})
+            if hours is None or await push_service._seen_within(  # noqa: SLF001
+                    session, user.email, sig, hours):
+                continue
             sent = await push_service.send_to_subject(
-                session, user.email, n["title"], n["action"], url="/app/", tag=f"rule:{n['id']}")
+                session, user.email, n["title"], n["action"], url="/app/", tag=sig)
             n["event"].notified = bool(sent)
+            if sent:
+                await push_service._mark(session, user.email, sig)  # noqa: SLF001
         await session.commit()
     for n in newly:
         n["event_id"] = str(n["event"].id)
@@ -484,9 +547,18 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
         #
         # Cleared here too, where the index is already loaded, so the screen is
         # self-consistent the moment it renders rather than eventually.
+        #
+        # The card and the latch are two different questions, and writing both
+        # in one line is what let the MSFT cap notify every few hours. The card
+        # must go the instant the condition is false -- the screen has to be
+        # honest about NOW. The latch governs notification, so clearing it on
+        # the first tick back under the cap re-arms the push, and a position
+        # sitting on its own boundary crosses it all day. Hence: drop the card
+        # immediately, re-arm the alert only on a real move.
         if not hit and r.rule_type in ("price_above", "price_below", "max_weight"):
-            r.triggered = False
-            _cleared = True
+            if clears_with_margin(r, pos["price"], pos["weight_pct"]):
+                r.triggered = False
+                _cleared = True
             continue
         plan = execution_plan(r, pos)
         price = float(pos.get("price") or 0)

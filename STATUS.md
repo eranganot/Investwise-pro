@@ -1,58 +1,212 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-10 by Claude (Beat-the-Market P0-P3)._
+_Last updated: 2026-08-11 by Claude (rule-flap fix)._
 _Seeded from git history + prior transcripts._
+
+## 🔔 FIXED 2026-08-11 — the MSFT notification that arrived every few hours
+
+Reported live: _"I'm still getting this notification every few hours but I have
+nothing real (nor important) to do about Microsoft."_ MSFT sat at **20.2% against
+a 20% cap it had armed itself** during P1.1.
+
+Three faults, each sufficient on its own:
+
+1. **No hysteresis — I introduced this one in P4.2.** The P4.2 fix cleared the
+   latch the moment the condition went false. A position resting on its own
+   boundary therefore went latch → push → clear → re-latch → push. The bug
+   before it was a rule that never stopped nagging; my fix produced a rule that
+   nagged *rhythmically*. Both reach the user as one rule that will not shut up.
+   Fixed with a re-arm band: 2.5% of the level, floored at half a point, so a
+   20% cap re-arms at 19.5% rather than 19.99%.
+2. **`evaluate_user` bypassed every P4.2 rate limit.** It called
+   `push_service.send_to_subject` directly with `tag=f"rule:{id}"` — no
+   `classify_trigger`, no signature, no `_seen_within`, no ledger row — while
+   P4.2 had built exactly that machinery for every other trigger. **Two
+   notification paths, one governed and one not: the same shape as the
+   duplicated reprice loop that mispriced the cash row on 2026-08-10.** Routed
+   through the existing limiter rather than given a second one.
+3. **It pushed a firing with no trade behind it.** Backlog #7 had already decided
+   a 0.2-point breach is a ~₪43 trim against a ₪250 minimum and made
+   `execution_plan` return `None` — so the app declined to propose the trade and
+   woke him about it in the same breath. The ₪12-tax-card lesson, unapplied to
+   push. Now: RuleEvent yes, card yes, push no.
+
+Plus a floor: `rule_fired` moved from `TRIGGER_IMMEDIATE` (= no limit at all) to
+`TRIGGER_RULE_REPEAT = 12h`. Hysteresis stops this flap; the floor means a future
+one can interrupt at most twice a day. Per rule id, so a different holding's stop
+is unaffected.
+
+**The coupling underneath it.** `triggered_rule_recs` cleared `r.triggered` in the
+same line that decided not to render the card. Those are two different questions:
+the card must vanish the instant the breach corrects (the screen has to be honest
+about *now* — the SOXL fix), but the latch governs *notification*, so clearing it
+there re-armed the push on every render of Today. Now separated: card goes
+immediately, alert re-arms only on a real move.
+
+New: `tests/test_rule_flap.py` (13). `test_p42_notifications.py`'s
+"pushes immediately" assertion was pinning the very behaviour that caused this,
+and was rewritten rather than deleted. 593 passed, ruff clean.
 
 ## 📋 BACKLOG — everything still open (2026-08-10)
 
 `BEAT_MARKET_NEXT_PLAN.md` is **done**: P0, P1, P2, P3, P4 all shipped. This is
 what is left, in the order I would do it.
 
-### Blocking "verified" — nothing below matters until these
-1. **Pixel QA across P0-P4.** `qa/QA-2026-08-10-p0-safety.md` plus the
-   "YOU must check these" block in each `smoke-p*.ps1`. Rendering and
-   notification cadence cannot be checked over HTTP, and **three of this
-   session's worst bugs were found only by looking at the screen** while 570
-   tests stayed green.
-2. **Notifications on the Pixel + confirm the 07:00 digest arrives.** Open since
-   2026-07-18. Until `subscriptions >= 1`, P4.2 is unproven — the triggers are
-   unit-tested, the *cadence* is not.
-3. **`smoke-p0.ps1 -Execute`** — the funding write path has never run live.
+### ✅ Done (2026-08-10)
+1. **Pixel QA across P0-P4** — done.
+2. **Notifications on the Pixel + 07:00 digest** — done. P4.2 is now verified end
+   to end, cadence included.
+3. **`smoke-p0.ps1 -Execute`** — done. The funding write path has run live.
+6. **Regime gate on `vol_target`** — decided: leave off. Measured everywhere,
+   enabled nowhere. Revisit only if the numbers change.
+7. **Sub-minimum trims** — advisory below `MIN_TRADE_ILS`; the card still says
+   the cap is breached.
+8. **`upsert_positions` cash guard** — the last unguarded door to the cash row.
+9. **FMP `timestamp`** — still unexercised in production (Yahoo is primary), so
+   the failure mode is loud instead of assumed: quotes with no venue timestamp
+   are counted, returned and logged.
+10. **Redeploy card vanishing** — concentrates into one leg rather than
+    producing no card while cash sits idle.
 
-### Security, and overdue
-4. **Rotate `AGENT_API_KEY`.** It is hardcoded in **12 committed smoke scripts**,
-   in 162 commits of history, and has been pasted into chat transcripts
-   repeatedly (including throughout this session). Rotating means editing those
-   12 files; do both together or the smokes break. Flagged as "next" since
-   2026-08-03 and still open.
-5. **Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway.** DB-generated
-   today, so a DB reset invalidates every push subscription at once.
+### Still open, and overdue
+4. **Rotate `AGENT_API_KEY`.** Hardcoded in **12 committed smoke scripts**, in
+   162 commits of history, and pasted into chat repeatedly. Rotate and edit the
+   12 files in ONE change or every smoke breaks. Replace the hardcoded fallback
+   with a fail-fast on `$env:IW_AGENT_KEY` rather than a new literal.
+5. **Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway.** DB-generated, so
+   a DB reset invalidates every push subscription at once.
 
-### Done since the backlog was written (2026-08-10)
-- **6. Regime gate on `vol_target`** — **decided: leave off.** It is measured on
-  all seven strategies and enabled on none; that is a complete answer. Revisit
-  only if the numbers change. Not a decision that was blocking anything.
-- **7. Sub-minimum trims** — a cap has no tolerance band, so MSFT 0.2 points over
-  its 20% cap produced a ₪43 trim against a ₪250 minimum. Now advisory below the
-  minimum; the card still says the cap is breached.
-- **8. `upsert_positions` cash guard** — the last unguarded door to the cash row,
-  now closed. The documentation-test that flagged it flipped when the guard went
-  in, which is exactly what it was for.
-- **9. FMP `timestamp`** — still unexercised in production (Yahoo is primary), so
-  instead of claiming it works the failure mode is now loud: the count of quotes
-  with no venue timestamp is returned and logged. Both response shapes are pinned
-  by a test.
-- **10. Redeploy card vanishing** — when every leg lands under the minimum it now
-  concentrates into the single best candidate rather than producing no card while
-  cash sits idle.
+---
+
+## 🗺️ EXECUTION PLAN — backlog 12-18
+
+Ordered by what unblocks what, not by size. The one non-obvious dependency:
+**#15 must precede #12.**
+
+| # | Value | Effort | Risk | Phase |
+|---|---|---|---|---|
+| 18 `.gitignore` | low | minutes | none | A |
+| 16 lint gate on `tests/` | low | ~1h | none | A |
+| 17 one `ship-phase.ps1` | medium | ~2h | none | A |
+| 15 thread-pool the provider I/O | high | 1-2 days | medium | B |
+| 12 core + N sleeves | **highest** | several sessions | med-high | C |
+| 14 regime numbers + per-sleeve toggle | medium | ~half a day | low | D |
+| 13 war-room strategy debate | low | 1 day | low | — |
+
+### Phase A — clear the decks (half a day, zero risk)
+**18, 16, 17.** All independent, all mechanical, none can break production.
+
+Do them first because they change the *floor* for everything after: #16 means
+the next phases cannot introduce test lint (the suite already carries 26
+unnoticed errors); #17 means Phase C's many commits use one ship script instead
+of a fourth near-copy. This session lost an afternoon to a duplicated reprice
+loop — four near-identical ship scripts is the same shape in the tooling.
+
+Ship as one commit. Nothing here touches app behaviour.
+
+### Phase B — make the request path able to carry N (1-2 days, medium risk)
+**15 — offload blocking provider I/O to a thread pool.**
+
+**This must come before #12, and that is the whole reason it is Phase B.**
+`/recommendations` makes *synchronous* provider calls inside `async def` on a
+single uvicorn worker, so one request blocks every other. N sleeves multiplies
+those calls — each sleeve needs its own signal evaluation, funding preview and
+backtest read. Building #12 first means measuring and fixing the same problem
+twice, with more surface the second time.
+
+Method: baseline the warm `/recommendations` latency FIRST (phase 10 got it from
+24.2s to ~1.0s; do not give that back), wrap provider calls in
+`asyncio.to_thread`, re-measure. The existing TTL caching (quotes 15s, history
+1h, fundamentals 6h) stays exactly as it is — this is about not blocking the
+loop, not about fetching less.
+
+Risk is medium because it touches every request path, so it ships alone.
+
+### Phase C — core + N sleeves (several sessions)
+**12.** Scoped in full above. Sub-phase it the way P3 worked, inert first:
+
+- **C1** `plan_sleeves` table + migration + startup self-heal + backfill the
+  existing single strategy. Read-only endpoint. **No behaviour change** — this
+  can land and sit inert, like `regime.py` did.
+- **C2** add/update/remove a sleeve; `_arm_sleeve_cap` sums per ticker.
+- **C3** funding with the wider exclusion set (sleeve A must never sell B).
+- **C4** signals, discipline rules and the drift/cold-start cards, per sleeve.
+- **C5** the Plan UI: a sleeve list replacing the single-strategy banner.
+
+Settle the core question (strategy row vs implicit remainder) before C1 — it
+decides the schema.
+
+### Phase D — finish the regime story (half a day)
+**14.** Render the gated-vs-ungated numbers on the card, plus the toggle.
+
+Deliberately AFTER Phase C: the toggle is per-strategy state, which under N
+sleeves means per-sleeve state. Doing it first means building it twice, and C5
+rewrites that card anyway. `smoke-p3.ps1` prints the table meanwhile, which is
+enough to make the enable decision.
+
+### Not scheduled
+**13 — war-room strategy debate.** Honestly assessed: low value, and it makes the
+slowest agent slower (5.4s cold, worse warm from the per-signal LLM call). The
+war room having no concept of a strategy is structural, not a defect. Recommend
+leaving it unscheduled unless it turns out to be something you actually want.
 
 ### Product, from the plan's own backlog
 11. **Per-ticker allocation targets** (P1.1 option b) — only if the max-weight
     cap proves insufficient. Touches the rebalancing every family depends on.
-12. **Multiple concurrent sleeves.** `plans.strategy` is a single `VARCHAR(40)`;
-    sleeves should compose (20% trend + 15% factor + 65% core). Needs a
-    `plan_sleeves` table and touches apply, preview, funding, signals and
-    discipline rules.
+12. **Core + N sleeves — NEXT SESSION, scoped below.**
+
+    **Goal.** Run one core plus any number of sleeves, each with its own share
+    and its own rule. E.g. 65% core, 20% `btm_trend_tqqq`, 15% `btm_factor_stack`.
+    Not limited to core + 1.
+
+    **Where it stands today.** `plans.strategy VARCHAR(40)` +
+    `plans.strategy_sleeve_pct FLOAT` — exactly one strategy. Everything else in
+    the book is governed by the plan's *objective* (Grow → 80/10/10), the
+    concentration cap and the cash floor. Applying a Beat the Market strategy
+    also overwrites objective and risk tolerance for the **whole** book, which is
+    why the app currently looks like it has two strategies when it has one.
+
+    **First decision, before any code:** is the core a *strategy row* (a static
+    family like `bal_6040`, so sleeves sum to 100% and the objective only sets
+    guardrails), or is it *implicit* (the remainder stays objective-managed, as
+    today)? The first is cleaner and a bigger change; the second is closer to
+    what exists. Everything below assumes a `plan_sleeves` table either way.
+
+    **Schema.** New `plan_sleeves`: `(id, subject, strategy_id, sleeve_pct,
+    is_core, created_at)`. Migration 0015 **plus** the startup self-heal DDL in
+    `main.py` — hand-running alembic against this deploy has failed twice.
+    Backfill the existing `plans.strategy` / `strategy_sleeve_pct` into one row
+    so no one's applied strategy is lost. Keep the old columns readable for one
+    release rather than dropping them in the same change.
+
+    **Invariants to hold, each of which is a test:**
+    - Sleeve percentages sum to ≤ 100. Over-allocating must abstain with a
+      reason, the way `_fund_sleeve` already does when it cannot fund.
+    - **One cap per ticker = the SUM of that ticker's target weights across
+      sleeves.** Two sleeves both wanting TQQQ must not arm two competing
+      `max_weight` rules — that is the P1 duplicate bug, back at N scale.
+    - **Funding sleeve A must never sell sleeve B.** `_fund_sleeve` currently
+      excludes only its own tickers from the trim candidates; it must exclude
+      *every* sleeve's.
+    - Each sleeve's signal is independent — a flip in one must not touch another.
+
+    **What already supports N, unchanged:**
+    - `StrategySignalState` is keyed `(subject, strategy_id)`.
+    - `strategy_signal` rules pin `strategy_id` (P4.1).
+    - `sleeve_targets(strategy_id, pct)` is pure and composes by merging dicts.
+
+    **What has to change:** `apply_strategy` (add/update/remove a sleeve rather
+    than overwrite one), `_arm_sleeve_cap` (sum per ticker), `_fund_sleeve` and
+    `load_basket` (per-sleeve or whole-plan, wider exclusion set),
+    `active_strategy_id` → returns a list, `discipline_recs` / `signal_rules`
+    (per sleeve), the sleeve-drift and cold-start cards (per sleeve), and the
+    Plan banner added on 2026-08-10, which currently assumes exactly one.
+
+    **Also settle:** with N sleeves, which one sets the plan's objective and risk
+    tolerance? Today the single applied strategy does. Candidates: the core does,
+    or they become independent of sleeves entirely. Leaving it implicit is how
+    the current confusion started.
+
 13. **War-room strategy debate.** Structural absence, not a bug — the war room
     has no concept of a strategy. Also the slowest agent; would need
     `narrate=False`.

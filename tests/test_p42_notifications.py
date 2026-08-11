@@ -16,10 +16,14 @@ def _rec(**kw):
     return {**base, **kw}
 
 
-def test_a_fired_rule_pushes_immediately():
+def test_a_fired_rule_pushes_promptly_but_not_repeatedly():
+    """This asserted TRIGGER_IMMEDIATE, i.e. no rate limit at all, on the
+    reasoning that a fired rule is always worth hearing. Live, a MSFT cap
+    breached by 0.2 points pushed every few hours: the FIRST firing is urgent,
+    the fifth is noise. See tests/test_rule_flap.py."""
     trigger, limit = ps.classify_trigger(_rec(id="rule_f3cff1bf", title="SOXL hit your stop"))
     assert trigger == "rule_fired"
-    assert limit == ps.TRIGGER_IMMEDIATE
+    assert limit == ps.TRIGGER_RULE_REPEAT
 
 
 def test_a_signal_flip_pushes_immediately():
