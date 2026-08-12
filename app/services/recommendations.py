@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.offload import offload
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import KVSetting, User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
@@ -43,6 +44,33 @@ SLEEVE_DRIFT_BAND_PCT = 5.0
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve"}
+
+
+async def _offload(fn, *args, **kwargs):
+    """Run one blocking agent on a worker thread (#15, Phase B).
+
+    Offloading a whole agent rather than each individual provider call is
+    deliberate. The call sites are ordinary sync functions, so awaiting inside
+    them would mean turning ten service modules async to buy the same thing:
+    the loop is released for the entire blocking stretch either way, and this
+    version does not thread `async` through code that moves money.
+
+    ORM SAFETY -- the sharp edge here. Several of these agents take `rows`,
+    which are live ORM objects, and touching an EXPIRED attribute from a worker
+    thread would try to lazy-load through the async session and raise
+    MissingGreenlet. Two existing decisions make that safe, and both are
+    load-bearing rather than lucky:
+
+      * AsyncSessionLocal sets `expire_on_commit=False`, so a commit mid-build
+        does not expire the positions.
+      * `_agent_tx` uses a SAVEPOINT precisely because `session.rollback()`
+        expires everything -- its docstring below already records that lesson.
+
+    tests/test_offload.py asserts nothing is unloaded at this boundary, so if
+    either decision is ever reversed it fails there rather than as an
+    intermittent 500 in production.
+    """
+    return await offload(fn, *args, **kwargs)
 
 
 def _agent_tx(session: AsyncSession):
@@ -761,11 +789,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     #    data hiccup never breaks the Today view.
     trimmed = {(r.get("apply") or {}).get("ticker") for r in recs
                if (r.get("apply") or {}).get("kind") == "trim"}
-    recs += _holding_verdict_recs(rows, snap, cap, trimmed)
+    recs += await _offload(_holding_verdict_recs, rows, snap, cap, trimmed)
     _tm.mark("holding_verdicts")
-    recs += _hedge_recs(rows, snap)
+    recs += await _offload(_hedge_recs, rows, snap)
     _tm.mark("hedge")
-    recs += _momentum_recs(rows, snap)
+    recs += await _offload(_momentum_recs, rows, snap)
     _tm.mark("momentum")
     recs += _income_cost_recs(pdicts, snap, objective)
     _tm.mark("income_cost")
@@ -773,8 +801,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # so _reconcile can drop the old advisory "Put idle cash to work" card when
     # this one fires -- two cards about the same shekels is what the reconcile
     # pass exists to prevent.
-    _redeploy = _redeploy_cash_recs(rows, snap, plan, objective, cap, _cash_ils)
-    recs += _commodity_recs(rows, snap, objective, plan, cap, _cash_ils)
+    _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils)
+    recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils)
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -1161,7 +1189,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     _tm.mark("backtest")
-    _ideas = _buy_ideas(snap)      # screener; timed separately, it hits providers
+    _ideas = await _offload(_buy_ideas, snap)   # screener; timed separately, it hits providers
     _tm.mark("buy_ideas")
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
             "market": market,

@@ -1,7 +1,69 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (execution plan, Phase A)._
+_Last updated: 2026-08-12 by Claude (execution plan, Phases A + B)._
 _Seeded from git history + prior transcripts._
+
+## 🚧 PHASE B — #15, thread-pool the provider I/O. COMMITTED, NOT YET RE-MEASURED
+
+Two commits: `fca2718` (resilience, inert) + the offload. 608 passed, ruff
+clean. **The after-measurement has not been taken — see "Next" below.**
+
+### The baseline, measured against production first
+
+| | |
+|---|---|
+| `/plan` alone | 0.38 – 0.52s |
+| `/plan` while `/recommendations` was in flight | 2.09 / 2.22 / 3.05s |
+| `/recommendations` warm | 3.5 – 7.7s |
+| `/portfolio` alone | 0.36s |
+
+Nothing was slow — `/plan` was **queued**, and finished just before the
+`/recommendations` call holding the loop in every trial. That is the defect.
+
+**⚠️ The plan's guard rail was already spent.** It said "phase 10 got it from
+24.2s to ~1.0s; do not give that back." It was already back: warm is 4–6s.
+STATUS contradicted itself (the 08-03 entry says 1.0s; backlog #15 says "~5s
+warm"). **The honest number to hold is ~4–6s, not 1.0s.** Phase B does not
+improve it — it stops one request being everyone else's problem.
+
+### What changed
+- **`app/core/offload.py`** — one `offload()` helper, not `asyncio.to_thread`
+  sprinkled per site.
+- **Whole agents offloaded, not individual provider calls.** The `guarded_*`
+  callers are ordinary sync functions, so awaiting inside them would mean
+  turning ten service modules async for the same result.
+- Six agents in `build_recommendations`, both blocking calls in the war-room
+  route, and both Google OAuth round-trips.
+- **`ResilienceTier` is single-flight** (`fca2718`) — the plan said the TTL
+  caching would be left as it is, and leaving the *code* as it was would have
+  changed the *behaviour*: the cache deduplicated concurrent work only because
+  serialization meant request 2 always found request 1's result. Overlapping
+  requests would have made it N provider calls per cold key.
+
+### Three corrections to things that were believed
+1. **`_gemini_generate`'s docstring was false.** It claimed "runs in a worker
+   thread so it never blocks the event loop". It submits to a pool then calls
+   `.result()` — a synchronous wait. The pool buys isolation, not concurrency.
+   Corrected in place.
+2. **The bucket/breaker races are mostly not real.** `CircuitBreaker` lost zero
+   of 1.28M concurrent increments across 64 threads. `TokenBucket` *does*
+   over-admit (capacity-5 granted 12) but only at ~1000 threads with
+   `switchinterval=1e-9`. The locks are insurance; the tests say
+   `REGRESSION GUARD` rather than pretending to prove a production bug.
+3. **ORM rule for anything passed to `offload`: columns yes, relationships
+   never.** Columns are all loaded (`expire_on_commit=False` + `_agent_tx`'s
+   savepoint). Relationships are lazy and raise `MissingGreenlet` off-thread —
+   proven in `tests/test_offload.py`, which had to `expunge` the Account first
+   because SQLAlchemy resolves many-to-one from the identity map with no IO.
+
+### ⚠️ Still to do — the phase is NOT verified
+1. **Re-measure after deploy.** Repeat the `/plan`-while-`/recommendations`
+   trial. Expect ~0.4s instead of 2.5s. Until then this is unproven live.
+2. **`google_auth` is in this commit and touches sign-in.** Chosen deliberately
+   (widest blast radius), but it is the one change that can lock you out.
+   Test a real Google sign-in after deploy.
+3. Warm `/recommendations` should be unchanged (~4–6s). A large *increase*
+   would mean thread-pool contention and is the signal to revisit.
 
 ## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
 

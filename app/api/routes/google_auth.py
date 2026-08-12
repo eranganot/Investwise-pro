@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import Role, create_token
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.offload import offload
 from app.services.feed_service import ensure_user
 
 router = APIRouter(tags=["google-auth"])
@@ -114,10 +115,14 @@ async def google_callback(request: Request, code: str = "", state: str = "",
                 "redirect_uri": s.google_oauth_redirect_uri,
             }).encode(),
             method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"})
-        tokens = _http_json(token_req)
+        # Two blocking round-trips to Google inside an async handler. Sign-in
+        # is rare, so this is not a hot path -- but it is the same defect, and
+        # a slow Google is otherwise a stalled event loop for every other
+        # request in flight.
+        tokens = await offload(_http_json, token_req)
         access = tokens.get("access_token")
         info_req = urllib.request.Request(_USERINFO_URL, headers={"Authorization": f"Bearer {access}"})
-        info = _http_json(info_req)
+        info = await offload(_http_json, info_req)
     except Exception:
         return RedirectResponse("/login?error=Sign-in+failed+(could+not+reach+Google)")
 

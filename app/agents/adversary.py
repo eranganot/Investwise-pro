@@ -73,9 +73,17 @@ def _gemini_generate(key: str, model: str, prompt: str, timeout: float = 20.0) -
     The google-genai / google-generativeai SDKs manage an httpx client whose
     lifecycle conflicts with FastAPI's event loop ("Cannot send a request, as the
     client has been closed"). Hitting the REST endpoint with the stdlib avoids
-    that whole class of problems. The call runs in a worker thread so it never
-    blocks the event loop; the key travels as the ``x-goog-api-key`` header (not
-    in the URL/logs).
+    that whole class of problems. The key travels as the ``x-goog-api-key``
+    header (not in the URL/logs).
+
+    NOTE ON THREADING -- this docstring used to claim "the call runs in a worker
+    thread so it never blocks the event loop". The executor below does move the
+    socket work off this thread, but `.result()` then WAITS for it
+    synchronously, so a caller on the event loop is blocked for the full
+    duration exactly as if it had called urlopen directly. The pool buys
+    isolation, not concurrency. Whether the loop is free is decided by the
+    CALLER: `app.core.offload.offload` is what actually releases it, and the
+    async callers of this path go through it (#15, Phase B).
     """
     import concurrent.futures
     import json
