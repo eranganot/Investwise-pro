@@ -56,14 +56,46 @@ improve it — it stops one request being everyone else's problem.
    proven in `tests/test_offload.py`, which had to `expunge` the Account first
    because SQLAlchemy resolves many-to-one from the identity map with no IO.
 
-### ⚠️ Still to do — the phase is NOT verified
-1. **Re-measure after deploy.** Repeat the `/plan`-while-`/recommendations`
-   trial. Expect ~0.4s instead of 2.5s. Until then this is unproven live.
-2. **`google_auth` is in this commit and touches sign-in.** Chosen deliberately
-   (widest blast radius), but it is the one change that can lock you out.
-   Test a real Google sign-in after deploy.
-3. Warm `/recommendations` should be unchanged (~4–6s). A large *increase*
-   would mean thread-pool contention and is the signal to revisit.
+### ✅ VERIFIED LIVE on `cd2cc8b` — partial win, and the shortfall is diagnosed
+
+Google sign-in re-tested and working (the risky half of this commit).
+
+| | before | after |
+|---|---|---|
+| `/plan` alone | 0.38–0.52s | **0.32–0.36s** (8 runs) |
+| `/plan` during a recs build | 2.09 / 2.22 / 3.05s | **1.34 / 1.33 / 1.34 / 0.34 / 0.32 / 0.37** |
+| `/recommendations` warm | 3.5–7.7s | 1.2–2.5s |
+
+**The after-numbers are bimodal, and that is the finding.** Three trials at
+~1.33s and three at ~0.33s — two clean clusters, not scatter. That is a
+*remaining* ~1s blocking window: `/plan` either lands inside it or misses it.
+Blocking went from ~2.2s every time to ~1.0s roughly half the time. Real, but
+**this phase is not finished**, and calling it done would have been wrong.
+
+**Do not credit the warm improvement to this change.** 3.5–7.7s → 1.2–2.5s
+looks like a win and almost certainly is not one: offloading cannot speed up
+sequentially-awaited work. The baseline was taken during US market hours and
+the after-run was not. Unattributed.
+
+### Why it fell short — three awaited functions that block anyway
+`await` yields nothing when the coroutine makes synchronous provider calls
+inside itself. These three are on the `/recommendations` path, are `await`ed,
+and were NOT offloaded:
+
+| call site | reaches |
+|---|---|
+| `await suggest_rules_for_holdings(...)` (line ~1031) | `rules_service` — 2 guarded calls, 200 days **per ticker** |
+| `await _perf_fn(session, user)` (line ~809) | `performance_service` — 3 guarded calls |
+| `await _war_room_recs(...)` (line ~914) | `signal_service` — 2 guarded calls |
+
+That is the ~1s. **Phase B2** is offloading these three. `cached_regime()` is
+already cache-only and safe.
+
+### Still open
+- No endpoint reports the deployed commit, so "is this the new container?" can
+  only be answered from the Railway UI. STATUS records two debugging rounds
+  lost to exactly that ambiguity — a `/health` field carrying the git SHA is a
+  small fix worth making.
 
 ## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
 
