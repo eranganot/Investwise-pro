@@ -118,11 +118,44 @@ Railway shows $sha Active BEFORE believing any smoke result"; that was an
 eyeball check until now, and Phase B's own verification was blocked on a
 screenshot.
 
-### ⚠️ Next: re-measure
-Repeat the `/plan`-during-`/recommendations` trial. Before B2: 1.34 / 1.33 /
-1.34 / 0.34 / 0.32 / 0.37 (bimodal). If B2 worked, the ~1.33s cluster is gone
-and all six land near 0.33s. **Check `/health` `commit` first** — that is now
-possible.
+### ✅ VERIFIED LIVE on `8520c70` — #15 is DONE, and my read of the residual was wrong
+
+Container confirmed from the API itself for the first time:
+`/health` → `{"commit":"8520c70"}`. No screenshot needed.
+
+**The original defect is gone.** It has not recurred once in 30 measurements:
+
+| | before Phase B | now |
+|---|---|---|
+| `/plan` during a recs build | **2.09 / 2.22 / 3.05s, every trial** | statistically identical to `/plan` alone |
+
+**❌ The "residual ~1s of blocking" in the Phase B entry was wrong.** The
+after-run was bimodal and I attributed the ~1.33s cluster to a remaining
+blocking window. It is not load-related at all. `/plan` with **zero**
+concurrency does the same thing:
+
+```
+1.49 1.33 1.33 | 0.32 0.36 0.36 | 1.33 1.31 1.33 1.34 | 0.41 0.32 0.33 0.30
+```
+
+Spikes arrive in **blocks**, which is a TTL expiring — not contention.
+`/portfolio` shows it too. I diagnosed load-blocking without running the
+control in the same window, which is the error this file keeps recording:
+*that was a hypothesis, not a finding.* B2's two offloads were still correct
+work, but the measurement that motivated them did not say what I said it said.
+
+### 🔎 NEW, SEPARATE defect — worth its own item
+`/plan` and `/portfolio` intermittently take **~1.35s instead of ~0.33s**, with
+no concurrency involved: ~1s of blocking work on a cache miss, on the loop
+thread. Every user page load hits this periodically.
+
+**The prime suspect is `fx.py`** — one `guarded_fx` call behind a 15s TTL,
+called from `allocation_mix` / valuation on the loop thread. **This is exactly
+the call B2 declined to offload**, on the reasoning that one cached call for
+one currency pair was not worth it. The measurement says that call costs ~1s
+and fires on every page load periodically, so that decision was wrong and the
+data is what corrected it. Confirm by timing `guarded_fx` directly before
+fixing — do not repeat the mistake above by assuming.
 
 ## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
 
