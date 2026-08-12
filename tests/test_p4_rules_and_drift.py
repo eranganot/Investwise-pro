@@ -17,7 +17,7 @@ from app.services import rules_service as rs
 from app.services import strategy_catalog as sc
 from app.services.feed_service import ensure_user
 from app.services.intake_service import (
-    ensure_account, ensure_entity, list_positions, upsert_positions)
+    ensure_account, ensure_entity, upsert_positions)
 
 TREND = "btm_trend_tqqq"
 MEASURED = {"ok": True, "metrics": {

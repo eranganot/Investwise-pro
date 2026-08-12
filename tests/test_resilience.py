@@ -16,7 +16,8 @@ class Clock:
 def test_circuit_breaker_opens_and_recovers():
     clk = Clock()
     cb = CircuitBreaker(failure_threshold=2, recovery_timeout=10.0, clock=clk)
-    cb.record_failure(); cb.record_failure()
+    cb.record_failure()
+    cb.record_failure()
     assert cb.state == "OPEN" and cb.allow() is False
     clk.advance(10.0)
     assert cb.allow() is True and cb.state == "HALF_OPEN"

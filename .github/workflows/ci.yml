@@ -48,4 +48,7 @@ jobs:
       # Pinned ruff (via requirements-dev) so lint is reproducible and can be a
       # real gate rather than silently drifting red under a floating latest.
       - run: pip install -r requirements-dev.txt
-      - run: ruff check app
+      # `tests` is gated too. It used to be `app` only, and tests/ quietly
+      # accumulated 28 errors nobody saw -- the next phase should not be able
+      # to add a 29th.
+      - run: ruff check app tests

@@ -1,7 +1,6 @@
 """Phase 1.3 - Adversary per-stage cross-examination."""
 from __future__ import annotations
 
-import pytest
 
 from app.agents.adversary import Adversary, Severity
 from app.core.config import get_settings
@@ -85,15 +84,14 @@ def test_war_room_includes_cross_examination_lines():
     from app.services.war_room import build_war_room
     wr = build_war_room(DEFAULT_OBSERVATIONS)
     teva = [s for s in wr["sessions"] if s["ticker"] == "TEVA"][0]
-    xexam = [l for l in teva["transcript"]
-             if l["agent"] == "Adversary" and "cross-examination" in l["role"]]
+    xexam = [line for line in teva["transcript"]
+             if line["agent"] == "Adversary" and "cross-examination" in line["role"]]
     assert xexam, "expected Adversary cross-examination lines in the transcript"
-    assert all("severity" in l["detail"] for l in xexam)
+    assert all("severity" in line["detail"] for line in xexam)
 
 
 def test_llm_narrative_uses_google_key_gate(monkeypatch):
     from app.agents.adversary import Adversary
-    from app.core.config import get_settings
     s = get_settings().model_copy(update={"adversary_llm_enabled": True})
     adv = Adversary(s)
     notes = [adv.examine_detected(_strong_buy())]
@@ -109,7 +107,7 @@ def test_war_room_omits_ai_narrative_when_disabled():
     from app.services.war_room import build_war_room
     wr = build_war_room(DEFAULT_OBSERVATIONS)  # LLM off by default -> narrate() returns None
     for sess in wr["sessions"]:
-        assert not any("AI narrative" in l["role"] for l in sess["transcript"])
+        assert not any("AI narrative" in line["role"] for line in sess["transcript"])
 
 
 def test_war_room_includes_ai_narrative_when_enabled(monkeypatch):
@@ -120,5 +118,5 @@ def test_war_room_includes_ai_narrative_when_enabled(monkeypatch):
     monkeypatch.setattr(Adversary, "narrate", lambda self, notes, context="": "AI: I challenge this thesis.")
     wr = build_war_room(DEFAULT_OBSERVATIONS)
     teva = [s for s in wr["sessions"] if s["ticker"] == "TEVA"][0]
-    ai = [l for l in teva["transcript"] if l["role"].endswith("AI narrative")]
+    ai = [line for line in teva["transcript"] if line["role"].endswith("AI narrative")]
     assert ai and ai[0]["says"].startswith("AI:") and ai[0]["detail"]["source"] == "gemini"

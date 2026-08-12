@@ -38,7 +38,7 @@ function Invoke-Suite {
     Write-Host "`nFull suite + lint..." -ForegroundColor Cyan
     python -m pytest -q
     if ($LASTEXITCODE -ne 0) { Write-Host "Suite FAILED - not committing." -ForegroundColor Red; exit 1 }
-    python -m ruff check app
+    python -m ruff check app tests
     if ($LASTEXITCODE -ne 0) { Write-Host "ruff FAILED - CI gates on this. Not committing." -ForegroundColor Red; exit 1 }
     Write-Host "Green." -ForegroundColor Green
 }

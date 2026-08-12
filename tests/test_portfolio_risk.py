@@ -10,7 +10,8 @@ def _series(seed, n=160, mu=0.0004, sig=0.011):
     rng = np.random.default_rng(seed)
     p, out = 100.0, []
     for r in rng.normal(mu, sig, n):
-        p *= (1 + r); out.append(p)
+        p *= (1 + r)
+        out.append(p)
     return out
 
 

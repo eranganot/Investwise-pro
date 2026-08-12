@@ -9,7 +9,6 @@ The lesson recorded at the time was that a guard protects the code path it is
 on, not the behaviour — so the fix is only finished once every writer of
 `current_price` has been checked. This file pins the result of that sweep.
 """
-from decimal import Decimal
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

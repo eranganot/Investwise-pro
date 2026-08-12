@@ -43,12 +43,16 @@ def test_registry_selects_live_provider(monkeypatch):
     from app.providers import registry
     monkeypatch.setenv("MARKET_DATA_PROVIDER", "yahoo")
     monkeypatch.setenv("FX_PROVIDER", "frankfurter")
-    get_settings.cache_clear(); registry.market_provider.cache_clear(); registry.fx_provider.cache_clear()
+    get_settings.cache_clear()
+    registry.market_provider.cache_clear()
+    registry.fx_provider.cache_clear()
     try:
         assert registry.market_provider().name == "yahoo"
         assert registry.fx_provider().name == "frankfurter"
     finally:
-        get_settings.cache_clear(); registry.market_provider.cache_clear(); registry.fx_provider.cache_clear()
+        get_settings.cache_clear()
+        registry.market_provider.cache_clear()
+        registry.fx_provider.cache_clear()
 
 
 def test_refresh_prices_updates_holdings():

@@ -70,5 +70,7 @@ async def test_upsert_is_idempotent_by_ticker(session):
 
 def test_observation_none_without_prices():
     class P:
-        ticker = "Z"; market = "NYSE"; meta = {"depth": 1}
+        ticker = "Z"
+        market = "NYSE"
+        meta = {"depth": 1}
     assert position_to_observation(P()) is None

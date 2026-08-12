@@ -3,7 +3,7 @@ import pytest
 
 from app.engines.lag_engine import LagEngine
 from app.schemas.lag import LagObservation
-from app.schemas.state_machine import ActionType, Market
+from app.schemas.state_machine import Market
 
 A = pytest.approx
 

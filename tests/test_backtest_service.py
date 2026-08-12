@@ -155,7 +155,6 @@ async def test_an_old_row_or_a_bumped_engine_version_reads_as_stale():
     from sqlalchemy.pool import NullPool
     from app.core.config import get_settings
     from app.models.base import Base
-    from app.models.tables import StrategyBacktest
     import app.models  # noqa: F401
 
     eng = create_async_engine(get_settings().database_url, poolclass=NullPool)

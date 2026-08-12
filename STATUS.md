@@ -1,7 +1,47 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-11 by Claude (rule-flap fix)._
+_Last updated: 2026-08-12 by Claude (execution plan, Phase A)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
+
+593 passed, `ruff check app tests` clean. No app behaviour touched — no engine,
+no money path, no route. **Next: Phase B (#15, thread-pool the provider I/O),
+which ships alone.**
+
+- **#18 `.gitignore`** — smaller than the plan assumed: `.gitignore` already
+  existed and already covered `*.db`, so `investwise.db` was never the problem.
+  Added `.claude/` and `scripts/railway-error.log`, the two that actually
+  appeared on every `git status`. BOM dropped.
+- **#16 lint gate on `tests/`** — the plan said 26 errors; there were **28** by
+  the time it ran, which is the argument for a gate rather than a cleanup. 11
+  auto-fixable, 17 by hand: 10 `E702` semicolon-joined statements split, 5
+  `E741` `l` → `line` (all five are a war-room transcript line), 1 `F841`
+  unused `upsert_plan` result, 1 `F811`. Behaviour-preserving throughout — no
+  assertion changed. CI is now `ruff check app tests`, and `_common.ps1` was
+  updated to match so the local pre-push check can't pass what CI rejects.
+- **#17 one `ship-phase.ps1`** — `ship-p0/p1/p2.ps1` deleted. They differed only
+  in the file list and the closing checklist. The duplication had already cost
+  something: the P2 copy grew a better "nothing staged" message (it names the
+  likely cause instead of failing two steps later with "COMMIT_MSG.txt is
+  missing") that P0 and P1 never got — that version is the one that survives.
+  New `-DryRun` checks the file list without staging. `_common.ps1` stays; 25
+  `phaseN-*.ps1` scripts dot-source it.
+- Also committed: **`scripts/retire-holding.ps1`**, written for the delisted-COW
+  case and never committed. Its hardcoded `IW_AGENT_KEY` fallback was replaced
+  with a fail-fast, so backlog #4's blast radius stays at 11 scripts.
+
+**⚠️ `ship-phase.ps1` has never been parsed.** There is no PowerShell in the
+sandbox, so it is ASCII-checked and balance-checked only. **First real use
+should be `-DryRun`.**
+
+**Two mount findings worth keeping.** The FUSE mount denied `unlink` outright
+this session — a stale `.git/index.lock` left by the very first `git status`
+then blocked every git write until deletion was explicitly enabled. And
+`tests/conftest.py` points at `/tmp/iw_test_app.db`, which a previous session
+left owned by `nobody`; `/tmp` is sticky, so conftest's own cleanup cannot
+remove it and the whole suite fails with "attempt to write a readonly
+database". Set `DATABASE_URL` to a path under `$HOME` to get around it.
 
 ## 🔔 FIXED 2026-08-11 — the MSFT notification that arrived every few hours
 
@@ -93,7 +133,7 @@ Ordered by what unblocks what, not by size. The one non-obvious dependency:
 | 14 regime numbers + per-sleeve toggle | medium | ~half a day | low | D |
 | 13 war-room strategy debate | low | 1 day | low | — |
 
-### Phase A — clear the decks (half a day, zero risk)
+### ✅ Phase A — DONE 2026-08-12 (see the Phase A block at the top)
 **18, 16, 17.** All independent, all mechanical, none can break production.
 
 Do them first because they change the *floor* for everything after: #16 means

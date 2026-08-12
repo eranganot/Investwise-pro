@@ -67,7 +67,10 @@ def test_preferred_depth_flavor_tilts_conviction(observed):
              "spot_price": 100, "listing_price": 104, "quantity": 60, "cost_basis": 96, "volatility_pct": 8}]})
         def conv():
             g = next(s for s in c.get("/api/v1/war-room").json()["sessions"] if s["ticker"] == "GOLD")
-            return [l for l in g["transcript"] if l["agent"] == "Decision"][0]["detail"]["scores"]["conviction"]
-        c.put("/api/v1/plan", json={"preferred_depth": None}); base = conv()
-        c.put("/api/v1/plan", json={"preferred_depth": 1}); tilted = conv()
+            decision = [line for line in g["transcript"] if line["agent"] == "Decision"][0]
+            return decision["detail"]["scores"]["conviction"]
+        c.put("/api/v1/plan", json={"preferred_depth": None})
+        base = conv()
+        c.put("/api/v1/plan", json={"preferred_depth": 1})
+        tilted = conv()
         assert tilted > base

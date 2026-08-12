@@ -33,8 +33,8 @@ def test_effective_caps_flex_with_risk_tolerance():
 
 async def test_upsert_and_get_plan(session):
     user = await ensure_superadmin(session)
-    p = await upsert_plan(session, user, objective="Grow", risk_tolerance="High",
-                          horizon_years=15, target_amount=2_000_000, target_date="2035")
+    await upsert_plan(session, user, objective="Grow", risk_tolerance="High",
+                      horizon_years=15, target_amount=2_000_000, target_date="2035")
     await session.commit()
     got = await get_plan(session, user)
     assert got.objective == "Grow" and got.risk_tolerance == "High"

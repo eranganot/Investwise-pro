@@ -16,11 +16,9 @@ transaction, rather than relying on a Postgres-only symptom.
 """
 import inspect
 import os
-import re
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
-import pytest
 from fastapi.testclient import TestClient
 
 import app.main as m

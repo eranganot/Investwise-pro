@@ -16,8 +16,6 @@ from app.schemas.state_machine import (
     ActionType,
     DetectedSignal,
     Market,
-    OptimizedSignal,
-    RankedSignal,
     VettedSignal,
 )
 from app.schemas.validation import HandoffError, assert_handoff

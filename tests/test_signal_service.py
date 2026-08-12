@@ -8,7 +8,6 @@ a completely separate pipeline, never mentioned it.
 import pytest
 import os
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
-import math
 
 from app.services import signal_service as ss
 

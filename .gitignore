@@ -1,5 +1,12 @@
-﻿__pycache__/
+__pycache__/
 *.pyc
 *.db
 .venv/
 .env
+
+# Local agent/session state -- noise on every git status, and noise is where a
+# real modified file hides.
+.claude/
+
+# Written by scripts/get-error-log.ps1 on every run.
+scripts/railway-error.log
