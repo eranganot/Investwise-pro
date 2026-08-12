@@ -143,6 +143,41 @@ async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_sess
     return _plan_dict(plan, _portfolio_stats(await _orm(session, user)))
 
 
+@router.get("/plan/sleeves")
+async def get_my_sleeves(session: AsyncSession = Depends(get_session),
+                         user: User = Depends(acting_user)) -> dict:
+    """The strategy sleeves on this book, and the core they leave behind.
+
+    Read-only in every sense: it arms nothing, funds nothing, and writes nothing
+    -- not even a self-healing row. ``strategy_service.apply_strategy`` still
+    writes the single ``plans.strategy`` pair and is still what the rest of the
+    app acts on; this endpoint exists so the sleeve table can be seen and
+    verified in production before anything starts depending on it.
+
+    ``core_pct`` is the implicit remainder -- the share of the book the sleeves
+    have not claimed, still governed by the objective exactly as today. It is
+    computed, not stored, because in this model the core is not a row.
+
+    ``legacy`` carries the old columns unchanged. Until C2 makes ``apply`` write
+    a sleeve row, a strategy applied after the one-shot backfill ran will show
+    up there and nowhere else, and a reader that could not see that would think
+    the book had no strategy at all.
+    """
+    from app.services import sleeve_service as sv
+
+    plan = await get_plan(session, user)
+    sleeves = await sv.list_sleeves(session, user)
+    return {
+        "sleeves": sv.as_dicts(sleeves),
+        "allocated_pct": sv.total_pct(sleeves),
+        "core_pct": sv.remainder_pct(sleeves),
+        # Said out loud so no caller has to infer it from the arithmetic.
+        "core_is_implicit": True,
+        "legacy": {"strategy": getattr(plan, "strategy", None),
+                   "strategy_sleeve_pct": getattr(plan, "strategy_sleeve_pct", None)},
+    }
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)

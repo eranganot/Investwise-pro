@@ -1,7 +1,160 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (execution plan, Phases A + B)._
+_Last updated: 2026-08-12 by Claude (Phase C1)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C1 — `plan_sleeves` lands inert (2026-08-12). NOT YET DEPLOYED
+
+**634 passed** (612 baseline + 22 new), `ruff check app tests` clean. No app
+behaviour touched: `apply_strategy` still writes the single `plans.strategy` /
+`strategy_sleeve_pct` pair, still arms the same cap, and everything downstream
+still reads those columns. The table lands and sits, the way `regime.py` did.
+
+### The two decisions the plan said to settle first — settled, do not re-litigate
+
+| # | Decision |
+|---|---|
+| Core | **Implicit remainder, with `is_core` reserved.** Sleeves sum to **≤ 100** and what they do not claim stays objective-managed exactly as today. The column for the other model (a static family as an explicit core row, sleeves summing to exactly 100) ships unwritten, so taking that road later costs a behaviour change rather than a second migration. |
+| Objective / risk tolerance | **Independent of sleeves.** They stop being written by `apply_strategy` and become guardrails the user sets on the Plan tab. This is what kills "the app looks like it has two strategies when it has one" at the root. **Deliberately NOT in C1** — it is a visible behaviour change and C1 is inert, so it ships with C2. Recorded here so C2 does not have to re-open it. |
+
+### What shipped
+- **`plan_sleeves`** — `(id, subject, strategy_id, sleeve_pct, is_core, created_at)`,
+  keyed by `subject` (email) to match `TradingRule` and `StrategySignalState`,
+  which is what the per-sleeve rule and signal code already joins on. Unique on
+  `(subject, strategy_id)`: two rows for one strategy at two sizes is the exact
+  ambiguity the single-column design was being replaced to remove, and it would
+  come straight back at N scale.
+- **Migration `0014_plan_sleeves`** — **0014, not 0015 as the plan said.** The
+  last revision on disk is 0013.
+- **No new self-heal DDL in `main.py`, on purpose.** `create_all` *does* build a
+  missing table; what it never does is add a column to a table that already
+  exists, which is the only reason that DDL list exists. A redundant
+  `CREATE TABLE` there would imply a gap that is not there. A comment says so,
+  because the next person will look for one.
+- **`app/services/sleeve_service.py`** — `list_sleeves`, `total_pct`,
+  `remainder_pct`, `as_dicts`, and `validate`. The invariants live here rather
+  than in a route because C2 (add/update/remove), C3 (funding exclusion) and C4
+  (per-sleeve signals) all need the same answers and must not each grow their
+  own — that is the duplicated-reprice-loop shape.
+- **`GET /api/v1/plan/sleeves`** — read-only. Returns the sleeves, `core_pct` as
+  the computed remainder, and the untouched legacy columns.
+- **`scripts/smoke/smoke-c1.ps1`** — checks the deployed SHA off `/health`
+  first and *exits* if it does not match, so a pass cannot be a pass against a
+  stale container. Most of it asserts that nothing moved. The one check only
+  production can answer is whether the backfill turned the actually-applied
+  strategy into a row; it reports the known C1→C2 window as a SKIP with the
+  reason rather than a pass, because those are different facts. Fails fast on
+  `IW_AGENT_KEY` — it is not becoming backlog #4's twelfth hardcoded copy.
+
+### The backfill is a one-shot, and that is the interesting decision
+Startup, not migration: the ids are UUIDs and the subject is `users.email`, so
+cross-dialect SQL would mean generating keys and joining differently per
+backend — and hand-running alembic against this deploy has already failed twice.
+
+Guarded by a `KVSetting` marker so it runs **exactly once, ever**. The obvious
+alternative — "top up any subject with no rows, every boot" — reads better right
+up until C2 adds *remove a sleeve*: removing your only sleeve leaves you with no
+rows, and the next restart hands it back. **A migration that resurrects a
+decision the user made is worse than one that runs a beat too early.** There is
+a test for exactly that, written now rather than after C2 finds it.
+
+A plan carrying a strategy but no size predates 0012; it backfills at the
+catalog's **suggested** sleeve, never 100% — same refusal `sleeve_basket` makes,
+for the same reason. A static family backfills to nothing at all: it is a model
+portfolio, not a sleeve, and inventing a percentage would put a number on a card
+nobody chose.
+
+### The C1 → C2 window, stated rather than left to be discovered
+The marker is spent on the first boot. `apply_strategy` does not write sleeve
+rows yet. **So a strategy applied after the C1 deploy has no sleeve row** — it
+exists only in the old columns. The endpoint therefore returns a `legacy` block
+carrying them, because a reader seeing an empty `sleeves` list with no other
+signal would conclude the book has no strategy at all. C2 closes the window by
+making apply write the row, and the `legacy` block goes with it.
+
+### ❌ `alembic upgrade head` was already broken, before this change
+Found by running it, not by reading it. On a fresh database it dies at **0013**
+with `duplicate column name: strategy_id` and never reaches anything after —
+which means **0014 would have been unreachable by the documented upgrade path.**
+
+The cause is structural: `0001_initial` runs `Base.metadata.create_all`, so a
+fresh database gets every table built from **today's** models, already carrying
+every column the later revisions try to add. 0012 is guarded against exactly
+this. 0013 was not. Fixed with the same three-line guard 0012 uses; 0014 ships
+with its own.
+
+This is part of why hand-running alembic against this deploy "has failed twice".
+The DNS and the local-sqlite-URL explanations in the plan were both real, and so
+is this, and it would have kept failing after both were fixed. Verified after
+the fix: chain runs to `0014_plan_sleeves`, rerunning is a no-op, and 0014
+downgrades cleanly.
+
+### ❌ A Phase B test could never have passed on Windows — found by Eran running it
+`test_offload_leaves_the_loop_free_to_serve_others` failed his pre-push suite at
+`assert 0.29699999999138527 >= 0.3`. **633 passed, 1 failed** — and 634/634 green
+on Linux at the same commit. Not a flake, not C1.
+
+**The number is the whole diagnosis.** Windows' platform timer ticks at
+**15.625ms**, so `time.sleep(0.30)` returns after **19 ticks = 296.875ms** —
+three milliseconds short of what was asked for. His measured total was
+296.875ms + **125µs** of task-creation overhead. `assert total >= 0.30` is
+therefore *unsatisfiable on Windows*, every run, forever.
+
+That 125µs residual is what makes it a diagnosis rather than a guess: it rules
+out the other candidate. If `time.monotonic()` were the coarse clock, the
+reading would be an exact multiple of the tick — it is not, so the clock
+resolved sub-tick and the **sleep** is what quantized.
+
+**Why it was silent:** CI runs on ubuntu, where `sleep` overshoots. Phase B
+shipped the same day and was written and verified in the Linux sandbox, which
+has no Windows and no PowerShell. This was the assertion's first Windows run.
+
+**Fixed at the cause, not with slop.** `assert await slow == "done"` already
+proved the agent ran — the agent only returns after its sleep. The wall-clock
+lower bound was redundant *and* platform-dependent. Replaced with an ordering
+assertion (`total > cheap_finished_at`, exact because both readings come off one
+clock) plus a 0.25 floor, which still separates "it slept" from "it did not" by
+an order of magnitude.
+
+**Sibling, fixed in the same pass.**
+`test_calling_the_agent_directly_does_block_the_loop` carries the same
+`>= 0.30`. It passed on Windows **only by accident**: `cheap()` is created but
+never started before the blocking call, so its own 0.02s lands on top of the
+short sleep and pushes the total back over 0.30. A single
+`await asyncio.sleep(0)` added there for tidiness would have failed it too.
+Also lowered to 0.25. Those two were the **only** wall-clock lower bounds in the
+suite — `test_two_offloaded_agents_overlap` and
+`test_resilience_threading`'s concurrency check are upper bounds, which
+quantization can only make safer.
+
+**The rule, now in the module docstring:** no assertion in `test_offload.py` may
+put a lower bound on a wall-clock sleep.
+
+### Not verified, and worth saying
+- **Postgres.** No Postgres in the sandbox, so `plan_sleeves` has been exercised
+  on SQLite only. CI's `test-postgres` job is the gate — note it builds the
+  schema from `create_all`, not from migrations, so it proves the *model* on
+  Postgres and not the *migration*. The migration is standard `create_table` +
+  two indexes + one unique constraint, but that distinction should be understood
+  rather than assumed away.
+- **Nothing has been deployed or smoke-tested live.** The claim "C1 is inert" is
+  currently a claim about 634 green tests, not about production.
+
+### 🖥️ The frontend, so C5 is not a surprise
+This phase is backend-only by design, but the plan's C5 is real UI work and it
+is bigger than "render a list". In `app/static_app/index.html`:
+- **`renderStrategies` (~line 1234)** builds a banner that says, in words,
+  _"One strategy applies at a time"_ — the assumption is written into the copy,
+  not just the layout. It reads `MYPLAN.strategy_sleeve_pct` directly.
+- **`_appliedId()` returns one id**, and the card list marks exactly one card
+  `✓ YOUR STRATEGY` (`s.id===applied`). Both become set membership.
+- **`SLEEVE[id]` / `sleeveControl` / `sleeveQS`** already key per strategy, so
+  the slider itself survives N. That part is cheaper than it looks.
+- **The goal tabs** show a `✓` on the one goal holding the applied strategy;
+  under N sleeves more than one tab can be ticked.
+- New: the core has to render as a slice with no card behind it — it is the
+  implicit remainder, so there is nothing to click, and a UI that shows 65% with
+  no explanation invites the same "what is this second strategy?" confusion.
 
 ## 🚧 PHASE B — #15, thread-pool the provider I/O. COMMITTED, NOT YET RE-MEASURED
 
@@ -348,10 +501,15 @@ Risk is medium because it touches every request path, so it ships alone.
 ### Phase C — core + N sleeves (several sessions)
 **12.** Scoped in full above. Sub-phase it the way P3 worked, inert first:
 
-- **C1** `plan_sleeves` table + migration + startup self-heal + backfill the
-  existing single strategy. Read-only endpoint. **No behaviour change** — this
-  can land and sit inert, like `regime.py` did.
-- **C2** add/update/remove a sleeve; `_arm_sleeve_cap` sums per ticker.
+- **✅ C1 — DONE 2026-08-12** (see the Phase C1 block at the top). `plan_sleeves`
+  + migration 0014 + one-shot startup backfill + a read-only endpoint. Both
+  blocking decisions settled: **implicit-remainder core** (`is_core` reserved,
+  unwritten) and **objective/risk independent of sleeves** (recorded, and
+  deliberately deferred to C2 because it is a behaviour change).
+- **C2** add/update/remove a sleeve; `_arm_sleeve_cap` sums per ticker. Also
+  carries the two things C1 deliberately left: making `apply_strategy` stop
+  writing objective/risk tolerance, and making it write a sleeve row — which is
+  what closes the `legacy` window and lets that block be deleted.
 - **C3** funding with the wider exclusion set (sleeve A must never sell B).
 - **C4** signals, discipline rules and the drift/cold-start cards, per sleeve.
 - **C5** the Plan UI: a sleeve list replacing the single-strategy banner.

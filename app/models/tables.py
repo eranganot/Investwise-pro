@@ -19,6 +19,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -433,6 +434,41 @@ class StrategyBacktest(Base, PKMixin, TimestampMixin):
     last_error: Mapped[str] = mapped_column(String(255), default="")
     last_error_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
+
+
+class PlanSleeve(Base, PKMixin, TimestampMixin):
+    """One strategy sleeve and the share of the book it governs.
+
+    ``plans.strategy`` + ``plans.strategy_sleeve_pct`` can express exactly one
+    strategy, which is why applying a second one overwrote the first and why the
+    app looked like it had two strategies when it had one. A sleeve is a row
+    here instead, so the book can run 20% ``btm_trend_tqqq`` alongside 15%
+    ``btm_factor_stack`` without either pretending to be the whole portfolio.
+
+    **The core is the implicit remainder, not a row.** Whatever the sleeves do
+    not claim stays objective-managed exactly as it is today, so the sleeves sum
+    to <= 100 rather than to exactly 100. ``is_core`` ships unused, reserved for
+    the other model (a static family as an explicit core row summing to 100) so
+    that choice does not cost a second migration if it is taken later.
+
+    Keyed by ``subject`` (the user's email) to match ``TradingRule`` and
+    ``StrategySignalState``, which is what the per-sleeve rule and signal code
+    already joins on. One row per strategy per subject is enforced: two rows for
+    the same strategy at two sizes is the ambiguity the single-column design was
+    replacing, reintroduced at N scale.
+    """
+    __tablename__ = "plan_sleeves"
+    __table_args__ = (UniqueConstraint("subject", "strategy_id",
+                                       name="uq_plan_sleeves_subject_strategy"),)
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    strategy_id: Mapped[str] = mapped_column(String(40), index=True)
+    # Share of NAV this sleeve governs, in whole-ish percent (20.0 == 20%), the
+    # same unit and meaning as the plans.strategy_sleeve_pct it replaces.
+    sleeve_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    # RESERVED, always False in C1. See the class docstring: the core is the
+    # implicit remainder today. Nothing reads this yet, and nothing should start
+    # reading it until the explicit-core model is actually chosen.
+    is_core: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class StrategySignalState(Base, PKMixin, TimestampMixin):

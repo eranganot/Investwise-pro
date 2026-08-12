@@ -12,6 +12,14 @@ been holding it.
 
 These tests use a fake blocking agent rather than a real provider, so they are
 deterministic and make no network call.
+
+**No assertion here may put a lower bound on a wall-clock `time.sleep`.**
+Windows' platform timer ticks at 15.625ms, so `time.sleep(0.30)` returns after
+19 ticks -- 296.875ms, three milliseconds SHORT of what was asked for. An
+`assert total >= 0.30` therefore fails on Windows every single run while passing
+on the Linux CI box forever. Bound the duration well below the requested sleep,
+or assert on ordering instead: both readings come off the same clock, so their
+relative order is exact no matter how coarse it is.
 """
 from __future__ import annotations
 
@@ -57,7 +65,21 @@ async def test_offload_leaves_the_loop_free_to_serve_others():
     assert cheap_finished_at < 0.20, (
         f"the loop was blocked: a 0.02s coroutine took {cheap_finished_at:.3f}s"
     )
-    assert total >= 0.30           # and the slow work really did run
+    # ...and the slow work really did run. Asserted two ways, neither of which
+    # is `total >= 0.30`:
+    #
+    # `await slow == "done"` above already proves the agent ran to completion --
+    # it only returns after its sleep. This adds that it OUTLASTED the cheap
+    # coroutine, which is the ordering the test is really about, and that it
+    # actually slept rather than returning immediately.
+    #
+    # The floor is 0.25, not 0.30, and that is not slop: `assert total >= 0.30`
+    # failed on Windows at 0.29699999999138527. `time.sleep(0.30)` there returns
+    # after 19 platform ticks of 15.625ms = 296.875ms, so the strict bound is
+    # unsatisfiable on that platform and green on Linux forever. 0.25 still
+    # separates "it slept" from "it did not" by an order of magnitude.
+    assert total > cheap_finished_at
+    assert total >= 0.25, f"the agent did not sleep: {total:.3f}s"
 
 
 @pytest.mark.asyncio
@@ -81,7 +103,17 @@ async def test_calling_the_agent_directly_does_block_the_loop():
     await task
 
     assert cheap_finished_at is not None
-    assert cheap_finished_at >= 0.30, (
+    # 0.25 for the same reason as the sibling test: a wall-clock sleep can come
+    # back short of what was asked for, and 0.30 is not a bound Windows can meet.
+    #
+    # This one survived the Windows run only by accident -- `cheap()` is created
+    # but never started before the blocking call, so its own 0.02s lands on TOP
+    # of the short sleep and pushes the total back over 0.30. One
+    # `await asyncio.sleep(0)` added here for tidiness would have failed it too.
+    #
+    # No discriminating power is lost: the two outcomes this separates are
+    # ~0.02s (loop stayed free) and ~0.30s (loop was held).
+    assert cheap_finished_at >= 0.25, (
         "the fake agent is not actually blocking, so the sibling test proves nothing"
     )
 

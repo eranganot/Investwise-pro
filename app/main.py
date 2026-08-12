@@ -74,11 +74,28 @@ async def lifespan(app: FastAPI):
                     # P4: strategy_signal rules pin the strategy they follow.
                     "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
                     "strategy_id VARCHAR(40)",
+                    # C1 (plan_sleeves) needs no entry here. create_all above
+                    # DOES build a missing table; what it never does is add a
+                    # column to a table that already exists, which is the whole
+                    # reason this list exists. A redundant CREATE TABLE would
+                    # imply a gap that is not there.
                 ):
                     try:
                         await conn.execute(text(ddl))
                     except Exception:  # noqa: BLE001
                         pass
+        # C1: backfill the single strategy the `plans` columns can hold into one
+        # sleeve row, so the new table agrees with the old columns on day one.
+        # One-shot and idempotent -- see sleeve_service.BACKFILL_KEY for why it
+        # is deliberately not a per-boot self-heal. Never allowed to break
+        # startup: this release changes no behaviour, so a failed backfill must
+        # not cost a deploy.
+        try:
+            from app.services.sleeve_service import backfill_once
+            async with AsyncSessionLocal() as _session:
+                await backfill_once(_session)
+        except Exception:  # noqa: BLE001
+            logger.warning("plan_sleeves backfill skipped", exc_info=True)
     if settings.environment == "production":
         if settings.auto_create_tables:
             logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")
