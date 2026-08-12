@@ -144,18 +144,47 @@ control in the same window, which is the error this file keeps recording:
 *that was a hypothesis, not a finding.* B2's two offloads were still correct
 work, but the measurement that motivated them did not say what I said it said.
 
-### 🔎 NEW, SEPARATE defect — worth its own item
-`/plan` and `/portfolio` intermittently take **~1.35s instead of ~0.33s**, with
-no concurrency involved: ~1s of blocking work on a cache miss, on the loop
-thread. Every user page load hits this periodically.
+### ❌ THE "~1.35s DEFECT" DOES NOT EXIST — it was the measuring instrument
 
-**The prime suspect is `fx.py`** — one `guarded_fx` call behind a 15s TTL,
-called from `allocation_mix` / valuation on the loop thread. **This is exactly
-the call B2 declined to offload**, on the reasoning that one cached call for
-one currency pair was not worth it. The measurement says that call costs ~1s
-and fires on every page load periodically, so that decision was wrong and the
-data is what corrected it. Confirm by timing `guarded_fx` directly before
-fixing — do not repeat the mistake above by assuming.
+Investigated before fixing, on instruction to use evidence rather than a
+suspect. There was nothing to fix. The hypothesis died in three steps:
+
+1. **FX is not it.** `/api/v1/fx/rate` calls `guarded_fx` directly. Cold
+   (TTL expired) **0.95s then 0.46s**; warm **0.32–0.44s**. The FX fetch costs
+   ~0.1–0.6s over baseline, not ~1.0s, and cold-vs-warm does not reproduce the
+   spike.
+2. **No app code is it.** Interleaved `/health` (no DB, no providers, no auth —
+   it returns a 5-key dict) vs `/health/ready` (DB only) vs `/plan`. **`/health`
+   spiked to 1.33 / 1.37 / 1.41 / 1.37 / 1.56s.** Dict construction does not
+   take 1.3 seconds. That rules out FX, the DB and every line of app logic at
+   once.
+3. **It is TCP connect.** Timing breakdown: on slow rounds `time_connect` is
+   **1.07–1.24s** while server time (TTFB − TLS) is **~0.08s in every round,
+   fast or slow**. Ten requests over ONE reused connection: `0.080 0.085 0.083
+   0.083 0.083 0.086 0.083 0.084 0.080` — flat, no spikes at all.
+
+`curl` was opening a fresh TCP connection per request and intermittently
+paying ~1.2s for the handshake from the sandbox. **Every "~1.35s spike" in the
+two entries above was the harness, not the app.**
+
+### ✅ #15 re-verified cleanly, with connection reuse
+
+10 × `/plan` on one connection, requests 2–10:
+
+| | |
+|---|---|
+| no load | 0.095 0.092 0.095 0.088 0.091 0.092 0.087 0.091 0.091 |
+| **while `/recommendations` runs continuously** | 0.088 0.085 0.086 0.085 0.084 0.085 0.087 0.088 0.087 |
+
+Indistinguishable. **`/plan` is completely unaffected by concurrent load — #15
+is done.** True serving time is **~0.085s**, not the ~0.33s quoted earlier;
+that figure carried ~0.25s of per-request TCP+TLS setup.
+
+### Nothing to fix in `fx.py`
+The 15s TTL on a rate the ECB publishes **daily** is still silly, and
+`retry(attempts=3)` against a 10s timeout is a real tail risk **by code
+reading** — but neither causes any observed problem. Logged as optional
+hardening, explicitly NOT as a defect, because no measurement supports one.
 
 ## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
 
@@ -791,6 +820,19 @@ All five originally-reported issues confirmed fixed against production: cash car
 Phase 13's second pass reallocates an *unfillable class's* budget, but it is gated on `if remaining >= MIN_TRADE_ILS and legs:` — with zero legs there is nothing to reallocate into, so the card vanishes rather than under-deploying. Seen live: NAV 22,006, cash 2,589 (11.8%) vs a 3% floor → spendable ₪1,929; the Equities share of ₪551 split across four holdings = ₪138 each, all under the ₪250 minimum → no legs → no card, while ₪1,929 sits idle. **Fix:** when no leg clears the minimum, concentrate the budget into the single best candidate instead of splitting it thin.
 
 ## Corrections worth remembering
+- **Measure over a REUSED connection, or you are timing the handshake.** A
+  fresh TCP connection per request adds ~0.25s of setup and intermittently
+  ~1.2s — larger than most things being measured. Two separate "defects" were
+  reported on 2026-08-12 (a residual blocking window, then a ~1s FX stall) and
+  **neither existed**: both were `curl` reconnecting. The tell is that
+  `/health`, which touches nothing, spikes identically. Use one `curl`
+  invocation with the URL repeated, and read `%{time_connect}` and
+  `%{time_starttransfer}` — never `%{time_total}` alone. The same applies to
+  the smoke scripts, which issue one `Invoke-RestMethod` per check.
+- **A control run must be taken in the SAME window as the test run.** The
+  residual-blocking claim came from comparing an under-load run against a
+  control measured earlier. Re-running the control alongside it is what
+  falsified it.
 - **A guard protects the path it is on, not the behaviour.** Phase 1 fixed cash-being-quoted-as-NASDAQ:CASH in `refresh_all_positions` and stopped there. `POST /portfolio/refresh-prices` had its own copy of the same loop with no guard, so on 2026-08-10 the identical bug fired again from the manual button and inflated NAV ~9x. When fixing a data-integrity bug, **find every writer of that field first** — the fix is otherwise conditional on which code path the user happens to hit. (Still unaudited: broker sync, CSV intake, `add_holding`, `update_position`.)
 - **The AMZN "cap breach" was not a bug.** `risk_tolerance: High` sets `concentration_cap` to 0.40, so AMZN at 29% is within limits — `diversification_score: 100` proves it (that score can only be 100 when `max_weight <= cap`). A smoke test hardcoding 0.25 manufactured the false alarm. Read caps from `/api/v1/plan`, never assume 0.25.
 - **Gemini outages were billing, not code**: HTTP 429 "prepayment credits are depleted". `gemini_generate` swallows every exception identically, so a two-minute billing fix looked like a permanent outage. Surfacing the error class is still an open improvement.
