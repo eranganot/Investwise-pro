@@ -81,8 +81,14 @@ if (-not $SkipTests) {
     Step "1b. ruff (CI runs exactly: ruff check app tests)"
     python -m ruff check app tests
     if ($LASTEXITCODE -ne 0) { Die "ruff is red - CI will fail" }
+} elseif ($DryRun) {
+    # Do NOT say "pushing unverified" here -- a dry run exits at step 2 and
+    # pushes nothing. A message that claims a push happened when it did not is
+    # how a smoke run against a stale container starts.
+    Step "1. Suite skipped (-SkipTests, and -DryRun pushes nothing anyway)"
 } else {
-    Write-Host "`n  -SkipTests: pushing unverified. CI is now your only gate." -ForegroundColor DarkYellow
+    Step "1. Suite SKIPPED (-SkipTests)"
+    Write-Host "  Pushing unverified. CI is now your only gate." -ForegroundColor DarkYellow
 }
 
 # --------------------------------------------------- 2. stage, explicitly
