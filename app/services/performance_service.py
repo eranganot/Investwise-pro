@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.engines.performance import summarize
 from app.models.tables import User
+from app.core.offload import offload
 from app.providers.registry import guarded_history, market_provider
 from app.services.intake_service import list_positions
 
@@ -32,17 +33,28 @@ async def performance(session: AsyncSession, user: User, *, history_days: int = 
     rows = await list_positions(session, user)
     if not rows:
         return {"ok": False, "reason": "no holdings"}
+    # Project to plain tuples HERE, on the event loop's own thread, then hand
+    # the blocking half to a worker. Reading these two columns is safe off-loop
+    # as well, but projecting first means _performance_from holds no ORM object
+    # at all -- so it cannot grow a relationship access later and start raising
+    # MissingGreenlet (see app/core/offload.py).
+    holdings = [(p.ticker, float(p.quantity)) for p in rows]
+    return await offload(_performance_from, holdings, history_days)
 
+
+def _performance_from(holdings: list[tuple[str, float]], history_days: int) -> dict:
+    """The blocking half of performance(): one history fetch per holding plus
+    the benchmark, all synchronous urllib. Pure -- no session, no ORM."""
     qty, maps = {}, {}
-    for p in rows:
+    for ticker, quantity in holdings:
         try:
-            series = guarded_history(p.ticker, history_days)  # [(date, close)]
-        except Exception:
+            series = guarded_history(ticker, history_days)  # [(date, close)]
+        except Exception:  # noqa: BLE001
             series = []
         if len(series) < 3:
             continue
-        qty[p.ticker] = float(p.quantity)
-        maps[p.ticker] = {d: c for d, c in series}
+        qty[ticker] = quantity
+        maps[ticker] = {d: c for d, c in series}
     if not maps:
         return {"ok": False, "reason": "no usable price history for holdings"}
 

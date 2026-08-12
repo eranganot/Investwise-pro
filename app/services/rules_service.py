@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.offload import offload
 from app.models.tables import RuleEvent, TradingRule, User
 from app.services.portfolio_analytics import compute_snapshot, load_positions
 
@@ -696,9 +697,6 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
     grounded in the holding's own realized volatility, never invented; rule types
     the user has already armed are omitted so suggestions stay fresh.
     """
-    from app.providers.registry import guarded_history
-    from app.services.recommendations import stop_buffer_pct
-
     idx = await _positions_index(session, user)
     if not idx:
         return []
@@ -706,6 +704,22 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
     have = {(r.ticker.upper(), r.rule_type) for r in existing}
+    # Everything above is DB work; everything in _suggestions_from is 200 days
+    # of history PER TICKER through synchronous urllib. Phase B offloaded the
+    # agents that looked blocking at their call site and missed this one,
+    # because `await suggest_rules_for_holdings(...)` reads as non-blocking --
+    # and an await yields nothing when the coroutine blocks inside itself.
+    # Measured cost of that miss: ~1s of held event loop, half the time.
+    #
+    # `idx` and `have` are plain dicts/sets, not ORM rows, so the columns-yes-
+    # relationships-never rule in app/core/offload.py cannot be violated here.
+    return await offload(_suggestions_from, idx, have)
+
+
+def _suggestions_from(idx: dict[str, dict], have: set) -> list[dict]:
+    """The blocking half of suggest_rules_for_holdings. Pure: no session."""
+    from app.providers.registry import guarded_history
+    from app.services.recommendations import stop_buffer_pct
 
     out: list[dict] = []
     for tk, pos in idx.items():

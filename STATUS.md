@@ -77,25 +77,52 @@ looks like a win and almost certainly is not one: offloading cannot speed up
 sequentially-awaited work. The baseline was taken during US market hours and
 the after-run was not. Unattributed.
 
-### Why it fell short — three awaited functions that block anyway
+### Why it fell short — awaited functions that block anyway
 `await` yields nothing when the coroutine makes synchronous provider calls
-inside itself. These three are on the `/recommendations` path, are `await`ed,
-and were NOT offloaded:
+inside itself. `await suggest_rules_for_holdings(...)` reads as non-blocking at
+the call site, which is exactly why Phase B missed it.
 
-| call site | reaches |
+## ✅ PHASE B2 — the rest of the offload + the deploy-SHA gap (2026-08-12)
+
+612 passed, ruff clean. **Not yet re-measured — see below.**
+
+**Two fixes, not the three STATUS claimed.**
+
+| | |
 |---|---|
-| `await suggest_rules_for_holdings(...)` (line ~1031) | `rules_service` — 2 guarded calls, 200 days **per ticker** |
-| `await _perf_fn(session, user)` (line ~809) | `performance_service` — 3 guarded calls |
-| `await _war_room_recs(...)` (line ~914) | `signal_service` — 2 guarded calls |
+| `suggest_rules_for_holdings` | split: DB work stays on the loop, the 200-days-**per-ticker** loop moved into `_suggestions_from(idx, have)` behind `offload`. Takes plain dicts/sets, never ORM rows. |
+| `performance()` | split: `_performance_from(holdings, history_days)` behind `offload`. Positions are projected to `(ticker, quantity)` tuples **on the loop thread** first, so the worker holds no ORM object at all and cannot later grow a relationship access. |
 
-That is the ~1s. **Phase B2** is offloading these three. `cached_regime()` is
-already cache-only and safe.
+**❌ Correction — `_war_room_recs` was never a third culprit.** The previous
+STATUS entry listed it as still-blocking. It was already fixed in Phase B:
+`_war_room_recs` calls `_war_room_payload`, which is the function whose
+`build_observations` and `build_war_room` calls were offloaded. Diagnosis by
+inspection, asserted without checking the call chain. The sweep afterwards was
+done by listing every `guarded_*` caller rather than reasoning about it.
 
-### Still open
-- No endpoint reports the deployed commit, so "is this the new container?" can
-  only be answered from the Railway UI. STATUS records two debugging rounds
-  lost to exactly that ambiguity — a `/health` field carrying the git SHA is a
-  small fix worth making.
+**Deliberately NOT offloaded, with reasons:**
+- `fx.py` — one call behind a 15s TTL for one currency pair, not per-ticker
+  fan-out.
+- `screener_agent`, `research_agent` — already inside offloaded callers.
+- `backtest_service`, `portfolio_risk_service`, `strategy_service`,
+  `market.py`, `intake.py`, `pricing_service` — these serve *other* routes.
+  They block their own request, not `/recommendations`. Worth a follow-up;
+  widening a medium-risk phase to reach them was not.
+
+### `/health` now reports the deployed commit
+`{"commit": "cd2cc8b"}` from `RAILWAY_GIT_COMMIT_SHA` (the Dockerfile copies no
+`.git`, so env is the only source). Returns `"unknown"` rather than falling
+back to `app_version` — "22.1" is hand-edited and would be mistaken for the
+commit, which is the exact failure being fixed. Every ship script says "confirm
+Railway shows $sha Active BEFORE believing any smoke result"; that was an
+eyeball check until now, and Phase B's own verification was blocked on a
+screenshot.
+
+### ⚠️ Next: re-measure
+Repeat the `/plan`-during-`/recommendations` trial. Before B2: 1.34 / 1.33 /
+1.34 / 0.34 / 0.32 / 0.37 (bimodal). If B2 worked, the ~1.33s cluster is gone
+and all six land near 0.33s. **Check `/health` `commit` first** — that is now
+possible.
 
 ## ✅ PHASE A — SHIPPED (2026-08-12). Backlog 16, 17, 18.
 
