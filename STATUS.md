@@ -1,7 +1,94 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (Phase C5.1 — the core gets a control)._
+_Last updated: 2026-08-13 by Claude (Phase C6 — the core is a choice)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C6 — the core stops being an anonymous remainder
+
+**743 passed on SQLite (729 + 14 new), ruff clean on `app` and `tests`, every
+`<script>` block parses under `node --check`.**
+
+Eran asked one question — _"for the core, why can't I choose from the strategy
+cards?"_ — and the answer was **you can, and three things were stopping it**, one
+of them able to sell his whole book.
+
+### The three
+1. **C5 mislabelled 14 buttons.** Renaming "Apply strategy" to "Add as a sleeve"
+   hit *every* card, including the 14 static families, which create no sleeve at
+   all. Mine, two days old.
+2. **Indication was impossible.** `_appliedIds()` reads `plan_sleeves`; a static
+   family wrote no row there, so a core choice could never be ticked. And
+   `plans.strategy` holds the most recently applied strategy *of either kind*, so
+   it could not name the core either.
+3. **"Replace book with this basket" would have sold his sleeves.**
+   `_replace_book` deletes every holding and inserts the basket, entirely
+   sleeve-unaware. On a two-sleeve book it sells SOXL, MTUM, QUAL and AVUV and
+   leaves the `plan_sleeves` rows pointing at nothing — the stale-cap shape
+   `retire_sleeve` exists to prevent, at book scale. **Phase C shipped five
+   sub-phases past this button and never came back to it.** Now refused, with a
+   reason that names the alternative.
+
+### The defect underneath, which no screen could show
+`recommendations.py` read the core's target asset mix out of `plans.strategy` in
+two places (the rebalance card, and the rebalance-apply handler):
+
+```python
+_s = _strat.get(getattr(plan, "strategy", None))
+target = _s["target_allocation"] if _s else OBJ_TARGET[objective]
+```
+
+Apply `bal_6040` → the book's target became 60/40. Resize **any** sleeve →
+`plans.strategy` now named the sleeve, `_strat.get` missed, and the target
+silently reverted to `OBJ_TARGET["Grow"]` = 80/10/10. **The book's target asset
+allocation depended on which card you pressed last.** C2's own comment called
+that column "a pointer, no longer the truth"; these two readers were still
+treating it as the truth about the core. `/mix` was a third answer again — it
+read `OBJ_TARGET` directly and ignored the family entirely.
+
+All three now go through one `_core_target(session, user, objective)`.
+
+### The model — C1's decision survives intact
+`is_core` was reserved in C1 and never written. C6 writes it, for a **narrower**
+purpose than the model C1 rejected: the core row records **which** strategy
+manages the core, never **how big** it is. `sleeve_pct` on a core row is always
+0 and the size stays `remainder_pct`. So the core is still a remainder — it just
+has a name now.
+
+`list_sleeves` filters `is_core` out, and that single choke point is what keeps
+C6 from touching sleeve behaviour. A core row leaking through would claim a
+share of the book in `total_pct` and arm `max_weight` caps across its whole
+basket. Two tests pin it from both directions.
+
+### Also fixed, found on the way
+- **`applyStrat` never called `loadStrategies()`** — applying refreshed `/plan`
+  but not the panel or the ticks, so a card you had just applied still looked
+  unapplied until you switched tabs. Invisible before C6 because nothing on the
+  card changed; the core tick made it obvious.
+- **The apply confirmation claimed a write C2 removed.** It said "your plan is
+  now objective Grow, High risk" for *every* strategy — but a sleeve has not
+  written objective or risk since C2. It now says which of the two things
+  happened.
+
+### Backfill
+`backfill_core_once`, its own one-shot KV key (`plan_core_backfilled_v1`),
+because C1's has already been spent on every live deploy. A `plans.strategy`
+naming a **static** family becomes the core row; a rule-based one is skipped,
+because it says nothing about the core.
+
+Deliberately **not** a read-through fallback on `plans.strategy` — that version
+needs no key and works for every existing book, right up until you *clear* your
+core, at which point the next page load hands it straight back. Same trap the
+sleeve backfill's own comment describes; worth a second KV key not to fall into
+it twice.
+
+### One flake worth recording
+A single full-suite run failed `test_whatif.py::test_drawdown_slider_scales_
+scenario_loss` with `no such table: users`, on the shared
+`/tmp/iw_test_app.db`. It did not reproduce in isolation, and the next two full
+runs (SQLite 743, Postgres) were clean. Logged rather than dismissed: the
+`_isolate_db` autouse fixture builds a throwaway NullPool engine per test, and a
+cross-test schema disappearance is exactly the kind of thing that gets waved off
+three times before it costs a red CI.
 
 ## ✅ PHASE C5.1 — two things the finished Plan tab still got wrong
 
@@ -1178,7 +1265,15 @@ Risk is medium because it touches every request path, so it ships alone.
      Under N they only ever describe the most recently applied one. Already C4's
      remit; noted so it is not rediscovered.
 - **✅ C5 — DONE 2026-08-13** (see the Phase C5 block at the top). Sleeve list,
-  Remove per sleeve, Fund all sleeves. Phase C is complete.
+  Remove per sleeve, Fund all sleeves.
+- **✅ C5.1 — DONE 2026-08-13.** The slider showed the catalog's suggestion
+  instead of the sleeve you run (and "Resize sleeve" would have sent it); the
+  core got its objective control.
+- **✅ C6 — DONE 2026-08-13** (see the Phase C6 block at the top). The core is a
+  choice: `is_core` finally written, the 14 static families labelled as cores
+  rather than sleeves, one `_core_target` behind the rebalance card / the apply
+  handler / `/mix`, and **"Replace book with this basket" refused while sleeves
+  run** — it would have sold them. Phase C is complete.
 
 Settle the core question (strategy row vs implicit remainder) before C1 — it
 decides the schema.

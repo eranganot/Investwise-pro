@@ -124,6 +124,33 @@ def _rid(*parts) -> str:
     return "rec_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
 
 
+async def _core_target(session, user, objective: str) -> dict:
+    """The asset mix the book is managed to: the chosen core's, else the objective's.
+
+    Both callers used to read this out of ``plans.strategy``:
+
+        _s = _strat.get(getattr(plan, "strategy", None))
+        target = _s["target_allocation"] if _s else OBJ_TARGET[objective]
+
+    That column holds the most recently applied strategy **of either kind**. So
+    on a book running sleeves it usually names a sleeve, ``_strat.get`` missed,
+    and the target quietly fell back to the objective -- then applying a static
+    family switched it, and resizing any sleeve switched it back. The book's
+    target asset mix depended on which card you pressed last, and nothing said
+    so. C2 had already called that column "a pointer, no longer the truth"; these
+    two readers were still treating it as the truth about the core.
+
+    The core row is an explicit choice, so there is nothing left to infer.
+    """
+    from app.services import sleeve_service as sv
+
+    sid = await sv.core_strategy_id(session, user)
+    entry = _strat.get(sid) if sid else None
+    if entry and entry.get("target_allocation"):
+        return entry["target_allocation"]
+    return OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+
+
 def _ils(x) -> str:
     return f"₪{round(x):,}"
 
@@ -682,11 +709,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             formulas=[
                 f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"\u20aa{save:,.0f}")])
 
-    # 3) Rebalance toward the plan's objective
+    # 3) Rebalance toward the core's target mix
     mix, _ = current_mix(rows)
-    _sid = getattr(plan, "strategy", None)
-    _s = _strat.get(_sid) if _sid else None
-    target = (_s["target_allocation"] if _s else OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"]))
+    target = await _core_target(session, user, objective)
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
     for a in report.rebalance_actions[:2]:
         recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
@@ -1957,12 +1982,9 @@ def _buy_ideas(snap) -> list[dict]:
 
 
 async def _rebalance_to(session, user, rows, objective: str) -> None:
-    """Scale holdings so each asset class hits its objective target weight (NAV held constant)."""
+    """Scale holdings so each asset class hits the core's target weight (NAV held constant)."""
     from collections import defaultdict
-    plan = await get_plan(session, user)
-    _sid = getattr(plan, "strategy", None)
-    _s = _strat.get(_sid) if _sid else None
-    target = (_s["target_allocation"] if _s else OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"]))
+    target = await _core_target(session, user, objective)
     nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows)
     if not nav:
         return

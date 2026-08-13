@@ -7,11 +7,23 @@ one-shot backfill of the single strategy the ``plans`` columns can already hold,
 so the new table starts out agreeing with the old one instead of reading empty
 for someone who has a strategy applied.
 
-**The core is the implicit remainder.** Sleeves sum to <= 100 and the rest of the
-book stays objective-managed exactly as it is today. That is the smaller of the
-two models on the table -- the other makes the core an explicit ``is_core`` row
-so the sleeves sum to exactly 100 -- and the column for it exists but is never
-written, so choosing it later costs a behaviour change rather than a migration.
+**The core is the implicit remainder, and since C6 it also has a name.** Sleeves
+sum to <= 100 and the rest of the book stays objective-managed. C1 reserved
+``is_core`` for the other model -- the core as an explicit row so the sleeves sum
+to exactly 100 -- and deliberately never wrote it.
+
+C6 writes it, for a narrower purpose than that model intended, and the
+distinction is the whole design: **the core row records WHICH strategy manages
+the core, never HOW BIG it is.** ``sleeve_pct`` on a core row is always 0 and the
+core's size stays computed by ``remainder_pct``. So C1's decision stands -- the
+core is still a remainder -- while "my core is managed by 60/40 Balanced" becomes
+a thing the book can state instead of a thing the user has to infer from an
+objective dropdown.
+
+Everything that reads sleeves therefore filters the core row OUT. A core row that
+leaked into ``total_pct`` would shrink the book by nothing at all, and one that
+leaked into ``all_sleeve_targets`` would arm ``max_weight`` caps on the core's
+whole basket. ``list_sleeves`` is the single choke point for that.
 
 Two invariants live here rather than in a route, because the phases after this
 one (add/update/remove a sleeve, the per-ticker cap sum, the funding exclusion
@@ -48,15 +60,26 @@ _EPSILON_PCT = 0.05
 # made is worse than one that runs a beat too early.
 BACKFILL_KEY = "plan_sleeves_backfilled_v1"
 
+# The C6 sibling: a `plans.strategy` naming a STATIC family becomes the core row.
+# Its own key, because C1's backfill has already run everywhere and reusing the
+# key would mean it never fires. See `backfill_core_once`.
+CORE_BACKFILL_KEY = "plan_core_backfilled_v1"
+
 
 # --------------------------------------------------------------------------- #
 # Reading
 # --------------------------------------------------------------------------- #
 async def list_sleeves(session: AsyncSession, user: User) -> list[PlanSleeve]:
-    """Every sleeve on this book, oldest first so the order is stable."""
+    """Every sleeve on this book, oldest first so the order is stable.
+
+    **Excludes the core row.** This is the choke point that keeps C6 from
+    changing anything about sleeves: the core is not a sleeve, does not claim a
+    share of the book, and must not reach the cap arming or the funding
+    arithmetic. Every existing caller keeps the answer it had before C6.
+    """
     return list((await session.scalars(
         select(PlanSleeve)
-        .where(PlanSleeve.subject == user.email)
+        .where(PlanSleeve.subject == user.email, PlanSleeve.is_core.is_(False))
         .order_by(PlanSleeve.created_at, PlanSleeve.strategy_id))).all())
 
 
@@ -217,6 +240,89 @@ async def remove(session: AsyncSession, user: User, strategy_id: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# The core -- C6
+#
+# One row, `is_core=True`, naming the static family that manages the remainder.
+# `sleeve_pct` on it is always 0: the core's SIZE is still the computed
+# remainder, and storing a second answer to "how big is the core" is how the two
+# would eventually disagree.
+# --------------------------------------------------------------------------- #
+async def get_core(session: AsyncSession, user: User) -> PlanSleeve | None:
+    """The core strategy row, or None for a book managed by its objective alone."""
+    return (await session.scalars(
+        select(PlanSleeve)
+        .where(PlanSleeve.subject == user.email, PlanSleeve.is_core.is_(True))
+        .order_by(PlanSleeve.created_at))).first()
+
+
+async def core_strategy_id(session: AsyncSession, user: User) -> str | None:
+    row = await get_core(session, user)
+    return row.strategy_id if row is not None else None
+
+
+def validate_core(strategy_id: str) -> str | None:
+    """Why this strategy may not be the core, or None if it may.
+
+    A rule-based strategy is refused here rather than coerced into a core. The
+    two are different objects: a sleeve is a mechanical rule over a share of NAV
+    with an entry and an exit, a core is a whole-book target mix. Letting
+    ``btm_trend_soxl`` be a core would hand the book a target allocation derived
+    from a 3x fund's model basket, which is the mistake ``sleeve_basket`` was
+    written to prevent at the other end.
+    """
+    from app.services import strategies as static_cat
+    from app.services import strategy_catalog
+
+    sid = (strategy_id or "").strip()
+    if not sid:
+        return "a core needs a strategy"
+    if strategy_catalog.get(sid) is not None:
+        return (f"{sid} is a rule-based sleeve, not a core. It governs a share of "
+                f"the book on a signal; a core is the whole-book mix the rest is "
+                f"managed to. Add it as a sleeve instead")
+    if static_cat.get(sid) is None:
+        return f"'{sid}' is not a strategy this app knows"
+    return None
+
+
+async def set_core(session: AsyncSession, user: User, strategy_id: str) -> dict:
+    """Name the strategy that manages the core. Replaces any previous choice.
+
+    Never a second row: the core is singular by construction, so this updates in
+    place rather than adding. Two is_core rows would give ``get_core`` an
+    oldest-first answer that silently ignored the newer choice.
+    """
+    why = validate_core(strategy_id)
+    if why:
+        return {"ok": False, "error": "not a core strategy", "reason": why}
+
+    row = await get_core(session, user)
+    was = row.strategy_id if row is not None else None
+    if row is None:
+        session.add(PlanSleeve(subject=user.email, strategy_id=strategy_id,
+                               sleeve_pct=0.0, is_core=True))
+    else:
+        row.strategy_id = strategy_id
+        row.sleeve_pct = 0.0
+    await session.flush()
+    return {"ok": True, "action": "unchanged" if was == strategy_id
+            else ("changed" if was else "set"),
+            "strategy_id": strategy_id, "previous": was}
+
+
+async def clear_core(session: AsyncSession, user: User) -> dict:
+    """Back to a core managed by the objective alone. Sells nothing, like every
+    other removal here -- it drops a target, not a holding."""
+    row = await get_core(session, user)
+    if row is None:
+        return {"ok": False, "error": "no core strategy is set on this book"}
+    was = row.strategy_id
+    await session.delete(row)
+    await session.flush()
+    return {"ok": True, "removed": was}
+
+
+# --------------------------------------------------------------------------- #
 # Backfill
 # --------------------------------------------------------------------------- #
 async def backfill_once(session: AsyncSession) -> dict:
@@ -268,4 +374,52 @@ async def backfill_once(session: AsyncSession) -> dict:
     session.add(KVSetting(key=BACKFILL_KEY, value=str(created)))
     await session.commit()
     logger.info("plan_sleeves backfill: %s sleeve(s) created", created)
+    return {"ran": True, "created": created}
+
+
+async def backfill_core_once(session: AsyncSession) -> dict:
+    """The other half of C1's backfill: a ``plans.strategy`` naming a STATIC
+    family becomes the core row. Runs exactly once, ever.
+
+    C1's backfill skipped these on purpose -- it had nowhere to put them, since
+    a static family has no sleeve size and inventing one would have put a number
+    on a card nobody chose. C6 gives them a home.
+
+    **Why a one-shot and not a read-through fallback.** The tempting version is
+    "no core row? then read ``plans.strategy``" -- no migration, no key, works
+    for every existing book. It breaks the moment C6 adds *clear the core*:
+    ``plans.strategy`` still names the family, so the next page load hands the
+    choice straight back. That is the same trap the sleeve backfill's own comment
+    describes, and it is worth paying a second KV key not to fall into it twice.
+    """
+    if await session.get(KVSetting, CORE_BACKFILL_KEY) is not None:
+        return {"ran": False, "reason": "already backfilled"}
+
+    from app.services import strategies as static_cat
+
+    have_core = {r.subject for r in (await session.scalars(
+        select(PlanSleeve).where(PlanSleeve.is_core.is_(True)))).all()}
+
+    rows = (await session.execute(
+        select(Plan, User.email).join(User, User.id == Plan.user_id)
+        .where(Plan.strategy.isnot(None)))).all()
+
+    created = 0
+    for plan, email in rows:
+        sid = (plan.strategy or "").strip()
+        if not sid or not email or email in have_core:
+            continue
+        # Only a static family. A rule-based id here means the last thing applied
+        # was a sleeve, which says nothing about the core -- that ambiguity in
+        # `plans.strategy` is exactly what C6 exists to remove.
+        if static_cat.get(sid) is None:
+            continue
+        session.add(PlanSleeve(subject=email, strategy_id=sid,
+                               sleeve_pct=0.0, is_core=True))
+        have_core.add(email)
+        created += 1
+
+    session.add(KVSetting(key=CORE_BACKFILL_KEY, value=str(created)))
+    await session.commit()
+    logger.info("plan_sleeves core backfill: %s core row(s) created", created)
     return {"ran": True, "created": created}

@@ -9,7 +9,7 @@ from app.core.database import get_session
 from app.engines.allocation_engine import AllocationEngine
 from app.engines.simulation_engine import SimulationEngine
 from app.models.tables import User
-from app.services.allocation_mix import OBJ_TARGET as _OBJ, current_mix
+from app.services.allocation_mix import current_mix
 from app.services.intake_service import list_positions
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 
@@ -165,13 +165,29 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
     """
     from app.services import sleeve_service as sv
 
+    from app.services import strategies as static_cat
+
     plan = await get_plan(session, user)
     sleeves = await sv.list_sleeves(session, user)
+    core_row = await sv.get_core(session, user)
+    core = None
+    if core_row is not None:
+        entry = static_cat.get(core_row.strategy_id) or {}
+        core = {"strategy_id": core_row.strategy_id,
+                "name": entry.get("name") or core_row.strategy_id,
+                "objective": entry.get("objective"),
+                "risk_tolerance": entry.get("risk_tolerance"),
+                "target_allocation": entry.get("target_allocation")}
     return {
         "sleeves": sv.as_dicts(sleeves),
         "allocated_pct": sv.total_pct(sleeves),
         "core_pct": sv.remainder_pct(sleeves),
-        # Said out loud so no caller has to infer it from the arithmetic.
+        # C6. Which strategy manages the core, or None for "the objective does".
+        # The core's SIZE is still `core_pct` above and still computed -- this
+        # names the manager, it does not claim a share of the book.
+        "core": core,
+        # Still true, and still worth saying: the core is a remainder. C6 gave it
+        # a name, not a percentage of its own.
         "core_is_implicit": True,
         "legacy": {"strategy": getattr(plan, "strategy", None),
                    "strategy_sleeve_pct": getattr(plan, "strategy_sleeve_pct", None)},
@@ -222,6 +238,24 @@ async def remove_my_sleeve(strategy_id: str,
     return await retire_sleeve(session, user, strategy_id)
 
 
+@router.delete("/plan/core", dependencies=[Depends(require_role(Role.ANALYST))])
+async def clear_my_core(session: AsyncSession = Depends(get_session),
+                        user: User = Depends(acting_user)) -> dict:
+    """Go back to a core managed by the objective alone.
+
+    Sells nothing, arms nothing, retires nothing -- unlike removing a sleeve,
+    there are no caps behind a core. It drops one target: the book's asset mix
+    goes from the family's to the objective's, and the rebalance cards recompute
+    against the new one on the next load.
+    """
+    from app.services import sleeve_service as sv
+
+    out = await sv.clear_core(session, user)
+    if out.get("ok"):
+        await session.commit()
+    return out
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)
@@ -256,7 +290,11 @@ async def mix_check(session: AsyncSession = Depends(get_session), user: User = D
     if not nav:
         return {"message": "Add holdings to check your mix."}
     plan = await get_plan(session, user)
-    target = _OBJ.get(plan.objective if plan else "Balanced", _OBJ["Balanced"])
+    # The core's mix if one is chosen, the objective's otherwise -- the same
+    # answer the rebalance cards use, from the same helper. Two places computing
+    # "what is my target mix" differently is how /mix and Today came to disagree.
+    from app.services.recommendations import _core_target
+    target = await _core_target(session, user, plan.objective if plan else "Balanced")
     report = AllocationEngine().compute(target_allocation=target, current_allocation=current, nav=nav)
     out = report.model_dump()
     # Always surface Cash, even at 0%: a missing slice read as "fully invested"

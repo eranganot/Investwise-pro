@@ -91,9 +91,13 @@ async def lifespan(app: FastAPI):
         # startup: this release changes no behaviour, so a failed backfill must
         # not cost a deploy.
         try:
-            from app.services.sleeve_service import backfill_once
+            from app.services.sleeve_service import backfill_core_once, backfill_once
             async with AsyncSessionLocal() as _session:
                 await backfill_once(_session)
+                # C6: the half C1 skipped -- a plans.strategy naming a STATIC
+                # family becomes the core row. Its own one-shot key, because
+                # C1's has already been spent on every live deploy.
+                await backfill_core_once(_session)
         except Exception:  # noqa: BLE001
             logger.warning("plan_sleeves backfill skipped", exc_info=True)
     if settings.environment == "production":

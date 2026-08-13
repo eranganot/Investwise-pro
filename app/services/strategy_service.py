@@ -280,6 +280,17 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
 
     is_sleeve = strategy_catalog.get(strategy_id) is not None
     sleeve_result = None
+    core_result = None
+    if not is_sleeve:
+        # C6: a static family IS a core choice, and now says so. Before this the
+        # only trace was `plans.strategy` -- overwritten by the next sleeve you
+        # applied, so the book's target mix depended on which card you pressed
+        # last. `recommendations` reads the core row instead now.
+        from app.services import sleeve_service as sv
+        core_result = await sv.set_core(session, user, strategy_id)
+        if not core_result.get("ok"):
+            return {"ok": False, "strategy_id": strategy_id,
+                    "error": core_result["error"], "reason": core_result["reason"]}
     if is_sleeve:
         from app.services import sleeve_service as sv
         pct = s.get("sleeve_pct")
@@ -325,7 +336,16 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                                             current_allocation=mix, nav=nav)
         actions = [a.model_dump() for a in report.rebalance_actions]
     return {"ok": True, "strategy": s, "nav": round(nav, 2), "rebalance_actions": actions,
-            "sleeve_caps": caps,
+            "sleeve_caps": caps, "core": core_result,
+            # Said out loud for the same reason `sleeve_cap_note` is: applying a
+            # core sets the TARGET, it does not trade toward it. The rebalance
+            # actions above are advice, and always have been -- nothing here
+            # executes them.
+            "core_note": (
+                "This sets the mix your core is managed to. Nothing was bought or "
+                "sold; the rebalance cards on Today move you there one asset class "
+                "at a time, each with its own preview and tax estimate."
+            ) if core_result and core_result.get("ok") else None,
             # What the book now runs, so the caller never has to infer from the
             # single legacy column that this was additive.
             "sleeve": sleeve_result,
@@ -882,6 +902,32 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
 # --------------------------------------------------------------------------- #
 async def _replace_book(session: AsyncSession, user: User, strategy_id: str, s: dict,
                         *, total: float | None, dry_run: bool) -> dict:
+    # REFUSED ON A BOOK RUNNING SLEEVES. C6.
+    #
+    # This deletes every holding and inserts the basket. It is entirely
+    # sleeve-unaware, so on a two-sleeve book it sells SOXL, MTUM, QUAL and AVUV
+    # and leaves the plan_sleeves rows pointing at positions that no longer
+    # exist -- targets with nothing behind them, the stale-cap shape `retire_
+    # sleeve` was written to prevent, at book scale.
+    #
+    # Phase C built sleeves across five sub-phases and never came back to this
+    # button. It is refused rather than made sleeve-aware because "replace the
+    # whole book" has no sleeve-aware meaning: the sleeves ARE part of the book,
+    # and a version that spared them would not be a replacement. The thing a user
+    # actually wants here now exists -- set the family as your core, and let the
+    # rebalance cards move you there.
+    from app.services import sleeve_service as sv
+    sleeves = await sv.list_sleeves(session, user)
+    if sleeves:
+        names = ", ".join(x.strategy_id for x in sleeves)
+        return {"ok": False, "mode": REPLACE, "strategy_id": strategy_id,
+                "error": "replacing the book would sell your sleeves",
+                "reason": (f"this sells every holding and buys the basket, including the "
+                           f"positions your {len(sleeves)} sleeve(s) hold ({names}). "
+                           f"Make this your core instead — it sets the mix the rest of "
+                           f"the book is managed to and sells nothing."),
+                "sleeves": [x.strategy_id for x in sleeves]}
+
     rows = await list_positions(session, user)
     snap = _snapshot(rows)
     budget = total if (total and total > 0) else ((snap.get("nav") or 0.0) or 10000.0)

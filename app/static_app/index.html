@@ -1237,6 +1237,18 @@ function _stratName(id){
   return id;
 }
 function _pct(n){ return (Math.round(Number(n)*10)/10).toString(); }
+function _coreId(){ return (MYSLEEVES&&MYSLEEVES.core&&MYSLEEVES.core.strategy_id)||null; }
+
+// The one thing a core choice actually changes, shown on the card that makes it.
+// Without this the 14 static cards look interchangeable -- and four of them
+// genuinely are, at the objective level. The target mix is where they differ.
+function coreMixLine(s){
+  const t=s.target_allocation;
+  if(!t) return "";
+  const parts=Object.keys(t).filter(k=>t[k]>0).map(k=>`${Math.round(t[k]*100)}% ${k}`).join(" · ");
+  return `<div class="ds" style="font-size:11px;opacity:.75">🎯 Manages your book to <b>${parts}</b>
+    — this becomes the target your rebalance cards measure drift against.</div>`;
+}
 
 // The sleeve panel. Replaces the "Your strategy: X" banner, which could only
 // describe one thing and asserted in prose that there was only one.
@@ -1281,16 +1293,43 @@ async function setCore(){
   }catch(e){ if(note) note.innerHTML=`<span class="bad">${e}</span>`; }
 }
 
+// The core row. Before C6 it was a bare percentage with a sentence saying an
+// objective managed it somewhere else on the page. It now names the strategy
+// that manages it, when one is chosen, and says plainly when one is not.
+function coreRow(pct){
+  const c=(MYSLEEVES&&MYSLEEVES.core)||null;
+  const mix=c&&c.target_allocation
+    ? Object.keys(c.target_allocation).filter(k=>c.target_allocation[k]>0)
+        .map(k=>`${Math.round(c.target_allocation[k]*100)}% ${k}`).join(" · ")
+    : null;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+      <span style="flex:1">Core${c?` — <b>${c.name}</b>`:""}</span>
+      <b style="min-width:52px;text-align:right">${pct}%</b>
+      ${c?`<button onclick="clearCore()">Clear</button>`:`<span style="width:62px"></span>`}
+    </div>
+    ${mix?`<div class="mk" style="opacity:.75">🎯 Managed to <b>${mix}</b> — the target your
+       rebalance cards measure drift against.</div>`:""}
+    <div style="display:flex;align-items:center;gap:8px;padding:2px 0 4px 0;flex-wrap:wrap">${coreControl()}</div>
+    <div class="mk" id="core_note" style="opacity:.7"></div>
+    <div class="mk" style="opacity:.7;margin-top:4px">${c
+      ? `Your core is managed to that strategy's mix. The objective and risk tolerance above still
+         set the concentration cap and the cash floor for the <b>whole</b> book, sleeves included.`
+      : `No core strategy chosen — your core is managed to your objective alone
+         (${(MYPLAN&&MYPLAN.objective)||"—"}). Pick one from the goal tabs below to manage it to a
+         specific mix instead.`}
+      The core is whatever the sleeves have not claimed, so it has no card size of its own. These
+      percentages are <b>targets</b>; press Fund all sleeves to see what you actually hold against
+      them.</div>`;
+}
+
 function sleevePanel(){
   const ids=_appliedIds();
   if(!ids.size){
     return `<div class="card" style="margin-bottom:10px">
-      <div class="muted">No sleeves yet — your whole book is the core. Apply a strategy below to
-        run one alongside it.</div>
-      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap">
-        <span style="flex:1;min-width:120px">Core <b>100%</b></span>${coreControl()}
-      </div>
-      <div class="mk" id="core_note" style="opacity:.7"></div>
+      <div class="muted">No sleeves yet — your whole book is the core. Apply a Beat the Market
+        strategy below to run one alongside it.</div>
+      ${coreRow("100")}
     </div>`;
   }
   const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>`
@@ -1304,17 +1343,7 @@ function sleevePanel(){
   return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
       <div class="nm">Your sleeves — ${alloc!=null?alloc+"% of the book":""}</div>
       <div style="margin:6px 0">${rows}</div>
-      <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
-        <span style="flex:1">Core</span><b style="min-width:52px;text-align:right">${core}%</b>
-        <span style="width:62px"></span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;padding:0 0 4px 0;flex-wrap:wrap">${coreControl()}</div>
-      <div class="mk" id="core_note" style="opacity:.7"></div>
-      <div class="mk" style="opacity:.7;margin-top:4px">The core is whatever the sleeves have not
-        claimed. It has no card of its own because it is a remainder rather than a strategy — the
-        objective above is what manages it, and it sets the concentration cap and cash floor for
-        the whole book, sleeves included. These percentages are <b>targets</b>; press Fund all
-        sleeves to see what you actually hold against them.</div>
+      ${coreRow(core)}
       <div class="acts" style="margin-top:8px">
         <button class="load" onclick="fundAllSleeves()">⚡ Fund all sleeves</button>
       </div>
@@ -1339,25 +1368,66 @@ async function loadStrategies(){
   STGOAL=STGOAL||[...appliedGoals][0]||STRAT.goals[0];
   const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${appliedGoals.has(g)?"✓ ":""}${g}</button>`).join("");
 
-  const list=(STRAT.by_goal[STGOAL]||[]).map(s=>`
-    <div class="stcard${ids.has(s.id)?" mine":""}">
-      <div style="display:flex;justify-content:space-between"><span class="nm">${ids.has(s.id)?'<span class="stmine">✓ A SLEEVE OF YOURS</span> ':""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
+  // Two different objects share this card shape and C5 papered over the seam:
+  // every apply button read "Add as a sleeve", including on the 14 static
+  // families, which create no sleeve at all. A measured card IS a sleeve; a
+  // static one is a whole-book target mix, i.e. a CORE. They get different
+  // labels, different second buttons and different ticks.
+  const coreId=_coreId();
+  const list=(STRAT.by_goal[STGOAL]||[]).map(s=>{
+    const isSleeve=!!s.measured, mine=isSleeve?ids.has(s.id):(coreId===s.id);
+    return `
+    <div class="stcard${mine?" mine":""}">
+      <div style="display:flex;justify-content:space-between"><span class="nm">${mine?`<span class="stmine">✓ ${isSleeve?"A SLEEVE OF YOURS":"YOUR CORE"}</span> `:""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
-      ${s.measured?measuredProfile(s):stratProfile(s.profile)}
+      ${isSleeve?measuredProfile(s):stratProfile(s.profile)}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
-      ${s.measured?sleeveControl(s):""}
+      ${isSleeve?sleeveControl(s):coreMixLine(s)}
       <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
-        <button onclick="applyStrat('${s.id}')">${ids.has(s.id)?"Resize sleeve":"Add as a sleeve"}</button>
-        ${s.measured
+        ${isSleeve
+          ? `<button onclick="applyStrat('${s.id}')">${mine?"Resize sleeve":"Add as a sleeve"}</button>`
+          : (mine
+              ? `<button disabled style="opacity:.5;cursor:default">✓ Your core</button>`
+              : `<button onclick="applyStrat('${s.id}')">Make this my core</button>`)}
+        ${isSleeve
           ? `<button class="load" onclick="fundStratSleeve('${s.id}','${s.name.replace(/'/g,'')}')">⚡ Fund this sleeve</button>`
-          : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`}
+          : (ids.size
+              ? `<button class="load" disabled style="opacity:.4;cursor:not-allowed"
+                   title="This deletes every holding and buys the basket - including the positions your sleeves hold. Make it your core instead.">↻ Replace book — blocked, you run sleeves</button>`
+              : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`)}
       </div>
-    </div>`).join("");
+    </div>`;}).join("");
   $("stratBox").innerHTML=sleevePanel()+`<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list;
+}
+
+// Clearing the core sells nothing either, and there are no caps behind it -- a
+// core is a target mix, not a set of positions. All that changes is which mix
+// the rebalance cards measure drift against.
+async function clearCore(){
+  const o=$("stratOut"); o.style.display="block";
+  const name=(MYSLEEVES&&MYSLEEVES.core&&MYSLEEVES.core.name)||"your core strategy";
+  o.innerHTML=`<b>Stop managing your core to "${name}"?</b>`
+    + `<div style="margin:6px 0">Nothing is sold. Your core goes back to being managed to your
+       objective (<b>${(MYPLAN&&MYPLAN.objective)||"—"}</b>), and the rebalance cards start
+       measuring drift against that mix instead.</div>`
+    + `<div style="margin-top:8px"><button class="load" onclick="clearCoreConfirm()">Clear it</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`;
+  o.scrollIntoView({behavior:"smooth",block:"center"});
+}
+async function clearCoreConfirm(){
+  const o=$("stratOut"); o.innerHTML="Clearing…";
+  try{
+    const resp=await fetch("/api/v1/plan/core",{method:"DELETE"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't clear: ${r.error||resp.status}</span>`;return;}
+    o.innerHTML=`<span class="ok">✓ Your core is managed to your objective again.</span>`
+      + `<div class="muted" style="font-size:11px">Nothing was sold.</div>`;
+    loadStrategies();
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 
 // Removing a sleeve sells NOTHING. It stops the app steering toward that target
@@ -1582,7 +1652,7 @@ async function applyStrat(id){
   try{const resp=await fetch(`/api/v1/strategies/${id}/apply${sleeveQS(id)}`,{method:"POST"});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
-    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.error||resp.status}</span>`;return;}
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.reason||r.error||resp.status}</span>`;return;}
     const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()}</li>`).join("");
     // Applying used to be indistinguishable at 20% and at 90%, because the sleeve
     // only ever changed the basket. It now arms a real, enforced ceiling -- so say
@@ -1590,12 +1660,26 @@ async function applyStrat(id){
     const caps=(r.sleeve_caps||[]).map(c=>{
       const verb=c.action==="armed"?"Armed":(c.action==="relevelled"?`Moved from ${c.previous_level}% to`:"Left at");
       return `<li>${verb} a <b>${c.level}%</b> cap on <b>${c.ticker}</b></li>`;}).join("");
-    o.innerHTML=`<span class="ok">✓ Applied <b>${r.strategy.name}</b></span> — your plan is now objective <b>${r.strategy.objective}</b>, <b>${r.strategy.risk_tolerance}</b> risk.`+
+    // Two outcomes, and until C6 this line claimed the first one for both.
+    // A CORE sets the whole book's objective, risk tolerance and target mix. A
+    // SLEEVE has not written objective or risk since C2 -- so "your plan is now
+    // objective Grow, High risk" after adding a sleeve described a write that
+    // deliberately no longer happens.
+    const isCore=!!(r.core&&r.core.ok);
+    const mixOf=t=>Object.keys(t||{}).filter(k=>t[k]>0).map(k=>Math.round(t[k]*100)+"% "+k).join(" · ");
+    o.innerHTML=(isCore
+        ? `<span class="ok">✓ <b>${r.strategy.name}</b> now manages your core</span> — objective <b>${r.strategy.objective}</b>, <b>${r.strategy.risk_tolerance}</b> risk, managed to <b>${mixOf(r.strategy.target_allocation)}</b>.`
+        : `<span class="ok">✓ <b>${r.strategy.name}</b> ${r.sleeve&&r.sleeve.action==="resized"?"resized to":"is now a sleeve at"} <b>${r.sleeve?_pct(r.sleeve.sleeve_pct):""}%</b></span> — your objective and risk tolerance are unchanged.`)+
       (caps?`<div style="margin-top:6px">Standing rules:<ul>${caps}</ul>`
             + `<div class="muted" style="font-size:11px">${r.sleeve_cap_note||""}</div></div>`:"")+
       (acts?`<div style="margin-top:6px">Suggested rebalancing toward target:<ul>${acts}</ul></div>`:`<div class="muted" style="margin-top:6px">Already aligned with this strategy \u2014 no trades needed.</div>`)+
+      (isCore?`<div class="muted" style="font-size:11px;margin-top:6px">${r.core_note||""}</div>`:"")+
       (caps?`<div style="margin-top:8px"><button class="load" onclick="fundStratSleeve('${id}','${(r.strategy.name||'').replace(/'/g,"")}')">Now fund this sleeve</button></div>`:"");
-    loadPlan(); if(typeof loadRules==="function") loadRules();
+    // loadStrategies() was missing: applying refreshed /plan but never the panel
+    // or the ticks, so a card you had just applied still looked unapplied until
+    // you switched tabs. Invisible before C6 because nothing on the card
+    // changed; the core tick makes it obvious.
+    loadStrategies(); loadPlan(); if(typeof loadRules==="function") loadRules();
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 // Two very different actions used to sit one click apart under near-identical
@@ -1608,7 +1692,11 @@ async function loadStratBasket(id,name){
     const resp=await fetch(`/api/v1/strategies/${id}/load-basket`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
-    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't preview: ${r.error||resp.status}</span>`;return;}
+    // C6: refused outright on a book running sleeves, because this deletes every
+    // holding and the sleeves' positions are among them. `reason` says what to
+    // do instead; showing only `error` would leave the user at a dead end.
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">${r.error||resp.status}</span>`
+      + (r.reason?`<div style="margin-top:6px">${r.reason}</div>`:"");return;}
     const gone=(r.removing||[]).map(x=>`<li>${x.ticker} — ₪${Math.round(x.value_ils).toLocaleString()}</li>`).join("");
     o.innerHTML=`<b>Replace your whole book with the "${name}" basket?</b>`
       + (gone?`<div style="margin:6px 0">This <b class="bad">deletes</b> every holding below (₪${Math.round(r.removing_value_ils).toLocaleString()} in total):<ul>${gone}</ul></div>`
