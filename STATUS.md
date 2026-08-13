@@ -64,6 +64,40 @@ The test that matters most after flipping it: **a `dry_run` still changes
 nothing.** An open gate plus a dry run that quietly executes is the worst
 available outcome, so it is asserted directly against holdings and cash.
 
+### ✅ EXECUTED FOR REAL on `cf963fe` — and every number reconciles
+An 8% `btm_factor_stack` sleeve, funded live. Chosen over 15% deliberately: the
+legs (₪426 / ₪682 / ₪596) all clear `MIN_TRADE_ILS`, so the identical code path
+runs — three legs, shared budget, real trim, tax, leg scaling — for half the
+money. Below ~5% the legs fall under the minimum and it would test something else.
+
+| | preview | executed | |
+|---|---|---|---|
+| AVUV | 426 | **393** | 426 × 0.922682 = 393.1 ✓ |
+| MTUM | 682 | **629** | 682 × 0.922682 = 629.3 ✓ |
+| QUAL | 596 | **550** | 596 × 0.922682 = 549.9 ✓ |
+| sold | VXUS 6 sh ₪1,570 | **VXUS ₪1,570, tax ₪1** | as planned ✓ |
+
+**The budget balances to the shekel.** ₪3 cash + ₪1,570 − ₪0.75 tax = ₪1,572.25
+available; ₪393 + ₪629 + ₪550 = ₪1,572 bought. Leg scale 0.922682 = 1,572.25 /
+1,704. Nothing leaked.
+
+**No leg was dropped — the proportional scaling earned its place.** Unscaled, QUAL
+would have absorbed the whole ₪132 and come in at ₪464 instead of ₪550.
+
+**The live-quote path checks out from three directions**, which is the one thing
+no preview and no test could establish:
+- **Implied FX is identical across all three buys.** ₪393 / (1.031 × 127.51) =
+  **2.99**; ₪629 / (0.6683 × 314.73) = **2.99**; ₪550 / (0.8163 × 225.45) =
+  **2.99**. Three quotes, three share calculations, one rate.
+- **The tax proves the cost basis.** VXUS sold at ₪261.67/share = $87.51 at 2.99,
+  against a stored basis of **87.21**. $0.30 × 6 × 2.99 × 25% CGT = **₪1.34**,
+  and the plan said ₪1.
+- **The cash floor held to the shekel.** CASH 638.91 against a 3% floor of ₪639 —
+  it spent the ₪3 above the floor and stopped exactly there.
+
+VXUS 1.673 remaining = 7.673 before, minus exactly 6. NAV 21,297 → 21,295, which
+is the realised tax leaving the book.
+
 ### Still open, deliberately
 `rank_trim_candidates` ranks against the **plan's** concentration cap (40% at
 High) and tax-friendliness — it does **not** know about hand-set caps. A position
@@ -859,11 +893,29 @@ Risk is medium because it touches every request path, so it ships alone.
   the caps, sleeves stop writing objective/risk. Also pulled **the exclusion-set
   half of C3** forward: additive apply without it means funding one sleeve can
   sell another.
-- **C3** funding with the wider exclusion set (sleeve A must never sell B).
-  **The exclusion set itself already shipped in C2** — it stopped being
-  deferrable when apply went additive. What remains here is the per-sleeve
-  funding preview and `load_basket` operating per-sleeve or whole-plan.
+- **✅ C3 — DONE 2026-08-13.** C3a shipped the sizing and preview inert; C3b
+  turned execution on and **it has run for real against the live book** (see the
+  Phase C3b block at the top). The exclusion set had already gone out in C2.
 - **C4** signals, discipline rules and the drift/cold-start cards, per sleeve.
+  **Plus three things C3 found and deliberately left here:**
+  1. **"Fully funded" while short.** After C3b executed, the preview reads
+     _"intended 18.0%, would end at 17.4%"_ and, two lines down, _"every sleeve
+     fits — no partial result to explain."_ Both are true and together they
+     contradict. The factor sleeve landed ₪132 short, so its per-leg gaps are now
+     ~₪33 / ₪53 / ₪46 — all under `MIN_TRADE_ILS`, so `_legs_for` drops them and
+     the sleeve reports `nothing_to_do`. That is the **right** call; chasing ₪33
+     is not worth the friction. But the book will sit at 17.4% against an 18%
+     intent indefinitely and nothing on screen says so. Wants a third status —
+     "as close as a tradeable lot allows" — distinct from `nothing_to_do`, and
+     `fully_funded` should stop being true when `resulting < intended`.
+  2. **`rank_trim_candidates` does not know about hand-set caps.** It ranks on
+     the *plan's* concentration cap (40% at High) plus tax-friendliness, so a
+     position over its own 30% cap is not preferentially trimmed. It decides
+     which of your holdings get sold; it deserves a proper look before the
+     ranking carries more weight.
+  3. **The drift and cold-start cards still read `plan.strategy`** — one sleeve.
+     Under N they only ever describe the most recently applied one. Already C4's
+     remit; noted so it is not rediscovered.
 - **C5** the Plan UI: a sleeve list replacing the single-strategy banner.
 
 Settle the core question (strategy row vs implicit remainder) before C1 — it
