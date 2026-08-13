@@ -3,11 +3,16 @@
 _Last updated: 2026-08-12 by Claude (Phase C2)._
 _Seeded from git history + prior transcripts._
 
-## ✅ PHASE C2 — a book runs N sleeves (2026-08-12). NOT YET DEPLOYED
+## ✅ PHASE C2 — a book runs N sleeves (2026-08-12). SHIPPED `8c254c4`, THEN PATCHED
 
-**651 passed** (634 baseline + 17 new), `ruff check app tests` clean. C1 shipped
+**653 passed** (634 baseline + 19 new), `ruff check app tests` clean. C1 shipped
 and verified live first — `smoke-c1.ps1` green on `5cab5cd`, backfill confirmed
 against the real database.
+
+**`8c254c4` carried a regression that disarmed live hand-set caps — see the
+block below. The follow-up commit fixes it and adds `rearm-caps.ps1`. Anyone
+reading this before running that script should assume the V / SCHD / MSFT caps
+are still off.**
 
 **This is where it stops being inert.** Applying a second strategy now runs both
 sleeves instead of silently dropping the first.
@@ -60,6 +65,55 @@ per-sleeve funding preview is still C3's.
 
 The harvester keeps a fallback to the legacy column when there are no sleeve
 rows, so the protection is never weaker than it was in C1.
+
+### ❌❌ A REGRESSION THAT REACHED PRODUCTION — hand-set caps silently disarmed
+Caught by `smoke-c2.ps1 -Execute` on `8c254c4`, but **only because the output
+printed the cap list**; the script's own assertion said "no cap left behind" while
+three caps had just been turned off.
+
+**The fault.** C2's retirement loop treated *every* active `max_weight` rule as
+its own, retiring any whose ticker no sleeve wanted. Applying a single sleeve
+therefore disarmed live hand-set caps. Reproduced in the sandbox with the real
+values off the smoke output:
+
+```
+BEFORE any sleeve : {'V': True,  'SCHD': True,  'MSFT': True}
+AFTER apply soxl  : {'V': False, 'SCHD': False, 'MSFT': False, 'SOXL': True}
+```
+
+**MSFT at 20% is the cap the 2026-08-11 notification fix is built around.** It
+was off, on the live book, with nothing said.
+
+**The gap between the docstring and the code is the whole lesson.** The docstring
+claimed ownership of "`max_weight` on a *sleeve ticker*" — a defensible claim,
+since arming already overwrote the level of a hand-set cap there. The code
+claimed every `max_weight` rule on the book. I wrote both in the same sitting and
+did not notice they disagreed. *A boundary documented in a comment and not
+enforced in code is not a boundary.*
+
+**Why nothing caught it.** Retirement is the *intended* behaviour for sleeve
+caps, so it logs nothing and raises nothing. The suite's fixture only ever had
+sleeve-armed caps, so there was no hand-set cap to lose. And the smoke checked
+one direction — caps that *appeared* — which is half a check.
+
+**Fixed at the cause.** Ownership is now **marked**: `trading_rules.strategy_id`
+carries `SLEEVE_OWNED` on every cap the sleeve system arms, and only a marked cap
+is ever retired. The column already exists (0013). A hand-set cap on a ticker a
+sleeve wants is **adopted** — re-levelled and marked, which is what already
+happened to its level — and reported as `adopted` rather than done quietly. A
+hand-set cap on any other ticker is never touched.
+
+**Three checks added, each one the data can fail:** a hand-set cap on a
+non-sleeve ticker survives apply *and* removal of every sleeve; a hand-set cap on
+a sleeve ticker is adopted and says so; and the smoke now compares caps in **both
+directions**, naming any it finds disarmed.
+
+**Recovery: `scripts/rearm-caps.ps1`.** Fixing the cause does not un-retire what
+was already retired. It re-arms inactive `max_weight` caps that are *not*
+sleeve-marked, so it cannot resurrect one legitimately retired by removing a
+sleeve, and it reads the state back rather than trusting the toggle responses —
+a toggle is a flip, so a stale view would turn a cap off instead of on. Run once,
+then delete.
 
 ### ❌ A bug I introduced and the suite caught — `session.rollback()` on refusal
 The over-allocation path called `session.rollback()` before returning. That

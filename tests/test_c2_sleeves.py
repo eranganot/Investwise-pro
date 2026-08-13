@@ -214,6 +214,52 @@ def test_removing_one_of_two_sleeves_relevels_a_shared_cap_rather_than_retiring_
         assert _caps(c)["TQQQ"]["level"] == pytest.approx(20.0)
 
 
+def test_a_hand_set_cap_on_a_non_sleeve_ticker_is_never_touched():
+    """The regression that reached production, pinned.
+
+    The first C2 build retired every active max_weight whose ticker no sleeve
+    wanted. Applying one sleeve therefore silently disarmed live hand-set caps --
+    on a real book, V, SCHD and MSFT, including the 20% MSFT cap the 2026-08-11
+    notification fix is built around. Ownership is now MARKED, not assumed.
+    """
+    with TestClient(m.app) as c:
+        _seed(c)
+        # V is held and capped by hand. No sleeve ever wants it.
+        c.post("/api/v1/rules", json={"ticker": "V", "rule_type": "max_weight",
+                                      "mode": "pct", "level": 30, "note": "set by hand"})
+        assert _caps(c)["V"]["level"] == pytest.approx(30.0)
+
+        _apply(c, SOXL, 10)
+        assert "V" in _caps(c), "applying a sleeve disarmed a hand-set cap"
+        assert _caps(c)["V"]["level"] == pytest.approx(30.0), "and it must keep its level"
+
+        _apply(c, FACTOR, 15)
+        c.delete(f"/api/v1/plan/sleeves/{FACTOR}")
+        c.delete(f"/api/v1/plan/sleeves/{SOXL}")
+        assert "V" in _caps(c), "removing every sleeve disarmed a hand-set cap"
+        assert _caps(c)["V"]["level"] == pytest.approx(30.0)
+
+
+def test_a_hand_set_cap_on_a_sleeve_ticker_is_adopted_and_says_so():
+    """The other half. The sleeve system already overwrote the LEVEL of a
+    hand-set cap on a ticker it wants -- two max_weight rules on one ticker at
+    two levels is the ambiguity it exists to remove. So it takes ownership, and
+    reports `adopted` rather than doing it quietly."""
+    with TestClient(m.app) as c:
+        _seed(c)
+        c.post("/api/v1/rules", json={"ticker": "SOXL", "rule_type": "max_weight",
+                                      "mode": "pct", "level": 55, "note": "set by hand"})
+        r = _apply(c, SOXL, 10)
+        soxl = next(x for x in r["sleeve_caps"] if x["ticker"] == "SOXL")
+        assert soxl["action"] == "adopted"
+        assert soxl["previous_level"] == pytest.approx(55.0)
+        assert _caps(c)["SOXL"]["level"] == pytest.approx(10.0)
+
+        # Adopted means owned, so removing the sleeve does retire it.
+        d = c.delete(f"/api/v1/plan/sleeves/{SOXL}").json()
+        assert d["retired_caps"] == ["SOXL"]
+
+
 def test_removing_the_named_sleeve_moves_the_legacy_pointer():
     """/plan must not go on reporting a strategy the book no longer runs."""
     with TestClient(m.app) as c:

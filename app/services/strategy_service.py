@@ -60,6 +60,14 @@ BROKER_NOTE = "Tracked book updated — no brokerage order was placed."
 # case an absolute-shekel threshold waves through.
 SLEEVE_SHORTFALL_TOLERANCE_PCT = 1.0
 
+# Marks a `max_weight` rule as armed BY the sleeve system, in the `strategy_id`
+# column migration 0013 already added. Only a marked cap may be retired when a
+# sleeve goes away -- without it, applying a sleeve disarms every hand-set cap on
+# the book, which is exactly what happened the first time C2 ran against a real
+# one. A single sentinel rather than the contributing strategy id, because a
+# ticker two sleeves both want has two owners and one column.
+SLEEVE_OWNED = "sleeve"
+
 
 def _pdicts(rows) -> list[dict]:
     # meta is carried deliberately: it holds `price_currency`, without which an
@@ -113,13 +121,25 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
 
     Idempotent: applying twice re-levels, never stacks.
 
-    **The ownership claim, stated because removal now acts on it.** This system
-    treats ``max_weight`` on a sleeve ticker as its own. It already overwrote a
-    hand-set cap when arming; it now also retires one when the last sleeve
-    wanting that ticker goes away. Retired, not deleted -- ``active = False``,
-    history kept, the way P4 retires rules on positions no longer held. The
-    return value names every ticker it touched and what it did, so the caller can
-    tell the user rather than leaving it to be discovered in the Rules screen.
+    **Ownership is MARKED, not assumed** -- ``trading_rules.strategy_id`` carries
+    ``SLEEVE_OWNED`` on every cap this system arms, and only a marked cap is ever
+    retired.
+
+    The first version of this skipped the marker and retired any active
+    ``max_weight`` whose ticker no sleeve wanted. That reads fine until you
+    remember people set caps by hand: applying one sleeve silently disarmed
+    live caps on V, SCHD and MSFT -- including the 20% MSFT cap the 2026-08-11
+    notification fix is built around. Reproduced, not theorised. The docstring
+    claimed ownership of "max_weight on a sleeve ticker"; the code claimed every
+    max_weight rule there was.
+
+    A hand-set cap on a ticker a sleeve wants is ADOPTED (re-levelled and marked,
+    which is what this already did to the level) and reported as ``adopted`` so
+    the caller can say so. A hand-set cap on any other ticker is never touched.
+
+    Retired, not deleted -- ``active = False``, history kept, the way P4 retires
+    rules on positions no longer held. The return value names every ticker it
+    touched and what it did.
     """
     from sqlalchemy import select
 
@@ -150,20 +170,27 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
         row = existing.get(tk)
         if row is not None:
             was = float(row.level)
+            adopting = row.strategy_id != SLEEVE_OWNED
             row.level = float(level)
             row.note = note
             row.active = True
             row.triggered = False
+            row.strategy_id = SLEEVE_OWNED
             out.append({"ticker": tk, "level": level, "previous_level": was,
-                        "action": "relevelled" if was != level else "unchanged"})
+                        "action": ("adopted" if adopting else
+                                   "relevelled" if was != level else "unchanged")})
         else:
             session.add(TradingRule(subject=user.email, ticker=tk, rule_type="max_weight",
-                                    mode="pct", level=float(level), note=note))
+                                    mode="pct", level=float(level), note=note,
+                                    strategy_id=SLEEVE_OWNED))
             out.append({"ticker": tk, "level": level, "previous_level": None,
                         "action": "armed"})
 
     for tk, row in sorted(existing.items()):
-        if tk in targets or not row.active:
+        # ONLY caps this system armed. A cap the user set by hand on a ticker no
+        # sleeve wants is none of our business -- see the docstring for what
+        # happened the one time this loop did not check.
+        if tk in targets or not row.active or row.strategy_id != SLEEVE_OWNED:
             continue
         row.active = False
         row.triggered = False

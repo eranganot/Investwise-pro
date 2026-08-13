@@ -214,6 +214,17 @@ Sec "C2.6  ROUND TRIP - add a probe sleeve, then remove it"
                     $leaked = @($capsAfter.Keys | Where-Object { -not $capsBefore.ContainsKey($_) })
                     if ($leaked.Count -eq 0) { Ok "no cap left behind by the probe" }
                     else { Bad "caps survived the removal: $($leaked -join ', ')" }
+
+                    # BOTH directions. The first version of this only checked for
+                    # caps that appeared, and reported "no cap left behind" while
+                    # the probe had just silently disarmed three hand-set ones.
+                    # A check that can only fail one way is half a check.
+                    $lost = @($capsBefore.Keys | Where-Object { -not $capsAfter.ContainsKey($_) })
+                    if ($lost.Count -eq 0) { Ok "and every cap you had before is still armed" }
+                    else {
+                        Bad "the probe DISARMED caps you already had: $($lost -join ', ')"
+                        Write-Host "        Re-arm them under Trading rules before trusting this book." -ForegroundColor Red
+                    }
                 }
             }
         }
