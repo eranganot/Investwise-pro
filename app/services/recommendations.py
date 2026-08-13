@@ -2262,8 +2262,16 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
 async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) -> dict | None:
     """Arm a trading rule from an Accept spec. Returns a compact summary for the
     'what changed' confirmation, or None if the spec was malformed."""
-    from app.services.rules_service import create_rule as _mk
+    from app.services.rules_service import (
+        conflicting_rule_level, create_rule as _mk)
     try:
+        # Read the level BEFORE the write: create_rule re-levels a protective
+        # rule that already exists rather than stacking a second one, and a
+        # confirmation saying "armed" when it actually replaced a 12% stop with
+        # a 15% one is claiming something that did not happen.
+        was = await conflicting_rule_level(
+            session, user, spec["ticker"], spec["rule_type"],
+            spec.get("mode", "pct"), spec.get("strategy_id"))
         rule = await _mk(session, user, ticker=spec["ticker"], rule_type=spec["rule_type"],
                          mode=spec.get("mode", "pct"), level=float(spec["level"]),
                          note=spec.get("note"))
@@ -2271,8 +2279,13 @@ async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) 
         return None
     unit = "₪" if rule.mode == "price" else "%"
     pretty = rule.rule_type.replace("_", " ")
+    label = f"{rule.ticker} {pretty} {rule.level:g}{unit}"
+    if was is not None and abs(float(was) - float(rule.level)) > 1e-9:
+        label += f" (was {float(was):g}{unit})"
     return {"ticker": rule.ticker, "rule_type": rule.rule_type, "mode": rule.mode,
-            "level": rule.level, "label": f"{rule.ticker} {pretty} {rule.level:g}{unit}"}
+            "level": rule.level, "previous_level": was,
+            "action": "relevelled" if was is not None else "armed",
+            "label": label}
 
 
 async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, spec: dict) -> dict:

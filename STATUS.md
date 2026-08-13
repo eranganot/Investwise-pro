@@ -1,7 +1,68 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (Phase C4)._
+_Last updated: 2026-08-13 by Claude (rule uniqueness)._
 _Seeded from git history + prior transcripts._
+
+## 🔴 THREE CARDS WERE ARMING THREE TRAILING STOPS ON ONE TICKER
+
+**729 passed on SQLite, 725 / 8 skipped on Postgres, ruff clean, and the suite
+now emits ZERO warnings.**
+
+Found by looking at the live Today screen, not by reading code. Three cards, all
+on screen at once, all proposing rules on the same tickers:
+
+| card | proposes |
+|---|---|
+| Arm the discipline for Factor Stack | trailing stop **MTUM 12%** |
+| 6 protective rules ready to arm | 6 rules across AVUV, **MTUM**, QUAL |
+| MTUM is in an uptrend | trailing stop **MTUM 15%** |
+
+**`create_rule` had no uniqueness rule.** It built a `TradingRule` and added it.
+Reproduced: arming 12% then 15% leaves **both active on MTUM**. The tighter one
+fires first, so you get stopped out at 12% having decided on 15%.
+
+**Why nothing caught it.** Nothing errors — both rules are valid. Each card
+filters only against rules **already armed**, so none of them can see what the
+others are proposing on the same render. Three independent producers
+(`strategy_catalog.discipline_rules`, `rules_service.suggest_rules_for_holdings`,
+`_momentum_recs`) all emit `trailing_stop` specs, and the write path that
+receives them had no opinion.
+
+**The codebase had already reached this conclusion once and not generalised it.**
+`_arm_sleeve_caps` sums `max_weight` per ticker, and `discipline_rules`
+deliberately emits no `max_weight` because — its own docstring — "two max_weight
+rules on the same ticker at two different levels" is a duplicate. The protective
+stops never got the same guard.
+
+**Fixed at the write, which is the one choke point.** `create_rule` re-levels an
+existing **active** rule of the same kind on the same ticker instead of stacking
+beside it, and re-arms it (`triggered = False`) so a re-levelled rule cannot be
+armed and latched at once.
+
+**What deliberately still stacks**, because these do not contradict each other:
+- `price_above` / `price_below` — "tell me at 100 and again at 120" is a real
+  thing to want.
+- `strategy_signal` — keyed by `(mode, strategy_id)`. An entry and an exit on one
+  ticker are both wanted, and **two sleeves may both subscribe to one ticker's
+  signal**; collapsing those would silently unsubscribe a sleeve.
+- A **retired** rule never blocks a fresh one. History is kept, not overwritten.
+
+**The confirmation stops lying too.** `conflicting_rule_level` is read *before*
+the write, so Accept reports `relevelled` with `MTUM trailing stop 15% (was 12%)`
+rather than claiming it armed something new.
+
+### 🔇 183 warnings → 0
+Every one was the same: APScheduler's price job fires during `TestClient`
+startup and calls `asyncio.run()` on a thread that already has a loop, so
+`_refresh_all` is created and never awaited. Harmless — in production the
+scheduler owns its own thread — but **183 copies of a benign warning is where a
+real one hides**, the same argument as gitignoring the noise off `git status` in
+Phase A. Filtered by that one coroutine name, not blanket, so the next genuinely
+un-awaited coroutine still shows. `asyncio_default_fixture_loop_scope` pinned to
+`function` while there, so that deprecation lands as a no-op later.
+
+**Phase A's lint gate earned its keep here**: my own new test file arrived with
+nine `E702` semicolon-joined statements and CI would have rejected it.
 
 ## ✅ PHASE C4 — signals, discipline and drift stop describing only one sleeve
 

@@ -8,3 +8,20 @@ requires-python = ">=3.12"
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Pinned so the fixture loop scope stops being a deprecation warning on every
+# async test. "function" is what pytest-asyncio will default to anyway; saying
+# it now means the change lands as a no-op instead of as a surprise.
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # The suite carried 183 warnings, every one of them this: APScheduler's
+    # price-refresh job fires during TestClient startup and calls asyncio.run()
+    # on a thread that already has a running loop, so the coroutine is created
+    # and never awaited. Harmless here -- in production the scheduler owns its
+    # own thread and the job runs -- but 183 copies of a benign warning is a
+    # place a REAL one hides, which is the same argument as gitignoring the
+    # noise off `git status` in Phase A.
+    #
+    # Scoped to this one coroutine on purpose. A blanket ignore would hide the
+    # next genuinely un-awaited coroutine too.
+    "ignore:coroutine '_refresh_all' was never awaited:RuntimeWarning",
+]

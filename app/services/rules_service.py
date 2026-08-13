@@ -46,6 +46,30 @@ RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
 # trail, and a notification.
 _SIGNAL_MODES = ("entry", "exit")
 
+# Rule types where a ticker may carry AT MOST ONE active rule, so a second
+# request re-levels the first instead of stacking beside it.
+#
+# Three independent producers emit `trailing_stop` specs -- the strategy
+# discipline card, the per-holding rule suggestions, and the momentum card -- and
+# none of them can see what the others are proposing on the same screen, because
+# each filters only against rules already armed. Accepting two of them left MTUM
+# carrying a 12% trailing stop AND a 15% one, both active, no warning. The
+# tighter one fires first, so you get stopped out at 12% having decided on 15%.
+#
+# The codebase already reached this conclusion once for `max_weight`:
+# `_arm_sleeve_caps` sums per ticker, and `strategy_catalog.discipline_rules`
+# deliberately emits no max_weight because "two max_weight rules on the same
+# ticker at two different levels" is a duplicate. The guard was never generalised
+# to the protective stops, which have exactly the same problem.
+#
+# NOT included, on purpose:
+#   * price_above / price_below -- "tell me at 100 and again at 120" is a
+#     legitimate thing to want, and two alerts do not contradict each other.
+#   * strategy_signal -- an entry and an exit rule on one ticker are both
+#     wanted, and two sleeves can legitimately subscribe to the same ticker's
+#     signal. Keyed below by (mode, strategy_id) rather than excluded outright.
+_ONE_PER_TICKER = {"stop_loss", "take_profit", "trailing_stop", "max_weight", "buy_dip"}
+
 _SEV = {"stop_loss": "CRITICAL", "trailing_stop": "CRITICAL", "max_weight": "HIGH",
         "take_profit": "HIGH", "buy_dip": "HIGH", "price_above": "MEDIUM",
         "price_below": "MEDIUM", "strategy_signal": "HIGH"}
@@ -612,12 +636,60 @@ async def create_rule(session: AsyncSession, user: User, *, ticker: str, rule_ty
             mode = "price"
         if rule_type in ("trailing_stop", "max_weight"):
             mode = "pct"
-    rule = TradingRule(subject=user.email, ticker=ticker.strip().upper(),
-                       rule_type=rule_type, mode=mode, level=float(level), note=note,
-                       strategy_id=strategy_id)
+    ticker = ticker.strip().upper()
+
+    # Re-level rather than stack. See _ONE_PER_TICKER for why.
+    existing = await _conflicting_rule(session, user, ticker, rule_type, mode, strategy_id)
+    if existing is not None:
+        existing.level = float(level)
+        existing.mode = mode
+        existing.active = True
+        existing.triggered = False       # a re-levelled rule re-arms
+        if note:
+            existing.note = note[:160]
+        if strategy_id:
+            existing.strategy_id = strategy_id
+        await session.commit()
+        return existing
+
+    rule = TradingRule(subject=user.email, ticker=ticker,
+                       rule_type=rule_type, mode=mode, level=float(level),
+                       note=(note[:160] if note else note), strategy_id=strategy_id)
     session.add(rule)
     await session.commit()
     return rule
+
+
+async def conflicting_rule_level(session: AsyncSession, user: User, ticker: str,
+                                 rule_type: str, mode: str,
+                                 strategy_id: str | None = None) -> float | None:
+    """The level a create_rule call would REPLACE, or None if it would add one.
+
+    Read before the write, so a confirmation can say "re-levelled 12% -> 15%"
+    instead of claiming it armed a rule that already existed.
+    """
+    row = await _conflicting_rule(session, user, (ticker or "").strip().upper(),
+                                  rule_type, mode, strategy_id)
+    return float(row.level) if row is not None else None
+
+
+async def _conflicting_rule(session: AsyncSession, user: User, ticker: str,
+                            rule_type: str, mode: str, strategy_id: str | None):
+    """The active rule this one would duplicate, or None.
+
+    A `strategy_signal` is keyed by its mode and the strategy it follows: an
+    entry and an exit on one ticker are both wanted, and two sleeves may
+    legitimately subscribe to the same ticker's signal.
+    """
+    if rule_type not in _ONE_PER_TICKER and rule_type != "strategy_signal":
+        return None
+    q = select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.ticker == ticker,
+                                  TradingRule.rule_type == rule_type,
+                                  TradingRule.active.is_(True))
+    if rule_type == "strategy_signal":
+        q = q.where(TradingRule.mode == mode, TradingRule.strategy_id == strategy_id)
+    return (await session.scalars(q)).first()
 
 
 async def list_rules(session: AsyncSession, user: User) -> list[dict]:
