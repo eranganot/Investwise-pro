@@ -75,9 +75,16 @@ def remainder_pct(sleeves) -> float:
 
 
 def as_dicts(sleeves) -> list[dict]:
+    # created_at is carried because "which boot wrote this?" turned out to be a
+    # real question the first time C1 deployed: the backfill's log line is
+    # emitted once, on one boot, and a later restart is silent by design. The
+    # row's own timestamp answers it without log archaeology.
     return [{"strategy_id": s.strategy_id,
              "sleeve_pct": round(float(s.sleeve_pct or 0.0), 4),
-             "is_core": bool(s.is_core)} for s in sleeves]
+             "is_core": bool(s.is_core),
+             "created_at": (s.created_at.isoformat()
+                            if getattr(s, "created_at", None) else None)}
+            for s in sleeves]
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +127,93 @@ def validate(sleeves, *, strategy_id: str, sleeve_pct: float,
                 f"There is {max(0.0, free):g}% left after the sleeves you already "
                 f"run — lower this one, or shrink another first")
     return None
+
+
+# --------------------------------------------------------------------------- #
+# What the sleeves collectively want to hold
+# --------------------------------------------------------------------------- #
+async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, float]:
+    """Every sleeve's target weights, SUMMED PER TICKER across the whole book.
+
+    This is the primitive the N-sleeve safety rules are built on, and summing is
+    the whole point of it:
+
+    * **One cap per ticker.** Two sleeves both wanting TQQQ must arm one
+      ``max_weight`` at their combined size, not two competing ones. Two rules on
+      one ticker at two levels is the P1 duplicate bug, back at N scale.
+    * **One exclusion set.** The tax harvester and the funding engine must know
+      about every sleeve, not just the one ``plans.strategy`` happens to name.
+      Funding sleeve A by selling sleeve B is the failure this prevents.
+
+    Weights are shares of NAV, so they add directly: a 10% SOXL sleeve and a
+    15% sleeve that is 40% SOXL contribute 0.10 and 0.06 to the same ticker.
+    """
+    # Local import: strategy_service imports this module, and sleeve_targets is
+    # a pure catalog lookup with no session of its own.
+    from app.services.strategy_service import sleeve_targets
+
+    out: dict[str, float] = {}
+    for s in await list_sleeves(session, user):
+        for tk, w in (sleeve_targets(s.strategy_id, s.sleeve_pct) or {}).items():
+            tk = tk.upper()
+            out[tk] = out.get(tk, 0.0) + float(w)
+    return out
+
+
+async def sleeve_tickers(session: AsyncSession, user: User) -> set[str]:
+    """Just the names. The exclusion set, for callers that do not need weights."""
+    return set(await all_sleeve_targets(session, user))
+
+
+# --------------------------------------------------------------------------- #
+# Writing -- C2. Everything above this line existed in C1 and wrote nothing.
+# --------------------------------------------------------------------------- #
+async def add_or_resize(session: AsyncSession, user: User, strategy_id: str,
+                        sleeve_pct: float) -> dict:
+    """Add a sleeve, or re-size one already on the book. Never a second copy.
+
+    Refuses rather than half-applies: over-allocating is returned as a reason the
+    caller can print, in the same voice ``_fund_sleeve`` uses when it cannot
+    fund. Nothing is written on a refusal.
+    """
+    sleeves = await list_sleeves(session, user)
+    why = validate(sleeves, strategy_id=strategy_id, sleeve_pct=sleeve_pct,
+                   replacing=True)
+    if why:
+        return {"ok": False, "error": "sleeve does not fit", "reason": why,
+                "allocated_pct": total_pct(sleeves)}
+
+    row = next((s for s in sleeves if s.strategy_id == strategy_id), None)
+    if row is None:
+        session.add(PlanSleeve(subject=user.email, strategy_id=strategy_id,
+                               sleeve_pct=float(sleeve_pct), is_core=False))
+        action, was = "added", None
+    else:
+        was = float(row.sleeve_pct or 0.0)
+        row.sleeve_pct = float(sleeve_pct)
+        action = "resized" if was != float(sleeve_pct) else "unchanged"
+    await session.flush()
+    after = await list_sleeves(session, user)
+    return {"ok": True, "action": action, "strategy_id": strategy_id,
+            "sleeve_pct": float(sleeve_pct), "previous_pct": was,
+            "allocated_pct": total_pct(after), "core_pct": remainder_pct(after)}
+
+
+async def remove(session: AsyncSession, user: User, strategy_id: str) -> dict:
+    """Drop a sleeve. The caller is responsible for the caps -- see
+    ``strategy_service.retire_sleeve``, which is the only thing that should call
+    this, because a row removed without re-levelling the caps leaves a ceiling on
+    the book with nothing behind it."""
+    row = next((s for s in await list_sleeves(session, user)
+                if s.strategy_id == strategy_id), None)
+    if row is None:
+        return {"ok": False, "error": f"'{strategy_id}' is not a sleeve on this book"}
+    was = float(row.sleeve_pct or 0.0)
+    await session.delete(row)
+    await session.flush()
+    after = await list_sleeves(session, user)
+    return {"ok": True, "removed": strategy_id, "was_pct": was,
+            "allocated_pct": total_pct(after), "core_pct": remainder_pct(after)}
 
 
 # --------------------------------------------------------------------------- #

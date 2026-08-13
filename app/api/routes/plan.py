@@ -178,6 +178,26 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
     }
 
 
+@router.delete("/plan/sleeves/{strategy_id}",
+               dependencies=[Depends(require_role(Role.ANALYST))])
+async def remove_my_sleeve(strategy_id: str,
+                           session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
+    """Stop running a sleeve, and put its caps back where they belong.
+
+    Removing the row and re-levelling the caps happen together on purpose -- a
+    sleeve dropped on its own leaves a live ceiling on a position now held for
+    some other reason. The response names every cap it retired, so the change is
+    reported rather than discovered later in the Rules screen.
+
+    Nothing is sold. The sleeve stops being a target the app steers toward; the
+    shares stay exactly where they are, and what to do with them is yours.
+    """
+    from app.services.strategy_service import retire_sleeve
+
+    return await retire_sleeve(session, user, strategy_id)
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)

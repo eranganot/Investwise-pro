@@ -77,34 +77,63 @@ def _nav(rows) -> float:
     return _snapshot(rows)["nav"] if rows else 0.0
 
 
-async def _arm_sleeve_cap(session: AsyncSession, user: User, strategy_id: str,
-                          sleeve_pct: float | None) -> list[dict]:
-    """Arm one ``max_weight`` per aggressive ticker, at the sleeve size.
+def _cap_note(ticker: str, level: float, sleeve_ids: list[str]) -> str:
+    names = [(strategy_catalog.get(i) or {}).get("name", i) for i in sleeve_ids]
+    if len(names) > 1:
+        # Say the sum out loud. A 25% cap that is 10% from one sleeve and 15%
+        # from another is not a number anyone can reconstruct from the screen.
+        return (f"{' + '.join(names)}: your sleeves want {ticker} at {level:g}% of the "
+                f"book between them. One cap at the total, not one per sleeve.")
+    who = names[0] if names else "Your sleeve"
+    return (f"{who}: the sleeve you chose. Caps {ticker} at {level:g}% of the book "
+            f"-- it does not make the rebalancer aim for it.")
 
-    Why this exists: ``as_legacy_strategy`` hardcodes ``{"Equities": 1.0}`` for
-    every strategy in this family, so ``sleeve_pct`` only ever changed the
-    *basket*. Applying at 20% and at 90% wrote an identical plan -- the sleeve
-    was a number the app collected and then ignored. Asset-class allocation
-    cannot express it either: TQQQ and QQQ are both Equities.
 
-    So the sleeve becomes a rule. It is a real, continuously enforced ceiling
-    that shows up in the Rules UI and fires when breached.
+async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
+    """Arm one ``max_weight`` per ticker, at the SUM of its weight across sleeves.
 
-    Idempotent by design: applying twice must re-level the existing cap, never
-    stack a second one on the same ticker. It deliberately re-levels a cap the
-    user set by hand too -- two max_weight rules on one ticker at two levels is
-    the ambiguity this replaces -- and the return value says which it did, so
-    the caller can tell them.
+    C2 changed the unit this works in. It used to take one strategy and arm caps
+    from that strategy's targets alone; it now reads every sleeve on the book and
+    arms one cap per ticker at their combined size.
+
+    **That is not a tidy-up, it is the P1 duplicate bug pre-empted at N scale.**
+    Two sleeves both wanting TQQQ, each arming its own cap, means two
+    ``max_weight`` rules on one ticker at two levels, and whichever fires first
+    wins. One cap at the sum is the only answer that means anything.
+
+    Anything armed for a ticker no sleeve wants any more is retired here, which
+    is how removing a sleeve stops leaving a ceiling behind it.
+
+    Why sleeve caps exist at all: ``as_legacy_strategy`` hardcodes
+    ``{"Equities": 1.0}`` for every strategy in this family, so ``sleeve_pct``
+    only ever changed the *basket*. Applying at 20% and at 90% wrote an identical
+    plan -- the sleeve was a number the app collected and then ignored.
+    Asset-class allocation cannot express it either: TQQQ and QQQ are both
+    Equities. So the sleeve becomes a rule.
+
+    Idempotent: applying twice re-levels, never stacks.
+
+    **The ownership claim, stated because removal now acts on it.** This system
+    treats ``max_weight`` on a sleeve ticker as its own. It already overwrote a
+    hand-set cap when arming; it now also retires one when the last sleeve
+    wanting that ticker goes away. Retired, not deleted -- ``active = False``,
+    history kept, the way P4 retires rules on positions no longer held. The
+    return value names every ticker it touched and what it did, so the caller can
+    tell the user rather than leaving it to be discovered in the Rules screen.
     """
-    if strategy_catalog.get(strategy_id) is None:
-        return []                       # static families are portfolios, not sleeves
-    targets = sleeve_targets(strategy_id, sleeve_pct)
-    if not targets:
-        return []
     from sqlalchemy import select
 
     from app.models.tables import TradingRule
-    name = (strategy_catalog.get(strategy_id) or {}).get("name", strategy_id)
+    from app.services import sleeve_service as sv
+
+    sleeves = await sv.list_sleeves(session, user)
+    targets = await sv.all_sleeve_targets(session, user)
+    # Which sleeves want each ticker, so a summed cap can say where it came from.
+    contributors: dict[str, list[str]] = {}
+    for s in sleeves:
+        for tk in (sleeve_targets(s.strategy_id, s.sleeve_pct) or {}):
+            contributors.setdefault(tk.upper(), []).append(s.strategy_id)
+
     existing = {(r.ticker or "").upper(): r for r in (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.rule_type == "max_weight"))).all()}
@@ -117,8 +146,7 @@ async def _arm_sleeve_cap(session: AsyncSession, user: User, strategy_id: str,
             # instant it is armed. "I want none of this" is a decision to act on,
             # not a rule to spring on someone.
             continue
-        note = (f"{name}: the sleeve you chose. Caps {tk} at {level:g}% of the book "
-                f"-- it does not make the rebalancer aim for it.")
+        note = _cap_note(tk, level, sorted(contributors.get(tk, [])))
         row = existing.get(tk)
         if row is not None:
             was = float(row.level)
@@ -133,26 +161,91 @@ async def _arm_sleeve_cap(session: AsyncSession, user: User, strategy_id: str,
                                     mode="pct", level=float(level), note=note))
             out.append({"ticker": tk, "level": level, "previous_level": None,
                         "action": "armed"})
+
+    for tk, row in sorted(existing.items()):
+        if tk in targets or not row.active:
+            continue
+        row.active = False
+        row.triggered = False
+        out.append({"ticker": tk, "level": float(row.level),
+                    "previous_level": float(row.level), "action": "retired"})
     await session.commit()
     return out
 
 
 async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                          sleeve_pct: float | None = None) -> dict:
+    """Apply a strategy. For the rule-based family this ADDS a sleeve (C2).
+
+    Applying used to overwrite: one ``plans.strategy``, so choosing a second
+    strategy silently dropped the first. It now adds a row alongside whatever is
+    already running, and applying the same strategy again re-sizes it rather than
+    stacking a duplicate.
+
+    **Over-allocating refuses and writes nothing.** Not "clamps to what fits" --
+    a sleeve installed at a size nobody chose is the failure ``_fund_sleeve``
+    already abstains over, and clamping would do it silently.
+
+    Two things it no longer does, both deliberate:
+
+    * **A SLEEVE no longer writes ``objective`` or ``risk_tolerance``.** Those set
+      the concentration cap and the cash floor for the WHOLE book, so with N
+      sleeves "whichever one you applied last decides your guardrails" is not a
+      rule anyone would choose. They are yours to set on the Plan tab, and
+      existing values are left exactly as they are -- a refactor must not move a
+      live book's guardrails as a side effect.
+
+      **A static family still writes them, and that is the point of the
+      distinction.** The four static families are model PORTFOLIOS, not sleeves:
+      "Grow AI & Semis" is a whole-book allocation and its objective is part of
+      what you chose. Only the rule-based sleeves were overwriting guardrails
+      they do not govern.
+    * **It does not arm a cap per strategy.** ``_arm_sleeve_caps`` arms one per
+      ticker at the summed size across every sleeve.
+    """
     # Either catalog: static baskets live in `strategies`, rule-based ones in
     # `strategy_catalog`. Adapting rather than forking keeps one apply path.
     s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
-    # preset the plan. The sleeve is remembered so a later reload sizes the same
-    # way -- applying at 20% and reloading at 100% would silently quadruple the
-    # exposure the user chose.
-    await upsert_plan(session, user, objective=s["objective"], risk_tolerance=s["risk_tolerance"],
-                      preferred_depth=s.get("preferred_depth"), strategy=strategy_id,
-                      strategy_sleeve_pct=s.get("sleeve_pct"))
+
+    is_sleeve = strategy_catalog.get(strategy_id) is not None
+    sleeve_result = None
+    if is_sleeve:
+        from app.services import sleeve_service as sv
+        pct = s.get("sleeve_pct")
+        sleeve_result = await sv.add_or_resize(session, user, strategy_id, float(pct or 0.0))
+        if not sleeve_result.get("ok"):
+            # Return before the plan is touched, so a refused apply cannot leave
+            # the book half-changed.
+            #
+            # NO session.rollback() HERE. `add_or_resize` validates before it
+            # writes, so on a refusal there is nothing to undo -- and rollback
+            # EXPIRES every ORM object in the session, including the caller's
+            # `user`. The next attribute read then re-queries and blows up. That
+            # is the same expiry hazard `_agent_tx` uses a SAVEPOINT to avoid,
+            # and it is recorded in CLAUDE.md; a plain rollback here would have
+            # reintroduced it on the one path nobody exercises.
+            return {"ok": False, "strategy_id": strategy_id,
+                    "error": sleeve_result["error"], "reason": sleeve_result["reason"],
+                    "allocated_pct": sleeve_result["allocated_pct"]}
+
+    # The legacy columns are still written for one more release: a rollback to
+    # C1 must not lose the applied strategy, and everything not yet converted to
+    # read plan_sleeves (the signal service, the drift card) still reads them.
+    # With N sleeves one column cannot represent the book, so it holds the most
+    # recently applied -- a pointer, no longer the truth. C4 removes the readers;
+    # the columns go after that.
+    #
+    # objective / risk_tolerance only for a static family. See the docstring.
+    _guardrails = {} if is_sleeve else {"objective": s["objective"],
+                                        "risk_tolerance": s["risk_tolerance"]}
+    await upsert_plan(session, user, preferred_depth=s.get("preferred_depth"),
+                      strategy=strategy_id, strategy_sleeve_pct=s.get("sleeve_pct"),
+                      **_guardrails)
     await session.commit()
     # The sleeve stops being decorative here: it becomes an enforced ceiling.
-    caps = await _arm_sleeve_cap(session, user, strategy_id, s.get("sleeve_pct"))
+    caps = await _arm_sleeve_caps(session, user) if is_sleeve else []
     # rebalance trades toward the strategy's target allocation
     rows = await list_positions(session, user)
     nav = _nav(rows)
@@ -164,6 +257,9 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
         actions = [a.model_dump() for a in report.rebalance_actions]
     return {"ok": True, "strategy": s, "nav": round(nav, 2), "rebalance_actions": actions,
             "sleeve_caps": caps,
+            # What the book now runs, so the caller never has to infer from the
+            # single legacy column that this was additive.
+            "sleeve": sleeve_result,
             # Said out loud because it is the honest limit of option (a): the cap
             # stops the sleeve growing past the chosen size, it does not grow the
             # book INTO it. Funding is what does that.
@@ -171,6 +267,39 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                 "This caps the sleeve at the size you chose; it does not make the "
                 "rebalancer aim for it. Use 'Fund this sleeve' to grow into it."
             ) if caps else None}
+
+
+async def retire_sleeve(session: AsyncSession, user: User, strategy_id: str) -> dict:
+    """Remove a sleeve and put its caps back where they belong.
+
+    The two halves must happen together, which is why this exists rather than
+    letting a caller delete the row. Dropping the row alone leaves a live
+    ``max_weight`` on a position now held for some other reason -- a ceiling with
+    nothing behind it, which is the stale-AMZN-stop shape P4 already had to fix.
+
+    A ticker another sleeve still wants keeps its cap, re-levelled to what the
+    remaining sleeves ask for. Only a ticker nobody wants any more is retired,
+    and retired means ``active = False`` with the history kept.
+    """
+    from app.services import sleeve_service as sv
+
+    removed = await sv.remove(session, user, strategy_id)
+    if not removed.get("ok"):
+        return removed
+    caps = await _arm_sleeve_caps(session, user)
+
+    # The legacy pointer cannot outlive the sleeve it names, or /plan would go on
+    # reporting a strategy the book no longer runs.
+    plan = await get_plan(session, user)
+    if plan is not None and getattr(plan, "strategy", None) == strategy_id:
+        remaining = await sv.list_sleeves(session, user)
+        plan.strategy = remaining[-1].strategy_id if remaining else None
+        plan.strategy_sleeve_pct = remaining[-1].sleeve_pct if remaining else None
+        await session.commit()
+
+    return {**removed, "sleeve_caps": caps,
+            "retired_caps": [c["ticker"] for c in caps if c["action"] == "retired"],
+            "broker_note": BROKER_NOTE}
 
 
 # --------------------------------------------------------------------------- #
@@ -290,8 +419,16 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                             f"{', '.join(f'{k} {v * 100:.0f}%' for k, v in sorted(targets.items()))} "
                             f"target — nothing to buy.")}
 
+    # EVERY sleeve's tickers are off-limits as a funding source, not just this
+    # one's. Once a book can run two sleeves, `exclude=set(targets)` means
+    # funding Factor Stack can sell the SOXL sleeve to pay for it -- the plan
+    # holds both on purpose, and one of them is not a piggy bank for the other.
+    # (Pulled forward from C3: it stopped being deferrable the moment C2 made
+    # apply additive.)
+    from app.services import sleeve_service as sv
+    exclude = set(targets) | await sv.sleeve_tickers(session, user)
     fund = plan_funding(rows, snap, plan, objective, cap, amount,
-                        cash_ils=cash_ils, exclude=set(targets))
+                        cash_ils=cash_ils, exclude=exclude)
 
     # Abstain rather than half-execute: a partially funded sleeve is a position
     # nobody chose, at a size nobody chose. Judged in points of NAV, not shekels

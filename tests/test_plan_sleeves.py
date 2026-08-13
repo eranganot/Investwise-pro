@@ -109,16 +109,19 @@ def test_a_sleeve_needs_a_strategy():
 # `_clear_marker()` after the apply, not a bare `_backfill()`.
 # --------------------------------------------------------------------------- #
 def test_a_strategy_applied_before_the_deploy_becomes_a_sleeve_row():
+    """Still meaningful after C2: the backfill covers a book whose strategy was
+    applied by the OLD code, which wrote only the columns."""
     with TestClient(m.app) as c:
         _seed(c)
         c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
-        _clear_marker()                       # ...now the C1 deploy boots
+        _delete_all_sleeves()                 # as if applied before C2 existed
+        _clear_marker()                       # ...now the deploy boots
         assert _backfill() == {"ran": True, "created": 1}
-        body = c.get("/api/v1/plan/sleeves").json()
-        assert body["sleeves"] == [{"strategy_id": "btm_trend_tqqq",
-                                    "sleeve_pct": 15.0, "is_core": False}]
-        assert body["allocated_pct"] == 15.0
-        assert body["core_pct"] == 85.0
+        rows = c.get("/api/v1/plan/sleeves").json()
+        assert [(r["strategy_id"], r["sleeve_pct"], r["is_core"])
+                for r in rows["sleeves"]] == [("btm_trend_tqqq", 15.0, False)]
+        assert rows["allocated_pct"] == 15.0
+        assert rows["core_pct"] == 85.0
 
 
 def test_booting_spends_the_marker_even_on_an_empty_book():
@@ -133,20 +136,17 @@ def test_booting_spends_the_marker_even_on_an_empty_book():
         assert _backfill()["ran"] is False
 
 
-def test_a_strategy_applied_after_the_deploy_shows_only_under_legacy():
-    """The C1 -> C2 window, stated rather than discovered.
-
-    ``apply_strategy`` still writes only the ``plans`` columns in this phase, and
-    the backfill is spent, so a strategy applied now has no sleeve row. The
-    endpoint has to say so -- a reader seeing an empty ``sleeves`` list with no
-    other signal would conclude the book has no strategy at all. C2 closes this
-    by making apply write the row; the ``legacy`` block goes with it.
-    """
+def test_the_c1_window_is_closed_apply_writes_the_row_itself():
+    """C1 shipped with a gap: the backfill is a one-shot, so a strategy applied
+    after that boot had no sleeve row and showed up only under ``legacy``. C2
+    closes it at the source -- apply writes the row, no backfill involved."""
     with TestClient(m.app) as c:
         _seed(c)
         c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
         body = c.get("/api/v1/plan/sleeves").json()
-        assert body["sleeves"] == []
+        assert [r["strategy_id"] for r in body["sleeves"]] == ["btm_trend_tqqq"]
+        # The legacy columns still agree, and still get written for one release
+        # so a rollback to C1 does not lose the applied strategy.
         assert body["legacy"] == {"strategy": "btm_trend_tqqq",
                                   "strategy_sleeve_pct": 15.0}
 
@@ -161,6 +161,7 @@ def test_the_backfill_never_runs_twice_even_after_a_sleeve_is_deleted():
     with TestClient(m.app) as c:
         _seed(c)
         c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
+        _delete_all_sleeves()
         _clear_marker()
         assert _backfill() == {"ran": True, "created": 1}
 
@@ -198,6 +199,7 @@ def test_a_pre_0012_plan_with_no_size_falls_back_to_the_suggestion_not_to_100():
     with TestClient(m.app) as c:
         _seed(c)
         c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
+        _delete_all_sleeves()               # as if applied before C2 existed
         _null_the_sleeve_pct()
         _clear_marker()
         assert _backfill()["created"] == 1
@@ -213,13 +215,24 @@ def test_a_pre_0012_plan_with_no_size_falls_back_to_the_suggestion_not_to_100():
 def test_the_endpoint_writes_nothing_not_even_a_self_healing_row():
     """A GET that quietly created state would make "does this book have a
     sleeve?" depend on whether anyone happened to open the page -- the same
-    reason `peek_user` exists separately from `evaluate_user`."""
+    reason `peek_user` exists separately from `evaluate_user`.
+
+    C2 made apply write rows, so "zero rows" is no longer the assertion. What
+    still has to hold is that READING never changes the count, in either
+    direction and from either starting point.
+    """
     with TestClient(m.app) as c:
         _seed(c)
-        c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
+        assert _row_count() == 0
         for _ in range(3):
             c.get("/api/v1/plan/sleeves")
-        assert _row_count() == 0
+        assert _row_count() == 0, "a read invented a sleeve on an empty book"
+
+        c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
+        assert _row_count() == 1
+        for _ in range(3):
+            c.get("/api/v1/plan/sleeves")
+        assert _row_count() == 1, "a read duplicated an existing sleeve"
 
 
 def test_an_untouched_book_reports_a_whole_core_and_no_legacy_strategy():

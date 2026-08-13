@@ -585,11 +585,22 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # instructions about the same position on the same screen. The tax engine
         # has no idea the position is held on purpose, and a 12 shekel tail
         # should not wag a strategy dog.
+        #
+        # C2: read EVERY sleeve, not the one plans.strategy happens to name. A
+        # book can run two now, and an exclusion set built from one of them
+        # leaves the other harvestable -- the same two-agents-disagreeing bug,
+        # just on whichever sleeve was not applied most recently.
         try:
-            from app.services.strategy_service import sleeve_targets
-            _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
-            _sleeve = {t.upper() for t in sleeve_targets(
-                _plan_sid, getattr(plan, "strategy_sleeve_pct", None))} if _plan_sid else set()
+            from app.services import sleeve_service as sv
+            _sleeve = await sv.sleeve_tickers(session, user)
+            if not _sleeve:
+                # No sleeve rows yet (a book that predates the backfill, or one
+                # running a static family). Fall back to the legacy column so
+                # this protection never gets weaker than it was in C1.
+                from app.services.strategy_service import sleeve_targets
+                _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
+                _sleeve = {t.upper() for t in sleeve_targets(
+                    _plan_sid, getattr(plan, "strategy_sleeve_pct", None))} if _plan_sid else set()
         except Exception:  # noqa: BLE001
             _sleeve = set()
         _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _sleeve})

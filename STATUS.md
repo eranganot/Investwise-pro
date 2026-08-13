@@ -1,7 +1,97 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (Phase C1)._
+_Last updated: 2026-08-12 by Claude (Phase C2)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C2 — a book runs N sleeves (2026-08-12). NOT YET DEPLOYED
+
+**651 passed** (634 baseline + 17 new), `ruff check app tests` clean. C1 shipped
+and verified live first — `smoke-c1.ps1` green on `5cab5cd`, backfill confirmed
+against the real database.
+
+**This is where it stops being inert.** Applying a second strategy now runs both
+sleeves instead of silently dropping the first.
+
+### Decisions taken this session — do not re-litigate
+
+| # | Decision |
+|---|---|
+| Apply | **Additive.** Applying a second strategy adds a sleeve; applying the same one again re-sizes it. Never a duplicate row. |
+| Over-allocation | **Refuse, never clamp.** Past 100% the apply is rejected with a reason naming the room left, and nothing is written. Clamping would install a sleeve at a size nobody chose and report success. |
+| Removal | **Retires the caps it armed** — `active = False`, history kept, as P4 retires rules on positions no longer held. A ticker another sleeve still wants keeps its cap, re-levelled to what the remainder asks for. |
+| Guardrails | **A sleeve no longer writes `objective` / `risk_tolerance`. A static family still does.** Sharper than the C1 note: the four static families are model PORTFOLIOS — "Grow AI & Semis" is a whole-book allocation and its objective is part of what you chose. Only the rule-based sleeves were overwriting guardrails they do not govern. Existing values are untouched. |
+| Applying at 0% | **Refused**, where it used to be a silent no-op that wrote a plan and armed nothing. There is now a way to say it properly: remove the sleeve. |
+
+### What shipped
+- **`sleeve_service.add_or_resize` / `remove`** — validate-then-write, so a
+  refusal leaves the book exactly as it was.
+- **`all_sleeve_targets`** — the new primitive: every sleeve's targets **summed
+  per ticker**. Both safety rules below are built on it, so they cannot drift
+  apart the way two hand-rolled copies would.
+- **`_arm_sleeve_caps`** replaces `_arm_sleeve_cap`. One cap per ticker at the
+  summed size across sleeves, and a cap no sleeve wants any more is retired.
+  Two sleeves both wanting TQQQ arming their own caps is the **P1 duplicate bug
+  at N scale** — two rules on one ticker at two levels, whichever fires first
+  wins. A summed cap's note names both sleeves, because 35% built from 20 and 15
+  cannot be reconstructed from the screen.
+- **`strategy_service.retire_sleeve`** + `DELETE /api/v1/plan/sleeves/{id}`.
+  Removing the row and re-levelling the caps happen together, on purpose. It
+  also moves the legacy `plans.strategy` pointer, so `/plan` cannot go on
+  reporting a strategy the book no longer runs.
+- **`scripts/set-sleeves.ps1`** — list / add / remove, with `-WhatIf`. The Plan
+  tab has no Remove control until C5, so without this you could add a sleeve
+  from the phone and have no way to drop it. Same escape hatch
+  `retire-holding.ps1` already is.
+- **`/plan/sleeves` gains `created_at`** — because "which boot wrote this?" was
+  a real question the first time C1 deployed, and the answer was log
+  archaeology.
+
+### ⚠️ One piece of C3 pulled forward, because C2 made it undeferrable
+`_fund_sleeve` and the tax harvester each excluded the tickers of **one**
+strategy — whichever `plans.strategy` named. That was correct while a book could
+only run one. **The moment apply became additive it became a money-path
+hazard:** funding Factor Stack could sell the SOXL sleeve, and the harvester
+could offer up a sleeve it did not know about — the same two-agents-disagreeing
+shape as the ₪12 SOXL tax card, on whichever sleeve was not applied most
+recently.
+
+Both now exclude the union across every sleeve. Nothing else from C3 moved; the
+per-sleeve funding preview is still C3's.
+
+The harvester keeps a fallback to the legacy column when there are no sleeve
+rows, so the protection is never weaker than it was in C1.
+
+### ❌ A bug I introduced and the suite caught — `session.rollback()` on refusal
+The over-allocation path called `session.rollback()` before returning. That
+**expires every ORM object in the session**, including the caller's `user`; the
+next attribute read re-queries and fails. It is the same expiry hazard
+`_agent_tx` uses a SAVEPOINT to avoid, and it is already written down in
+CLAUDE.md — reintroduced on the one path nobody exercises.
+
+`test_a_zero_sleeve_arms_nothing` caught it, and only because `_caps()` reads
+`user.email` after the refusal. The rollback was **not needed at all**:
+`add_or_resize` validates before it writes, so on a refusal there is nothing to
+undo. Removed, and the test now asserts the ORM object survives.
+
+### Worth knowing, not fixed here
+`rules_service.list_rules` retires a rule whose ticker is not in the book, at
+read time (P4). So a cap armed for a sleeve you have **chosen but not yet
+funded** is armed and then retired on the next Rules read. Pre-existing, not
+introduced by C2, and arguably right — but it means the cold-start case has a
+cap that does not persist. Flagged rather than changed; it interacts with the
+cold-start card and belongs with C4.
+
+It also cost the first run of the C2 cap tests, which seeded one holding and so
+measured the retirement sweep instead of the arming logic. The fixture now holds
+every sleeve ticker, with a comment saying why.
+
+### Still true, still not verified
+- **Postgres.** SQLite only in the sandbox. CI's `test-postgres` job is the gate.
+- **Nothing deployed.** "N sleeves works" is a claim about 651 green tests.
+- **The frontend still assumes one strategy.** C2 is backend-only; the Plan tab
+  will show the most recently applied sleeve and say "One strategy applies at a
+  time" while the book runs two. That is C5, and the C1 entry has the survey.
+  Until then `set-sleeves.ps1` is the honest view of what is running.
 
 ## ✅ PHASE C1 — `plan_sleeves` lands inert (2026-08-12). NOT YET DEPLOYED
 
@@ -506,11 +596,15 @@ Risk is medium because it touches every request path, so it ships alone.
   blocking decisions settled: **implicit-remainder core** (`is_core` reserved,
   unwritten) and **objective/risk independent of sleeves** (recorded, and
   deliberately deferred to C2 because it is a behaviour change).
-- **C2** add/update/remove a sleeve; `_arm_sleeve_cap` sums per ticker. Also
-  carries the two things C1 deliberately left: making `apply_strategy` stop
-  writing objective/risk tolerance, and making it write a sleeve row — which is
-  what closes the `legacy` window and lets that block be deleted.
+- **✅ C2 — DONE 2026-08-12** (see the Phase C2 block at the top). Additive
+  apply, add/resize/remove, `_arm_sleeve_caps` sums per ticker, removal retires
+  the caps, sleeves stop writing objective/risk. Also pulled **the exclusion-set
+  half of C3** forward: additive apply without it means funding one sleeve can
+  sell another.
 - **C3** funding with the wider exclusion set (sleeve A must never sell B).
+  **The exclusion set itself already shipped in C2** — it stopped being
+  deferrable when apply went additive. What remains here is the per-sleeve
+  funding preview and `load_basket` operating per-sleeve or whole-plan.
 - **C4** signals, discipline rules and the drift/cold-start cards, per sleeve.
 - **C5** the Plan UI: a sleeve list replacing the single-strategy banner.
 

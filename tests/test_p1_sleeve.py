@@ -126,19 +126,32 @@ async def test_arming_is_idempotent_and_relevels_instead_of_stacking():
 @pytest.mark.asyncio
 async def test_a_zero_sleeve_arms_nothing():
     """A 0% cap is breached by any holding at all, so it would fire the instant
-    it was armed -- the app springing a sale rather than setting a guard."""
+    it was armed -- the app springing a sale rather than setting a guard.
+
+    C2 turned this from a silent no-op into a refusal. Applying at 0% used to
+    write the plan and arm nothing, leaving a strategy "applied" that governed no
+    part of the book. There is now a way to say that properly -- remove the
+    sleeve -- so 0% gets an answer instead of a shrug. The original protection is
+    unchanged and still asserted: no 0% cap is ever armed.
+    """
     eng, Session = _session()
     try:
         async with Session() as s:
             user = await _book(s, "zero_probe@example.com", [_pos("MSFT")])
             res = await ss.apply_strategy(s, user, TREND, sleeve_pct=0)
             caps = await _caps(s, user)
+            # A refusal must not expire the caller's ORM objects. An earlier
+            # draft called session.rollback() here, which expires everything in
+            # the session -- reading user.email inside _caps above is what
+            # caught it, with the same MissingGreenlet-adjacent failure
+            # CLAUDE.md already warns about.
+            assert user.email == "zero_probe@example.com"
     finally:
         await eng.dispose()
 
-    assert caps == []
-    assert res["sleeve_caps"] == []
-    assert res["sleeve_cap_note"] is None
+    assert caps == [], "no cap may be armed at 0%"
+    assert res["ok"] is False
+    assert "removal" in res["reason"], res["reason"]
 
 
 @pytest.mark.asyncio
