@@ -114,18 +114,29 @@ if ($r.funding) {
 # =========================================================================== #
 Sec "C3.3  no sleeve is a funding source for another"
 # =========================================================================== #
-$sl = Api GET '/api/v1/plan/sleeves' 60
-if ($null -eq $sl) { Skip "cannot read the sleeve list" }
-else {
-    # Every ticker any sleeve wants, from the preview's own buy legs plus what is
-    # already held for those sleeves.
+# A check that cannot fail is not a check. The first version did
+# `foreach ($x in @($r.funding.sells))` with $r.funding null -- @($null) is a
+# one-element array containing $null, so $x.ticker threw, $sells stayed empty,
+# and the comparison then "passed" having compared nothing. Exactly the shape of
+# the C2 smoke reporting "no cap left behind" while three caps were disarmed.
+$sells = @()
+if ($r.funding -and $r.funding.sells) {
+    foreach ($x in @($r.funding.sells)) { if ($x) { $sells += "$($x.ticker)".ToUpper() } }
+}
+if ($sells.Count -eq 0) {
+    Skip "no funding sales in this plan - there is nothing here to check"
+    Write-Host "        Not a pass: it means the preview proposed no trims at all." -ForegroundColor DarkGray
+} else {
     $sleeveTickers = @()
-    foreach ($s in @($r.sleeves)) { foreach ($b in @($s.buys)) { $sleeveTickers += $b.ticker.ToUpper() } }
-    $sells = @()
-    foreach ($x in @($r.funding.sells)) { $sells += $x.ticker.ToUpper() }
+    foreach ($s in @($r.sleeves)) {
+        foreach ($b in @($s.buys)) { if ($b) { $sleeveTickers += "$($b.ticker)".ToUpper() } }
+    }
     $bad = @($sells | Where-Object { $sleeveTickers -contains $_ })
-    if ($bad.Count -eq 0) { Ok "nothing a sleeve wants appears as a funding sale" }
-    else { Bad "funding proposes selling sleeve tickers: $($bad -join ', ')" }
+    if ($bad.Count -eq 0) {
+        Ok "$($sells.Count) funding sale(s), none of them a ticker a sleeve wants"
+    } else {
+        Bad "funding proposes selling sleeve tickers: $($bad -join ', ')"
+    }
 }
 
 # =========================================================================== #
@@ -177,5 +188,21 @@ if ($null -ne $before -and $null -ne $after) {
 Write-Host "`n----------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host "C3a SMOKE: $pass passed, $fail failed, $skip skipped" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($skip -gt 0) { Write-Host "A SKIP is not a pass - read the note under each one." -ForegroundColor Yellow }
-Write-Host "The trims and the tax above are what C3b would actually do. Check them." -ForegroundColor Yellow
+
+# The point of C3a is to READ a real funding plan before enabling the write. If
+# there was nothing to fund, this run proved the endpoint works and told you
+# nothing whatsoever about the money path. Say so, loudly, rather than letting
+# "10 passed" read as "the funding logic is verified".
+if ($sells.Count -eq 0) {
+    Write-Host "`n  THIS RUN DID NOT EXERCISE THE MONEY PATH." -ForegroundColor Yellow
+    Write-Host "  Every sleeve was already at its target, so there were no trims and no" -ForegroundColor Yellow
+    Write-Host "  tax to check. Green here is NOT evidence that C3b is safe to enable." -ForegroundColor Yellow
+    Write-Host "  To get a real plan to read, add a second sleeve and re-run:" -ForegroundColor Gray
+    Write-Host "    .\scripts\set-sleeves.ps1 -Add btm_factor_stack -Pct 15" -ForegroundColor Gray
+    Write-Host "    .\scripts\smoke\smoke-c3.ps1" -ForegroundColor Gray
+    Write-Host "    .\scripts\set-sleeves.ps1 -Remove btm_factor_stack" -ForegroundColor Gray
+    Write-Host "  All read-only except the sleeve row and its caps, which C2 round-trips." -ForegroundColor DarkGray
+} else {
+    Write-Host "The trims and the tax above are what C3b would actually do. Check them." -ForegroundColor Yellow
+}
 if ($fail) { exit 1 }
