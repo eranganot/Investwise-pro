@@ -44,14 +44,19 @@ REPLACE = "replace"
 # Whole-plan funding is not a `load_basket` mode: it is not about one basket.
 FUND_PLAN = "fund_plan"
 
-# C3a: the multi-sleeve funding path SIZES and PREVIEWS but does not execute.
-# Spending one budget across several sleeves is the first thing in this phase
-# that can sell shares nobody looked at first, so the numbers get read against a
-# real book before the write is enabled. C3b flips this to True.
+# C3b: multi-sleeve funding EXECUTES.
 #
-# The SINGLE-sleeve path is unaffected and still executes -- it has been live
-# since P0.1 and this phase does not change what it does.
-PLAN_FUNDING_EXECUTION = False
+# It shipped False in C3a deliberately -- spending one budget across several
+# sleeves is the first thing in this phase that can sell shares nobody looked at
+# first. Flipped only after the preview was read against the real book: a 15%
+# factor sleeve on a 21,297 NAV planned 3,195 of buys, funded by trimming VXUS
+# and SCHD for 10 shekels of tax, with a 38 shekel residual (0.18% of NAV). The
+# arithmetic, the exclusion set and the refusal were all checked there first.
+#
+# Kept as a switch rather than deleted: it is the fastest way to take the
+# multi-sleeve write out of service without a revert, and a test asserts that
+# setting it False still refuses.
+PLAN_FUNDING_EXECUTION = True
 
 BROKER_NOTE = "Tracked book updated — no brokerage order was placed."
 
@@ -479,6 +484,18 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
     return legs
 
 
+def _buying_class(legs) -> str | None:
+    """The single asset class a set of buy legs lands in, or None if mixed.
+
+    Only used to let `describe_funding` say "this does not change your Equities
+    weight" when it is true. Mixed buys get no claim rather than a vague one.
+    """
+    from app.services.allocation_mix import classify
+    classes = {classify(str(leg.get("ticker") or "").upper(), "NASDAQ", None)
+               for leg in (legs or [])}
+    return classes.pop() if len(classes) == 1 else None
+
+
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,
                        *, total: float | None, sleeve_pct: float | None,
                        dry_run: bool) -> dict:
@@ -542,14 +559,14 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                 "chosen_sleeve_pct": round(chosen_pct, 1),
                 "achievable_sleeve_pct": round(achievable_pct, 1),
                 "buys": legs, "funding": fund,
-                "funding_summary": describe_funding(fund)}
+                "funding_summary": describe_funding(fund, _buying_class(legs))}
 
     preview = {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                "sleeve_pct": sleeve_pct, "amount_ils": amount,
                "chosen_sleeve_pct": round(chosen_pct, 1),
                "achievable_sleeve_pct": round(achievable_pct, 1),
                "buys": legs, "funding": fund,
-               "funding_summary": describe_funding(fund),
+               "funding_summary": describe_funding(fund, _buying_class(legs)),
                "broker_note": BROKER_NOTE}
     if dry_run:
         return {**preview, "dry_run": True}
@@ -687,7 +704,9 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
                          and residual < MIN_TRADE_ILS),
         "plan_shortfall_ils": round(residual, 2),
         "funding": fund,
-        "funding_summary": describe_funding(fund) if fund else "Nothing to fund.",
+        "funding_summary": (describe_funding(
+            fund, _buying_class([lg for x in funded for lg in x["buys"]]))
+            if fund else "Nothing to fund."),
         "broker_note": BROKER_NOTE,
     }
     if not result["fully_funded"]:

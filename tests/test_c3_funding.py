@@ -213,12 +213,7 @@ def test_the_residual_is_spread_across_every_leg_not_dumped_on_the_last():
         assert wanted, "precondition: something must be fundable"
         expected_legs = sum(len(x["buys"]) for x in wanted)
 
-        original = ss.PLAN_FUNDING_EXECUTION
-        try:
-            ss.PLAN_FUNDING_EXECUTION = True
-            res = _fund(c, dry_run=False)
-        finally:
-            ss.PLAN_FUNDING_EXECUTION = original
+        res = _fund(c, dry_run=False)
 
         assert res["leg_scale"] <= 1.0
         assert not res["skipped"], f"a leg was dropped: {res['skipped']}"
@@ -254,7 +249,14 @@ def test_a_complete_fund_says_so():
 # --------------------------------------------------------------------------- #
 # C3a cannot sell anything
 # --------------------------------------------------------------------------- #
-def test_execution_is_refused_and_the_refusal_still_shows_the_plan():
+def test_closing_the_gate_still_refuses_and_still_shows_the_plan():
+    """C3b opened the gate; the switch has to keep working.
+
+    It is the fastest way to take the multi-sleeve write out of service without
+    a revert, so "does False still mean no" cannot be left to assumption. The
+    refusal must also carry the sizing -- a blank wall is useless to whoever is
+    trying to work out why it stopped.
+    """
     with TestClient(m.app) as c:
         _seed(c, cash=100000)
         _apply(c, SOXL, 10)
@@ -262,11 +264,15 @@ def test_execution_is_refused_and_the_refusal_still_shows_the_plan():
                   for p in c.get("/api/v1/portfolio").json()["positions"]}
         cash_before = c.get("/api/v1/portfolio/cash").json()
 
-        res = _fund(c, dry_run=False)
+        original = ss.PLAN_FUNDING_EXECUTION
+        try:
+            ss.PLAN_FUNDING_EXECUTION = False
+            res = _fund(c, dry_run=False)
+        finally:
+            ss.PLAN_FUNDING_EXECUTION = original
+
         assert res["ok"] is False
         assert "preview-only" in res["error"]
-        # The refusal is not a blank wall: the sizing it refused to act on is
-        # exactly what the user needs in order to check it.
         assert res["sleeves"] and res["funding"] is not None
 
         after = {p["ticker"]: p["quantity"]
@@ -275,22 +281,36 @@ def test_execution_is_refused_and_the_refusal_still_shows_the_plan():
         assert c.get("/api/v1/portfolio/cash").json() == cash_before
 
 
-def test_the_gate_is_the_only_thing_stopping_it():
-    """Proves the refusal is a deliberate gate rather than a path that never
-    worked -- otherwise C3b would flip a switch onto untested code."""
+def test_execution_is_on_by_default_now():
+    """C3b. The gate defaults open, and a plain call actually buys."""
+    assert ss.PLAN_FUNDING_EXECUTION is True
     with TestClient(m.app) as c:
         _seed(c, cash=100000)
         _apply(c, SOXL, 10)
-        original = ss.PLAN_FUNDING_EXECUTION
-        try:
-            ss.PLAN_FUNDING_EXECUTION = True
-            res = _fund(c, dry_run=False)
-            assert res["ok"] is True and res["dry_run"] is False
-            assert res["bought"], "with the gate open it must actually buy"
-            bought = {b["ticker"] for b in res["bought"]}
-            assert "SOXL" in bought
-        finally:
-            ss.PLAN_FUNDING_EXECUTION = original
+        res = _fund(c, dry_run=False)
+        assert res["ok"] is True and res["dry_run"] is False
+        assert {b["ticker"] for b in res["bought"]} == {"SOXL"}
+
+
+def test_a_dry_run_still_changes_nothing_now_that_the_gate_is_open():
+    """The one that matters most after flipping it: dry_run must still be inert.
+    An open gate plus a dry_run that quietly executes is the worst outcome here.
+    """
+    with TestClient(m.app) as c:
+        _seed(c, cash=100000)
+        _apply(c, SOXL, 10)
+        before = {p["ticker"]: p["quantity"]
+                  for p in c.get("/api/v1/portfolio").json()["positions"]}
+        cash_before = c.get("/api/v1/portfolio/cash").json()
+
+        res = _fund(c, dry_run=True)
+        assert res["dry_run"] is True
+        assert "bought" not in res and "sold" not in res
+
+        after = {p["ticker"]: p["quantity"]
+                 for p in c.get("/api/v1/portfolio").json()["positions"]}
+        assert after == before, "a dry run moved holdings"
+        assert c.get("/api/v1/portfolio/cash").json() == cash_before
 
 
 def test_single_sleeve_funding_still_executes_untouched():
@@ -325,6 +345,59 @@ def test_funding_sizes_from_the_sleeve_row_not_the_legacy_column():
         # 7% of the book, from the row -- not the catalog's suggested 10%.
         assert r["chosen_sleeve_pct"] == pytest.approx(7.0, abs=0.3), (
             f"sized at {r['chosen_sleeve_pct']}%, expected the row's 7%")
+
+
+# --------------------------------------------------------------------------- #
+# The funding summary has to describe the trade it is actually proposing
+# --------------------------------------------------------------------------- #
+def test_selling_equities_to_buy_equities_says_the_weight_does_not_move():
+    """The wording bug the first real preview exposed.
+
+    Two sales were labelled "Equities is 97% against a 80% target, so it's the
+    overweight sleeve" — and then every shekel went into MTUM, QUAL and AVUV,
+    also equities. The 97% did not move by a point. The card read as a rebalance
+    it was not.
+    """
+    with TestClient(m.app) as c:
+        _seed(c, cash=0)             # force the money to come from sales
+        _apply(c, FACTOR, 15)
+        res = _fund(c)
+        summary = res["funding_summary"]
+        assert (res.get("funding") or {}).get("sells"), "precondition: something must be sold"
+        assert "does not change your Equities weight" in summary, summary
+        assert "swaps which equities you hold" in summary, summary
+
+
+def test_no_sale_claims_to_be_correcting_the_overweight_it_names():
+    """The per-sale reason explains why THAT position was picked. It must not
+    read as a justification for the trade."""
+    with TestClient(m.app) as c:
+        _seed(c, cash=0)
+        _apply(c, FACTOR, 15)
+        sells = (_fund(c).get("funding") or {}).get("sells", [])
+        assert sells, "precondition: something must be sold"
+        for sell in sells:
+            reason = sell["reason"]
+            assert "overweight sleeve" not in reason, reason
+            # "sleeve" now means a strategy sleeve everywhere else on this
+            # screen; it must not also mean "asset class" here.
+            assert "sleeve" not in reason.lower(), reason
+            # Exactly two honest shapes. The single-name one IS a justification
+            # -- a position over its own cap should come down, and selling it
+            # genuinely fixes that. The class one is only a ranking.
+            assert ("single-name cap" in reason
+                    or "cheapest way to raise it" in reason), reason
+
+
+def test_a_cash_funded_purchase_makes_no_claim_about_weights():
+    """The clause is only true when the money came out of the class it goes
+    back into. Funded from cash, there is nothing to disclaim."""
+    with TestClient(m.app) as c:
+        _seed(c, cash=100000)        # plenty of cash, no sales needed
+        _apply(c, SOXL, 10)
+        res = _fund(c)
+        assert not (res.get("funding") or {}).get("sells")
+        assert "does not change your" not in res["funding_summary"]
 
 
 def test_a_book_with_no_sleeves_is_told_so_rather_than_funding_nothing_quietly():

@@ -1,7 +1,74 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (Phase C3a)._
+_Last updated: 2026-08-13 by Claude (Phase C3b)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C3b — multi-sleeve funding EXECUTES, and the card stops misdescribing itself
+
+**705 passed on SQLite, 701 / 8 skipped on Postgres, ruff clean.**
+
+### The preview that unlocked it — read against the real book on `f9cfc55`
+`btm_factor_stack` at 15%, added temporarily alongside the live 10% SOXL sleeve:
+
+| | |
+|---|---|
+| NAV | ₪21,297 |
+| Sleeve target | 15% → **₪3,195** (= 799 AVUV + 1,278 MTUM + 1,118 QUAL) |
+| Funded by | ₪3 cash + **VXUS 7 shares ₪1,832** + **SCHD 13 shares ₪1,331** |
+| Tax | **₪10 total** — it picked the two least-taxed positions |
+| Residual | **₪38, 0.18% of NAV**, inside the one-point tolerance |
+| Exclusion set | neither sale is a ticker any sleeve wants ✅ |
+
+Add and remove round-tripped clean: caps armed at 3.8 / 6.0 / 5.2 summing to 15%,
+SOXL untouched, all three retired on removal, nothing sold.
+
+### ❌ The card was describing a trade it was not making
+Both sales were labelled _"Equities is 97% against a 80% target, so it's the
+overweight sleeve"_ — and then **every shekel went into MTUM, QUAL and AVUV,
+which are also equities.** The equity weight after the plan is still 97%. The
+trim named an overweight it does nothing about.
+
+The reason string was honest as a *ranking* explanation — it is why VXUS was
+picked over MSFT — and misleading as a *justification*. On the card it reads as
+"we are rebalancing you toward 80% equities". The real trade is swapping
+international and dividend exposure for US factor exposure, which may well be
+what you want, but it is a different decision and the screen did not say so.
+
+Same shape as P4's three bugs: each agent individually correct, disagreeing on
+one screen. **It was pre-existing** — the single-sleeve Fund button has always
+read this way — and C3 only made it prominent.
+
+Also fixed in passing: that message said **"sleeve" meaning ASSET CLASS**, on a
+screen where "sleeve" now means a strategy sleeve. A terminology collision Phase
+C created.
+
+**Two changes, no arithmetic touched:**
+- The class-level reason now says what it is:
+  _"cheapest way to raise it: Equities is the most overweight class (97% against
+  a 80% target) and VXUS is among its least-taxed positions."_
+  The single-name reason is unchanged — a position above its own cap genuinely
+  *is* corrected by selling it, so that one was always a fair justification.
+- `describe_funding(fund, buying_class)` adds an honesty clause when the money
+  goes straight back into the class it came out of: _"This does not change your
+  Equities weight — the proceeds buy Equities again. It swaps which equities you
+  hold."_ Only when it is true; a cash-funded purchase makes no such claim.
+
+### The gate is open, and still a gate
+`PLAN_FUNDING_EXECUTION = True`. Kept as a switch rather than deleted — it is the
+fastest way to take the multi-sleeve write out of service without a revert — and
+a test asserts that setting it `False` still refuses **and still returns the
+sizing**, because a blank wall is useless to whoever is working out why it
+stopped.
+
+The test that matters most after flipping it: **a `dry_run` still changes
+nothing.** An open gate plus a dry run that quietly executes is the worst
+available outcome, so it is asserted directly against holdings and cash.
+
+### Still open, deliberately
+`rank_trim_candidates` ranks against the **plan's** concentration cap (40% at
+High) and tax-friendliness — it does **not** know about hand-set caps. A position
+over its own 30% cap is not preferentially trimmed. Pre-existing, out of scope
+here, and worth a look before the trim ranking is trusted much further.
 
 ## ✅ PHASE C3a — fund N sleeves on ONE budget. PREVIEW ONLY, NOT YET DEPLOYED
 

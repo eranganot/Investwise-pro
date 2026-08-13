@@ -122,9 +122,20 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
             reason = (f"{p['ticker']} is {p['weight']:.0%} of the book, above your "
                       f"{cap:.0%} single-name cap")
         else:
-            reason = (f"{cls} is {mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} "
-                      f"target, so it's the overweight sleeve")
+            # This says why THIS position was picked to sell. It is NOT a claim
+            # that selling it corrects the overweight.
+            #
+            # The old wording -- "so it's the overweight sleeve" -- read as a
+            # rebalance justification. On the first real C3 preview it labelled
+            # two sales that way and then put every shekel back into the same
+            # asset class: the 97% it named did not move by a single point. It
+            # also said "sleeve" meaning ASSET CLASS, on a screen where sleeve
+            # now means a strategy sleeve.
+            reason = (f"cheapest way to raise it: {cls} is the most overweight class "
+                      f"({mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} target) "
+                      f"and {p['ticker']} is among its least-taxed positions")
         out.append({**p, "score": round(score, 2), "reason": reason,
+                    "asset_class": cls,
                     "gain_pct": round(gain_pct, 1),
                     "trimmable_ils": round(max(name_over, class_over) * nav, 2)})
     out.sort(key=lambda x: x["score"], reverse=True)
@@ -167,6 +178,9 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             tax = gain * rate * float(get_settings().cgt_rate)
             sells.append({"ticker": cand["ticker"], "market": cand["market"], "shares": shares,
                           "value_ils": round(value, 2), "tax_ils": round(tax, 2),
+                          # Carried so a caller can tell whether the proceeds are
+                          # going straight back into the class they came out of.
+                          "asset_class": cand.get("asset_class"),
                           "reason": cand["reason"], "gain_pct": cand["gain_pct"]})
             tax_total += tax
             remaining = round(remaining - value, 2)
@@ -184,8 +198,14 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     }
 
 
-def describe_funding(fund: dict) -> str:
-    """One plain sentence naming the money's source — no jargon, no ambiguity."""
+def describe_funding(fund: dict, buying_class: str | None = None) -> str:
+    """One plain sentence naming the money's source — no jargon, no ambiguity.
+
+    ``buying_class`` is what the proceeds are being spent on. Pass it and the
+    sentence will say so when the money is going straight back into the class it
+    came out of — because that is a fact the sale reasons cannot express on their
+    own, and its absence made a real preview read as a rebalance it was not.
+    """
     bits = []
     if fund.get("from_cash_ils"):
         bits.append(f"₪{fund['from_cash_ils']:,.0f} from cash")
@@ -196,6 +216,16 @@ def describe_funding(fund: dict) -> str:
     line = "Fund it with " + " and ".join(bits) + "."
     if fund.get("tax_ils"):
         line += f" Estimated tax on the sale: ₪{fund['tax_ils']:,.0f}."
+
+    # The honesty clause. Selling equities to buy equities is a legitimate
+    # trade -- swapping international and dividend exposure for factor exposure
+    # is a real decision -- but it is NOT the rebalance the per-sale reasons
+    # sound like, and the user has to be told which one they are agreeing to.
+    sold = {s.get("asset_class") for s in fund.get("sells", []) if s.get("asset_class")}
+    if buying_class and sold and sold == {buying_class}:
+        line += (f" This does not change your {buying_class} weight — the proceeds buy "
+                 f"{buying_class} again. It swaps which {buying_class.lower()} you hold.")
+
     if fund.get("shortfall_ils"):
         line += f" That still leaves ₪{fund['shortfall_ils']:,.0f} short."
     return line
