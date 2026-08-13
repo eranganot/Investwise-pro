@@ -1,7 +1,57 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (Phase C2)._
+_Last updated: 2026-08-12 by Claude (Postgres note-length hotfix)._
 _Seeded from git history + prior transcripts._
+
+## 🔴 CI WAS RED ON `main` — a 161-character note in a VARCHAR(160) column
+
+`test-postgres` failed on `7f990fd` while `test` and `lint` passed. Three tests,
+one cause: `StringDataRightTruncationError: value too long for type character
+varying(160)`.
+
+**SQLite does not enforce VARCHAR length. Postgres does.** So C2's cap note was
+green across 653 local tests and broken on the database production runs on.
+
+**The number.** `_cap_note` for two sleeves sharing a ticker produced exactly
+**161** characters — one over — for
+`Trend-Filtered Leveraged Nasdaq + Volatility-Targeted Leverage`. Three sleeves
+produced 187.
+
+**This was a live 500 waiting to happen, not just a red build.** The multi-sleeve
+note is only reached when two sleeves want the same ticker. Eran runs one, and
+the C2 smoke's probe used a strategy with different tickers — so production never
+hit it. Applying Trend-Filtered *and* Volatility-Targeted, both of which want
+TQQQ, would have 500'd `apply_strategy`.
+
+**Fixed by making the note fit rather than by chopping it.** Dropping the
+`your sleeves:` lead-in bought 14 characters, which is the difference between
+naming both sleeves and falling back to a bare count in the commonest case. The
+long form is attempted; a count form, whose length does not depend on catalog
+names, takes over when it will not fit; `[:MAX_RULE_NOTE]` is a backstop rather
+than the plan. `MAX_RULE_NOTE` is asserted against
+`TradingRule.__table__.c.note.type.length`, so a hardcoded 160 cannot drift from
+the column it guards.
+
+**The check is one the data can fail.** `tests/test_rule_note_length.py`
+parametrises over the real catalog: every single strategy, **every pair**, and
+all seven at once. Renaming a strategy to something long now fails there instead
+of in production.
+
+### 🐘 Postgres is no longer a blind spot in the sandbox
+Every C1/C2 entry carried "Postgres unverified — CI is the gate". It did not have
+to be that way: `apt-get install postgresql`, `initdb`, and the suite runs
+against `postgresql+asyncpg://` locally in ~5.5 minutes. **Do this before pushing
+anything that touches a model or writes a string.** CI found this one; it should
+have been found here.
+
+Run both, because they disagree — that is the entire point:
+
+```
+DATABASE_URL="postgresql+asyncpg://investwise:investwise@localhost:5432/investwise" python -m pytest -q
+DATABASE_URL="sqlite+aiosqlite:///$HOME/iw_test_app.db"                              python -m pytest -q
+```
+
+**684 passed on SQLite, 680 passed / 8 skipped on Postgres, ruff clean.**
 
 ## ✅ PHASE C2 — a book runs N sleeves (2026-08-12). SHIPPED `8c254c4`, THEN PATCHED
 

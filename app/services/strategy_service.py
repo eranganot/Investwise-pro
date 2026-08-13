@@ -68,6 +68,11 @@ SLEEVE_SHORTFALL_TOLERANCE_PCT = 1.0
 # ticker two sleeves both want has two owners and one column.
 SLEEVE_OWNED = "sleeve"
 
+# `trading_rules.note` is VARCHAR(160). SQLite does not enforce that and
+# Postgres does, so an over-long note is green locally and a 500 in production.
+# Mirrored from the model rather than guessed, so the two cannot drift.
+MAX_RULE_NOTE = 160
+
 
 def _pdicts(rows) -> list[dict]:
     # meta is carried deliberately: it holds `price_currency`, without which an
@@ -86,15 +91,36 @@ def _nav(rows) -> float:
 
 
 def _cap_note(ticker: str, level: float, sleeve_ids: list[str]) -> str:
+    """The explanation stored on a sleeve-armed cap. **Must fit MAX_RULE_NOTE.**
+
+    ``trading_rules.note`` is ``VARCHAR(160)``. SQLite ignores that; Postgres
+    raises ``StringDataRightTruncationError`` and the whole apply 500s. The
+    first version of the two-sleeve wording came to **161 characters** for
+    "Trend-Filtered Leveraged Nasdaq + Volatility-Targeted Leverage" and 187 for
+    three sleeves -- green on the local SQLite suite, red on CI's Postgres job,
+    and a live 500 waiting for the first book to run two sleeves on one ticker.
+
+    So the long form is *attempted*, and the short form -- whose length does not
+    depend on how the catalog names things -- is used when it does not fit. The
+    truncation at the end is a backstop, not the plan: a note that has to be
+    chopped has already lost the sentence that mattered.
+    """
     names = [(strategy_catalog.get(i) or {}).get("name", i) for i in sleeve_ids]
     if len(names) > 1:
-        # Say the sum out loud. A 25% cap that is 10% from one sleeve and 15%
-        # from another is not a number anyone can reconstruct from the screen.
-        return (f"{' + '.join(names)}: your sleeves want {ticker} at {level:g}% of the "
-                f"book between them. One cap at the total, not one per sleeve.")
+        # Say the sum out loud. A 35% cap that is 20 from one sleeve and 15 from
+        # another is not a number anyone can reconstruct from the screen.
+        tail = (f"want {ticker} at {level:g}% of the book between them. "
+                f"One cap at the total, not one per sleeve.")
+        # No "your sleeves:" lead-in -- dropping it buys 14 characters, which is
+        # the difference between naming both sleeves and falling back to a count
+        # for the commonest case (two strategies sharing TQQQ came to 161).
+        long_form = f"{' + '.join(names)} {tail}"
+        if len(long_form) <= MAX_RULE_NOTE:
+            return long_form
+        return f"{len(names)} sleeves {tail}"[:MAX_RULE_NOTE]
     who = names[0] if names else "Your sleeve"
     return (f"{who}: the sleeve you chose. Caps {ticker} at {level:g}% of the book "
-            f"-- it does not make the rebalancer aim for it.")
+            f"-- it does not make the rebalancer aim for it.")[:MAX_RULE_NOTE]
 
 
 async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
