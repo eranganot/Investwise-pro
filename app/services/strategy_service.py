@@ -41,6 +41,17 @@ from app.services.portfolio_analytics import compute_snapshot
 # Modes `load_basket` understands. "fund" is additive, "replace" is destructive.
 FUND = "fund"
 REPLACE = "replace"
+# Whole-plan funding is not a `load_basket` mode: it is not about one basket.
+FUND_PLAN = "fund_plan"
+
+# C3a: the multi-sleeve funding path SIZES and PREVIEWS but does not execute.
+# Spending one budget across several sleeves is the first thing in this phase
+# that can sell shares nobody looked at first, so the numbers get read against a
+# real book before the write is enabled. C3b flips this to True.
+#
+# The SINGLE-sleeve path is unaffected and still executes -- it has been live
+# since P0.1 and this phase does not change what it does.
+PLAN_FUNDING_EXECUTION = False
 
 BROKER_NOTE = "Tracked book updated — no brokerage order was placed."
 
@@ -407,9 +418,20 @@ async def load_basket(session: AsyncSession, user: User, strategy_id: str,
                       total: float | None = None, sleeve_pct: float | None = None,
                       mode: str | None = None, dry_run: bool = False) -> dict:
     if sleeve_pct is None:
-        _plan = await get_plan(session, user)
-        if _plan is not None and getattr(_plan, "strategy", None) == strategy_id:
-            sleeve_pct = getattr(_plan, "strategy_sleeve_pct", None)
+        # C3: size from the sleeve ROW. The old fallback read
+        # plans.strategy_sleeve_pct, and only when plans.strategy happened to
+        # name this strategy -- so on a book running two sleeves, funding the one
+        # that was not applied most recently silently fell through to the
+        # catalog default instead of the size you chose.
+        from app.services import sleeve_service as sv
+        row = next((x for x in await sv.list_sleeves(session, user)
+                    if x.strategy_id == strategy_id), None)
+        if row is not None:
+            sleeve_pct = float(row.sleeve_pct)
+        else:
+            _plan = await get_plan(session, user)
+            if _plan is not None and getattr(_plan, "strategy", None) == strategy_id:
+                sleeve_pct = getattr(_plan, "strategy_sleeve_pct", None)
     s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}
@@ -425,6 +447,38 @@ async def load_basket(session: AsyncSession, user: User, strategy_id: str,
 # --------------------------------------------------------------------------- #
 # mode="fund"
 # --------------------------------------------------------------------------- #
+def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
+              *, total: float | None = None) -> list[dict]:
+    """What to buy, per ticker, to bring a sleeve up to its target.
+
+    Extracted so single-sleeve and whole-plan funding size legs with the SAME
+    code. Two implementations of "how much of this do I need" would eventually
+    disagree, and the one that disagreed would be whichever the user happened to
+    press -- the duplicated-reprice-loop shape.
+
+    A ``total`` override means "spend exactly this much", split across the sleeve
+    by its own weights. Otherwise the sleeve is sized as a share of NAV and only
+    the shortfall against what is already held is bought.
+    """
+    legs: list[dict] = []
+    weight_sum = sum(targets.values()) or 1.0
+    for tk, w in sorted(targets.items()):
+        tk = tk.upper()
+        if total and total > 0:
+            want = float(total) * (w / weight_sum)
+            short = want
+        else:
+            want = nav * w
+            short = want - held.get(tk, 0.0)
+        if short < MIN_TRADE_ILS:
+            continue
+        legs.append({"ticker": tk, "target_ils": round(want, 2),
+                     "held_ils": round(held.get(tk, 0.0), 2),
+                     "buy_ils": round(short, 2),
+                     "target_pct": round(w * 100, 1)})
+    return legs
+
+
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,
                        *, total: float | None, sleeve_pct: float | None,
                        dry_run: bool) -> dict:
@@ -445,25 +499,7 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     cash_ils = await get_cash(session, user)
     held = _held_ils(rows, snap)
 
-    # A `total` override means "spend exactly this much", split across the sleeve
-    # by its own weights. Otherwise the sleeve is sized as a share of NAV and we
-    # buy only the shortfall against what is already held.
-    legs: list[dict] = []
-    weight_sum = sum(targets.values()) or 1.0
-    for tk, w in sorted(targets.items()):
-        tk = tk.upper()
-        if total and total > 0:
-            want = float(total) * (w / weight_sum)
-            short = want
-        else:
-            want = nav * w
-            short = want - held.get(tk, 0.0)
-        if short < MIN_TRADE_ILS:
-            continue
-        legs.append({"ticker": tk, "target_ils": round(want, 2),
-                     "held_ils": round(held.get(tk, 0.0), 2),
-                     "buy_ils": round(short, 2),
-                     "target_pct": round(w * 100, 1)})
+    legs = _legs_for(targets, nav, held, total=total)
     amount = round(sum(x["buy_ils"] for x in legs), 2)
     if amount < MIN_TRADE_ILS:
         return {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
@@ -520,6 +556,186 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
 
     executed = await _execute_funded_sleeve(session, user, legs, fund)
     return {**preview, "dry_run": False, **executed}
+
+
+# --------------------------------------------------------------------------- #
+# Whole-plan funding (C3)
+# --------------------------------------------------------------------------- #
+async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) -> dict:
+    """Fund every under-funded sleeve on the book in one pass.
+
+    **Why one pass rather than calling ``_fund_sleeve`` N times.** Each call
+    builds its own funding plan from the same cash and the same trim candidates.
+    Run twice, and both would plan to spend the cash above your floor and both
+    would plan to trim the same shares -- the money counted once by the book and
+    twice by the app. One shared plan is the only version that can be right.
+
+    **Largest sleeve first when the money will not stretch.** Each sleeve is
+    funded to the size you chose or skipped entirely -- never installed at a size
+    nobody picked, which is what the single-sleeve path already abstains over.
+    The order is a preference, not a result: it honours the conviction your
+    sleeve sizes encode, and it sells less than the alternative, because what a
+    sleeve does not claim simply stays in the objective-managed core rather than
+    sitting idle. The cost, said plainly: your largest sleeve is also the one
+    least likely to fit, and when it does not, the smaller ones still get a turn.
+
+    **Capacity is asked of the funding engine, never recomputed.** Whether a
+    sleeve fits is decided by calling ``plan_funding`` for the running total and
+    reading its shortfall. A separate "how much could this book raise" sum would
+    be a second implementation of the same question, free to disagree with the
+    one that actually does the work.
+    """
+    from app.services import sleeve_service as sv
+
+    sleeves = await sv.list_sleeves(session, user)
+    if not sleeves:
+        return {"ok": False, "mode": FUND_PLAN,
+                "error": "no sleeves on this book — apply a strategy first"}
+
+    rows = await list_positions(session, user)
+    snap = _snapshot(rows)
+    nav = snap.get("nav") or 0.0
+    if nav <= 0:
+        return {"ok": False, "mode": FUND_PLAN,
+                "error": "no tracked holdings to size sleeves against — add holdings or cash first"}
+
+    plan = await get_plan(session, user)
+    objective = plan.objective if plan else "Grow"
+    cap = effective_caps(plan)["concentration_cap"]
+    cash_ils = await get_cash(session, user)
+    held = _held_ils(rows, snap)
+    # No sleeve is a funding source for any other, including itself.
+    exclude = await sv.sleeve_tickers(session, user)
+
+    def _fits(total_ils: float) -> dict:
+        return plan_funding(rows, snap, plan, objective, cap, total_ils,
+                            cash_ils=cash_ils, exclude=exclude)
+
+    # Largest first. Ties broken by strategy id so the order is deterministic --
+    # a funding plan that changes between two identical previews is untrustworthy
+    # even when both are correct.
+    ordered = sorted(sleeves, key=lambda x: (-float(x.sleeve_pct or 0.0), x.strategy_id))
+
+    out: list[dict] = []
+    running = 0.0
+    for row in ordered:
+        sid = row.strategy_id
+        pct = float(row.sleeve_pct or 0.0)
+        targets = sleeve_targets(sid, pct)
+        entry = {"strategy_id": sid, "sleeve_pct": pct,
+                 "name": (strategy_catalog.get(sid) or {}).get("name", sid)}
+        if not targets:
+            out.append({**entry, "status": "not_a_sleeve", "amount_ils": 0.0,
+                        "reason": "this strategy's basket is the core itself — nothing to fund"})
+            continue
+        legs = _legs_for(targets, nav, held)
+        amount = round(sum(x["buy_ils"] for x in legs), 2)
+        if amount < MIN_TRADE_ILS:
+            out.append({**entry, "status": "nothing_to_do", "amount_ils": 0.0, "buys": [],
+                        "reason": "already held at roughly its target"})
+            continue
+
+        trial = _fits(round(running + amount, 2))
+        trial_short = float(trial.get("shortfall_ils") or 0.0)
+        # Judged in POINTS OF NAV, matching the single-sleeve rule, and the
+        # detour that got here is worth recording.
+        #
+        # A stricter "the plan must be payable to the shekel" was tried first,
+        # after a probe showed two sleeves reported funded with a 621 shekel hole
+        # in the plan. But probing further showed the residual is STRUCTURAL:
+        # `plan_funding` sells whole shares and nets capital-gains tax out of the
+        # proceeds, so it essentially always lands a little short of the exact
+        # figure -- 339 shekels on a 5,765 sleeve, from one share of rounding
+        # plus tax. A shekel-exact rule rejects almost everything, which is
+        # precisely why the single-sleeve path judges in points of NAV.
+        #
+        # The residual was never the real hazard. The hazard was that
+        # `_execute_funded_sleeve` lets the LAST leg absorb all of it and drops
+        # that leg entirely if what is left falls below MIN_TRADE_ILS -- so one
+        # arbitrary sleeve loses a whole position. That is fixed where it lives,
+        # by scaling every leg proportionally, rather than by refusing to fund.
+        if trial_short / nav * 100.0 >= SLEEVE_SHORTFALL_TOLERANCE_PCT:
+            out.append({**entry, "status": "skipped", "amount_ils": amount, "buys": legs,
+                        "shortfall_ils": round(trial_short, 2),
+                        "reason": (f"needs ₪{amount:,.0f} and the book is "
+                                   f"₪{trial_short:,.0f} short of "
+                                   f"funding it on top of the sleeves above it")})
+            continue
+        running = round(running + amount, 2)
+        out.append({**entry, "status": "funded", "amount_ils": amount, "buys": legs})
+
+    funded = [x for x in out if x["status"] == "funded"]
+    fund = _fits(running) if running >= MIN_TRADE_ILS else None
+    # Read off the plan that will actually run, not the trial that accepted the
+    # last sleeve, and reported rather than buried: whole-share rounding and tax
+    # mean this is normally small but rarely zero.
+    residual = float((fund or {}).get("shortfall_ils") or 0.0)
+
+    # Intended vs resulting, stated rather than left to be worked out. A pass
+    # that funds two of three sleeves is not a success and must not read as one.
+    intended_pct = round(sum(float(s.sleeve_pct or 0.0) for s in sleeves), 1)
+    held_sleeve_ils = sum(held.get(tk, 0.0) for tk in exclude)
+    resulting_pct = round((held_sleeve_ils + running) / nav * 100.0, 1)
+
+    result = {
+        "ok": True, "mode": FUND_PLAN, "nav": round(nav, 2),
+        "sleeves": out,
+        "amount_ils": running,
+        "intended_sleeve_pct": intended_pct,
+        "resulting_sleeve_pct": resulting_pct,
+        "fully_funded": (all(x["status"] in ("funded", "nothing_to_do") for x in out)
+                         and residual < MIN_TRADE_ILS),
+        "plan_shortfall_ils": round(residual, 2),
+        "funding": fund,
+        "funding_summary": describe_funding(fund) if fund else "Nothing to fund.",
+        "broker_note": BROKER_NOTE,
+    }
+    if not result["fully_funded"]:
+        skipped = [x["name"] for x in out if x["status"] == "skipped"]
+        result["message"] = (
+            f"This would leave the book at {resulting_pct:g}% in sleeves against the "
+            f"{intended_pct:g}% you chose."
+            + (f" Not funded: {', '.join(skipped)}." if skipped else "")
+            + (f" The plan is still ₪{residual:,.0f} short even so — that is a bug,"
+               f" not a choice; do not execute it." if residual >= MIN_TRADE_ILS else "")
+            + " What the sleeves do not claim stays in the core.")
+
+    if dry_run:
+        return {**result, "dry_run": True}
+
+    # C3a ships the sizing and the preview; execution of the MULTI-SLEEVE path
+    # stays off until the numbers have been read against a real book. The
+    # single-sleeve path is untouched and still executes -- it has been live
+    # since P0.1.
+    if not PLAN_FUNDING_EXECUTION:
+        return {**result, "ok": False, "dry_run": True,
+                "error": "whole-plan funding is preview-only in this release",
+                "reason": ("The sizing and the funding plan are real and shown above. "
+                           "Executing several sleeves against one budget is held back "
+                           "until those numbers have been checked against this book. "
+                           "Fund a single sleeve to execute today.")}
+
+    if not funded or fund is None:
+        return {**result, "dry_run": False, "sold": [], "bought": [], "skipped": []}
+
+    # **Spread the residual across every leg instead of letting the last one
+    # wear it.** `_execute_funded_sleeve` walks the legs spending
+    # min(want, budget) and skips any leg whose share drops below
+    # MIN_TRADE_ILS -- so an unscaled list hands the entire shortfall to
+    # whichever leg happens to be last, and can drop it outright. One sleeve
+    # would then quietly end up smaller, or missing a position, after this
+    # function reported it funded.
+    #
+    # Scaling proportionally keeps every sleeve's composition intact and leaves
+    # them all a hair under the chosen size, which is the same "close to what you
+    # asked for" the single-sleeve tolerance already accepts -- applied evenly
+    # rather than dumped on an arbitrary ticker.
+    payable = float(fund.get("funded_ils") or 0.0)
+    scale = min(1.0, payable / running) if running > 0 else 1.0
+    all_legs = [{**leg, "buy_ils": round(float(leg["buy_ils"]) * scale, 2)}
+                for x in funded for leg in x["buys"]]
+    executed = await _execute_funded_sleeve(session, user, all_legs, fund)
+    return {**result, "dry_run": False, "leg_scale": round(scale, 6), **executed}
 
 
 async def _execute_funded_sleeve(session: AsyncSession, user: User,

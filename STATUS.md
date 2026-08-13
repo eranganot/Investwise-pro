@@ -1,7 +1,81 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-12 by Claude (Postgres note-length hotfix)._
+_Last updated: 2026-08-12 by Claude (Phase C3a)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C3a — fund N sleeves on ONE budget. PREVIEW ONLY, NOT YET DEPLOYED
+
+**697 passed / 8 skipped on Postgres, 701 on SQLite, ruff clean.** Both engines,
+every run, from here on.
+
+**Nothing in this phase can sell anything.** `PLAN_FUNDING_EXECUTION = False`
+gates the multi-sleeve write; the single-sleeve path is untouched and still
+executes exactly as it has since P0.1.
+
+### The hazard it removes
+Funding two sleeves by calling the single-sleeve path twice builds **two** funding
+plans from the **same** cash and the **same** trim candidates. Both plan to spend
+the cash above your floor; both plan to trim the same shares. Money counted once
+by the book and twice by the app. `fund_plan` plans it once.
+
+### Decisions taken this session — do not re-litigate
+
+| # | Decision |
+|---|---|
+| Order when money is short | **Largest sleeve first.** Each sleeve funded to the size you chose, or skipped whole. |
+| Why not smallest-first | I argued for it and **I was wrong**. The case rested on "smallest-first fills the budget most completely", which assumes stranded budget is waste. There is no pre-raised pot — `plan_funding` raises exactly what is asked, so funding less means *selling less and realising less tax* — and what a sleeve does not claim stays in the objective-managed core, a legitimate destination rather than a hole. Eran caught this. Largest-first honours the conviction the sizes encode and is less invasive. |
+| Partial funding | **Never.** A sleeve is funded whole or skipped. |
+| Sizing source | The **sleeve row**, not `plans.strategy_sleeve_pct`. |
+| Capacity | **Asked of `plan_funding`, never recomputed.** Whether a sleeve fits is decided by calling it for the running total and reading the shortfall. A separate "what could this book raise" sum would be a second implementation, free to disagree with the one doing the work. |
+
+### A sizing bug that only a probe against realistic numbers found
+`load_basket` fell back to `plans.strategy_sleeve_pct` **only when
+`plans.strategy` happened to name that strategy.** On a book running two sleeves,
+funding the one applied *first* silently fell through to the catalog default
+instead of the size chosen. Fixed to read the row; a test applies two sleeves and
+asserts the first still sizes at 7%.
+
+### ❌ Two wrong turns on the residual, both caught before shipping
+**First:** acceptance judged in points of NAV, matching the single-sleeve rule. A
+probe against a realistic book showed **two sleeves reported funded with a ₪621
+hole in the plan** — 0.54% of a ₪114k NAV, waved through by the one-point
+tolerance.
+
+**Second:** so I demanded the plan be payable to the shekel. Probing again showed
+the residual is **structural** — `plan_funding` sells whole shares and nets
+capital-gains tax out of the proceeds, so it lands ~₪339 short of a ₪5,765 sleeve
+from one share of rounding plus tax. A shekel-exact rule rejects nearly
+everything, which is *why* the single-sleeve path judges in points of NAV. The
+strict version refused both sleeves on a book that could comfortably fund one.
+
+**The residual was never the real hazard.** The hazard is that
+`_execute_funded_sleeve` walks the legs spending `min(want, budget)` and skips any
+whose share falls under `MIN_TRADE_ILS` — so the **last** leg wears the entire
+shortfall and can be dropped outright. One sleeve quietly ends up smaller, or
+missing a position, after being reported funded.
+
+Fixed where it lives: legs are **scaled proportionally** to what the plan will
+actually raise. Every sleeve keeps its composition and lands a hair under, which
+is the same "close to what you asked for" the single-sleeve tolerance already
+accepts — spread evenly instead of dumped on an arbitrary ticker. Acceptance went
+back to points of NAV.
+
+*Neither of these was found by reading the code. Both came from running it
+against numbers shaped like a real book.*
+
+### 🚦 `ship-phase.ps1` now WATCHES CI instead of printing a reminder
+`8c254c4`, `38890bb` and `7f990fd` all went out **red** on `test-postgres` and
+nobody looked. Step 5 printed "CI green?" as a checklist line, and a checklist
+line is not a gate. `_common.ps1` has had `Push-AndWatch` — which runs
+`gh run watch --exit-status` — since the phased scripts were written, and this
+script never called it. Now it does, and a red run stops the ship with the
+SQLite-vs-Postgres reason on screen.
+
+### What to check before C3b flips execution on
+`smoke-c3.ps1` prints the funding plan the phase would execute: which holdings
+would be trimmed, how many shares, and the estimated tax. That is the whole
+reason C3a exists as its own release — read those numbers against the real book
+before anything can act on them.
 
 ## 🔴 CI WAS RED ON `main` — a 161-character note in a VARCHAR(160) column
 

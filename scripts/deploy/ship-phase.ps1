@@ -158,6 +158,33 @@ Remove-Item COMMIT_MSG.txt -ErrorAction SilentlyContinue
 $sha = (git rev-parse --short HEAD)
 Write-Host "`nPushed $sha." -ForegroundColor Green
 
+# ------------------------------------------------------- 4b. WATCH CI
+# Step 5 has always PRINTED "CI green?" as a checklist line, and a checklist
+# line is not a gate. Three consecutive pushes (C2 and its two follow-ups) went
+# out red on test-postgres and nobody looked -- the failure was a VARCHAR(160)
+# overflow that SQLite does not enforce, so the local suite was green every time.
+#
+# _common.ps1 has had Push-AndWatch, which does exactly this, since the phased
+# scripts were written. This script never called it. Wiring it in here rather
+# than dot-sourcing that file, because this script deliberately does not depend
+# on it.
+if (Get-Command gh -ErrorAction SilentlyContinue) {
+    Step "4b. Watching CI (Ctrl-C detaches; the run keeps going)"
+    gh run watch --exit-status
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "`nCI IS RED on $sha." -ForegroundColor Red
+        Write-Host "  gh run view --log-failed" -ForegroundColor Gray
+        Write-Host "  A green local suite proves nothing about test-postgres:" -ForegroundColor DarkYellow
+        Write-Host "  SQLite ignores VARCHAR length, Postgres enforces it." -ForegroundColor DarkYellow
+        Die "fix it before shipping anything else"
+    }
+    Write-Host "CI green." -ForegroundColor Green
+} else {
+    Write-Host "`n  gh CLI not found - CI is NOT being watched." -ForegroundColor DarkYellow
+    Write-Host "  Check Actions in the browser before believing step 5." -ForegroundColor DarkYellow
+    Write-Host "  winget install GitHub.cli" -ForegroundColor DarkGray
+}
+
 # ------------------------------------------------------- 5. verify deploy
 Step "5. Wait for the deploy, then verify"
 $n = 1

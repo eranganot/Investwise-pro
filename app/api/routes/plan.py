@@ -178,6 +178,30 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
     }
 
 
+@router.post("/plan/sleeves/fund", dependencies=[Depends(require_role(Role.ANALYST))])
+async def fund_my_sleeves(dry_run: bool = True,
+                          session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """Fund every under-funded sleeve against ONE shared budget.
+
+    Calling the single-sleeve path N times would build N funding plans from the
+    same cash and the same trim candidates -- money counted once by the book and
+    N times by the app. This plans it once.
+
+    Largest sleeve first when the money will not stretch, each one funded to the
+    size you chose or skipped entirely. The response says what would be funded,
+    what would not, and the allocation you would end up with against the one you
+    asked for, so a partial result cannot read as a success.
+
+    **Preview only in this release.** `dry_run=false` returns the same plan and
+    refuses, with the reason. The single-sleeve `load-basket` route still
+    executes exactly as it does today.
+    """
+    from app.services.strategy_service import fund_plan
+
+    return await fund_plan(session, user, dry_run=dry_run)
+
+
 @router.delete("/plan/sleeves/{strategy_id}",
                dependencies=[Depends(require_role(Role.ANALYST))])
 async def remove_my_sleeve(strategy_id: str,

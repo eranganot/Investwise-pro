@@ -5,6 +5,7 @@
 #   .\scripts\set-sleeves.ps1 -Add btm_trend_soxl -Pct 20        # resize, not a second copy
 #   .\scripts\set-sleeves.ps1 -Remove btm_trend_soxl
 #   .\scripts\set-sleeves.ps1 -Remove btm_trend_soxl -WhatIf     # show, change nothing
+#   .\scripts\set-sleeves.ps1 -FundPlan                          # C3 funding preview
 #
 # WHY THIS EXISTS. C2 makes "Apply strategy" additive: tapping it on a second
 # card runs both sleeves. The Plan tab has no Remove control until C5, so
@@ -21,6 +22,7 @@ param(
     [string]$Add = '',
     [double]$Pct = 0,
     [string]$Remove = '',
+    [switch]$FundPlan,
     [switch]$WhatIf,
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app"
 )
@@ -64,6 +66,35 @@ function Show-Sleeves($title) {
     }
     Write-Host ("  {0,-24} {1,6:N1}%   (the remainder, objective-managed)" -f 'core', $s.core_pct) -ForegroundColor DarkGray
     return $s
+}
+
+if ($FundPlan) {
+    # Preview only - the API refuses to execute this path in C3a and says so.
+    $r = Api POST '/api/v1/plan/sleeves/fund?dry_run=true' 180
+    if ($null -eq $r) { Fail "cannot read the funding preview" }
+    if (-not $r.ok) { Fail "$($r.error)" }
+    Write-Host "`nFunding every under-funded sleeve, one shared budget" -ForegroundColor Cyan
+    Write-Host ("  NAV {0:N0}   intended {1:N1}%   would end at {2:N1}%" -f `
+        $r.nav, $r.intended_sleeve_pct, $r.resulting_sleeve_pct)
+    Write-Host ""
+    foreach ($s in @($r.sleeves)) {
+        $colour = switch ($s.status) {
+            'funded'       { 'Green' }
+            'skipped'      { 'Red' }
+            default        { 'DarkGray' }
+        }
+        Write-Host ("  {0,-24} {1,-14} {2,10:N0}" -f $s.strategy_id, $s.status, $s.amount_ils) -ForegroundColor $colour
+        if ($s.reason) { Write-Host "      $($s.reason)" -ForegroundColor DarkGray }
+    }
+    if ($r.funding) {
+        Write-Host "`n  $($r.funding_summary)" -ForegroundColor Yellow
+        Write-Host ("  plan shortfall {0:N0} ({1:N2}% of NAV)" -f `
+            $r.plan_shortfall_ils, ($r.plan_shortfall_ils / $r.nav * 100)) -ForegroundColor DarkGray
+    }
+    if ($r.message) { Write-Host "`n  $($r.message)" -ForegroundColor Yellow }
+    Write-Host "`n  Preview only in this release. Nothing was sold or bought." -ForegroundColor DarkGray
+    Write-Host "  Fund a single sleeve to execute today: Plan tab -> Fund this sleeve." -ForegroundColor DarkGray
+    exit 0
 }
 
 if (-not $Add -and -not $Remove) {
