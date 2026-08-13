@@ -200,11 +200,26 @@ async def strategy_signal(session: AsyncSession = Depends(get_session),
 
 @router.post("/strategies/signal/ack",
              dependencies=[Depends(require_role(Role.ANALYST))])
-async def ack_strategy_signal(session: AsyncSession = Depends(get_session),
+async def ack_strategy_signal(strategy_id: str | None = None,
+                              session: AsyncSession = Depends(get_session),
                               user: User = Depends(acting_user)) -> dict:
-    """Clear a pending flip once you have acted on it (or decided not to)."""
+    """Clear a pending flip once you have acted on it (or decided not to).
+
+    ``strategy_id`` names the sleeve. Omit it and every pending flip is cleared,
+    which is the honest reading of an un-targeted "I have dealt with it" on a
+    book running several sleeves -- the alternative was silently clearing
+    whichever sleeve happened to be first and leaving the rest armed.
+    """
     from app.services import strategy_signal_service as sigs
-    sid = await sigs.active_strategy_id(session, user)
-    if not sid:
+
+    ids = await sigs.active_strategy_ids(session, user)
+    if not ids:
         return {"ok": False, "error": "no rule-based strategy is applied"}
-    return {"ok": await sigs.resolve_signal(session, user, sid), "strategy_id": sid}
+    if strategy_id is not None:
+        if strategy_id not in ids:
+            return {"ok": False, "error": f"'{strategy_id}' is not a sleeve on this book"}
+        ids = [strategy_id]
+    cleared = [sid for sid in ids if await sigs.resolve_signal(session, user, sid)]
+    return {"ok": bool(cleared), "cleared": cleared,
+            # Kept for callers written against the single-sleeve shape.
+            "strategy_id": cleared[0] if cleared else None}

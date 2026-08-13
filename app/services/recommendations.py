@@ -43,7 +43,8 @@ SLEEVE_DRIFT_BAND_PCT = 5.0
 # looked like it had been carried out when nothing had happened.
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
-                     "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve"}
+                     "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
+                     "fund_plan"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -515,6 +516,22 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
     return out
 
 
+def _fund_action(sleeve_ids: list[str]) -> dict:
+    """Where a "top this ticker up" Accept should route.
+
+    One sleeve wants it -> fund that sleeve, which is what the button on the
+    Plan tab does. TWO sleeves want it -> there is no single `strategy_id` to
+    hand `fund_sleeve`, and picking one of them would fund it at that sleeve's
+    share while the card was describing the SUM. The whole-plan path is the only
+    one that can honour a summed target, so that is where it goes.
+    """
+    if len(sleeve_ids) == 1:
+        return {"kind": "fund_sleeve", "strategy_id": sleeve_ids[0]}
+    if not sleeve_ids:
+        return {"kind": "none"}
+    return {"kind": "fund_plan"}
+
+
 async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm = _Stopwatch()
     rows = await list_positions(session, user)
@@ -960,10 +977,28 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # a different decision from topping up. That one routes to "Fund this
     # sleeve", which shows the whole plan.
     try:
+        from app.services import sleeve_service as _sv
         from app.services.strategy_service import sleeve_targets
-        _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
-        _chosen = getattr(plan, "strategy_sleeve_pct", None) if plan is not None else None
-        _targets = sleeve_targets(_plan_sid, _chosen) if _plan_sid else {}
+
+        # PER TICKER, AT THE SUMMED TARGET -- not per sleeve.
+        #
+        # The book holds ONE position per ticker. If two sleeves both want TQQQ,
+        # measuring drift per sleeve produces two cards about the same holding at
+        # two different targets, and acting on either makes the other wrong. That
+        # is the P1 duplicate-cap bug in card form, which is why the caps are
+        # summed too -- same primitive, same reason.
+        _targets = await _sv.all_sleeve_targets(session, user)
+        # Which sleeves want each ticker, so Accept can route to the right place.
+        _wanted_by: dict[str, list[str]] = {}
+        for _s in await _sv.list_sleeves(session, user):
+            for _t in (sleeve_targets(_s.strategy_id, _s.sleeve_pct) or {}):
+                _wanted_by.setdefault(_t.upper(), []).append(_s.strategy_id)
+        if not _targets:
+            # A book that predates the C1 backfill still has only the columns.
+            _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
+            _chosen = getattr(plan, "strategy_sleeve_pct", None) if plan is not None else None
+            _targets = sleeve_targets(_plan_sid, _chosen) if _plan_sid else {}
+            _wanted_by = {t.upper(): [_plan_sid] for t in _targets} if _plan_sid else {}
         if _targets and nav:
             _weights = snap.get("exposure_ticker") or {}
             for _tk, _w in sorted(_targets.items()):
@@ -1021,9 +1056,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                "shares": max(1, int(_amount / max(
                                    1e-9, next((float(r.current_price or 0) for r in rows
                                                if (r.ticker or "").upper() == _tk), 0) or 1e-9)))}
-                              if _over else
-                              {"kind": "fund_sleeve", "strategy_id": _plan_sid,
-                               "sleeve_pct": _chosen}),
+                              if _over else _fund_action(_wanted_by.get(_tk) or [])),
                     "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
                 })
@@ -1130,11 +1163,18 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _hidden_sig = {r.get("id") for r in recs
                        if str(r.get("id", "")).startswith("stratsig_")} & (dismissed | completed)
         if _hidden_sig:
-            from app.services.strategy_signal_service import active_strategy_id, resolve_signal
+            from app.services.strategy_signal_service import (
+                active_strategy_ids, resolve_signal, signal_card_id)
             try:
-                _sid = await active_strategy_id(session, user)
-                if _sid:
-                    await resolve_signal(session, user, _sid)
+                # Resolve the sleeve whose card was actually dismissed. This used
+                # to clear `active_strategy_id` -- the FIRST sleeve -- whichever
+                # card had been handled, so on a two-sleeve book dismissing the
+                # factor sleeve's flip silently consumed the SOXL sleeve's
+                # pending signal and left the factor one still armed. Exactly
+                # backwards, and silent.
+                for _sid in await active_strategy_ids(session, user):
+                    if signal_card_id(_sid) in _hidden_sig:
+                        await resolve_signal(session, user, _sid)
             except Exception:  # noqa: BLE001 -- never break Today over cleanup
                 logger.warning("could not clear a handled strategy signal", exc_info=False)
         _n = len(recs)
@@ -2031,6 +2071,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         from app.services.strategy_service import load_basket
         detail = await load_basket(session, user, spec["strategy_id"],
                                    sleeve_pct=spec.get("sleeve_pct"), mode="fund")
+    elif kind == "fund_plan":
+        # A ticker two sleeves both want. Only the whole-plan path can honour a
+        # SUMMED target -- funding one of the two sleeves would buy that sleeve's
+        # share while the card described the total, so the card would still be
+        # right and the action would still be wrong.
+        from app.services.strategy_service import fund_plan
+        detail = await fund_plan(session, user, dry_run=False)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")

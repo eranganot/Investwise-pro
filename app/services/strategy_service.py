@@ -648,8 +648,26 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
         legs = _legs_for(targets, nav, held)
         amount = round(sum(x["buy_ils"] for x in legs), 2)
         if amount < MIN_TRADE_ILS:
-            out.append({**entry, "status": "nothing_to_do", "amount_ils": 0.0, "buys": [],
-                        "reason": "already held at roughly its target"})
+            # Two different situations wore one label until C4.
+            #
+            # A sleeve AT its target has nothing to do. A sleeve still short by
+            # less than one tradeable lot ALSO produces no legs -- `_legs_for`
+            # drops anything under MIN_TRADE_ILS -- but it is not at its target
+            # and never will be. After C3b executed, the factor sleeve sat 132
+            # short with per-leg gaps of ~33/53/46; the preview said "intended
+            # 18.0%, would end at 17.4%" and, two lines down, "every sleeve fits".
+            # Both true, and together they contradict.
+            gap_ils = round(sum(nav * w - held.get(tk.upper(), 0.0)
+                                for tk, w in targets.items()), 2)
+            if gap_ils >= MIN_TRADE_ILS / 10.0:
+                out.append({**entry, "status": "as_close_as_a_lot_allows",
+                            "amount_ils": 0.0, "buys": [], "shortfall_ils": gap_ils,
+                            "reason": (f"₪{gap_ils:,.0f} under its target, but no single leg "
+                                       f"reaches the ₪{MIN_TRADE_ILS:,.0f} minimum trade — "
+                                       f"this is as close as a whole lot gets")})
+            else:
+                out.append({**entry, "status": "nothing_to_do", "amount_ils": 0.0, "buys": [],
+                            "reason": "already held at roughly its target"})
             continue
 
         trial = _fits(round(running + amount, 2))
@@ -700,8 +718,12 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
         "amount_ils": running,
         "intended_sleeve_pct": intended_pct,
         "resulting_sleeve_pct": resulting_pct,
+        # "Fully funded" has to mean the book ends where it was asked to. A
+        # sleeve that is as close as a lot allows is a good outcome and still
+        # not a complete one.
         "fully_funded": (all(x["status"] in ("funded", "nothing_to_do") for x in out)
-                         and residual < MIN_TRADE_ILS),
+                         and residual < MIN_TRADE_ILS
+                         and abs(resulting_pct - intended_pct) < 0.05),
         "plan_shortfall_ils": round(residual, 2),
         "funding": fund,
         "funding_summary": (describe_funding(
@@ -711,10 +733,14 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
     }
     if not result["fully_funded"]:
         skipped = [x["name"] for x in out if x["status"] == "skipped"]
+        lot_bound = [x["name"] for x in out if x["status"] == "as_close_as_a_lot_allows"]
         result["message"] = (
             f"This would leave the book at {resulting_pct:g}% in sleeves against the "
             f"{intended_pct:g}% you chose."
             + (f" Not funded: {', '.join(skipped)}." if skipped else "")
+            + (f" As close as a whole lot allows: {', '.join(lot_bound)} — the remaining"
+               f" gap is smaller than the minimum trade, so it will stay there."
+               if lot_bound else "")
             + (f" The plan is still ₪{residual:,.0f} short even so — that is a bug,"
                f" not a choice; do not execute it." if residual >= MIN_TRADE_ILS else "")
             + " What the sleeves do not claim stays in the core.")

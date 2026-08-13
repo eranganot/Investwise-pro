@@ -106,6 +106,15 @@ def evaluate(strategy_id: str, series: dict) -> dict:
             "strategy_name": entry.get("name")}
 
 
+def signal_card_id(strategy_id: str) -> str:
+    """The Today card id for a sleeve's pending flip.
+
+    One function so the producer and everything that has to match a card back to
+    its sleeve cannot disagree about the truncation.
+    """
+    return f"stratsig_{strategy_id[:12]}"
+
+
 async def _state(session: AsyncSession, subject: str, strategy_id: str) -> StrategySignalState | None:
     return (await session.execute(
         select(StrategySignalState).where(StrategySignalState.subject == subject,
@@ -113,30 +122,85 @@ async def _state(session: AsyncSession, subject: str, strategy_id: str) -> Strat
     )).scalar_one_or_none()
 
 
-async def active_strategy_id(session: AsyncSession, user: User) -> str | None:
-    """The user's applied strategy, when it is one of the rule-based family."""
+async def active_strategy_ids(session: AsyncSession, user: User) -> list[str]:
+    """Every rule-based sleeve on this book, oldest first (C4).
+
+    Reads ``plan_sleeves``. It used to read ``plans.strategy`` -- one column,
+    one strategy -- so on a book running two sleeves every signal, every
+    discipline rule and every drift card described whichever one had been
+    applied most recently, and the other was invisible.
+
+    Falls back to the legacy column when there are no sleeve rows, so a book
+    that predates the C1 backfill keeps working exactly as it did.
+    """
+    from app.services import sleeve_service as sv
+
+    ids = [s.strategy_id for s in await sv.list_sleeves(session, user)
+           if strategy_catalog.get(s.strategy_id)]
+    if ids:
+        return ids
     plan = (await session.execute(
         select(Plan).where(Plan.user_id == user.id))).scalars().first()
     sid = getattr(plan, "strategy", None) if plan is not None else None
-    return sid if sid and strategy_catalog.get(sid) else None
+    return [sid] if sid and strategy_catalog.get(sid) else []
+
+
+async def active_strategy_id(session: AsyncSession, user: User) -> str | None:
+    """The FIRST rule-based sleeve, for callers that still handle only one.
+
+    Kept so nothing breaks mid-migration, and deliberately not deleted quietly:
+    any remaining caller of this is a place that still cannot see a second
+    sleeve. Prefer ``active_strategy_ids``.
+    """
+    ids = await active_strategy_ids(session, user)
+    return ids[0] if ids else None
 
 
 async def evaluate_user(session: AsyncSession, user: User) -> dict:
-    """Evaluate the user's active strategy and record a flip if the target moved."""
-    sid = await active_strategy_id(session, user)
-    if not sid:
+    """Evaluate EVERY sleeve on the book and record a flip per sleeve (C4).
+
+    ``StrategySignalState`` was already keyed ``(subject, strategy_id)``, so the
+    storage needed nothing -- only the caller was single-strategy. One sleeve
+    failing (a missing ticker, a stale feed) must not silence the others, so each
+    is evaluated independently and the failures are returned rather than raised.
+    """
+    ids = await active_strategy_ids(session, user)
+    if not ids:
         return {"ok": False, "reason": "NO_RULE_STRATEGY"}
+    per: dict[str, dict] = {}
+    for sid in ids:
+        try:
+            per[sid] = await _evaluate_one(session, user, sid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("signal failed for %s", sid, exc_info=True)
+            per[sid] = {"ok": False, "reason": "ERROR", "detail": str(exc)[:120]}
+    ok = [r for r in per.values() if r.get("ok")]
+    # Counts get their own names. Spreading a single sleeve's result would
+    # otherwise overwrite an int count with that sleeve's `flipped` bool, and a
+    # field that means two things depending on how many sleeves you run is the
+    # kind of thing that reads fine until it does not.
+    return {"ok": bool(ok), "sleeves": per,
+            "sleeves_checked": len(ok),
+            "sleeves_flipped": sum(1 for r in ok if r.get("flipped")),
+            # The single-sleeve shape, kept so existing callers and the job's
+            # log line keep reading the same fields on a one-sleeve book.
+            **(next(iter(ok), {}) if len(ids) == 1 else {})}
+
+
+async def _evaluate_one(session: AsyncSession, user: User, sid: str) -> dict:
     spec = strategy_catalog.backtestable(only=[sid])[0]
     series, missing = _fetch(bt.tickers_needed(spec, regime_gate=True))
     # The regime indexes are observational for now, so losing one degrades the
     # regime read rather than silencing the strategy signal entirely.
     missing = [tk for tk in missing if tk in bt.tickers_needed(spec)]
     if missing:
-        return {"ok": False, "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
+        return {"ok": False, "strategy_id": sid,
+                "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
 
     res = evaluate(sid, series)
     if not res.get("ok"):
-        return res
+        return {**res, "strategy_id": sid}
+    res = {**res, "strategy_id": sid}
 
     row = await _state(session, user.email, sid)
     target = res["target"]
@@ -168,16 +232,25 @@ async def peek_user(session: AsyncSession, user: User) -> dict:
     showing you, and whether you were notified would depend on whether you
     happened to look.
     """
-    sid = await active_strategy_id(session, user)
-    if not sid:
+    ids = await active_strategy_ids(session, user)
+    if not ids:
         return {"ok": False, "reason": "NO_RULE_STRATEGY"}
+    per = [await _peek_one(session, user, sid) for sid in ids]
+    first = next((r for r in per if r.get("ok")), per[0])
+    # `sleeves` is the truth; the flattened first sleeve is kept so a one-sleeve
+    # book reads exactly as it did before C4.
+    return {**first, "sleeves": per}
+
+
+async def _peek_one(session: AsyncSession, user: User, sid: str) -> dict:
     spec = strategy_catalog.backtestable(only=[sid])[0]
     series, missing = _fetch(bt.tickers_needed(spec, regime_gate=True))
     # The regime indexes are observational for now, so losing one degrades the
     # regime read rather than silencing the strategy signal entirely.
     missing = [tk for tk in missing if tk in bt.tickers_needed(spec)]
     if missing:
-        return {"ok": False, "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
+        return {"ok": False, "strategy_id": sid,
+                "reason": bt.MISSING_TICKER, "detail": ", ".join(missing)}
     res = evaluate(sid, series)
     row = await _state(session, user.email, sid)
     return {**res, "strategy_id": sid,
@@ -192,9 +265,13 @@ async def pending_signal_recs(session: AsyncSession, user: User) -> list[dict]:
     Guidance, not an order: applying it rebalances the tracked book toward the
     new target, and the card says plainly that no brokerage order is placed.
     """
-    sid = await active_strategy_id(session, user)
-    if not sid:
-        return []
+    out: list[dict] = []
+    for sid in await active_strategy_ids(session, user):
+        out.extend(await _pending_one(session, user, sid))
+    return out
+
+
+async def _pending_one(session: AsyncSession, user: User, sid: str) -> list[dict]:
     row = await _state(session, user.email, sid)
     if row is None or row.flipped_at is None:
         return []
@@ -202,7 +279,7 @@ async def pending_signal_recs(session: AsyncSession, user: User) -> list[dict]:
     now_txt = _describe(row.target or {}, entry)
     was_txt = _describe(row.previous_target or {}, entry)
     return [{
-        "id": f"stratsig_{sid[:12]}",
+        "id": signal_card_id(sid),
         "dimension": "strategy",
         "severity": "HIGH",
         "title": f"{entry.get('name', sid)}: the rule changed what it wants to hold",
@@ -240,9 +317,16 @@ async def discipline_recs(session: AsyncSession, user: User) -> list[dict]:
     levels are derived from its measured volatility. An invented stop is worse
     than none: it looks calculated.
     """
-    sid = await active_strategy_id(session, user)
-    if not sid:
-        return []
+    out: list[dict] = []
+    for sid in await active_strategy_ids(session, user):
+        # Each sleeve's levels come from ITS OWN measured volatility, so the
+        # rules cannot be merged into one card without inventing a number that
+        # belongs to neither strategy.
+        out.extend(await _discipline_one(session, user, sid))
+    return out
+
+
+async def _discipline_one(session: AsyncSession, user: User, sid: str) -> list[dict]:
     from app.services.backtest_service import get_many
     from app.services.rules_service import list_rules
 
@@ -326,9 +410,10 @@ async def evaluate_all(session: AsyncSession) -> dict:
             logger.warning("strategy signal failed for a user", exc_info=True)
             continue
         if res.get("ok"):
-            checked += 1
-            if res.get("flipped"):
-                flipped += 1
+            # Sleeves, not users: a book running two sleeves that both flip is
+            # two things the user needs told, and counting it as one hid that.
+            checked += int(res.get("sleeves_checked") or 0)
+            flipped += int(res.get("sleeves_flipped") or 0)
     return {"checked": checked, "flipped": flipped}
 
 

@@ -1,7 +1,75 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (Phase C3b)._
+_Last updated: 2026-08-13 by Claude (Phase C4)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C4 — signals, discipline and drift stop describing only one sleeve
+
+**716 passed on SQLite, 712 / 8 skipped on Postgres, ruff clean.** Backend only;
+C5 is the Plan tab.
+
+Everything downstream of the sleeve table still read `plans.strategy` — one
+column, one strategy. On a book running two sleeves, every signal, every
+discipline card and every drift card described whichever one had been applied
+most recently, and **the other was invisible**.
+
+### What changed
+- **`active_strategy_ids`** reads `plan_sleeves` and returns the list.
+  `active_strategy_id` survives, returning the first, and is deliberately *not*
+  deleted quietly: any remaining caller of it is a place that still cannot see a
+  second sleeve. Falls back to the legacy column when there are no rows.
+- **`evaluate_user`** evaluates every sleeve, each independently, so one sleeve
+  failing on a missing ticker or a stale feed cannot silence the others.
+  `StrategySignalState` was already keyed `(subject, strategy_id)` — the storage
+  needed nothing, only the caller was single-strategy.
+- **`sleeves_checked` / `sleeves_flipped`** rather than reusing `checked` and
+  `flipped`. Spreading a single sleeve's result would otherwise overwrite an int
+  count with that sleeve's `flipped` bool — a field meaning two different things
+  depending on how many sleeves you run. `evaluate_all` now counts **sleeves**,
+  not users-with-any-signal.
+- **One signal card and one discipline card per sleeve.** Discipline levels come
+  from each strategy's own measured volatility, so merging them would invent a
+  number belonging to neither.
+
+### Drift is per TICKER at the SUMMED target — not per sleeve
+The book holds **one position per ticker**. Two sleeves both wanting TQQQ,
+measured per sleeve, produce two cards about the same holding at two different
+targets, and acting on either makes the other wrong. That is the P1 duplicate-cap
+bug in card form — same `all_sleeve_targets` primitive, same reason.
+
+Verified live-shaped: TREND at 20% + VOL at 15% produces exactly **one** card,
+_"You chose a 35% TQQQ sleeve and hold none of it."_
+
+**Accept routes by ownership.** One sleeve wants the ticker → `fund_sleeve` for
+that sleeve. Two sleeves want it → **`fund_plan`**, because there is no single
+`strategy_id` to hand `fund_sleeve`, and funding one of them would buy that
+sleeve's share while the card described the total.
+
+### ❌ A defect C4 found: dismissing one sleeve's signal cleared another's
+Today's cleanup resolved `active_strategy_id` — the **first** sleeve — whichever
+signal card had actually been dismissed. On a two-sleeve book, dismissing the
+factor sleeve's flip **silently consumed the SOXL sleeve's pending signal and
+left the factor one still armed**. Exactly backwards, and silent.
+
+Fixed by matching the dismissed card back to its sleeve. The card id now comes
+from **`signal_card_id(strategy_id)`** — one function, so the producer and the
+matcher cannot disagree about the truncation. The ack route takes an optional
+`strategy_id`; omitted, it clears every pending flip, which is the honest reading
+of an un-targeted "I have dealt with it".
+
+### The C3b carry-over, closed
+A sleeve at its target and a sleeve short by less than one tradeable lot both
+produced no legs and both said `nothing_to_do`. New status
+**`as_close_as_a_lot_allows`**, and `fully_funded` is now false when
+`resulting != intended`. Live, that was the factor sleeve sitting ₪132 short
+while the preview said "would end at 17.4%" and "every sleeve fits" two lines
+apart.
+
+### Note for later: sleeve order can tie
+`list_sleeves` orders by `created_at, strategy_id`. Two sleeves added in one
+transaction share a `created_at`, so the order falls through to the id. Nothing
+depends on it today — `fund_plan` sorts by size, the caps sum, `active_strategy_id`
+is a fallback — but "oldest first" is not guaranteed and should not be relied on.
 
 ## ✅ PHASE C3b — multi-sleeve funding EXECUTES, and the card stops misdescribing itself
 
@@ -896,8 +964,11 @@ Risk is medium because it touches every request path, so it ships alone.
 - **✅ C3 — DONE 2026-08-13.** C3a shipped the sizing and preview inert; C3b
   turned execution on and **it has run for real against the live book** (see the
   Phase C3b block at the top). The exclusion set had already gone out in C2.
-- **C4** signals, discipline rules and the drift/cold-start cards, per sleeve.
-  **Plus three things C3 found and deliberately left here:**
+- **✅ C4 — DONE 2026-08-13** (see the Phase C4 block at the top). Signals,
+  discipline and drift per sleeve; drift measured per ticker at the summed
+  target. Two of the three C3 carry-overs are closed (1 and 3); item 2 below
+  remains open.
+  **The three things C3 found:**
   1. **"Fully funded" while short.** After C3b executed, the preview reads
      _"intended 18.0%, would end at 17.4%"_ and, two lines down, _"every sleeve
      fits — no partial result to explain."_ Both are true and together they
