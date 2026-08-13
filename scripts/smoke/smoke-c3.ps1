@@ -1,21 +1,29 @@
-# SMOKE - C3a: funding N sleeves against one budget. PREVIEW ONLY.
+# SMOKE - C3: funding N sleeves against one budget.
 #
-#   .\scripts\smoke\smoke-c3.ps1
+#   .\scripts\smoke\smoke-c3.ps1                  # read-only, safe
 #   .\scripts\smoke\smoke-c3.ps1 -SkipShaCheck
+#   .\scripts\smoke\smoke-c3.ps1 -AllowExecute    # REALLY FUNDS. Sells shares.
 #
-# There is no -Execute here and that is the point of the phase. C3a sizes the
-# plan and shows it; the write stays off until these numbers have been read
-# against a real book. Every request below is a GET or a dry-run POST.
+# ==> READ THIS BEFORE ADDING A FLAG <==
 #
-# The single most useful thing this prints is the funding plan itself: which
-# holdings would be trimmed, for how much, and the estimated tax. Read that
-# before C3b turns execution on.
+# C3b turned multi-sleeve execution ON. `dry_run=false` is now a REAL TRADE: it
+# sells holdings and buys sleeve legs. The C3a version of this script called it
+# unconditionally to prove execution was refused, which was safe only while the
+# gate was shut. On the first run after the flip it fired a live write at
+# production and got away with it purely because every sleeve was already at
+# target, so the plan was empty. With one under-funded sleeve it would have sold
+# VXUS and SCHD unasked.
+#
+# So: nothing here executes unless you pass -AllowExecute. The default run
+# proves the thing that actually matters in production -- that a dry run moves
+# nothing -- and prints the plan.
 #
 # ASCII ONLY - PowerShell 5.1 reads .ps1 as Windows-1252 without a BOM.
 
 param(
     [string]$Sha = '',
     [switch]$SkipShaCheck,
+    [switch]$AllowExecute,
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
 
 $ErrorActionPreference = 'Continue'
@@ -51,7 +59,7 @@ function Api($method, $path, $tmo = 180) {
     }
 }
 
-Write-Host "Smoke: C3a whole-plan funding, preview only  ($BaseUrl)" -ForegroundColor White
+Write-Host "Smoke: C3 whole-plan funding  ($BaseUrl)" -ForegroundColor White
 
 # =========================================================================== #
 Sec "C3.0  am I talking to the new container?"
@@ -88,7 +96,7 @@ Ok "the whole-plan funding preview responds"
 if ($r.dry_run -eq $true) { Ok "and says it is a dry run" } else { Bad "dry_run is not true on a preview" }
 
 # =========================================================================== #
-Sec "C3.2  what it would actually do  -- READ THIS, it is the point of C3a"
+Sec "C3.2  what it would actually do  -- READ THIS"
 # =========================================================================== #
 Write-Host ("        NAV {0:N0}    intended {1:N1}%    would end at {2:N1}%" -f `
     $r.nav, $r.intended_sleeve_pct, $r.resulting_sleeve_pct) -ForegroundColor Gray
@@ -165,28 +173,62 @@ if ($r.fully_funded) {
 }
 
 # =========================================================================== #
-Sec "C3.5  execution is OFF, and refusing still shows the plan"
+Sec "C3.5  a dry run moves nothing"
 # =========================================================================== #
-$before = Api GET '/api/v1/portfolio' 60
-$x = Api POST '/api/v1/plan/sleeves/fund?dry_run=false'
-if ($null -eq $x) { Bad "the execute call did not respond" }
-elseif ($x.ok -eq $false -and "$($x.error)" -match 'preview-only') {
-    Ok "execution refused: $($x.error)"
-    if ($x.sleeves) { Ok "and the refusal still carries the sizing, so it can be checked" }
-    else { Bad "the refusal threw the plan away - nothing left to review" }
-} else {
-    Bad "EXECUTION WAS NOT REFUSED. C3a must not be able to sell."
+# The property worth checking against a live book now that the gate is open.
+# Execution being ON is covered by the suite; it cannot be probed here without
+# actually trading, which is what -AllowExecute is for.
+function Snapshot() {
+    $p = Api GET '/api/v1/portfolio' 60
+    if ($null -eq $p) { return $null }
+    return (($p.positions | ForEach-Object { "$($_.ticker):$($_.quantity)" }) -join ',')
 }
-$after = Api GET '/api/v1/portfolio' 60
-if ($null -ne $before -and $null -ne $after) {
-    $b = ($before.positions | ForEach-Object { "$($_.ticker):$($_.quantity)" }) -join ','
-    $a = ($after.positions  | ForEach-Object { "$($_.ticker):$($_.quantity)" }) -join ','
-    if ($a -eq $b) { Ok "holdings are untouched" } else { Bad "HOLDINGS MOVED during a preview-only phase" }
+
+$before = Snapshot
+for ($i = 0; $i -lt 2; $i++) { $null = Api POST '/api/v1/plan/sleeves/fund?dry_run=true' }
+$after = Snapshot
+if ($null -eq $before -or $null -eq $after) { Skip "cannot read the portfolio to compare" }
+elseif ($after -eq $before) { Ok "three previews later, holdings are identical" }
+else { Bad "A DRY RUN MOVED HOLDINGS. Stop and investigate before funding anything." }
+
+# =========================================================================== #
+if ($AllowExecute) {
+Sec "C3.6  EXECUTING FOR REAL  -- this sells shares"
+# =========================================================================== #
+    if (-not $r.funding -or -not @($r.funding.sells)) {
+        Skip "nothing to fund, so there is nothing to execute"
+    } else {
+        Write-Host "        About to sell:" -ForegroundColor Red
+        foreach ($sell in @($r.funding.sells)) {
+            Write-Host ("          {0} {1} shares for {2:N0}, tax {3:N0}" -f `
+                $sell.ticker, $sell.shares, $sell.value_ils, $sell.tax_ils) -ForegroundColor Red
+        }
+        Write-Host "        Ctrl-C now if that is not what you want." -ForegroundColor Yellow
+        Start-Sleep -Seconds 6
+
+        $x = Api POST '/api/v1/plan/sleeves/fund?dry_run=false' 300
+        if ($null -eq $x) { Bad "the execute call did not respond - CHECK YOUR BOOK BY HAND" }
+        elseif (-not $x.ok) { Bad "execution refused: $($x.error) - $($x.reason)" }
+        else {
+            Ok "executed. leg scale $($x.leg_scale)"
+            foreach ($b in @($x.bought)) {
+                Write-Host ("          bought {0,-6} {1,10:N0}" -f $b.ticker, $b.amount_ils) -ForegroundColor Green
+            }
+            foreach ($s in @($x.sold)) {
+                Write-Host ("          sold   {0,-6} {1,10:N0}  tax {2:N0}" -f $s.ticker, $s.value_ils, $s.tax_ils) -ForegroundColor Green
+            }
+            if (@($x.skipped)) { Bad "legs were SKIPPED, so a sleeve is short: $(@($x.skipped) | ConvertTo-Json -Compress)" }
+            else { Ok "no leg was dropped" }
+        }
+    }
+} else {
+Sec "C3.6  real execution - not attempted"
+    Skip "pass -AllowExecute to actually fund. It sells shares and realises tax."
 }
 
 # =========================================================================== #
 Write-Host "`n----------------------------------------------------------" -ForegroundColor DarkGray
-Write-Host "C3a SMOKE: $pass passed, $fail failed, $skip skipped" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
+Write-Host "C3 SMOKE: $pass passed, $fail failed, $skip skipped" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($skip -gt 0) { Write-Host "A SKIP is not a pass - read the note under each one." -ForegroundColor Yellow }
 
 # The point of C3a is to READ a real funding plan before enabling the write. If
@@ -203,6 +245,6 @@ if ($sells.Count -eq 0) {
     Write-Host "    .\scripts\set-sleeves.ps1 -Remove btm_factor_stack" -ForegroundColor Gray
     Write-Host "  All read-only except the sleeve row and its caps, which C2 round-trips." -ForegroundColor DarkGray
 } else {
-    Write-Host "The trims and the tax above are what C3b would actually do. Check them." -ForegroundColor Yellow
+    Write-Host "The trims and the tax above are what -AllowExecute would actually do." -ForegroundColor Yellow
 }
 if ($fail) { exit 1 }
