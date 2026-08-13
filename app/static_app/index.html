@@ -393,7 +393,7 @@
       <div class="goal" id="goalbig"></div>
       <div class="bar2" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
       <div class="grid2">
-        <div><label>What are you aiming for?</label>
+        <div><label>What are you aiming for? <span class="mk">· this is what manages your core</span></label>
           <select id="p_obj"><option>Grow</option><option selected>Balanced</option><option>Preserve</option><option>Income</option></select></div>
         <div><label>Risk tolerance</label>
           <select id="p_risk"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
@@ -1240,14 +1240,58 @@ function _pct(n){ return (Math.round(Number(n)*10)/10).toString(); }
 
 // The sleeve panel. Replaces the "Your strategy: X" banner, which could only
 // describe one thing and asserted in prose that there was only one.
+// The core is managed by the objective, and always has been -- but the only
+// place to set it was an unlabelled "What are you aiming for?" dropdown further
+// down the page, with nothing connecting the two. The core row read as a
+// leftover with no strategy at all. It is the same PUT /plan the form below
+// uses; putting the control where the core is named is the whole change.
+function coreControl(){
+  const obj=(MYPLAN&&MYPLAN.objective)||"Balanced";
+  const risk=(MYPLAN&&MYPLAN.risk_tolerance)||"Medium";
+  const opt=(v,cur)=>`<option${v===cur?" selected":""}>${v}</option>`;
+  return `<span style="font-size:12px">managed as
+    <select id="core_obj" onchange="setCore()" style="padding:2px 4px">
+      ${["Grow","Balanced","Income","Preserve"].map(v=>opt(v,obj)).join("")}
+    </select>
+    <select id="core_risk" onchange="setCore()" style="padding:2px 4px">
+      ${["Low","Medium","High"].map(v=>opt(v,risk)).join("")}
+    </select> risk</span>`;
+}
+
+// Writes only the two fields. `upsert_plan` drops nulls, so this cannot clear a
+// target amount or a horizon -- which is exactly why it does its own PUT rather
+// than calling savePlan(), whose body is read out of a form that loadPlan() may
+// still be racing to populate.
+async function setCore(){
+  const body={objective:$("core_obj").value, risk_tolerance:$("core_risk").value};
+  const note=$("core_note"); if(note) note.textContent="Saving…";
+  try{
+    const resp=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},
+                                           body:JSON.stringify(body)});
+    if(resp.status===401){location.href="/login";return;}
+    const p=await resp.json();
+    if(!resp.ok){ if(note) note.innerHTML=`<span class="bad">Save failed (${resp.status})</span>`; return; }
+    MYPLAN=p;
+    // The form lower down shows the same two fields; leaving it stale would let
+    // "Save my plan" put the old objective back.
+    if($("p_obj")) $("p_obj").value=p.objective;
+    if($("p_risk")) $("p_risk").value=p.risk_tolerance;
+    renderPlanNote(p);
+    if(note) note.innerHTML=`<span class="ok">Saved — your core, health score and the agents all use this.</span>`;
+  }catch(e){ if(note) note.innerHTML=`<span class="bad">${e}</span>`; }
+}
+
 function sleevePanel(){
   const ids=_appliedIds();
-  const objLine=MYPLAN
-    ? `objective <b>${MYPLAN.objective||"—"}</b> · ${MYPLAN.risk_tolerance||"—"} risk`
-    : "";
   if(!ids.size){
-    return `<div class="card muted" style="margin-bottom:10px">No sleeves yet — your whole book is
-      the core, managed to your ${objLine||"plan"}. Apply a strategy below to run one alongside it.</div>`;
+    return `<div class="card" style="margin-bottom:10px">
+      <div class="muted">No sleeves yet — your whole book is the core. Apply a strategy below to
+        run one alongside it.</div>
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;flex-wrap:wrap">
+        <span style="flex:1;min-width:120px">Core <b>100%</b></span>${coreControl()}
+      </div>
+      <div class="mk" id="core_note" style="opacity:.7"></div>
+    </div>`;
   }
   const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>`
     <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
@@ -1260,13 +1304,17 @@ function sleevePanel(){
   return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
       <div class="nm">Your sleeves — ${alloc!=null?alloc+"% of the book":""}</div>
       <div style="margin:6px 0">${rows}</div>
-      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:.7">
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
         <span style="flex:1">Core</span><b style="min-width:52px;text-align:right">${core}%</b>
         <span style="width:62px"></span>
       </div>
+      <div style="display:flex;align-items:center;gap:8px;padding:0 0 4px 0;flex-wrap:wrap">${coreControl()}</div>
+      <div class="mk" id="core_note" style="opacity:.7"></div>
       <div class="mk" style="opacity:.7;margin-top:4px">The core is whatever the sleeves have not
-        claimed — managed to your ${objLine}. There is no card for it, because it is a remainder
-        rather than a strategy.</div>
+        claimed. It has no card of its own because it is a remainder rather than a strategy — the
+        objective above is what manages it, and it sets the concentration cap and cash floor for
+        the whole book, sleeves included. These percentages are <b>targets</b>; press Fund all
+        sleeves to see what you actually hold against them.</div>
       <div class="acts" style="margin-top:8px">
         <button class="load" onclick="fundAllSleeves()">⚡ Fund all sleeves</button>
       </div>
@@ -1277,6 +1325,14 @@ async function loadStrategies(){
   if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
   try{ MYPLAN=await(await fetch("/api/v1/plan")).json(); }catch(e){ MYPLAN=null; }
   try{ MYSLEEVES=await(await fetch("/api/v1/plan/sleeves")).json(); }catch(e){ MYSLEEVES=null; }
+  // Seed each card's slider from the sleeve you actually run -- once. Re-seeding
+  // on every render would throw away a size you had dragged to and not yet
+  // applied, which is a whole goal-tab click away.
+  for(const x of (MYSLEEVES&&MYSLEEVES.sleeves)||[]){
+    if(!SLEEVE_SEEDED.has(x.strategy_id)){
+      SLEEVE[x.strategy_id]=+_pct(x.sleeve_pct); SLEEVE_SEEDED.add(x.strategy_id);
+    }
+  }
   const ids=_appliedIds();
   // Every goal holding one of your sleeves gets a tick, not just one of them.
   const appliedGoals=new Set([...ids].map(_goalOf).filter(Boolean));
@@ -1326,6 +1382,9 @@ async function removeSleeveConfirm(id,name){
     o.innerHTML=`<span class="ok">✓ Stopped running "${name}" (was ${_pct(r.was_pct)}%).</span>`
       + `<div style="margin:6px 0">${retired.length?`Caps retired: ${retired.join(", ")}.`:"No caps retired — every ticker is still wanted by another sleeve."}</div>`
       + `<div class="muted" style="font-size:11px">Nothing was sold. ${r.broker_note||""}</div>`;
+    // Let the card's slider fall back to the suggestion again: it is no longer
+    // a sleeve of yours, so "you run 8% today" would be a lie on the next render.
+    delete SLEEVE[id]; SLEEVE_SEEDED.delete(id);
     loadStrategies();
   }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
@@ -1398,6 +1457,10 @@ async function fundAllSleevesConfirm(){
 // the static cards so the two read alike, but every label says measured rather
 // than estimated, because they are not the same kind of claim.
 const SLEEVE={};                       // strategy id -> chosen %, per session
+// Which ids the slider has already been seeded from the book for. Seeding once
+// rather than every render is the difference between "the slider opens on what
+// you run" and "the slider snaps back every time you switch goal tab".
+const SLEEVE_SEEDED=new Set();
 function measuredProfile(s){
   const bt=s.backtest;
   if(!bt) return `<div class="stprof"><span class="stchip">Not measured yet</span>
@@ -1431,14 +1494,22 @@ function measuredProfile(s){
 
 // How much of the book this strategy governs. Without it the only expressible
 // choice was all-or-nothing, which is not how anyone runs a leveraged sleeve.
+// `s.sleeve_pct` off the catalog is the SUGGESTED size, identical to
+// `sleeve_default_pct` -- it has never had anything to do with the sleeve you
+// run. Falling back to it meant Factor Stack opened at "40% (suggested 40%)" on
+// a book running it at 8%: two numbers on one card, neither of them describing
+// the book, and no way to tell which was which. What you run comes first now,
+// and is named as such when it differs from the suggestion.
 function sleeveControl(s){
-  const cur=SLEEVE[s.id]!=null?SLEEVE[s.id]:(s.sleeve_pct||20);
+  const mine=((MYSLEEVES&&MYSLEEVES.sleeves)||[]).find(x=>x.strategy_id===s.id);
+  const run=mine?+_pct(mine.sleeve_pct):null;
+  const cur=SLEEVE[s.id]!=null?SLEEVE[s.id]:(run!=null?run:(s.sleeve_default_pct||s.sleeve_pct||20));
   return `<div class="stsleeve" style="margin:8px 0">
     <label style="font-size:12px;opacity:.85">Share of your portfolio:
       <b id="sv_${s.id}">${cur}%</b>
-      <span style="opacity:.6">(suggested ${s.sleeve_default_pct||20}%)</span>
+      <span style="opacity:.6">${run!=null?`· you run <b>${run}%</b> today `:""}· suggested ${s.sleeve_default_pct||20}%</span>
     </label>
-    <input type="range" min="0" max="100" step="5" value="${cur}" style="width:100%"
+    <input type="range" min="0" max="100" step="1" value="${cur}" style="width:100%"
            oninput="SLEEVE['${s.id}']=+this.value;document.getElementById('sv_${s.id}').textContent=this.value+'%'">
     <div class="ds" style="font-size:11px;opacity:.65">The rest stays in ${(s.base_when_flat||["your core holdings"]).join(", ")}. Apply and Load both use this number.</div>
   </div>`;

@@ -1,7 +1,67 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (Phase C5 — Phase C complete)._
+_Last updated: 2026-08-13 by Claude (Phase C5.1 — the core gets a control)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C5.1 — two things the finished Plan tab still got wrong
+
+Both found by Eran on the live screen, immediately after C5 shipped. Frontend
+only; no Python changed.
+
+### 1. The slider showed the suggestion, never your sleeve
+Factor Stack's card read **"Share of your portfolio: 40% (suggested 40%)"** on a
+book running that sleeve at **8%**. Two numbers on one card and neither of them
+described the book.
+
+`sleeveControl` fell back to `s.sleeve_pct`, which comes off the catalog and is
+*the same field as* `sleeve_default_pct` — the suggested size. It has never had
+anything to do with the sleeve you run. So every page load re-opened the slider
+at the suggestion, and pressing "Resize sleeve" without touching it would have
+silently taken the sleeve from 8% to 40%. **That is the real cost of this one:**
+not a wrong label, a wrong default on a button that writes.
+
+Fixed three ways:
+- the slider is **seeded from `plan_sleeves`**, once per sleeve, so a size you
+  dragged to and have not applied yet survives a goal-tab click;
+- the label names both numbers when they differ — *"12% · you run 8% today ·
+  suggested 40%"*;
+- **`step` is 1, not 5.** Worth noting for its own sake: 8 was not reachable
+  from this slider at all. Any sleeve size that is not a multiple of 5 was
+  written by the API, a script, or the C1 backfill — the UI could not have
+  produced it.
+
+Nothing shrinks a sleeve behind your back: `apply_strategy` **refuses** an
+over-allocation rather than clamping it, funding never resizes, and
+`add_or_resize` is the only writer in the codebase. `sleeve_pct` is whatever was
+last written to it.
+
+### 2. The core had no visible strategy
+The core row said *"managed to your objective Grow · High risk"* and offered no
+way to change it. The control existed — the **"What are you aiming for?"**
+dropdown further down the same tab — but nothing connected the two, so the core
+read as a leftover that nothing manages.
+
+The objective/risk selects now sit **in the core row**, where the core is named.
+They do their own two-field `PUT /api/v1/plan` rather than calling `savePlan()`:
+`upsert_plan` drops nulls, so a partial body cannot clear a target amount, and
+`savePlan`'s body is read out of a form that `loadPlan()` may still be racing to
+populate — `show("plan")` fires both loaders without awaiting either. On success
+it writes the same two values back into the form below, so "Save my plan" cannot
+put the old objective back.
+
+The panel also now says out loud that its percentages are **targets**, and points
+at Fund all sleeves for what you actually hold against them.
+
+### The trade-off, recorded because it will be asked again
+Sleeves have first claim on NAV; the core is the remainder. Raising a sleeve
+does not add exposure, it **moves** it out of the objective-managed core into a
+rule-managed, concentrated one — and the objective still sets the concentration
+cap and cash floor for the whole book, sleeves included. Funding the increase
+sells from the core at 25% CGT. A 40% Factor Stack sleeve is not "more of the
+same book"; it is a book whose bad-year drop is 40% governed by three factor
+ETFs and a backtest.
+
+---
 
 ## ✅ PHASE C5 — the Plan tab stops claiming there is only one strategy
 
