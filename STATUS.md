@@ -71,6 +71,19 @@ line is not a gate. `_common.ps1` has had `Push-AndWatch` — which runs
 script never called it. Now it does, and a red run stops the ship with the
 SQLite-vs-Postgres reason on screen.
 
+### ❌ `smoke-c3.ps1` failed on first run, and it was the script, not the app
+`Cannot bind parameter 'Headers'` — with the **/health response** as the value it
+tried to bind. **PowerShell variables are case-insensitive**, so naming the
+header hashtable `$H` and then writing `$h = Api GET '/health'` replaces the
+headers with the health payload, and every later call dies. `smoke-c1` and
+`smoke-c2` use `$ApiHeaders` and never collided; renaming it in c3 walked
+straight into it. It read exactly like "C3 is not deployed" — it was deployed,
+CI #126 green on `5bb2e13`.
+
+`smoke-phase9.ps1` carries the identical latent collision (`$H` at line 7, `$h`
+at line 28) and would fail the same way on any call after the health check.
+Both renamed to `$ApiHeaders`, with the gotcha written above the declaration.
+
 ### What to check before C3b flips execution on
 `smoke-c3.ps1` prints the funding plan the phase would execute: which holdings
 would be trimmed, how many shares, and the estimated tax. That is the whole

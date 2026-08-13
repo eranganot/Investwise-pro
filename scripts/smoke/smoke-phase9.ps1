@@ -4,12 +4,16 @@
 
 $ErrorActionPreference = 'Continue'
 $BaseUrl = "https://investwise-pro-production.up.railway.app"
-$H = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+# PowerShell variables are CASE-INSENSITIVE: $H and $h are one variable. Naming
+# the header hashtable $H and then doing `$h = Api GET '/health'` silently
+# replaces the headers with the health response, and every later call dies with
+# "Cannot bind parameter 'Headers'". Hence $ApiHeaders, matching smoke-c1/c2.
+$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
 $pass = 0; $fail = 0; $skip = 0
 function Ok($m)   { Write-Host "  PASS  $m" -ForegroundColor Green;  $script:pass++ }
 function Bad($m)  { Write-Host "  FAIL  $m" -ForegroundColor Red;    $script:fail++ }
 function Skip($m) { Write-Host "  SKIP  $m" -ForegroundColor Yellow; $script:skip++ }
-function Api($method, $path) { try { return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $H -TimeoutSec 90 } catch { Write-Host "  HTTP $($_.Exception.Response.StatusCode.value__) on $method $path" -ForegroundColor DarkRed; return $null } }
+function Api($method, $path) { try { return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $ApiHeaders -TimeoutSec 90 } catch { Write-Host "  HTTP $($_.Exception.Response.StatusCode.value__) on $method $path" -ForegroundColor DarkRed; return $null } }
 
 Write-Host "`n=== PHASE 9 SMOKE ===" -ForegroundColor Magenta
 

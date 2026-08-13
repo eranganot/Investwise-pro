@@ -25,7 +25,11 @@ if (-not $env:IW_AGENT_KEY) {
     Write-Host '  $env:IW_AGENT_KEY = [regex]::Match((Get-Content .\scripts\smoke\smoke-p3.ps1 -Raw), ''iwk_[A-Za-z0-9_\-]+'').Value' -ForegroundColor Gray
     exit 1
 }
-$H = @{ 'x-agent-key' = $env:IW_AGENT_KEY }
+# PowerShell variables are CASE-INSENSITIVE: $H and $h are one variable. Naming
+# the header hashtable $H and then doing `$h = Api GET '/health'` silently
+# replaces the headers with the health response, and every later call dies with
+# "Cannot bind parameter 'Headers'". Hence $ApiHeaders, matching smoke-c1/c2.
+$ApiHeaders = @{ 'x-agent-key' = $env:IW_AGENT_KEY }
 
 $pass = 0; $fail = 0; $skip = 0
 [Net.ServicePointManager]::DefaultConnectionLimit = 100
@@ -38,7 +42,7 @@ function Sec($m)  { Write-Host "`n$m" -ForegroundColor Cyan }
 
 function Api($method, $path, $tmo = 180) {
     try {
-        return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $H -TimeoutSec $tmo
+        return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $ApiHeaders -TimeoutSec $tmo
     } catch {
         $code = $null
         try { $code = $_.Exception.Response.StatusCode.value__ } catch {}
