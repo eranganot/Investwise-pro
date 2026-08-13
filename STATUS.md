@@ -1,7 +1,76 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (rule uniqueness)._
+_Last updated: 2026-08-13 by Claude (Phase C5 — Phase C complete)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE C5 — the Plan tab stops claiming there is only one strategy
+
+**729 passed on SQLite, ruff clean, every `<script>` block parses under
+`node --check`.** Frontend only; no Python changed.
+
+The banner said, in prose, _"One strategy applies at a time."_ It had said that
+since before C2 made it false, and it sat directly above a book running two
+sleeves. **This is the last place the app misdescribed what it does.**
+
+### What the Plan tab does now
+- **A sleeve panel** replaces the single-strategy banner: every sleeve with its
+  size, the **core as the remainder** it actually is, and the total allocated.
+  The core row is deliberately un-clickable and says why — it is a remainder, not
+  a strategy, so there is no card behind it.
+- **`_appliedIds()` returns a Set**, read from `plan_sleeves` with the legacy
+  column as fallback. Every card that is one of yours is ticked, not just one.
+- **Every goal tab holding one of your sleeves gets a ✓**, where before exactly
+  one could.
+- **"Apply strategy" now reads "Add as a sleeve"**, or **"Resize sleeve"** on a
+  card you already run — the button's old label described the overwrite it used
+  to do.
+- **Remove**, per sleeve, with a confirm that leads on the thing most likely to
+  be misread: **nothing is sold**. The shares stay; the app stops steering toward
+  that target and the caps it armed are retired.
+- **Fund all sleeves**, preview-then-confirm, reusing the shape "Fund this
+  sleeve" already uses. It shows every sleeve's status, every trim with its
+  share count and tax, and — when the plan lands short — says so instead of
+  reporting success. After executing it reports the **leg scale**, because the
+  amounts deliberately will not match the preview to the shekel.
+
+### Why "Fund all" is on the phone after all
+I first recommended keeping it script-only, on the grounds that a one-tap
+multi-position sell is a lot of consequence for a phone. Eran pushed back and was
+right: **"Fund this sleeve" already does exactly that** — it previews every buy
+and every sell with tax, then requires a second explicit tap. Fund-all is the
+same shape at a larger magnitude, and the confirm dialog already handles
+magnitude by naming every line. My "a 6-second Ctrl-C does not exist on mobile"
+argument was backwards; an explicit confirm is *better* than a countdown.
+
+The one genuine difference — one tap lets the app choose which sleeves get funded
+largest-first and which get skipped — is exactly what the preview shows before
+you confirm.
+
+### Not tested by the suite, on purpose
+There is no JS test infrastructure here, and `smoke-p2.ps1` already established
+the precedent: HTTP cannot see rendering, and asserting anyway would be asserting
+a lie. What IS checked mechanically: `node --check` on every script block, and a
+reference sweep confirming no stale `_appliedId(` or `MYPLAN.strategy_sleeve_pct`
+survived. **The rest is a phone pass.**
+
+---
+
+## 🏁 PHASE C IS COMPLETE
+
+| | |
+|---|---|
+| **C1** | `plan_sleeves` lands inert, one-shot backfill |
+| **C2** | a book runs N sleeves; caps summed per ticker |
+| **C3a/b** | one budget across sleeves — previewed, then executed for real |
+| **C4** | signals, discipline and drift per sleeve |
+| **C5** | the Plan tab tells the truth |
+
+**Six defects were found across Phase C, and not one of them came from reading
+code.** A Windows box running the suite. A smoke printing a list next to its own
+verdict. CI's Postgres job. Two probes with realistic numbers. A screenshot of
+Today. Three separate times **the check was the broken thing** — a smoke that
+passed having compared nothing, one that reported "no cap left behind" while
+three were disarmed, one that reported FAIL while quietly executing a live trade.
 
 ## 🔴 THREE CARDS WERE ARMING THREE TRAILING STOPS ON ONE TICKER
 
@@ -1048,7 +1117,8 @@ Risk is medium because it touches every request path, so it ships alone.
   3. **The drift and cold-start cards still read `plan.strategy`** — one sleeve.
      Under N they only ever describe the most recently applied one. Already C4's
      remit; noted so it is not rediscovered.
-- **C5** the Plan UI: a sleeve list replacing the single-strategy banner.
+- **✅ C5 — DONE 2026-08-13** (see the Phase C5 block at the top). Sleeve list,
+  Remove per sleeve, Fund all sleeves. Phase C is complete.
 
 Settle the core question (strategy row vs implicit remainder) before C1 — it
 decides the schema.

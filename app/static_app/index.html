@@ -1209,44 +1209,83 @@ async function delHolding(ticker,market){
     loadHoldings();
   }catch(e){alert(e.message||e);}
 }
-let STRAT=null, STGOAL=null, MYPLAN=null;
-// Which strategy is actually applied, and where it lives.
+let STRAT=null, STGOAL=null, MYPLAN=null, MYSLEEVES=null;
+// WHICH STRATEGIES ARE APPLIED -- plural, since C2.
 //
-// There is exactly ONE: plans.strategy is a single column. Applying a Beat the
-// Market strategy also sets the plan's OBJECTIVE (to Grow), which is why the
-// Grow tab can feel like "yours" too -- it is your objective, not a second
-// strategy. Both are labelled now, differently, so the difference is visible.
-function _appliedId(){ return MYPLAN && MYPLAN.strategy ? MYPLAN.strategy : null; }
+// This used to read plans.strategy: a single column, so the page could only ever
+// name one. A book running two sleeves showed whichever had been applied most
+// recently and said "One strategy applies at a time" underneath it, which was
+// simply untrue. plan_sleeves is the truth now; the column is a legacy pointer
+// kept for one more release and used only as a fallback for a book that predates
+// the C1 backfill.
+function _appliedIds(){
+  if(MYSLEEVES && Array.isArray(MYSLEEVES.sleeves) && MYSLEEVES.sleeves.length)
+    return new Set(MYSLEEVES.sleeves.map(x=>x.strategy_id));
+  return new Set(MYPLAN && MYPLAN.strategy ? [MYPLAN.strategy] : []);
+}
 function _goalOf(id){
   if(!id||!STRAT) return null;
   for(const g of STRAT.goals){ if((STRAT.by_goal[g]||[]).some(s=>s.id===id)) return g; }
   return null;
 }
+function _stratName(id){
+  if(!STRAT) return id;
+  for(const g of STRAT.goals){
+    const hit=(STRAT.by_goal[g]||[]).find(s=>s.id===id);
+    if(hit) return hit.name;
+  }
+  return id;
+}
+function _pct(n){ return (Math.round(Number(n)*10)/10).toString(); }
+
+// The sleeve panel. Replaces the "Your strategy: X" banner, which could only
+// describe one thing and asserted in prose that there was only one.
+function sleevePanel(){
+  const ids=_appliedIds();
+  const objLine=MYPLAN
+    ? `objective <b>${MYPLAN.objective||"—"}</b> · ${MYPLAN.risk_tolerance||"—"} risk`
+    : "";
+  if(!ids.size){
+    return `<div class="card muted" style="margin-bottom:10px">No sleeves yet — your whole book is
+      the core, managed to your ${objLine||"plan"}. Apply a strategy below to run one alongside it.</div>`;
+  }
+  const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+      <span style="flex:1">${_stratName(x.strategy_id)}</span>
+      <b style="min-width:52px;text-align:right">${_pct(x.sleeve_pct)}%</b>
+      <button onclick="removeSleeve('${x.strategy_id}','${_stratName(x.strategy_id).replace(/'/g,"")}')">Remove</button>
+    </div>`).join("");
+  const core=MYSLEEVES?_pct(MYSLEEVES.core_pct):null;
+  const alloc=MYSLEEVES?_pct(MYSLEEVES.allocated_pct):null;
+  return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
+      <div class="nm">Your sleeves — ${alloc!=null?alloc+"% of the book":""}</div>
+      <div style="margin:6px 0">${rows}</div>
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;opacity:.7">
+        <span style="flex:1">Core</span><b style="min-width:52px;text-align:right">${core}%</b>
+        <span style="width:62px"></span>
+      </div>
+      <div class="mk" style="opacity:.7;margin-top:4px">The core is whatever the sleeves have not
+        claimed — managed to your ${objLine}. There is no card for it, because it is a remainder
+        rather than a strategy.</div>
+      <div class="acts" style="margin-top:8px">
+        <button class="load" onclick="fundAllSleeves()">⚡ Fund all sleeves</button>
+      </div>
+    </div>`;
+}
+
 async function loadStrategies(){
   if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
   try{ MYPLAN=await(await fetch("/api/v1/plan")).json(); }catch(e){ MYPLAN=null; }
-  const applied=_appliedId(), appliedGoal=_goalOf(applied);
-  // Open on the tab holding your strategy, else on the first tab.
-  STGOAL=STGOAL||appliedGoal||STRAT.goals[0];
-  const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${g===appliedGoal?"\u2713 ":""}${g}</button>`).join("");
-
-  // One unambiguous line: what you are running, and what it set.
-  let banner="";
-  if(MYPLAN){
-    const card=applied?(STRAT.by_goal[appliedGoal]||[]).find(s=>s.id===applied):null;
-    const sleeve=MYPLAN.strategy_sleeve_pct;
-    banner = applied
-      ? `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
-           <div class="nm">Your strategy: ${card?card.name:applied}</div>
-           <div class="mk">${appliedGoal||""}${sleeve!=null?` \u00b7 ${sleeve}% sleeve`:""} \u00b7 objective <b>${MYPLAN.objective||"\u2014"}</b> \u00b7 ${MYPLAN.risk_tolerance||"\u2014"} risk</div>
-           <div class="mk" style="opacity:.7;margin-top:3px">One strategy applies at a time. "${MYPLAN.objective||""}" is the objective it set, not a second strategy.</div>
-         </div>`
-      : `<div class="card muted" style="margin-bottom:10px">No strategy applied yet \u2014 your plan is objective <b>${MYPLAN.objective||"\u2014"}</b>, ${MYPLAN.risk_tolerance||"\u2014"} risk. Apply one below to make it yours.</div>`;
-  }
+  try{ MYSLEEVES=await(await fetch("/api/v1/plan/sleeves")).json(); }catch(e){ MYSLEEVES=null; }
+  const ids=_appliedIds();
+  // Every goal holding one of your sleeves gets a tick, not just one of them.
+  const appliedGoals=new Set([...ids].map(_goalOf).filter(Boolean));
+  STGOAL=STGOAL||[...appliedGoals][0]||STRAT.goals[0];
+  const tabs=STRAT.goals.map(g=>`<button class="${g===STGOAL?'on':''}" onclick="STGOAL='${g}';loadStrategies()">${appliedGoals.has(g)?"✓ ":""}${g}</button>`).join("");
 
   const list=(STRAT.by_goal[STGOAL]||[]).map(s=>`
-    <div class="stcard${s.id===applied?" mine":""}">
-      <div style="display:flex;justify-content:space-between"><span class="nm">${s.id===applied?'<span class="stmine">\u2713 YOUR STRATEGY</span> ':""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
+    <div class="stcard${ids.has(s.id)?" mine":""}">
+      <div style="display:flex;justify-content:space-between"><span class="nm">${ids.has(s.id)?'<span class="stmine">✓ A SLEEVE OF YOURS</span> ':""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
       ${s.measured?measuredProfile(s):stratProfile(s.profile)}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
@@ -1254,15 +1293,102 @@ async function loadStrategies(){
       <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
-        <button onclick="applyStrat('${s.id}')">Apply strategy</button>
+        <button onclick="applyStrat('${s.id}')">${ids.has(s.id)?"Resize sleeve":"Add as a sleeve"}</button>
         ${s.measured
           ? `<button class="load" onclick="fundStratSleeve('${s.id}','${s.name.replace(/'/g,'')}')">⚡ Fund this sleeve</button>`
           : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`}
       </div>
     </div>`).join("");
-  $("stratBox").innerHTML=banner+`<div class="stgoal">${tabs}</div>`
+  $("stratBox").innerHTML=sleevePanel()+`<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list;
+}
+
+// Removing a sleeve sells NOTHING. It stops the app steering toward that target
+// and puts its caps back; the shares stay exactly where they are. Said out loud
+// in the confirm, because "Remove" next to a list of holdings reads as a sale.
+async function removeSleeve(id,name){
+  const o=$("stratOut"); o.style.display="block";
+  o.innerHTML=`<b>Stop running the "${name}" sleeve?</b>`
+    + `<div style="margin:6px 0">Nothing is sold. Your shares stay where they are — the app just
+       stops steering toward that target, and the caps it armed are retired.</div>`
+    + `<div style="margin-top:8px"><button class="load" onclick="removeSleeveConfirm('${id}','${name.replace(/'/g,"")}')">Remove it</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`;
+  o.scrollIntoView({behavior:"smooth",block:"center"});
+}
+async function removeSleeveConfirm(id,name){
+  const o=$("stratOut"); o.innerHTML="Removing the sleeve…";
+  try{
+    const resp=await fetch(`/api/v1/plan/sleeves/${id}`,{method:"DELETE"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't remove: ${r.error||resp.status}</span>`;return;}
+    const retired=(r.retired_caps||[]);
+    o.innerHTML=`<span class="ok">✓ Stopped running "${name}" (was ${_pct(r.was_pct)}%).</span>`
+      + `<div style="margin:6px 0">${retired.length?`Caps retired: ${retired.join(", ")}.`:"No caps retired — every ticker is still wanted by another sleeve."}</div>`
+      + `<div class="muted" style="font-size:11px">Nothing was sold. ${r.broker_note||""}</div>`;
+    loadStrategies();
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
+
+// FUND ALL SLEEVES -- one budget across every under-funded sleeve.
+//
+// Preview then confirm, the same shape as "Fund this sleeve", because this can
+// sell across several positions in one go. Calling the single-sleeve path once
+// per sleeve would build a funding plan per sleeve from the same cash and the
+// same trim candidates -- the money counted once by the book and N times by the
+// app. The API plans it once.
+async function fundAllSleeves(){
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Working out one plan for every sleeve…";
+  o.scrollIntoView({behavior:"smooth",block:"center"});
+  try{
+    const resp=await fetch("/api/v1/plan/sleeves/fund?dry_run=true",{method:"POST"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">${r.reason||r.error||resp.status}</span>`;return;}
+    const rows=(r.sleeves||[]).map(x=>{
+      const amt=x.amount_ils?`₪${Math.round(x.amount_ils).toLocaleString()}`:"—";
+      const label={funded:"will fund",skipped:"NOT funded",nothing_to_do:"already there",
+                   as_close_as_a_lot_allows:"as close as a whole lot gets"}[x.status]||x.status;
+      return `<li><b>${x.name||x.strategy_id}</b> — ${label} ${amt}
+        ${x.reason?`<div class="muted" style="font-size:11px">${x.reason}</div>`:""}</li>`;
+    }).join("");
+    const f=r.funding||{};
+    const sells=(f.sells||[]).map(x=>`<li>Sell ${x.shares} <b>${x.ticker}</b> — ₪${Math.round(x.value_ils).toLocaleString()}, est. tax ₪${Math.round(x.tax_ils).toLocaleString()}<div class="muted" style="font-size:11px">${x.reason||""}</div></li>`).join("");
+    const nothing=!r.amount_ils;
+    o.innerHTML=`<b>Fund every sleeve — ₪${Math.round(r.amount_ils||0).toLocaleString()}</b>`
+      + `<div style="margin:6px 0"><ul>${rows}</ul></div>`
+      + (sells||f.from_cash_ils?`<div style="margin:6px 0">How it's funded:<ul>`
+          + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_floor_ils).toLocaleString()} floor intact)</li>`:"")
+          + sells + `</ul>${f.tax_ils?`Estimated tax on the sales: <b>₪${Math.round(f.tax_ils).toLocaleString()}</b>.`:""}</div>`:"")
+      + (r.fully_funded
+          ? `<div class="ok" style="font-size:12px">Every sleeve lands at the size you chose.</div>`
+          : `<div class="bad" style="font-size:12px">${r.message||""}</div>`)
+      + `<div class="muted" style="font-size:11px">${r.broker_note||""}</div>`
+      + (nothing
+          ? `<div style="margin-top:8px"><button onclick="$('stratOut').style.display='none'">Close</button></div>`
+          : `<div style="margin-top:8px"><button class="load" onclick="fundAllSleevesConfirm()">Fund them</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`);
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
+}
+async function fundAllSleevesConfirm(){
+  const o=$("stratOut"); o.innerHTML="Funding…";
+  try{
+    const resp=await fetch("/api/v1/plan/sleeves/fund?dry_run=false",{method:"POST"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't fund: ${r.reason||r.error||resp.status}</span>`;return;}
+    const bought=(r.bought||[]).map(b=>`${b.ticker} ~₪${Math.round(b.amount_ils).toLocaleString()}`).join(", ")||"nothing";
+    const sold=(r.sold||[]).map(x=>`${x.shares} ${x.ticker}`).join(", ");
+    o.innerHTML=`<span class="ok">✓ Funded.</span>`
+      + `<div style="margin:6px 0">Bought ${bought}.${sold?` Sold ${sold}.`:""}${r.tax_ils?` Estimated tax ₪${Math.round(r.tax_ils).toLocaleString()}.`:""}</div>`
+      // Every leg is scaled by the same factor so no single sleeve wears the
+      // whole rounding gap -- worth showing, because the amounts will not match
+      // the preview to the shekel and that is deliberate.
+      + (r.leg_scale&&r.leg_scale<0.999?`<div class="muted" style="font-size:11px">Each leg scaled to ${Math.round(r.leg_scale*1000)/10}% of its target so the rounding gap is shared evenly rather than landing on one holding.</div>`:"")
+      + ((r.skipped||[]).length?`<div class="bad" style="font-size:12px">Skipped: ${(r.skipped).map(x=>x.ticker+" ("+x.reason+")").join(", ")}</div>`:"")
+      + `<div class="muted" style="font-size:11px">${r.broker_note||""}</div>`;
+    loadStrategies();
+    loadHoldings&&loadHoldings();
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 // The four Grow strategies are all 100% equities by asset class, so the numbers
 // that actually separate them -- expected return, volatility, drawdown,
