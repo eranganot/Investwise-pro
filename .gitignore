@@ -4,9 +4,12 @@ __pycache__/
 .venv/
 .env
 
-# Local agent/session state -- noise on every git status, and noise is where a
-# real modified file hides.
-.claude/
-
 # Written by scripts/get-error-log.ps1 on every run.
 scripts/railway-error.log
+
+# Local agent/session state -- noise on every git status, and noise is where a
+# real modified file hides. Portable copies live in the account skill library.
+.claude/
+
+# Staging for files the device bridge cannot delete; remove by hand.
+_to_delete/
