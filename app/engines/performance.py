@@ -51,4 +51,12 @@ def summarize(portfolio_values: list[float], benchmark_values: list[float] | Non
         out["benchmark_index"] = index_series(benchmark_values)
         out["benchmark_return_pct"] = round(br * 100, 2)
         out["excess_return_pct"] = round((pr - br) * 100, 2)
+        # Annualized twins of the two above. Without them a caller has only a
+        # TOTAL-period excess to put beside an ANNUALIZED cagr_pct, which is two
+        # different bases on one line -- the card did exactly that. Every excess
+        # is now available on the same basis as the return it sits next to.
+        bc = cagr(benchmark_values, periods_per_year)
+        out["benchmark_cagr_pct"] = round(bc * 100, 2)
+        out["excess_cagr_pct"] = round(
+            (cagr(portfolio_values, periods_per_year) - bc) * 100, 2)
     return out

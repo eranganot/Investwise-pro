@@ -1880,10 +1880,21 @@ async function loadPerf(){
     const ds=[{label:"Your portfolio",data:r.portfolio_index,borderColor:"#3b82f6",fill:false,pointRadius:0,tension:.12,borderWidth:2}];
     if(r.benchmark_index)ds.push({label:r.benchmark,data:r.benchmark_index,borderColor:"#8b97a8",borderDash:[5,4],fill:false,pointRadius:0,tension:.12,borderWidth:1.5});
     drawChart("ch_perf","line",{labels:r.dates,datasets:ds},{plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}}},scales:{x:{ticks:{display:false},grid:{display:false}}}});
-    const ex=r.excess_return_pct;
-    cap.innerHTML=`Total <b>${r.total_return_pct}%</b> · CAGR ${r.cagr_pct}% · Max drawdown ${r.max_drawdown_pct}%`+
-      (r.benchmark_return_pct!=null?` · vs ${r.benchmark} <b class="${ex>=0?'ok':'bad'}">${ex>=0?'+':''}${ex}%</b>`:"")+
-      `<div style="font-size:11px;margin-top:4px">Backfill of your current holdings over ${r.observations} days · source ${r.source}</div>`;
+    // Each excess sits next to the return it is an excess OF. The old line put a
+    // TOTAL-period "vs SPY" beside an ANNUALIZED CAGR -- two bases, one row, no
+    // labels, so the two numbers could not be compared with each other.
+    const ex=r.excess_return_pct, exc=r.excess_cagr_pct;
+    const sg=v=>(v>=0?'+':'')+v, cl=v=>v>=0?'ok':'bad';
+    const fxn=(r.unconverted_holdings||[]).map(u=>u.ticker).join(", ");
+    cap.innerHTML=`Total <b>${r.total_return_pct}%</b>`+
+      (r.benchmark_return_pct!=null?` <span class="${cl(ex)}">(vs ${r.benchmark} ${sg(ex)}%)</span>`:"")+
+      ` · CAGR ${r.cagr_pct}%/yr`+
+      (exc!=null?` <span class="${cl(exc)}">(vs ${r.benchmark} ${sg(exc)}%/yr)</span>`:"")+
+      ` · Max drawdown ${r.max_drawdown_pct}%`+
+      `<div style="font-size:11px;margin-top:4px">Backfill of your current holdings over ${r.observations} days · source ${r.source}`+
+      (r.base_currency?` · valued in ${r.base_currency}${r.fx_basis==="spot"?" at today's rate":""}`:"")+
+      (fxn?` · <span class="bad">no FX rate for ${fxn} — shown unconverted</span>`:"")+
+      `</div>`;
   }catch(e){}
 }
 async function loadExplore(){
