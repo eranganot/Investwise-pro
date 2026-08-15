@@ -378,9 +378,20 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
     geo, cur = by_id.get(_rid("divrisk", "geo")), by_id.get(_rid("divrisk", "cur"))
     if geo and cur:
         geo["title"] = "Diversify beyond one region and currency"
-        geo["action"] = ("Most of your money sits in a single region *and* the currency that goes "
-                         "with it, so one country's downturn hits you twice. Spread new money "
-                         "across other regions to fix both at once.")
+        # The merge used to REPLACE the action with generic prose. When the geo
+        # card is a sized, funded buy that left a card reading "spread new money
+        # across other regions" while its `apply` spec sold 37 SCHD to buy VXUS
+        # -- the text describing one thing and Accept doing another, which is the
+        # whole defect this branch exists to remove. The merged point is a
+        # PREFIX now; the sized action keeps the last word because it is the one
+        # that matches the button.
+        _merged_why = ("Most of your money sits in a single region *and* the currency that goes "
+                       "with it, so one country's downturn hits you twice.")
+        if (geo.get("apply") or {}).get("kind") == "buy_funded":
+            geo["action"] = _merged_why + " " + geo["action"]
+        else:
+            geo["action"] = (_merged_why + " Spread new money across other regions to fix both "
+                             "at once.")
         geo["meta"] = {**(geo.get("meta") or {}), "merged": ["geographic", "currency"]}
         drop.add(cur["id"])
 
@@ -448,10 +459,22 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
                "asset_class": (p.meta or {}).get("asset_class")} for p in (rows or [])]
     snap = compute_snapshot(pdicts) if pdicts else {"nav": 0.0}
     nav = snap.get("nav") or 0.0
-    mix, _ = current_mix(rows or [])
+    # No local `mix` any more: the class weights a card quotes now come back from
+    # propose_funded_buy, measured before and after the trade it is proposing.
+    # A second, statically-computed copy here is exactly how the cards ended up
+    # quoting a 97% that their own trade never moved.
     cash = await get_cash(session, user)
     held = {(getattr(p, "ticker", "") or "").upper(): p for p in (rows or [])}
-    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+
+    # Every strategy sleeve's tickers, off-limits as a funding source for any of
+    # these cards. Fetched once rather than per candidate.
+    try:
+        from app.services import sleeve_service as _sv
+        sleeve_names = await _sv.sleeve_tickers(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("sleeve tickers unavailable; funding will not exclude them",
+                       exc_info=True)
+        sleeve_names = set()
 
     for s in payload.get("sessions", []):
         if s.get("outcome") != "DISPLAYED" or len(out) >= 3:
@@ -496,52 +519,64 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
             })
             continue
 
-        # A buy candidate: size it to the plan, then say how to pay for it.
-        target_w = target.get(cls, 0.0)
-        if target_w <= 0:
-            continue  # the plan doesn't hold this asset class at all
-        # PR2 replaces this whole block with _fund.propose_funded_buy(). Inlined
-        # here at exactly the old value -- a TICKER weight against an ASSET CLASS
-        # target -- so this PR changes no behaviour while size_purchase goes away.
-        room = round(max(0.0, min(target_w, cap) - weight) * nav, 2)
-        if room < _fund.MIN_TRADE_ILS:
-            continue  # no room without breaching the plan -> not a recommendation
-        fund = _fund.plan_funding(rows, snap, plan, objective, cap, room,
-                                  cash_ils=cash, exclude={tk})
-        buyable = min(room, fund.get("funded_ils") or 0.0)
-        if buyable < _fund.MIN_TRADE_ILS:
-            continue  # can't be paid for -> don't pretend it's an action
-        fund = _fund.plan_funding(rows, snap, plan, objective, cap, buyable,
-                                  cash_ils=cash, exclude={tk})
-        verb = "Add to" if pos is not None else "Buy"
+        # A buy candidate. Everything below -- sizing, funding, the claim about
+        # what it does to the mix -- comes back from one call, because that is
+        # the only way the prose and the arithmetic cannot drift apart.
+        #
+        # allow_within_class_swap: an approved signal on a name inside an
+        # already-overweight class is a legitimate trade (shedding 3x leveraged
+        # exposure for factor exposure de-risks a 97%-equity book). We opt into
+        # the TRADE. The label is not ours to choose -- propose_funded_buy
+        # classifies it from the simulated post-trade mix and narrates it as a
+        # swap if that is what it is.
+        buy = _fund.propose_funded_buy(
+            rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+            ticker=tk, buying_class=cls, cash_ils=cash,
+            # Every sleeve's tickers are off-limits as a funding source, not
+            # just the one being bought. The plan holds those on purpose and one
+            # is not a piggy bank for another -- the rule C3 established for
+            # sleeve funding, which this path was quietly ignoring while it sold
+            # SOXL and TQQQ to buy QUAL and AVUV.
+            exclude=sleeve_names,
+            market=getattr(pos, "market", None) or "NYSE",
+            allow_within_class_swap=True)
+        if buy is None:
+            continue  # not wanted by the plan, or not payable for -> not a card
+        fund = buy.fund
+        # "Add to" works in a title ("Add to SCHD") but not in a sentence
+        # ("Add to 4,708 of SCHD"), which is what shipped. Two forms.
+        verb = "Add" if pos is not None else "Buy"
+        title_kind = "Swap into" if buy.is_swap else ("Add to" if pos is not None else "Buy")
         out.append({
             "id": _rid("warroom_buy", tk), "dimension": "signal", "severity": "MEDIUM",
-            "title": f"{verb} {tk} — {_ils(buyable)}",
+            "title": f"{title_kind} {tk} — {_ils(buy.amount_ils)}",
             "why": (f"The agents approved this on the {s.get('outcome_label')} path"
                     + (f" at {confidence:.0f}% confidence" if confidence is not None else "")
-                    + f". {alpha} It fits your {objective} plan: {cls} is {mix.get(cls, 0.0):.0%} "
-                      f"against a {target_w:.0%} target.").strip(),
-            "action": (f"{verb} {_ils(buyable)} of {tk}. That takes {cls} from "
-                       f"{mix.get(cls, 0.0):.0%} toward your {target_w:.0%} target and keeps {tk} "
-                       f"under your {cap:.0%} single-name cap. "
-                       # PR2: pass the real buying class here -- None keeps this PR behaviour-neutral.
-                       + _fund.describe_funding(fund, None)),
-            "impact": (f"Moves {cls} ~{(buyable / nav):.0%} closer to target."
+                    + f". {alpha} "
+                    + (f"{cls} is {buy.class_before:.0%} against a "
+                       f"{buy.class_target:.0%} {objective} target, so this does not add "
+                       f"{cls.lower()} exposure — it changes which {cls.lower()} you hold."
+                       if buy.is_swap else
+                       f"It fits your {objective} plan: {cls} is {buy.class_before:.0%} "
+                       f"against a {buy.class_target:.0%} target.")).strip(),
+            "action": (f"{verb} {_ils(buy.amount_ils)} of {tk}, keeping it under your "
+                       f"{cap:.0%} single-name cap. " + buy.summary),
+            "impact": (buy.impact
                        + (f" Signal impact {impact:.0f}/100." if impact is not None else "")),
-            "how": ([f"{verb} {_ils(buyable)} of {tk}"]
+            "how": ([f"{verb} {_ils(buy.amount_ils)} of {tk}"]
                     + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
                        for x in fund.get("sells", [])]
                     + ([f"Use {_ils(fund['from_cash_ils'])} of cash (floor of "
                         f"{_ils(fund['cash_floor_ils'])} stays untouched)"]
                        if fund.get("from_cash_ils") else [])
+                    + (["This is a swap inside one asset class, not a rebalance"]
+                       if buy.is_swap else [])
                     + ["Signals are trend-divergence based, not a price forecast"]),
-            "est_amount": round(buyable, 2),
-            "apply": {"kind": "buy_funded", "ticker": tk,
-                      "market": getattr(pos, "market", None) or "NYSE",
-                      "asset_class": cls, "amount_ils": round(buyable, 2),
-                      "from_cash_ils": fund.get("from_cash_ils", 0.0),
-                      "sells": fund.get("sells", [])},
+            "est_amount": buy.amount_ils,
+            "apply": buy.apply_spec,
             "meta": {"source": "war_room", "ticker": tk, "impact": impact,
+                     "kind": buy.kind,
+                     "class_before": buy.class_before, "class_after": buy.class_after,
                      "confidence": confidence, "funding": fund},
         })
     return out
@@ -585,6 +620,16 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _cash_ils = await _get_cash(session, user)
     except Exception:  # noqa: BLE001
         _cash_ils = 0.0
+    # Sleeve holdings are never a funding source for a Today card. The plan holds
+    # them on purpose; C3 established this for sleeve funding and every card that
+    # can sell has to honour it too.
+    try:
+        from app.services import sleeve_service as _sv
+        _sleeve_names = await _sv.sleeve_tickers(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("sleeve tickers unavailable; card funding will not exclude them",
+                       exc_info=True)
+        _sleeve_names = set()
     # Which contributing agents failed this build. Each block below is defensive so a
     # data hiccup never breaks Today \u2014 but silence made a missing card
     # indistinguishable from "nothing to do", so failures are now logged and reported.
@@ -762,25 +807,29 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                         "the whole portfolio.")
                 try:
                     from app.services import funding_service as _fs
-                    if _amt >= _fs.MIN_TRADE_ILS:
-                        _f = _fs.plan_funding(rows, snap, plan, objective, cap, _amt,
-                                              cash_ils=_cash_ils, exclude={"VXUS"})
-                        _buy = min(_amt, _f.get("funded_ils") or 0.0)
-                        if _buy >= _fs.MIN_TRADE_ILS:
-                            _f = _fs.plan_funding(rows, snap, plan, objective, cap, _buy,
-                                                  cash_ils=_cash_ils, exclude={"VXUS"})
-                            _act = (f"Buy {_ils(_buy)} of VXUS (global ex-US equities) to spread "
-                                    f"beyond one region. " + _fs.describe_funding(_f, None))  # PR2: real buying class
-                            _how = ([f"Buy {_ils(_buy)} of VXUS (Vanguard Total International Stock)"]
-                                    + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) "
-                                       f"— {x['reason']}" for x in _f.get("sells", [])]
-                                    + ([f"Use {_ils(_f['from_cash_ils'])} of cash"]
-                                       if _f.get("from_cash_ils") else [])
-                                    + ["Alternatives: VEA (developed) or VWO (emerging)"])
-                            _spec = {"kind": "buy_funded", "ticker": "VXUS", "market": "NASDAQ",
-                                     "asset_class": "Equities", "amount_ils": round(_buy, 2),
-                                     "from_cash_ils": _f.get("from_cash_ils", 0.0),
-                                     "sells": _f.get("sells", [])}
+                    # Geographic concentration is a real risk and VXUS is a real
+                    # answer to it -- but VXUS is Equities, so buying it out of
+                    # equities moves no asset-class weight. allow_within_class_swap
+                    # keeps the card (the diversification is in the geography, not
+                    # the mix) and forces it to say which one it is.
+                    _b = _fs.propose_funded_buy(
+                        rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+                        ticker="VXUS", buying_class="Equities", cash_ils=_cash_ils,
+                        requested_ils=_amt, exclude=_sleeve_names, market="NASDAQ",
+                        allow_within_class_swap=True)
+                    if _b is not None:
+                        _f = _b.fund
+                        _act = (f"Buy {_ils(_b.amount_ils)} of VXUS (global ex-US equities) to "
+                                f"spread beyond one region. " + _b.summary)
+                        _how = ([f"Buy {_ils(_b.amount_ils)} of VXUS (Vanguard Total International Stock)"]
+                                + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) "
+                                   f"— {x['reason']}" for x in _f.get("sells", [])]
+                                + ([f"Use {_ils(_f['from_cash_ils'])} of cash"]
+                                   if _f.get("from_cash_ils") else [])
+                                + (["This spreads your geography, not your asset mix"]
+                                   if _b.is_swap else [])
+                                + ["Alternatives: VEA (developed) or VWO (emerging)"])
+                        _spec = _b.apply_spec
                 except Exception:  # noqa: BLE001
                     logger.warning("geo diversification sizing failed", exc_info=True)
                 recs.append({"id": _rid("divrisk", "geo"), "dimension": "diversification",
@@ -790,7 +839,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                           if _spec["kind"] == "buy_funded" else "")),
                              "why": a.get("detail") or "Most of your money sits in a single region.",
                              "action": _act,
-                             "impact": "Lowers geographic concentration risk from over-reliance on one region.",
+                             "impact": ("Lowers geographic concentration risk from over-reliance "
+                                        "on one region. Your equity weight is unchanged."
+                                        if _spec.get("kind") == "buy_funded"
+                                        else "Lowers geographic concentration risk from "
+                                             "over-reliance on one region."),
                              "how": _how,
                              "est_amount": _spec.get("amount_ils"),
                              "apply": _spec})
@@ -859,7 +912,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # this one fires -- two cards about the same shekels is what the reconcile
     # pass exists to prevent.
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils)
-    recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils)
+    recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
+                           _sleeve_names)
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -1161,6 +1215,23 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
+
+    # ...and independent agents can also spend the same money. Every funded card
+    # sized itself against the same untouched snapshot, so three of them planned
+    # to sell the same 13 TQQQ and spend the same cash above the floor. Reconcile
+    # settles which cards CONTRADICT; this settles which ones the book can
+    # actually pay for, all of them together.
+    try:
+        from app.services import funding_service as _fs2
+        recs, _unfunded = _fs2.reserve_funding_across(
+            recs, rows, snap, plan, objective, cash_ils=_cash_ils)
+        for _card, _why in _unfunded:
+            logger.info("card dropped for want of funding: %s (%s)",
+                        _card.get("id"), _why)
+        if _unfunded:
+            degraded.append("funding")
+    except Exception:  # noqa: BLE001 -- never break Today over budgeting
+        logger.warning("cross-card funding reservation failed", exc_info=True)
 
     # Every card carries a plain-language "why" and "impact" (safety net for the
     # holding/hedge/momentum/fee agents that don't set them explicitly).
@@ -1896,9 +1967,11 @@ def _benchmark_recs(perf, objective) -> list[dict]:
     return out
 
 
-def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0) -> list[dict]:
+def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
+                    sleeve_names=None) -> list[dict]:
     """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
     out: list[dict] = []
+    sleeve_names = sleeve_names or set()
     try:
         from app.services import funding_service as _fund
     except Exception:  # noqa: BLE001
@@ -1929,24 +2002,24 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0) ->
     how = [f"Buy {_ils(gap_ils)} of {pick_tk} ({pick_name})"]
     apply_spec = {"kind": "none"}
     if _fund is not None and gap_ils >= _fund.MIN_TRADE_ILS:
-        fund = _fund.plan_funding(rows, snap, plan, objective, cap, gap_ils,
-                                  cash_ils=cash_ils, exclude={pick_tk})
-        affordable = min(gap_ils, fund.get("funded_ils") or 0.0)
-        if affordable >= _fund.MIN_TRADE_ILS:
-            fund = _fund.plan_funding(rows, snap, plan, objective, cap, affordable,
-                                      cash_ils=cash_ils, exclude={pick_tk})
-            action = (f"Buy {_ils(affordable)} of {pick_tk} ({pick_name}) — lifting commodities "
-                      f"from {com_w:.0%} toward your {target:.0%} target. "
-                      + _fund.describe_funding(fund, None)  # PR2: real buying class
+        # The control case for the honesty clause: this buys Commodities out of
+        # (usually) Equities, so BOTH weights genuinely move and the disclaimer
+        # must stay silent. If it ever fires here, the clause is over-firing.
+        buy = _fund.propose_funded_buy(
+            rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+            ticker=pick_tk, buying_class="Commodities", cash_ils=cash_ils,
+            requested_ils=gap_ils, exclude=sleeve_names, market="NYSE")
+        if buy is not None:
+            fund = buy.fund
+            affordable = buy.amount_ils
+            action = (f"Buy {_ils(affordable)} of {pick_tk} ({pick_name}) — "
+                      + buy.impact + " " + buy.summary
                       + f" Alternatives: {alts}.")
             how = ([f"Buy {_ils(affordable)} of {pick_tk} ({pick_name})"]
                    + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
                       for x in fund.get("sells", [])]
                    + ([f"Use {_ils(fund['from_cash_ils'])} of cash"] if fund.get("from_cash_ils") else []))
-            apply_spec = {"kind": "buy_funded", "ticker": pick_tk, "market": "NYSE",
-                          "asset_class": "Commodities", "amount_ils": round(affordable, 2),
-                          "from_cash_ils": fund.get("from_cash_ils", 0.0),
-                          "sells": fund.get("sells", [])}
+            apply_spec = buy.apply_spec
             gap_ils = affordable
     out.append({"id": _rid("commodity_add"), "dimension": "diversification", "severity": "LOW",
                 "title": f"Add a commodities sleeve — {_ils(gap_ils)} of {pick_tk}",
