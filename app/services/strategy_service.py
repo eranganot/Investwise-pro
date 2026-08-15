@@ -31,6 +31,11 @@ from app.services import strategy_catalog
 from app.services.allocation_mix import current_mix
 from app.services.funding_service import (
     MIN_TRADE_ILS, describe_funding, plan_funding)
+# The single asset class a set of buy legs lands in, or None if mixed. Lives in
+# funding_service beside the argument it feeds: `describe_funding` cannot do its
+# job without one, and owning a private copy here is exactly how the Today path
+# ended up never computing one at all.
+from app.services.funding_service import buying_class_of as _buying_class
 from app.services.fx import fx_rate, price_currency
 from app.services.intake_service import (
     delete_position, ensure_account, ensure_entity, get_cash,
@@ -502,18 +507,6 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
                      "buy_ils": round(short, 2),
                      "target_pct": round(w * 100, 1)})
     return legs
-
-
-def _buying_class(legs) -> str | None:
-    """The single asset class a set of buy legs lands in, or None if mixed.
-
-    Only used to let `describe_funding` say "this does not change your Equities
-    weight" when it is true. Mixed buys get no claim rather than a vague one.
-    """
-    from app.services.allocation_mix import classify
-    classes = {classify(str(leg.get("ticker") or "").upper(), "NASDAQ", None)
-               for leg in (legs or [])}
-    return classes.pop() if len(classes) == 1 else None
 
 
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,

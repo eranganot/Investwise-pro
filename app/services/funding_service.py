@@ -19,6 +19,7 @@ keeps more dry powder than a Grow book.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from app.services.allocation_mix import OBJ_TARGET, classify
 
@@ -52,15 +53,36 @@ def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None
     return max(0.0, float(cash_ils or 0.0) - cash_floor_ils(nav, objective, plan))
 
 
-def size_purchase(nav: float, current_weight: float, target_weight: float,
-                  cap: float | None = None) -> float:
-    """ILS to buy to close the gap to target, clipped at the concentration cap."""
-    if not nav or target_weight is None:
+def class_gap_ils(nav: float, mix: dict, cls: str, class_target: float) -> float:
+    """How much the PLAN wants added to an asset class. Zero once at or over target.
+
+    This is the only source of "the plan wants more here". It takes a mix keyed
+    by asset class on purpose: you cannot reach it with a single ticker's weight.
+    """
+    if not nav or not class_target:
         return 0.0
-    gap = max(0.0, float(target_weight) - float(current_weight or 0.0))
-    if cap is not None:
-        gap = min(gap, max(0.0, float(cap) - float(current_weight or 0.0)))
-    return round(nav * gap, 2)
+    gap = max(0.0, float(class_target) - float((mix or {}).get(cls, 0.0) or 0.0))
+    return round(float(nav) * gap, 2)
+
+
+def name_room_ils(nav: float, ticker_weight: float, cap: float) -> float:
+    """How much of ONE NAME can be added before the concentration cap bites.
+
+    A ceiling, never a statement of intent. Room under the cap is not a reason to
+    buy — it is only the most you may buy once something else has given a reason.
+    """
+    if not nav or cap is None:
+        return 0.0
+    return round(float(nav) * max(0.0, float(cap) - float(ticker_weight or 0.0)), 2)
+
+
+# `size_purchase(nav, current_weight, target_weight, cap)` used to do both jobs.
+# Both middle arguments were floats named "...weight", so passing a TICKER's
+# weight where an ASSET CLASS's target belonged type-checked, read fine, and
+# shipped: a name at 0% was sized against the whole 80% equities target and
+# clipped only by the 40% cap, producing an 8,170 "plan gap" that no plan ever
+# asked for. Two names that cannot be swapped by accident is the fix.
+# Guarded by tests/test_funding_service.py::test_size_purchase_is_gone.
 
 
 def _position_rows(rows, snap) -> list[dict]:
@@ -155,27 +177,78 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     amount_ils = max(0.0, float(amount_ils or 0.0))
     avail = spendable_cash(cash_ils, nav, objective, plan)
     from_cash = min(avail, amount_ils)
-    remaining = round(amount_ils - from_cash, 2)
+
+    # What still has to be raised, measured in money that can actually be SPENT.
+    #
+    # The loop used to draw down a *gross* target and subtract tax only at the
+    # end, so a plan that raised exactly the asking price came back short by the
+    # tax plus whatever was left under the minimum -- on every card, forever.
+    # Live: a 4,708 buy raised 4,290 gross and reported "still leaves 430 short"
+    # (418 unraised + 11 tax) while claiming to be a complete funding plan.
+    remaining_net = round(amount_ils - from_cash, 2)
 
     sells: list[dict] = []
     tax_total = 0.0
-    if remaining >= MIN_TRADE_ILS:
+    if remaining_net >= MIN_TRADE_ILS:
+        from app.core.config import get_settings
+        from app.services.fx import fx_rate, price_currency
+        cgt = float(get_settings().cgt_rate)
+
+        # How much each class may give up in total, spent down as the loop sells.
+        #
+        # `trimmable_ils` is per-candidate and computed from a mix that never
+        # moves, so a class 40% over target licensed selling 40% of NAV out of
+        # EVERY holding in it -- the same overweight authorising the same sale
+        # three times. On a three-position book that is a plan to liquidate 90%
+        # of it, which is what surfaced the moment funding started raising the
+        # amount actually asked for. One budget per class, drawn down once.
+        target = OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"])
+        class_mix: dict[str, float] = {}
+        for p in _position_rows(rows, snap):
+            class_mix[p["asset_class"]] = class_mix.get(p["asset_class"], 0.0) + p["weight"]
+        class_budget = {c: max(0.0, w - target.get(c, 0.0)) * nav for c, w in class_mix.items()}
+
         for cand in rank_trim_candidates(rows, snap, objective, cap, exclude):
-            if remaining < MIN_TRADE_ILS:
+            if remaining_net < MIN_TRADE_ILS:
                 break
-            take = min(remaining, cand["trimmable_ils"] or cand["value_ils"], cand["value_ils"])
+            price_ils = cand["price_ils"] or 0.0
+            if price_ils <= 0:
+                continue
+            cls = cand.get("asset_class")
+            if cand["trimmable_ils"]:
+                # Bounded by whichever authorised the sale: this NAME being over
+                # its own cap is a per-position fact, so it does not consume the
+                # class budget; the class overweight does.
+                name_allow = max(0.0, cand["weight"] - cap) * nav
+                allow = max(name_allow, class_budget.get(cls, 0.0))
+                if allow < MIN_TRADE_ILS:
+                    continue
+            else:
+                # Nothing is overweight: no budget to spend down, and the old
+                # whole-position fallback stands.
+                allow = cand["value_ils"]
+            rate = fx_rate(price_currency(cand["market"], cand["meta"]))
+            gain_per_share = max(0.0, cand["price"] - cand["cost_basis"])
+            # Tax as a fraction of this candidate's proceeds, so the sale can be
+            # grossed up to net the amount actually still needed.
+            tax_frac = min(0.95, (gain_per_share * rate * cgt) / price_ils)
+            want_gross = remaining_net / (1.0 - tax_frac)
+            take = min(want_gross, allow, cand["value_ils"])
             if take < MIN_TRADE_ILS:
                 continue
-            price_ils = cand["price_ils"] or 0.0
-            shares = int(take / price_ils) if price_ils else 0
+            shares = int(take / price_ils)
             if shares <= 0:
                 continue
+            # Whole lots floor the raise, so the last share is often the only
+            # thing standing between "funded" and a shortfall smaller than one
+            # share. Take it when the position can spare it -- never beyond the
+            # position itself.
+            net_per_share = price_ils * (1.0 - tax_frac)
+            if (shares * net_per_share < remaining_net
+                    and (shares + 1) * price_ils <= cand["value_ils"]):
+                shares += 1
             value = shares * price_ils
-            gain = max(0.0, (cand["price"] - cand["cost_basis"])) * shares
-            from app.core.config import get_settings
-            from app.services.fx import fx_rate, price_currency
-            rate = fx_rate(price_currency(cand["market"], cand["meta"]))
-            tax = gain * rate * float(get_settings().cgt_rate)
+            tax = gain_per_share * shares * rate * cgt
             sells.append({"ticker": cand["ticker"], "market": cand["market"], "shares": shares,
                           "value_ils": round(value, 2), "tax_ils": round(tax, 2),
                           # Carried so a caller can tell whether the proceeds are
@@ -183,7 +256,9 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                           "asset_class": cand.get("asset_class"),
                           "reason": cand["reason"], "gain_pct": cand["gain_pct"]})
             tax_total += tax
-            remaining = round(remaining - value, 2)
+            remaining_net = round(remaining_net - (value - tax), 2)
+            if cls in class_budget:
+                class_budget[cls] = max(0.0, class_budget[cls] - value)
 
     funded = round(from_cash + sum(s["value_ils"] for s in sells) - tax_total, 2)
     return {
@@ -198,13 +273,34 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     }
 
 
-def describe_funding(fund: dict, buying_class: str | None = None) -> str:
+def buying_class_of(legs) -> str | None:
+    """The single asset class a set of buy legs lands in, or None if mixed.
+
+    Lives here rather than in any one consumer: it is the argument
+    ``describe_funding`` cannot do its job without, so both the sleeve path and
+    the Today path have to reach the same answer. It used to live in
+    ``strategy_service`` alone, which is exactly how Today ended up never
+    computing it at all.
+    """
+    return _single_class({str((leg or {}).get("ticker") or "").upper() for leg in (legs or [])})
+
+
+def _single_class(tickers: set[str]) -> str | None:
+    classes = {classify(t, "NASDAQ", None) for t in tickers if t}
+    return classes.pop() if len(classes) == 1 else None
+
+
+def describe_funding(fund: dict, buying_class: str | None) -> str:
     """One plain sentence naming the money's source — no jargon, no ambiguity.
 
-    ``buying_class`` is what the proceeds are being spent on. Pass it and the
-    sentence will say so when the money is going straight back into the class it
-    came out of — because that is a fact the sale reasons cannot express on their
-    own, and its absence made a real preview read as a rebalance it was not.
+    ``buying_class`` is what the proceeds are being spent on, and it is
+    **required**. It has no default on purpose: when it had one, the Today path
+    simply never passed it, the honesty clause below silently never fired, and
+    three cards shipped claiming to move Equities from 97% toward an 80% target
+    while buying equities with equities. A missing argument is now a TypeError at
+    the call site instead of a missing sentence in production prose. ``None`` is
+    still a legal *value* — a mixed-class buy makes no claim rather than a vague
+    one — but you have to say so.
     """
     bits = []
     if fund.get("from_cash_ils"):
@@ -229,3 +325,147 @@ def describe_funding(fund: dict, buying_class: str | None = None) -> str:
     if fund.get("shortfall_ils"):
         line += f" That still leaves ₪{fund['shortfall_ils']:,.0f} short."
     return line
+
+
+# --------------------------------------------------------------------------- #
+# The only way to build a funded buy
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class FundedBuy:
+    """A funded purchase whose narration is derived from its own arithmetic.
+
+    Every field a card needs is computed here, together, from one simulation --
+    so the prose and the numbers cannot drift apart. They drifted apart for
+    months because sizing lived in one module, funding in a second, and the
+    sentence describing both in a third.
+    """
+    ticker: str
+    buying_class: str
+    amount_ils: float
+    fund: dict
+    class_before: float
+    class_after: float
+    class_target: float
+    kind: str                 # "toward_target" | "within_class_swap"
+    summary: str
+    impact: str
+    apply_spec: dict
+
+    @property
+    def is_swap(self) -> bool:
+        return self.kind == "within_class_swap"
+
+
+# Below this, a move is lot-granularity noise rather than a change in the mix.
+# A card claiming to move a weight must move it by at least this much.
+MIN_CLAIMABLE_MOVE = 0.005
+
+
+def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
+                       ticker: str, buying_class: str, cash_ils: float = 0.0,
+                       requested_ils: float | None = None,
+                       exclude: set[str] | None = None,
+                       market: str = "NYSE",
+                       allow_within_class_swap: bool = False) -> FundedBuy | None:
+    """Size, fund, simulate and narrate a purchase — or return None.
+
+    Returning None is the point as often as returning a card is. A purchase the
+    plan does not want, cannot pay for, or that would push a class further from
+    target is not a recommendation, and the honest thing to do with it is not to
+    render it more carefully -- it is not to render it.
+
+    ``allow_within_class_swap`` lets a caller keep a purchase whose funding comes
+    entirely out of the class it buys back into. That trade is legitimate --
+    shedding 3x leveraged exposure for factor exposure genuinely de-risks a book
+    -- but it moves no weight, so it is *forced* to narrate as a swap. The caller
+    opts into the trade, never into the label.
+    """
+    nav = float((snap or {}).get("nav") or 0.0)
+    tk = (ticker or "").upper()
+    if not nav or not tk or not buying_class:
+        return None
+
+    positions = _position_rows(rows, snap)
+    value_by_class: dict[str, float] = {}
+    for p in positions:
+        value_by_class[p["asset_class"]] = value_by_class.get(p["asset_class"], 0.0) + p["value_ils"]
+    invested = sum(value_by_class.values())
+    if invested <= 0:
+        return None
+    mix = {c: v / invested for c, v in value_by_class.items()}
+    ticker_weight = sum(p["weight"] for p in positions if p["ticker"] == tk)
+
+    targets = OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"])
+    class_target = float(targets.get(buying_class, 0.0) or 0.0)
+
+    # What the PLAN wants here, and separately the most this NAME may take.
+    gap = class_gap_ils(nav, mix, buying_class, class_target)
+    room = name_room_ils(nav, ticker_weight, cap)
+    want = min(gap, room) if gap >= MIN_TRADE_ILS else room
+    if gap < MIN_TRADE_ILS and not allow_within_class_swap:
+        # The class is at or over target. Absent an explicit opt-in there is no
+        # honest card here: buying more of a class the plan already holds too
+        # much of cannot be a move toward the plan.
+        return None
+    if requested_ils is not None:
+        want = min(want, max(0.0, float(requested_ils)))
+    if want < MIN_TRADE_ILS:
+        return None
+
+    ex = {t.upper() for t in (exclude or set())} | {tk}
+    fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils, exclude=ex)
+    amount = min(want, float(fund.get("funded_ils") or 0.0))
+    if amount < MIN_TRADE_ILS:
+        return None
+    if amount < want:
+        # Re-plan at the size the book can actually pay for, so the funding legs
+        # describe the trade being proposed rather than one that was rejected.
+        fund = plan_funding(rows, snap, plan, objective, cap, amount,
+                            cash_ils=cash_ils, exclude=ex)
+        amount = min(amount, float(fund.get("funded_ils") or 0.0))
+        if amount < MIN_TRADE_ILS:
+            return None
+
+    # Simulate. This -- not the trade size, not the caller's intent -- is what
+    # every claim below is rendered from.
+    after = dict(value_by_class)
+    after[buying_class] = after.get(buying_class, 0.0) + amount
+    for s in fund.get("sells", []):
+        cls = s.get("asset_class")
+        if cls:
+            after[cls] = after.get(cls, 0.0) - float(s.get("value_ils") or 0.0)
+    invested_after = sum(after.values())
+    if invested_after <= 0:
+        return None
+    class_before = mix.get(buying_class, 0.0)
+    class_after = after.get(buying_class, 0.0) / invested_after
+
+    moved = class_after - class_before
+    wanted_direction = class_target - class_before
+    if abs(moved) < MIN_CLAIMABLE_MOVE:
+        kind = "within_class_swap"
+    elif moved * wanted_direction > 0:
+        kind = "toward_target"
+    else:
+        # Further from target than it started. There is no wording that makes
+        # this a recommendation, so there is no card.
+        return None
+    if kind == "within_class_swap" and not allow_within_class_swap:
+        return None
+
+    if kind == "toward_target":
+        impact = (f"Moves {buying_class} from {class_before:.0%} to {class_after:.0%} "
+                  f"against your {class_target:.0%} target.")
+    else:
+        impact = (f"Does not move your {buying_class} weight ({class_before:.0%}). "
+                  f"Swaps which {buying_class.lower()} you hold.")
+
+    return FundedBuy(
+        ticker=tk, buying_class=buying_class, amount_ils=round(amount, 2), fund=fund,
+        class_before=round(class_before, 4), class_after=round(class_after, 4),
+        class_target=round(class_target, 4), kind=kind,
+        summary=describe_funding(fund, buying_class), impact=impact,
+        apply_spec={"kind": "buy_funded", "ticker": tk, "market": market,
+                    "asset_class": buying_class, "amount_ils": round(amount, 2),
+                    "from_cash_ils": fund.get("from_cash_ils", 0.0),
+                    "sells": fund.get("sells", [])})

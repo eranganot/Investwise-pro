@@ -172,4 +172,6 @@ def test_the_redeploy_card_concentrates_rather_than_disappearing():
     assert "if not legs and remaining >= _fund.MIN_TRADE_ILS" in src
     # It must still respect the single-name cap when it concentrates.
     tail = src[src.index("if not legs and remaining"):]
-    assert "size_purchase" in tail, "the concentrated leg must still be capped"
+    # `size_purchase` split into class_gap_ils (what the plan wants) and
+    # name_room_ils (the cap ceiling). The concentrated leg wants the ceiling.
+    assert "name_room_ils" in tail, "the concentrated leg must still be capped"

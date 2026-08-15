@@ -500,7 +500,10 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
         target_w = target.get(cls, 0.0)
         if target_w <= 0:
             continue  # the plan doesn't hold this asset class at all
-        room = _fund.size_purchase(nav, weight, min(target_w, cap), cap)
+        # PR2 replaces this whole block with _fund.propose_funded_buy(). Inlined
+        # here at exactly the old value -- a TICKER weight against an ASSET CLASS
+        # target -- so this PR changes no behaviour while size_purchase goes away.
+        room = round(max(0.0, min(target_w, cap) - weight) * nav, 2)
         if room < _fund.MIN_TRADE_ILS:
             continue  # no room without breaching the plan -> not a recommendation
         fund = _fund.plan_funding(rows, snap, plan, objective, cap, room,
@@ -521,7 +524,8 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
             "action": (f"{verb} {_ils(buyable)} of {tk}. That takes {cls} from "
                        f"{mix.get(cls, 0.0):.0%} toward your {target_w:.0%} target and keeps {tk} "
                        f"under your {cap:.0%} single-name cap. "
-                       + _fund.describe_funding(fund)),
+                       # PR2: pass the real buying class here -- None keeps this PR behaviour-neutral.
+                       + _fund.describe_funding(fund, None)),
             "impact": (f"Moves {cls} ~{(buyable / nav):.0%} closer to target."
                        + (f" Signal impact {impact:.0f}/100." if impact is not None else "")),
             "how": ([f"{verb} {_ils(buyable)} of {tk}"]
@@ -766,7 +770,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                             _f = _fs.plan_funding(rows, snap, plan, objective, cap, _buy,
                                                   cash_ils=_cash_ils, exclude={"VXUS"})
                             _act = (f"Buy {_ils(_buy)} of VXUS (global ex-US equities) to spread "
-                                    f"beyond one region. " + _fs.describe_funding(_f))
+                                    f"beyond one region. " + _fs.describe_funding(_f, None))  # PR2: real buying class
                             _how = ([f"Buy {_ils(_buy)} of VXUS (Vanguard Total International Stock)"]
                                     + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) "
                                        f"— {x['reason']}" for x in _f.get("sells", [])]
@@ -1703,7 +1707,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
             for p in held:
                 if remaining < _fund.MIN_TRADE_ILS:
                     break
-                room = _fund.size_purchase(nav, weights.get(p.ticker, 0.0), cap, cap)
+                room = _fund.name_room_ils(nav, weights.get(p.ticker, 0.0), cap)
                 amt = round(min(per, room, remaining), 2)
                 if amt < _fund.MIN_TRADE_ILS:
                     continue
@@ -1739,7 +1743,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
         best = None
         for cls, gap_ils, tw in gaps:
             for p in (held_by_class.get(cls) or []):
-                room = _fund.size_purchase(nav, weights.get(p.ticker, 0.0), cap, cap)
+                room = _fund.name_room_ils(nav, weights.get(p.ticker, 0.0), cap)
                 amt = round(min(remaining, room), 2)
                 if amt >= _fund.MIN_TRADE_ILS and (best is None or amt > best["amount_ils"]):
                     best = {"ticker": p.ticker, "amount_ils": amt, "asset_class": cls,
@@ -1763,7 +1767,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
             if remaining < _fund.MIN_TRADE_ILS:
                 break
             already = x["amount_ils"]
-            room = _fund.size_purchase(nav, weights.get(x["ticker"], 0.0), cap, cap) - already
+            room = _fund.name_room_ils(nav, weights.get(x["ticker"], 0.0), cap) - already
             extra = round(min(remaining, max(0.0, room)), 2)
             if extra < _fund.MIN_TRADE_ILS:
                 continue
@@ -1933,7 +1937,7 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0) ->
                                       cash_ils=cash_ils, exclude={pick_tk})
             action = (f"Buy {_ils(affordable)} of {pick_tk} ({pick_name}) — lifting commodities "
                       f"from {com_w:.0%} toward your {target:.0%} target. "
-                      + _fund.describe_funding(fund)
+                      + _fund.describe_funding(fund, None)  # PR2: real buying class
                       + f" Alternatives: {alts}.")
             how = ([f"Buy {_ils(affordable)} of {pick_tk} ({pick_name})"]
                    + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
