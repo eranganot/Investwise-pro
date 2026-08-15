@@ -13,3 +13,10 @@ scripts/railway-error.log
 
 # Staging for files the device bridge cannot delete; remove by hand.
 _to_delete/
+
+# Installed packages, never source. 2,463 of these were tracked until
+# 2026-08-15: every `git status` walked them and timed out at 40s, and -- the
+# expensive part -- `git status --short` returned an EMPTY view while five files
+# sat staged, which was very nearly reported as a clean tree. The `git add -A`
+# ban documented in .gitattributes was treating that symptom; this is the cause.
+node_modules/
