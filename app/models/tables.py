@@ -423,6 +423,12 @@ class StrategyBacktest(Base, PKMixin, TimestampMixin):
     # headline number instead of being computed once and forgotten.
     robustness: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
     data_source: Mapped[str] = mapped_column(String(32), default="")
+    # Which benchmark the excess figures in `metrics` are relative to. An excess
+    # only means anything against the thing it was measured against, so a change
+    # to settings.benchmark_ticker must invalidate the row rather than let a
+    # SPY-measured number render under a QQQ label. Empty on rows written before
+    # engine a4; those are already stale by version.
+    benchmark_ticker: Mapped[str] = mapped_column(String(16), default="")
     period_start: Mapped[str] = mapped_column(String(10), default="")
     period_end: Mapped[str] = mapped_column(String(10), default="")
     observations: Mapped[int] = mapped_column(Integer, default=0)

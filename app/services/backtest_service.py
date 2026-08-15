@@ -53,7 +53,11 @@ logger = logging.getLogger(__name__)
 #   a2 -> a3: sessions_per_year, limiting_ticker, history_start_by_ticker,
 #             history_capped_by_provider, and out-of-sample verdicts judged
 #             against the benchmark's decay rather than against zero.
-ENGINE_VERSION = "a3"
+#   a3 -> a4: base_tickers / base_cagr_pct / base_max_drawdown_pct /
+#             excess_over_base_cagr_pct -- the strategy measured against the
+#             thing it levers, alongside the existing book benchmark. Also
+#             benchmark_ticker, now recorded on the row (T0.1 / T0.4).
+ENGINE_VERSION = "a4"
 
 HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularity
 STALE_AFTER_DAYS = 7
@@ -98,6 +102,10 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     result = bt.run(series, spec, benchmark=bench)
     if not result.get("ok"):
         return result
+    # Which benchmark this measurement is relative to. Stored on the row so a
+    # later change to settings.benchmark_ticker marks it stale instead of
+    # silently relabelling a SPY-measured excess as excess-over-QQQ.
+    result["benchmark_ticker"] = bench_tk
 
     # Fragility travels with the headline number rather than being computed once
     # and forgotten: a strategy tuned until it looked good shows up here.
@@ -165,14 +173,30 @@ async def store(session: AsyncSession, strategy_id: str, result: dict) -> Strate
         row.data_source = market_provider().name
         row.period_start = str(result.get("start") or "")[:10]
         row.period_end = str(result.get("end") or "")[:10]
+        row.benchmark_ticker = str(result.get("benchmark_ticker") or "")[:16]
     if ok:
         row.observations = int(result.get("observations") or 0)
         row.computed_at = datetime.now(timezone.utc)
     return row
 
 
+def _benchmark_changed(row: StrategyBacktest) -> bool:
+    """The row was measured against a benchmark the settings no longer use.
+
+    An excess is only meaningful against the thing it was measured against.
+    Serving a SPY-measured `excess_cagr_pct` on a screen that now says QQQ is
+    not a stale number -- it is a wrong one. An empty column means the row
+    predates this field; the engine_version bump already marks those stale, so
+    it is not treated as a mismatch here.
+    """
+    stored = (row.benchmark_ticker or "").upper()
+    return bool(stored) and stored != (get_settings().benchmark_ticker or "").upper()
+
+
 def _is_stale(row: StrategyBacktest) -> bool:
     if row.engine_version != ENGINE_VERSION:
+        return True
+    if _benchmark_changed(row):
         return True
     when = row.computed_at
     if when is None:
@@ -189,6 +213,7 @@ def _payload(row: StrategyBacktest) -> dict:
         # the first waits for tonight's job, the second needs a recompute now.
         "stale_reason": (None if not _is_stale(row) else
                          "engine_version" if row.engine_version != ENGINE_VERSION
+                         else "benchmark" if _benchmark_changed(row)
                          else "age"),
         "live_engine_version": ENGINE_VERSION,
         "ok": row.ok,
@@ -206,6 +231,14 @@ def _payload(row: StrategyBacktest) -> dict:
         "data_source": row.data_source,
         "period": {"start": row.period_start, "end": row.period_end,
                    "observations": row.observations},
+        "benchmark_ticker": row.benchmark_ticker or None,
+        # Every figure travels with the window it was measured over, and with
+        # what KIND of measurement it is. A ten-year strategy backtest and a
+        # 250-day holdings backfill will disagree, and both are correct -- but
+        # only if the screen can tell them apart. `kind` is what lets a renderer
+        # refuse to put two different measurements on one unlabelled line.
+        "window": {"start": row.period_start, "end": row.period_end,
+                   "sessions": row.observations, "kind": "strategy_backtest"},
         "computed_at": row.computed_at.isoformat() if row.computed_at else None,
         "stale": _is_stale(row),
     }

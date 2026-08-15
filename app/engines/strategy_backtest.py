@@ -513,11 +513,54 @@ def _metrics(sim: dict, dates: list[str], bench: np.ndarray | None) -> dict:
                                  if sim.get("trip_days") else None),
         })
     if bench is not None and bench.size:
+        # THE BOOK BENCHMARK (settings.benchmark_ticker, normally SPY).
+        # Answers "did this beat the market", which is a claim about the whole
+        # portfolio. It is NOT a claim about whether the rule works -- see
+        # base_series() and excess_over_base_cagr_pct below.
         b = cagr(list(bench)) * 100
         out["benchmark_cagr_pct"] = round(b, 2)
         out["excess_cagr_pct"] = round(out["cagr_pct"] - b, 2)
         out["benchmark_max_drawdown_pct"] = round(max_drawdown(list(bench)) * 100, 2)
     return out
+
+
+def base_series(px: dict[str, np.ndarray], base: dict[str, float] | None) -> np.ndarray | None:
+    """Buy-and-hold index of the strategy's OWN base, on the same dates.
+
+    A trend rule on TQQQ levers QQQ; a trend rule on SOXL levers SMH. Measuring
+    either against SPY makes most of its apparent excess a Nasdaq-or-semis factor
+    bet rather than evidence the timing rule works. The catalog already names the
+    right comparison in `base` -- this turns it into a series.
+
+    Weights are fixed at the first session and never rebalanced, which is what
+    "hold the thing you are levering" actually means.
+    """
+    if not base:
+        return None
+    if any(tk not in px or px[tk].size == 0 or px[tk][0] == 0 for tk in base):
+        return None
+    legs = [w * (px[tk] / px[tk][0]) for tk, w in base.items()]
+    return np.sum(legs, axis=0)
+
+
+def _base_metrics(out: dict, px: dict[str, np.ndarray], spec: dict) -> None:
+    """Add the base-relative figures in place. Absent base -> nothing added.
+
+    Deliberately separate keys from the benchmark ones. The two answer different
+    questions and a book can easily have a positive `excess_over_base_cagr_pct`
+    and a negative `excess_cagr_pct` at the same time -- the rule working while
+    the book still loses to the market. Collapsing them into one number is how
+    that goes unnoticed.
+    """
+    vals = base_series(px, spec.get("base"))
+    if vals is None:
+        out["base_tickers"] = None
+        return
+    b = cagr(list(vals)) * 100
+    out["base_tickers"] = sorted(spec["base"])
+    out["base_cagr_pct"] = round(b, 2)
+    out["base_max_drawdown_pct"] = round(max_drawdown(list(vals)) * 100, 2)
+    out["excess_over_base_cagr_pct"] = round(out["cagr_pct"] - b, 2)
 
 
 # --------------------------------------------------------------------------
@@ -649,6 +692,10 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
 
     sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate)
     out = _metrics(sim, dates, bench)
+    # Two benchmarks, never conflated: the book's (above, in _metrics) and the
+    # strategy's own base (here). "Does the rule work?" and "does the book beat
+    # the market?" are different questions with different answers.
+    _base_metrics(out, px, spec)
     out.update(_exposure_stats(targets, spec))
 
     starts = {k: v for k, v in first_seen.items() if k != "__bench__"}
