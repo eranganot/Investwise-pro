@@ -95,6 +95,22 @@ def core_weights_from(held_ils: dict[str, float],
             if tk.upper() not in ex and v > 0}
 
 
+def claimable_tickers(spec: dict) -> set[str]:
+    """Every ticker this component can actually HOLD on some session.
+
+    Not the same as ``tickers_needed``: a trend rule gates on QQQ whether or not
+    it ever holds it, and a gate ticker is not a position. What can be held is
+    the basket, plus the base it falls back to when the setup is off, plus the
+    risk-off instrument. Concentration is a property of positions, so this is the
+    set a cap may be judged against.
+    """
+    out = set(spec.get("weights") or {})
+    out |= set(spec.get("base") or {})
+    if spec.get("risk_off"):
+        out.add(spec["risk_off"])
+    return {t.upper() for t in out}
+
+
 # --------------------------------------------------------------------------
 # blending
 # --------------------------------------------------------------------------
@@ -174,7 +190,8 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
                   components: list[dict], *,
                   benchmark: list[tuple[str, float]] | None = None,
                   cgt_rate: float = CGT_RATE,
-                  cost_bps: float = DEFAULT_COST_BPS) -> dict:
+                  cost_bps: float = DEFAULT_COST_BPS,
+                  detail: bool = True) -> dict:
     """Measure a blended book. Same metrics shape as a single strategy.
 
     ``components`` is ``[{"id": str, "spec": dict, "weight": float}]`` where
@@ -182,6 +199,14 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
     standard metrics dict means every renderer that can already draw a strategy
     card can draw a blend, plus four fields a blend needs and a single strategy
     does not.
+
+    ``detail=False`` skips the per-component and cash-drag simulations, which are
+    the expensive part and do not change the blended figures. A weight sweep
+    evaluates one blend per step and only needs the headline numbers; it measures
+    the point it settles on in full. The skipped fields come back as ``None``
+    rather than as zeros -- "not computed" and "measured at zero" are different
+    claims, and a sweep must not be able to report a zero cash drag it never
+    measured.
     """
     if not components:
         return _abstain(NO_COMPONENTS, "a blend needs at least one component")
@@ -227,6 +252,35 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
     out["components"] = []
     out["allocated_pct"] = round(total_w * 100, 2)
     out["cash_pct"] = round(max(0.0, 1.0 - total_w) * 100, 2)
+    out["detailed"] = bool(detail)
+
+    # Largest single-ticker exposure the blend ever reaches. The concentration
+    # cap is a property of the book being measured, so it is computed HERE from
+    # the same blended targets the metrics came from -- a solver recomputing it
+    # alongside would be a second implementation of one fact, which is the shape
+    # of the defect the card-claims batch existed to remove.
+    peaks: dict[str, float] = {}
+    for row in blended:
+        for tk, w in row.items():
+            if w > peaks.get(tk, 0.0):
+                peaks[tk] = w
+    # Per ticker, not just the maximum. A cap is judged against the positions a
+    # DECISION would create; reporting only the book-wide peak makes an
+    # already-concentrated core veto every sleeve size, including zero, which
+    # tells the reader nothing about the choice in front of them.
+    out["peak_weight_pct_by_ticker"] = {tk: round(w * 100, 2)
+                                        for tk, w in sorted(peaks.items())}
+    peak_tk = max(peaks, key=peaks.get) if peaks else None
+    out["peak_ticker"] = peak_tk
+    out["peak_ticker_weight_pct"] = round(peaks.get(peak_tk, 0.0) * 100, 2)
+
+    if not detail:
+        out["diversification_delta_pct"] = None
+        out["cash_drag_pct"] = None
+        out["excess_at_equal_risk_pct"] = None
+        out["equal_risk_leverage"] = None
+        out["blend_engine"] = "b1"
+        return out
 
     # Each component measured ALONE over the same window, at full weight. This
     # is what makes diversification_delta_pct a measurement rather than a claim.

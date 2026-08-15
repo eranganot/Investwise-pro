@@ -256,6 +256,32 @@ async def clear_my_core(session: AsyncSession = Depends(get_session),
     return out
 
 
+@router.get("/plan/target")
+async def target_solve(excess_pct: float, max_drawdown_pct: float,
+                       session: AsyncSession = Depends(get_session),
+                       user: User = Depends(acting_user)) -> dict:
+    """What sleeve size beats the benchmark by `excess_pct` within a drawdown ceiling.
+
+    READ-ONLY. Both parameters are required and neither has a default: a target
+    return with an implied drawdown tolerance is exactly the half-question this
+    endpoint exists to stop being asked. GET, so nothing about it can be mistaken
+    for an action.
+
+    Returns one of five outcomes -- REACHED, REACHED_ABOVE_CAP, DRAWDOWN_BOUND,
+    UNREACHABLE, NOT_MEASURABLE -- every one of which is a legitimate answer.
+    """
+    from app.services import target_solver
+    if max_drawdown_pct <= 0:
+        return {"outcome": target_solver.NOT_MEASURABLE,
+                "reason": "NO_CEILING",
+                "detail": "a drawdown ceiling above 0% is required — without one "
+                          "the answer is always the most leveraged blend allowed",
+                "execution_plan": None}
+    return await target_solver.solve_for(
+        session, user, target_excess_pct=float(excess_pct),
+        max_drawdown_pct=float(max_drawdown_pct))
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)
