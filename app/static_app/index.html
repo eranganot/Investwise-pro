@@ -293,6 +293,14 @@
         <span class="muted" id="priceNote" style="font-size:12px"></span>
       </div>
     </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b>Your portfolio over time</b>
+        <div class="stgoal" id="tdRanges" style="flex-wrap:nowrap;overflow-x:auto"></div>
+      </div>
+      <canvas id="ch_today" height="170" style="margin-top:8px"></canvas>
+      <div class="muted" id="todayPerfCap" style="margin-top:8px;font-size:12px">Loading…</div>
+    </div>
     <div class="card" id="aiSummaryCard">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
         <b>✨ AI summary</b>
@@ -693,7 +701,65 @@ function renderRuleBanner(){
     b.classList.remove("hide");
   } else { b.classList.add("hide"); }
 }
+// ---- T4: portfolio over time, on Today ----------------------------------
+// Y is PERCENT CHANGE, not value, so the same chart reads the same way whether
+// the book is worth 8k or 800k -- and so the benchmark can share the axis.
+const TD_RANGES=[["1W","1 week"],["1M","1 month"],["1Q","1 quarter"],["1Y","1 year"],["MAX","Max"]];
+let TDPERF={range:"1M",cache:{},busy:false};
+
+function tdRangeButtons(){
+  const b=$("tdRanges"); if(!b)return;
+  b.innerHTML=TD_RANGES.map(([k,label])=>
+    `<button class="${k===TDPERF.range?'on':''}" onclick="tdSetRange('${k}')" title="${label}">${k}</button>`).join("");
+}
+
+function tdSetRange(r){ if(TDPERF.range===r&&TDPERF.cache[r])return; TDPERF.range=r; tdRangeButtons(); loadTodayPerf(); }
+
+async function loadTodayPerf(){
+  tdRangeButtons();
+  const r=TDPERF.range, cap=$("todayPerfCap"); if(!cap)return;
+  // Cached per range: each call is one provider fetch PER HOLDING, so flicking
+  // between ranges uncached would fan out the same request over and over.
+  let d=TDPERF.cache[r];
+  if(!d){
+    cap.textContent="Measuring…"; TDPERF.busy=true;
+    try{ d=await(await fetch(`/api/v1/portfolio/performance?range=${r}`,{method:"POST"})).json(); }
+    catch(e){ d={ok:false,reason:String(e)}; }
+    TDPERF.busy=false; TDPERF.cache[r]=d;
+  }
+  if(!d.ok){
+    // "not enough overlapping sessions" is a real answer for 1W over a holiday
+    // week. Say which window failed rather than blanking the card.
+    cap.innerHTML=`<span class="warn">No chart for ${r}: ${d.reason||"not measurable"}.</span>`;
+    return;
+  }
+  // The server re-bases per window (index_series normalises to the first value
+  // in the series it fetched), so index-100 is the change ACROSS THIS RANGE and
+  // not since some earlier start. That is the whole reason the range is a server
+  // parameter rather than a client-side slice.
+  const pct=d.portfolio_index.map(v=>+(v-100).toFixed(2));
+  const ds=[{label:"Your portfolio",data:pct,borderColor:"#3b82f6",fill:false,pointRadius:0,tension:.12,borderWidth:2}];
+  if(d.benchmark_index)
+    ds.push({label:d.benchmark,data:d.benchmark_index.map(v=>+(v-100).toFixed(2)),
+             borderColor:"#8b97a8",borderDash:[5,4],fill:false,pointRadius:0,tension:.12,borderWidth:1.5});
+  drawChart("ch_today","line",{labels:d.dates,datasets:ds},{
+    plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}},
+             tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y>=0?"+":""}${c.parsed.y}%`}}},
+    scales:{x:{ticks:{display:false},grid:{display:false}},
+            y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`}}}});
+
+  const chg=pct.length?pct[pct.length-1]:0;
+  const ex=d.excess_return_pct;
+  cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${d.observations} sessions`+
+    (d.window?` (${d.window.start} to ${d.window.end})`:"")+
+    (ex!=null?` &middot; vs ${d.benchmark} <b class="${ex>=0?'ok':'bad'}">${ex>=0?"+":""}${ex}%</b>`:"")+
+    `<div style="margin-top:2px">Backfill of the holdings you have TODAY, priced back through their own history &mdash; not a record of what you traded. Valued in ${d.base_currency||"ILS"}${d.fx_basis==="spot"?" at today's rate":""}.</div>`+
+    ((d.degraded&&d.degraded.includes("fx"))
+      ? `<div class="bad">No FX rate for ${(d.unconverted_holdings||[]).map(u=>u.ticker).join(", ")} &mdash; shown unconverted.</div>` : "");
+}
+
 async function loadToday(){
+  loadTodayPerf();
   // Trading-rule alerts banner (top of Today)
   try{ RULES_PAYLOAD=await(await fetch("/api/v1/rules")).json(); renderRuleBanner(); }catch(e){}
   try{const h=await(await fetch("/api/v1/health-check")).json();
@@ -1323,6 +1389,178 @@ function coreRow(pct){
       them.</div>`;
 }
 
+// ---- T4: the target card ------------------------------------------------
+// Two inputs, and NEVER a slider. A slider implies every position on it is
+// attainable; the entire point of this card is that most of them are not, and
+// that saying so is the answer rather than a failure to answer.
+let TGT={excess:null,ceiling:null,res:null,busy:false,seeded:false,err:null};
+
+// UNREACHABLE and DRAWDOWN_BOUND render as `warn`, never `bad`. They are
+// correct answers and must not look like the app broke.
+const _TGT_VERDICT={
+  REACHED:            ["ok",   "Reachable"],
+  REACHED_ABOVE_CAP:  ["warn", "Only past your concentration cap"],
+  DRAWDOWN_BOUND:     ["warn", "Only by breaching your drawdown ceiling"],
+  UNREACHABLE:        ["warn", "Not reachable at any size"],
+  NOT_MEASURABLE:     ["muted","Not measurable"]
+};
+
+function _n(v,d){ return (v==null||v===""||isNaN(v))?d:(Math.round(v*10)/10); }
+
+async function _seedTarget(){
+  // Both defaults are MEASURED, not chosen: where the book actually is, and the
+  // risk it already carries. A made-up default is the card guessing on your
+  // behalf, and this card exists to stop that.
+  if(TGT.seeded) return; TGT.seeded=true;
+  try{
+    const p=await(await fetch("/api/v1/portfolio/performance",{method:"POST"})).json();
+    if(p&&p.ok){
+      if(TGT.excess==null)  TGT.excess=_n(p.excess_cagr_pct,null);
+      if(TGT.ceiling==null) TGT.ceiling=_n(p.max_drawdown_pct,null);
+      TGT.seedNote=(p.excess_cagr_pct!=null)
+        ? `seeded from your book: ${p.excess_cagr_pct}%/yr vs ${p.benchmark} over ${p.observations} days, ${p.max_drawdown_pct}% drawdown`
+        : null;
+    }
+  }catch(e){ /* leave the fields empty rather than invent a number */ }
+  _tgtRender();
+}
+
+function _tgtRender(){ const b=$("tgtBox"); if(b) b.innerHTML=targetBody(); }
+
+async function solveTarget(){
+  const ex=parseFloat($("tgtExcess").value), dd=parseFloat($("tgtCeiling").value);
+  TGT.excess=isNaN(ex)?null:ex; TGT.ceiling=isNaN(dd)?null:dd; TGT.err=null;
+  if(TGT.excess==null||TGT.ceiling==null||TGT.ceiling<=0){
+    // The ceiling is half the question, not an advanced option. Without one the
+    // answer is always the most leveraged blend the caps happen to allow.
+    TGT.err="Both are required. Without a drawdown ceiling the answer is always the most leveraged blend allowed.";
+    return _tgtRender();
+  }
+  TGT.busy=true; TGT.res=null; _tgtRender();
+  try{
+    const r=await fetch(`/api/v1/plan/target?excess_pct=${TGT.excess}&max_drawdown_pct=${TGT.ceiling}`);
+    TGT.res=await r.json();
+  }catch(e){ TGT.err=String(e); }
+  TGT.busy=false; _tgtRender();
+}
+
+function _tgtProvenance(m,res){
+  const bits=[];
+  if(res.benchmark) bits.push(`vs ${res.benchmark}`);
+  if(m&&m.observations) bits.push(`${m.observations} sessions`);
+  if(m&&m.start&&m.end) bits.push(`${m.start} to ${m.end}`);
+  if(res.solver_version) bits.push(`solver ${res.solver_version}`);
+  if(m&&m.blend_engine) bits.push(`blend ${m.blend_engine}`);
+  return bits.join(" &middot; ");
+}
+
+function _tgtCost(c){
+  if(!c) return "";
+  const d=c.drawdown||{}, p=c.projection, t=c.tax||{}, f=c.funding;
+  let out=`<div style="margin-top:8px;padding-top:8px;border-top:1px solid #1e2a3a">
+    <div class="mk" style="margin-bottom:4px">WHAT IT COSTS</div>
+    <div>Worst fall <b>${d.pct}%</b> = <b>${d.ils}</b> ILS, needing <b>+${d.recovery_pct}%</b> to get back to level.</div>`;
+  if(p){
+    // Median beside mean, always. For a leveraged blend the median sits well
+    // below the mean, and that gap is the single most useful thing here: a
+    // target expressed as an average is not the outcome you most likely get.
+    out+=`<div style="margin-top:4px">Over ${p.horizon_years} years in today's money
+      &mdash; median <b>${p.real.median_ils}</b>, mean ${p.real.mean_ils}
+      <span class="warn">(median is ${p.median_below_mean_pct}% below the mean)</span>.
+      5th&ndash;95th: ${p.real.p5_ils} to ${p.real.p95_ils}.
+      Chance of a real loss: <b>${Math.round(p.probability_of_real_loss*100)}%</b>.</div>
+      <div class="mk" style="margin-top:2px">Projection, not a measurement &mdash; ${p.runs} runs, CPI-deflated.</div>`;
+  }
+  if(t.drag_pct_per_year!=null)
+    out+=`<div style="margin-top:4px">Tax to <b>stay</b> in it: ${t.drag_pct_per_year}%/yr at ${t.cgt_rate_pct}% CGT (gross ${t.gross_cagr_pct}, net ${t.net_cagr_pct}).</div>`;
+  if(f&&f.needed_ils>0)
+    out+=`<div>Cost to <b>arrive</b>: ${f.needed_ils} ILS to raise, est. CGT ${f.estimated_cgt_ils}${f.shortfall_ils>0?`, <span class="warn">short by ${f.shortfall_ils}</span>`:""}.</div>`;
+  else if(f) out+=`<div class="mk">Nothing to fund &mdash; the solved size is not larger than what you run.</div>`;
+  return out+`</div>`;
+}
+
+function _tgtBinding(res){
+  const b=res.binding_constraint; if(!b) return "";
+  if(b.kind==="concentration_cap")
+    return `<div class="warn">Your ${b.cap_pct}% concentration cap binds: ${b.ticker} would have to reach ${b.would_reach_pct}%.</div>`;
+  if(b.kind==="drawdown_ceiling"){
+    const best=res.best_within_ceiling;
+    return `<div class="warn">It is reachable on return, but only at a ${b.would_require_pct}% drawdown against your ${b.ceiling_pct}% ceiling.</div>`+
+      (best?`<div>Best inside your ceiling: <b>${best.excess_pct}%/yr</b> at a ${best.total_sleeve_pct}% sleeve, ${best.max_drawdown_pct}% drawdown.</div>`:"")+
+      ((res.floor&&res.floor.breaches_ceiling)?`<div class="bad">${res.floor.note}</div>`:"");
+  }
+  if(b.kind==="component_excess")
+    return `<div class="warn">Holding it down: <b>${_stratName(b.component)}</b> measured ${b.component_cagr_pct}%/yr against a benchmark doing ${b.benchmark_cagr_pct}%/yr &mdash; an excess of <b>${b.component_excess_pct}%/yr</b>. No size of it reaches your target; the rule is what would have to change.</div>`;
+  return "";
+}
+
+function targetBody(){
+  const seed=TGT.seedNote?`<div class="mk" style="margin-top:4px">${TGT.seedNote}</div>`:"";
+  const form=`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
+      <label style="flex:1;min-width:150px"><div class="mk">BEAT THE BENCHMARK BY</div>
+        <input id="tgtExcess" type="number" step="0.5" value="${TGT.excess!=null?TGT.excess:""}"
+               placeholder="%/yr" style="width:100%"></label>
+      <label style="flex:1;min-width:150px"><div class="mk">WITHOUT EXCEEDING</div>
+        <input id="tgtCeiling" type="number" step="1" min="0.1" value="${TGT.ceiling!=null?TGT.ceiling:""}"
+               placeholder="% drawdown" style="width:100%"></label>
+      <button class="load" onclick="solveTarget()" ${TGT.busy?"disabled":""}>${TGT.busy?"Measuring…":"Solve"}</button>
+    </div>${seed}`;
+
+  if(TGT.err) return form+`<div class="bad" style="margin-top:8px">${TGT.err}</div>`;
+  if(TGT.busy) return form+`<div class="muted" style="margin-top:8px">Simulating the blend at each size over ten years of closes…</div>`;
+  const res=TGT.res;
+  if(!res) return form+`<div class="muted" style="margin-top:8px">Ask what a size would have to be. Every answer is measured, and "no" is one of them.</div>`;
+
+  const [cls,label]=_TGT_VERDICT[res.outcome]||["muted",res.outcome];
+  const m=res.measured;
+  let out=form+`<div style="margin-top:10px"><span class="rk ${cls}" style="font-weight:700">${label}</span></div>`;
+
+  if(res.outcome==="NOT_MEASURABLE"){
+    return out+`<div class="muted" style="margin-top:6px">${res.reason||""} ${res.detail||""}</div>`;
+  }
+  if(res.solved_total_sleeve_pct!=null && (res.outcome==="REACHED"||res.outcome==="REACHED_ABOVE_CAP"||res.outcome==="DRAWDOWN_BOUND")){
+    out+=`<div style="margin-top:6px">Your sleeves together would have to be
+      <b>${res.display_total_sleeve_pct}%</b> of the book
+      <span class="mk">(solved ${res.solved_total_sleeve_pct}%, shown on the 5-point grid)</span>.</div>`;
+  }
+  out+=_tgtBinding(res);
+
+  if(m){
+    out+=`<div style="margin-top:6px">Measured: <b>${m.excess_cagr_pct}%/yr</b> over ${res.benchmark},
+      at a <b>${m.max_drawdown_pct}%</b> drawdown.</div>`;
+    if(m.excess_at_equal_risk_pct!=null){
+      // The leverage-proof scoreboard. Raw excess is bought with leverage; this
+      // is not, so it is the number that decides whether the rule has an edge.
+      const eq=m.excess_at_equal_risk_pct;
+      out+=`<div>At <b>equal risk</b> to ${res.benchmark}: <b class="${eq>=0?'ok':'bad'}">${eq>=0?"+":""}${eq}%/yr</b>
+        <span class="mk">(scaled ${m.equal_risk_leverage}x to the same ${m.equal_risk_drawdown_pct}% drawdown)</span>.</div>`;
+      if(eq<0&&m.excess_cagr_pct>0)
+        out+=`<div class="warn">It beats the market on return and loses to it per unit of risk.</div>`;
+    }
+    if(m.components&&m.components.length)
+      out+=`<div class="mk" style="margin-top:4px">Blend: ${m.components.map(c=>`${_stratName(c.id)==="__core__"?"core":_stratName(c.id)} ${c.weight_pct}%`).join(", ")}${m.cash_pct>0?`, cash ${m.cash_pct}%`:""}</div>`;
+  }
+  out+=_tgtCost(res.cost);
+
+  if(res.degraded&&res.degraded.length)
+    out+=`<div class="bad" style="margin-top:6px">Degraded: ${res.degraded.join(", ")}${res.unpriced_holdings?` (${res.unpriced_holdings.join(", ")})`:""}</div>`;
+
+  out+=`<div class="mk" style="margin-top:8px">${_tgtProvenance(m,res)}</div>`;
+  out+=`<div class="mk">${res.axis_note||""}</div>`;
+  // Read-only, and the card says so in the same words the funding cards use.
+  out+=`<div class="mk">This changes nothing. To act on it, resize the sleeve and press Fund all sleeves &mdash; no brokerage order is placed either way.</div>`;
+  return out;
+}
+
+function targetCard(){
+  setTimeout(_seedTarget,0);
+  return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--amber)">
+    <div class="nm">What would it take?</div>
+    <div class="muted" style="margin:4px 0 8px">Measured against ten years of real closes. Every figure below is a measurement, not a forecast, except where it says otherwise.</div>
+    <div id="tgtBox">${targetBody()}</div>
+  </div>`;
+}
+
 function sleevePanel(){
   const ids=_appliedIds();
   if(!ids.size){
@@ -1399,7 +1637,7 @@ async function loadStrategies(){
               : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`)}
       </div>
     </div>`;}).join("");
-  $("stratBox").innerHTML=sleevePanel()+`<div class="stgoal">${tabs}</div>`
+  $("stratBox").innerHTML=sleevePanel()+targetCard()+`<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list;
 }

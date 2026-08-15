@@ -251,11 +251,46 @@ async def portfolio_risk_report(session: AsyncSession = Depends(get_session),
     return await portfolio_risk(session, user)
 
 
+# What the Today chart's range buttons mean, in CALENDAR days -- the provider
+# takes calendar days, not sessions. Kept server-side so the window that gets
+# MEASURED is the window that was asked for.
+PERF_RANGES = {"1W": 7, "1M": 31, "1Q": 93, "1Y": 366, "MAX": 2600}
+_PERF_MIN_DAYS, _PERF_MAX_DAYS = 7, 2600
+
+
 @router.post("/portfolio/performance", dependencies=[Depends(require_role(Role.ANALYST))])
-async def portfolio_performance(session: AsyncSession = Depends(get_session),
+async def portfolio_performance(range: str | None = None,
+                                history_days: int | None = None,
+                                session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
-    """Backfilled portfolio performance vs benchmark from real price history."""
-    return await performance(session, user)
+    """Backfilled portfolio performance vs benchmark from real price history.
+
+    ``range`` is one of 1W / 1M / 1Q / 1Y / MAX; ``history_days`` overrides it.
+    Both default to the previous behaviour (252 days) so existing callers are
+    unaffected.
+
+    **The window is applied on the server, deliberately.** ``index_series``
+    normalises to the first value IN THE SERIES, so a re-based percentage only
+    means "change over this window" if the series was fetched for that window.
+    Slicing a long series client-side would re-base against the wrong day, and
+    slicing a DOWNSAMPLED long series would be worse still -- at 160 points a
+    ten-year series is one point per ~16 sessions, so "last week" would be two
+    points sixteen sessions apart, drawn as though it were a week.
+    """
+    days = history_days
+    if days is None and range:
+        days = PERF_RANGES.get(range.strip().upper())
+        if days is None:
+            return {"ok": False, "reason": "unknown range",
+                    "detail": f"range must be one of {', '.join(PERF_RANGES)}"}
+    if days is None:
+        days = 252
+    days = max(_PERF_MIN_DAYS, min(int(days), _PERF_MAX_DAYS))
+    out = await performance(session, user, history_days=days)
+    if isinstance(out, dict):
+        out["requested_days"] = days
+        out["range"] = (range or "").strip().upper() or None
+    return out
 
 
 @router.delete("/portfolio/position")
