@@ -446,3 +446,42 @@ def test_a_war_room_buy_never_sells_a_sleeve_holding(observed):
             assert not (sold & protected), (
                 f"'{card['title']}' funds itself by selling sleeve holding(s) "
                 f"{sold & protected}")
+
+
+# --------------------------------------------------------------------------- #
+# 4. One inventory, and no card deleted for wanting the wrong shares
+#
+# The first attempt at cross-card netting let every card plan against the
+# untouched book and then dropped the ones whose legs had been claimed. On the
+# live book that silently removed the war-room card AND the commodities card
+# because a geo card had taken 2 MSFT first -- while 7,863 of V sat untouched
+# and would have funded both. Replacing three dishonest cards with no cards is
+# not a fix.
+# --------------------------------------------------------------------------- #
+def test_a_card_whose_funding_is_taken_is_re_sourced_not_dropped(observed):
+    from app.schemas.state_machine import ActionType, Market
+    observed(ticker="QUAL", market=Market.NASDAQ, depth=3, spot_price=100,
+             listing_price=104.8, action_type=ActionType.BUY,
+             expected_return_pct=9, volatility_pct=12)
+    with TestClient(app) as c:
+        _seed(c, BOOKS["equities_overweight"])
+        c.put("/api/v1/plan", json={"risk_tolerance": "Medium"})
+        body = c.get("/api/v1/recommendations").json()
+        funded = [r for r in body.get("recommendations", [])
+                  if (r.get("apply") or {}).get("kind") == "buy_funded"]
+        if len(funded) < 2:
+            pytest.skip("this book produced fewer than two funded cards")
+        assert "funding" not in (body.get("degraded") or []), (
+            "a card was dropped for want of funding; it should have been "
+            "re-sourced from what the earlier cards left")
+        # And the legs really are disjoint -- one inventory, spent once.
+        seen = {}
+        for card in funded:
+            for s in (card.get("apply") or {}).get("sells", []):
+                tk = str(s.get("ticker") or "").upper()
+                seen[tk] = seen.get(tk, 0.0) + float(s.get("shares") or 0.0)
+        held = {p["ticker"].upper(): float(p["quantity"])
+                for p in BOOKS["equities_overweight"]["positions"]}
+        for tk, used in seen.items():
+            assert used <= held.get(tk, 0.0) + 1e-9, (
+                f"the card set sells {used:g} {tk} out of {held.get(tk, 0.0):g} held")
