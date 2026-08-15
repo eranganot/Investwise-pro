@@ -207,6 +207,11 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         for p in _position_rows(rows, snap):
             class_mix[p["asset_class"]] = class_mix.get(p["asset_class"], 0.0) + p["weight"]
         class_budget = {c: max(0.0, w - target.get(c, 0.0)) * nav for c, w in class_mix.items()}
+        # Is anything at all overweight? If not, every candidate falls back to
+        # "sell what you have"; if so, only the overweight may be sold.
+        book_has_budget = (sum(class_budget.values())
+                           + sum(max(0.0, p["weight"] - cap) * nav
+                                 for p in _position_rows(rows, snap))) >= MIN_TRADE_ILS
 
         for cand in rank_trim_candidates(rows, snap, objective, cap, exclude):
             if remaining_net < MIN_TRADE_ILS:
@@ -215,17 +220,28 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             if price_ils <= 0:
                 continue
             cls = cand.get("asset_class")
-            if cand["trimmable_ils"]:
+            name_allow = max(0.0, cand["weight"] - cap) * nav
+            allow = max(name_allow, class_budget.get(cls, 0.0))
+            if allow >= MIN_TRADE_ILS:
                 # Bounded by whichever authorised the sale: this NAME being over
                 # its own cap is a per-position fact, so it does not consume the
                 # class budget; the class overweight does.
-                name_allow = max(0.0, cand["weight"] - cap) * nav
-                allow = max(name_allow, class_budget.get(cls, 0.0))
-                if allow < MIN_TRADE_ILS:
-                    continue
+                pass
+            elif book_has_budget:
+                # This position's class is at or under its target while something
+                # else in the book is over. Selling it would take a class the plan
+                # is already short of and make it shorter, to buy something else.
+                #
+                # `rank_trim_candidates` offers it anyway: its score carries a
+                # tax_friendliness term that stays positive for an underweight
+                # class, and a zero `trimmable_ils` used to fall through to the
+                # whole-position fallback below. That is how a war-room buy came
+                # to be funded partly by selling BND at 3% against a 10% target.
+                continue
             else:
-                # Nothing is overweight: no budget to spend down, and the old
-                # whole-position fallback stands.
+                # Nothing in the book is overweight at all: there is no budget to
+                # prefer, so the whole-position fallback stands and the buy is
+                # funded from wherever it can be.
                 allow = cand["value_ils"]
             rate = fx_rate(price_currency(cand["market"], cand["meta"]))
             gain_per_share = max(0.0, cand["price"] - cand["cost_basis"])
@@ -453,6 +469,28 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     if kind == "within_class_swap" and not allow_within_class_swap:
         return None
 
+    # The buy can be right about its OWN class and still leave the book worse
+    # off, because the money came out of a class that was already short.
+    #
+    # Found by the drift invariant in tests/test_card_claims.py: on a book 55%
+    # equities against an 80% target, the commodities card closed the 10-point
+    # commodities gap by selling equities, taking total drift from 0.70 to 1.27.
+    # `rank_trim_candidates` allowed it because its score carries a
+    # tax_friendliness term that stays positive when a class is UNDERweight, and
+    # a class with no overweight budget falls through to the whole-position
+    # fallback. Checking the buying class alone cannot catch that; checking the
+    # whole mix can, and does so for every funding shape at once.
+    #
+    # A labelled swap is exempt: it moves no weight, so it cannot move drift.
+    if kind != "within_class_swap":
+        classes = set(targets) | set(value_by_class) | set(after)
+        before_drift = sum(abs((value_by_class.get(c, 0.0) / invested)
+                               - targets.get(c, 0.0)) for c in classes)
+        after_drift = sum(abs((after.get(c, 0.0) / invested_after)
+                              - targets.get(c, 0.0)) for c in classes)
+        if after_drift > before_drift + 1e-9:
+            return None
+
     if kind == "toward_target":
         impact = (f"Moves {buying_class} from {class_before:.0%} to {class_after:.0%} "
                   f"against your {class_target:.0%} target.")
@@ -469,3 +507,88 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                     "asset_class": buying_class, "amount_ils": round(amount, 2),
                     "from_cash_ils": fund.get("from_cash_ils", 0.0),
                     "sells": fund.get("sells", [])})
+
+
+# --------------------------------------------------------------------------- #
+# One inventory for the whole card set
+# --------------------------------------------------------------------------- #
+_SEVERITY_RANK = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+
+
+def reserve_funding_across(cards, rows, snap, plan, objective: str | None,
+                           cash_ils: float = 0.0) -> tuple[list, list]:
+    """Draw every funded card from ONE inventory of shares and cash.
+
+    Each card sizes its own funding against the same untouched snapshot, so three
+    cards independently planned to sell the same 13 TQQQ and spend the same cash
+    above the floor. Accept two of them and the book is short: money counted once
+    by the broker and three times by the app.
+
+    This is the card-level twin of the property C3 already enforces for sleeves
+    (test_c3_funding.py::test_the_cash_above_the_floor_is_only_spent_once).
+
+    A card that cannot be paid for out of what is left is DROPPED, not resized
+    and not rendered short -- the same rule the individual builder follows. It is
+    returned in the second list so the caller can log what it swallowed rather
+    than have cards vanish silently.
+
+    Allocation runs in severity order; the returned list keeps the caller's
+    original ordering, because display order is not funding priority.
+    """
+    nav = float((snap or {}).get("nav") or 0.0)
+    cash_left = spendable_cash(cash_ils, nav, objective, plan)
+    shares_left: dict[str, float] = {}
+    for p in (rows or []):
+        tk = (getattr(p, "ticker", "") or "").upper()
+        if tk and tk != "CASH":
+            shares_left[tk] = shares_left.get(tk, 0.0) + float(getattr(p, "quantity", 0) or 0)
+
+    order = sorted(range(len(cards or [])),
+                   key=lambda i: (_SEVERITY_RANK.get(str((cards[i] or {}).get("severity", "")).upper(), 3), i))
+
+    keep_idx, dropped = set(), []
+    for i in order:
+        card = cards[i] or {}
+        spec = card.get("apply") or {}
+
+        # KNOWN LIMITATION, deliberate. A trim card sells shares a funded buy may
+        # also be planning to sell ("Trim SCHD" and "Add a commodities sleeve"
+        # both drew on the same SCHD position in a probe), so in principle it
+        # should draw the inventory down too.
+        #
+        # It is not reserved here, because a trim does not CONSUME purchasing
+        # power -- it converts shares into cash. Reserving its shares without
+        # re-sourcing the buy from the resulting cash just deletes a useful card:
+        # it dropped the commodities card outright on a book whose only real
+        # problem was one oversized position. Modelling it honestly means
+        # re-running the buy's funding against the post-trim book, which is a
+        # bigger change than this pass should carry.
+        #
+        # What is fixed here is the defect actually observed: three funded BUYS
+        # each planning to spend the same shares and the same cash.
+
+        if spec.get("kind") != "buy_funded":
+            keep_idx.add(i)           # nothing to reserve; it spends no money here
+            continue
+
+        want_cash = float(spec.get("from_cash_ils") or 0.0)
+        sells = spec.get("sells") or []
+        if want_cash - cash_left > 0.01:
+            dropped.append((card, f"needs {want_cash:,.0f} of cash, {cash_left:,.0f} left"))
+            continue
+        short = next((s for s in sells
+                      if float(s.get("shares") or 0) - shares_left.get(
+                          str(s.get("ticker") or "").upper(), 0.0) > 1e-9), None)
+        if short is not None:
+            tk = str(short.get("ticker") or "").upper()
+            dropped.append((card, f"needs {short.get('shares')} {tk}, "
+                                  f"{shares_left.get(tk, 0.0):g} left after earlier cards"))
+            continue
+
+        cash_left -= want_cash
+        for s in sells:
+            tk = str(s.get("ticker") or "").upper()
+            shares_left[tk] = shares_left.get(tk, 0.0) - float(s.get("shares") or 0)
+        keep_idx.add(i)
+
+    return [c for i, c in enumerate(cards or []) if i in keep_idx], dropped
