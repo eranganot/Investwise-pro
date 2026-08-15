@@ -26,6 +26,7 @@ slider bug with higher stakes.
 from __future__ import annotations
 
 import logging
+import math
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -360,6 +361,107 @@ def _would_execute(sleeves, ratios, total_pct) -> dict:
 
 
 # --------------------------------------------------------------------------
+# T3 - what the target costs
+# --------------------------------------------------------------------------
+
+def recovery_pct(drawdown_pct: float) -> float:
+    """The gain needed to get back to level after a fall of this size.
+
+    Asymmetric, and the asymmetry is the whole point: down 45% needs +82%, not
+    +45%. A drawdown reported on its own invites the reader to net it against
+    the return above it, which is arithmetic that does not work.
+    """
+    d = max(0.0, min(float(drawdown_pct), 99.999)) / 100.0
+    return round((d / (1.0 - d)) * 100.0, 2) if d else 0.0
+
+
+def geometric_to_arithmetic_pct(cagr_pct: float, volatility_pct: float) -> float:
+    """Convert a MEASURED CAGR into the drift SimulationEngine expects.
+
+    The engine draws ``exp((mu - sigma^2/2)T + sigma sqrt(T) z)``, so ``mu`` is
+    the arithmetic (log) drift and the MEDIAN outcome lands at
+    ``exp((mu - sigma^2/2)T)``. A measured CAGR is a geometric return -- it is
+    what the path actually compounded at -- so it belongs on the median, not on
+    the mean. Feeding it in as ``mu`` directly would shift the whole
+    distribution down by sigma^2/2 and understate every percentile.
+
+    Converting here means the median projects at the rate that was measured, and
+    the mean sits above it by exactly the volatility drag -- which is the honest
+    version of "a target expressed as an average is not the outcome you are most
+    likely to get".
+    """
+    sigma = max(0.0, float(volatility_pct)) / 100.0
+    g = float(cagr_pct) / 100.0
+    if g <= -1.0:
+        return float(cagr_pct)
+    # Deliberately NOT rounded: this feeds the simulation, it is not displayed,
+    # and rounding a drift throws away precision the projection then compounds.
+    return (math.log1p(g) + 0.5 * sigma ** 2) * 100.0
+
+
+def cost_of(measured: dict, *, nav_ils: float, horizon_years: float = 10.0,
+            seed: int = 7) -> dict:
+    """What the measured blend costs to hold: drawdown, distribution, tax.
+
+    Pure apart from the Monte Carlo, which is seeded, so two calls with the same
+    inputs give the same answer -- a projection that moves between refreshes is
+    not something anyone can act on.
+    """
+    from app.engines.simulation_engine import SimulationEngine
+
+    dd = float(measured.get("max_drawdown_pct") or 0.0)
+    nav = max(0.0, float(nav_ils or 0.0))
+    out = {
+        "drawdown": {
+            "pct": round(dd, 2),
+            "ils": round(nav * dd / 100.0, 2),
+            "recovery_pct": recovery_pct(dd),
+            "note": (f"a {dd:.1f}% fall needs +{recovery_pct(dd):.1f}% to get "
+                     f"back to level"),
+        },
+        "tax": {
+            "gross_cagr_pct": measured.get("gross_cagr_pct"),
+            "net_cagr_pct": measured.get("cagr_pct"),
+            "drag_pct_per_year": measured.get("tax_drag_pct"),
+            "cgt_rate_pct": measured.get("cgt_rate_pct"),
+            "note": "the cost to STAY in it; the cost to arrive is the funding CGT",
+        },
+        "projection": None,
+    }
+    if nav <= 0:
+        return out
+
+    vol = float(measured.get("volatility_pct") or 0.0)
+    mu = geometric_to_arithmetic_pct(float(measured.get("cagr_pct") or 0.0), vol)
+    sim = SimulationEngine(seed=seed).run(
+        initial_value=nav, expected_return_pct=mu, volatility_pct=vol,
+        horizon_years=horizon_years)
+    # REAL terms lead, per investing-discipline 2, with the assumption stated.
+    # Median beside mean on both, because for a leveraged blend the median sits
+    # well below the mean and that gap IS the finding.
+    out["projection"] = {
+        "horizon_years": horizon_years,
+        "basis": "real",
+        "real": {"median_ils": round(sim.real.p50, 2),
+                 "mean_ils": round(sim.real.mean, 2),
+                 "p5_ils": round(sim.real.p5, 2),
+                 "p95_ils": round(sim.real.p95, 2)},
+        "nominal": {"median_ils": round(sim.nominal.p50, 2),
+                    "mean_ils": round(sim.nominal.mean, 2)},
+        "probability_of_real_loss": round(sim.probability_of_loss_real, 3),
+        "median_below_mean_pct": (
+            round((1.0 - sim.real.p50 / sim.real.mean) * 100.0, 2)
+            if sim.real.mean else None),
+        "runs": sim.runs,
+        "assumptions": list(sim.assumptions) + [
+            "measured CAGR anchors the MEDIAN, not the mean",
+            "in today's purchasing power (real), CPI-deflated",
+        ],
+    }
+    return out
+
+
+# --------------------------------------------------------------------------
 # the session-bound half
 # --------------------------------------------------------------------------
 
@@ -405,8 +507,71 @@ async def solve_for(session: AsyncSession, user: User, *,
     for s in sleeves:
         needed |= set(bt.tickers_needed(s["spec"]))
     needed |= set(core.get("weights") or {})
-    return await offload(_solve_blocking, sorted(needed), bench_tk, sleeves, core,
-                         target_excess_pct, max_drawdown_pct, floor, cap)
+    out = await offload(_solve_blocking, sorted(needed), bench_tk, sleeves, core,
+                        target_excess_pct, max_drawdown_pct, floor, cap)
+
+    # T3 -- what it costs, attached only when there IS a size to cost.
+    if out.get("measured"):
+        nav = sum(held.values()) + float(await _cash(session, user))
+        horizon = float(getattr(plan, "horizon_years", None) or 10)
+        out["cost"] = cost_of(out["measured"], nav_ils=nav, horizon_years=horizon)
+        out["cost"]["funding"] = await _funding_preview(
+            session, user, sleeves, out.get("solved_total_sleeve_pct"), nav)
+    return out
+
+
+async def _cash(session, user) -> float:
+    try:
+        from app.services.intake_service import get_cash
+        return float(await get_cash(session, user) or 0.0)
+    except Exception:  # noqa: BLE001
+        logger.warning("target: cash unavailable; NAV excludes it", exc_info=False)
+        return 0.0
+
+
+async def _funding_preview(session, user, sleeves, solved_pct, nav) -> dict | None:
+    """What it would cost to ARRIVE at the solved size, via the shared planner.
+
+    Calls the same ``plan_funding`` the sleeve path calls, with the same
+    ``exclude``, rather than reimplementing the trim ranking -- a second
+    implementation of one fact is the shape the card-claims batch removed.
+
+    Read-only: ``plan_funding`` computes, it does not write.
+    """
+    if not solved_pct or nav <= 0:
+        return None
+    current = sum(float(s.get("current_pct") or 0.0) for s in sleeves)
+    delta_pct = float(solved_pct) - current
+    if delta_pct <= 0:
+        return {"needed_ils": 0.0, "note": "the solved size is not larger than "
+                                           "what you already run"}
+    amount = round(nav * delta_pct / 100.0, 2)
+    try:
+        from app.services.funding_service import plan_funding
+        from app.services.intake_service import get_cash, list_positions
+        from app.services.strategy_service import _held_ils, _snapshot
+        rows = await list_positions(session, user)
+        snap = _snapshot(rows)
+        plan = await get_plan(session, user)
+        _held_ils(rows, snap)
+        fund = plan_funding(
+            rows, snap, plan, getattr(plan, "objective", None) or "Grow",
+            float(effective_caps(plan)["concentration_cap"]), amount,
+            cash_ils=float(await get_cash(session, user) or 0.0),
+            exclude=await sv.sleeve_tickers(session, user))
+    except Exception:  # noqa: BLE001
+        logger.warning("target: funding preview unavailable", exc_info=False)
+        return {"needed_ils": amount, "degraded": True,
+                "note": "could not price the trims; the size stands, the cost does not"}
+    return {
+        "needed_ils": amount,
+        "raised_ils": fund.get("funded_ils"),
+        "estimated_cgt_ils": fund.get("tax_ils") or fund.get("estimated_cgt_ils"),
+        "legs": fund.get("legs") or fund.get("sells"),
+        "shortfall_ils": round(
+            max(0.0, amount - float(fund.get("funded_ils") or 0.0)), 2),
+        "note": "net proceeds, sleeves excluded as a funding source",
+    }
 
 
 def _solve_blocking(tickers, bench_tk, sleeves, core, target_excess_pct,
