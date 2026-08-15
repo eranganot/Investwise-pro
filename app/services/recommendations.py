@@ -420,7 +420,7 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
 
 
 
-async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
+async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -> list[dict]:
     """Turn approved agent signals into sized, plan-checked, executable cards.
 
     Two things were missing before. The war room and Today ran as separate
@@ -539,7 +539,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows) -> list[dict]:
             # SOXL and TQQQ to buy QUAL and AVUV.
             exclude=sleeve_names,
             market=getattr(pos, "market", None) or "NYSE",
-            allow_within_class_swap=True)
+            allow_within_class_swap=True, ledger=ledger)
         if buy is None:
             continue  # not wanted by the plan, or not payable for -> not a card
         fund = buy.fund
@@ -630,6 +630,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         logger.warning("sleeve tickers unavailable; card funding will not exclude them",
                        exc_info=True)
         _sleeve_names = set()
+    # ONE inventory for every funded card in this build. Each card is planned
+    # against what earlier cards have already committed to selling, so no two
+    # cards spend the same shares -- and a card whose first choice of funding is
+    # gone is re-sourced from what remains rather than dropped.
+    from app.services import funding_service as _fs
+    _ledger = _fs.FundingLedger()
     # Which contributing agents failed this build. Each block below is defensive so a
     # data hiccup never breaks Today \u2014 but silence made a missing card
     # indistinguishable from "nothing to do", so failures are now logged and reported.
@@ -816,7 +822,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                         rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
                         ticker="VXUS", buying_class="Equities", cash_ils=_cash_ils,
                         requested_ils=_amt, exclude=_sleeve_names, market="NASDAQ",
-                        allow_within_class_swap=True)
+                        allow_within_class_swap=True, ledger=_ledger)
                     if _b is not None:
                         _f = _b.fund
                         _act = (f"Buy {_ils(_b.amount_ils)} of VXUS (global ex-US equities) to "
@@ -913,7 +919,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # pass exists to prevent.
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
-                           _sleeve_names)
+                           _sleeve_names, _ledger)
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -1022,7 +1028,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
         async with _agent_tx(session):
-            recs += await _war_room_recs(session, user, rows)
+            recs += await _war_room_recs(session, user, rows, ledger=_ledger)
     except Exception:  # noqa: BLE001
         logger.warning("war-room recommendations failed", exc_info=True)
         degraded.append("agent_signals")
@@ -1216,22 +1222,6 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
 
-    # ...and independent agents can also spend the same money. Every funded card
-    # sized itself against the same untouched snapshot, so three of them planned
-    # to sell the same 13 TQQQ and spend the same cash above the floor. Reconcile
-    # settles which cards CONTRADICT; this settles which ones the book can
-    # actually pay for, all of them together.
-    try:
-        from app.services import funding_service as _fs2
-        recs, _unfunded = _fs2.reserve_funding_across(
-            recs, rows, snap, plan, objective, cash_ils=_cash_ils)
-        for _card, _why in _unfunded:
-            logger.info("card dropped for want of funding: %s (%s)",
-                        _card.get("id"), _why)
-        if _unfunded:
-            degraded.append("funding")
-    except Exception:  # noqa: BLE001 -- never break Today over budgeting
-        logger.warning("cross-card funding reservation failed", exc_info=True)
 
     # Every card carries a plain-language "why" and "impact" (safety net for the
     # holding/hedge/momentum/fee agents that don't set them explicitly).
@@ -1968,7 +1958,7 @@ def _benchmark_recs(perf, objective) -> list[dict]:
 
 
 def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
-                    sleeve_names=None) -> list[dict]:
+                    sleeve_names=None, ledger=None) -> list[dict]:
     """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
     out: list[dict] = []
     sleeve_names = sleeve_names or set()
@@ -2008,7 +1998,7 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
         buy = _fund.propose_funded_buy(
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=pick_tk, buying_class="Commodities", cash_ils=cash_ils,
-            requested_ils=gap_ils, exclude=sleeve_names, market="NYSE")
+            requested_ils=gap_ils, exclude=sleeve_names, market="NYSE", ledger=ledger)
         if buy is not None:
             fund = buy.fund
             affordable = buy.amount_ils

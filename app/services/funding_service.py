@@ -19,7 +19,7 @@ keeps more dry powder than a Grow book.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.services.allocation_mix import OBJ_TARGET, classify
 
@@ -166,7 +166,8 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
 
 def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  amount_ils: float, *, cash_ils: float = 0.0,
-                 exclude: set[str] | None = None) -> dict:
+                 exclude: set[str] | None = None,
+                 reserved: dict | None = None, cash_used: float = 0.0) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
@@ -175,7 +176,10 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     """
     nav = snap.get("nav") or 0.0
     amount_ils = max(0.0, float(amount_ils or 0.0))
-    avail = spendable_cash(cash_ils, nav, objective, plan)
+    # `reserved` / `cash_used` are what EARLIER cards in this same build have
+    # already committed to selling and spending. Without them each card plans
+    # against the whole book and three cards spend the same shares twice.
+    avail = max(0.0, spendable_cash(cash_ils, nav, objective, plan) - float(cash_used or 0.0))
     from_cash = min(avail, amount_ils)
 
     # What still has to be raised, measured in money that can actually be SPENT.
@@ -249,7 +253,12 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             # grossed up to net the amount actually still needed.
             tax_frac = min(0.95, (gain_per_share * rate * cgt) / price_ils)
             want_gross = remaining_net / (1.0 - tax_frac)
-            take = min(want_gross, allow, cand["value_ils"])
+            # Only the shares nobody else has claimed yet.
+            avail_shares = float(cand["quantity"]) - float((reserved or {}).get(cand["ticker"], 0.0))
+            if avail_shares <= 0:
+                continue
+            sellable_value = avail_shares * price_ils
+            take = min(want_gross, allow, sellable_value)
             if take < MIN_TRADE_ILS:
                 continue
             shares = int(take / price_ils)
@@ -261,7 +270,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             # position itself.
             net_per_share = price_ils * (1.0 - tax_frac)
             if (shares * net_per_share < remaining_net
-                    and (shares + 1) * price_ils <= cand["value_ils"]):
+                    and (shares + 1) * price_ils <= sellable_value):
                 shares += 1
             value = shares * price_ils
             tax = gain_per_share * shares * rate * cgt
@@ -382,7 +391,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                        requested_ils: float | None = None,
                        exclude: set[str] | None = None,
                        market: str = "NYSE",
-                       allow_within_class_swap: bool = False) -> FundedBuy | None:
+                       allow_within_class_swap: bool = False,
+                       ledger: "FundingLedger | None" = None) -> FundedBuy | None:
     """Size, fund, simulate and narrate a purchase — or return None.
 
     Returning None is the point as often as returning a card is. A purchase the
@@ -429,7 +439,10 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         return None
 
     ex = {t.upper() for t in (exclude or set())} | {tk}
-    fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils, exclude=ex)
+    _res = dict(ledger.shares) if ledger is not None else None
+    _used = ledger.cash_ils if ledger is not None else 0.0
+    fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils,
+                        exclude=ex, reserved=_res, cash_used=_used)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
     if amount < MIN_TRADE_ILS:
         return None
@@ -437,7 +450,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         # Re-plan at the size the book can actually pay for, so the funding legs
         # describe the trade being proposed rather than one that was rejected.
         fund = plan_funding(rows, snap, plan, objective, cap, amount,
-                            cash_ils=cash_ils, exclude=ex)
+                            cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
         if amount < MIN_TRADE_ILS:
             return None
@@ -498,6 +511,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         impact = (f"Does not move your {buying_class} weight ({class_before:.0%}). "
                   f"Swaps which {buying_class.lower()} you hold.")
 
+    if ledger is not None:
+        ledger.commit(fund)      # only once the card is definitely being returned
     return FundedBuy(
         ticker=tk, buying_class=buying_class, amount_ils=round(amount, 2), fund=fund,
         class_before=round(class_before, 4), class_after=round(class_after, 4),
@@ -512,83 +527,27 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
 # --------------------------------------------------------------------------- #
 # One inventory for the whole card set
 # --------------------------------------------------------------------------- #
-_SEVERITY_RANK = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+@dataclass
+class FundingLedger:
+    """What the cards built so far have already committed to spending.
 
+    Threaded through every ``propose_funded_buy`` in one build, so each card is
+    planned against what is LEFT rather than against the whole book. Three cards
+    had each planned to sell the same 13 TQQQ and spend the same cash above the
+    floor; money counted once by the broker and three times by the app.
 
-def reserve_funding_across(cards, rows, snap, plan, objective: str | None,
-                           cash_ils: float = 0.0) -> tuple[list, list]:
-    """Draw every funded card from ONE inventory of shares and cash.
-
-    Each card sizes its own funding against the same untouched snapshot, so three
-    cards independently planned to sell the same 13 TQQQ and spend the same cash
-    above the floor. Accept two of them and the book is short: money counted once
-    by the broker and three times by the app.
-
-    This is the card-level twin of the property C3 already enforces for sleeves
-    (test_c3_funding.py::test_the_cash_above_the_floor_is_only_spent_once).
-
-    A card that cannot be paid for out of what is left is DROPPED, not resized
-    and not rendered short -- the same rule the individual builder follows. It is
-    returned in the second list so the caller can log what it swallowed rather
-    than have cards vanish silently.
-
-    Allocation runs in severity order; the returned list keeps the caller's
-    original ordering, because display order is not funding priority.
+    This replaces an earlier pass that let every card plan against the untouched
+    book and then DROPPED the ones whose legs had been taken. That was worse than
+    the bug it fixed: on the live book it silently removed the war-room card and
+    the commodities card because a geo card had claimed 2 MSFT first -- while
+    7,863 of V sat untouched and would have funded both. A card that can be paid
+    for out of what remains must be re-sourced, not deleted.
     """
-    nav = float((snap or {}).get("nav") or 0.0)
-    cash_left = spendable_cash(cash_ils, nav, objective, plan)
-    shares_left: dict[str, float] = {}
-    for p in (rows or []):
-        tk = (getattr(p, "ticker", "") or "").upper()
-        if tk and tk != "CASH":
-            shares_left[tk] = shares_left.get(tk, 0.0) + float(getattr(p, "quantity", 0) or 0)
+    shares: dict = field(default_factory=dict)
+    cash_ils: float = 0.0
 
-    order = sorted(range(len(cards or [])),
-                   key=lambda i: (_SEVERITY_RANK.get(str((cards[i] or {}).get("severity", "")).upper(), 3), i))
-
-    keep_idx, dropped = set(), []
-    for i in order:
-        card = cards[i] or {}
-        spec = card.get("apply") or {}
-
-        # KNOWN LIMITATION, deliberate. A trim card sells shares a funded buy may
-        # also be planning to sell ("Trim SCHD" and "Add a commodities sleeve"
-        # both drew on the same SCHD position in a probe), so in principle it
-        # should draw the inventory down too.
-        #
-        # It is not reserved here, because a trim does not CONSUME purchasing
-        # power -- it converts shares into cash. Reserving its shares without
-        # re-sourcing the buy from the resulting cash just deletes a useful card:
-        # it dropped the commodities card outright on a book whose only real
-        # problem was one oversized position. Modelling it honestly means
-        # re-running the buy's funding against the post-trim book, which is a
-        # bigger change than this pass should carry.
-        #
-        # What is fixed here is the defect actually observed: three funded BUYS
-        # each planning to spend the same shares and the same cash.
-
-        if spec.get("kind") != "buy_funded":
-            keep_idx.add(i)           # nothing to reserve; it spends no money here
-            continue
-
-        want_cash = float(spec.get("from_cash_ils") or 0.0)
-        sells = spec.get("sells") or []
-        if want_cash - cash_left > 0.01:
-            dropped.append((card, f"needs {want_cash:,.0f} of cash, {cash_left:,.0f} left"))
-            continue
-        short = next((s for s in sells
-                      if float(s.get("shares") or 0) - shares_left.get(
-                          str(s.get("ticker") or "").upper(), 0.0) > 1e-9), None)
-        if short is not None:
-            tk = str(short.get("ticker") or "").upper()
-            dropped.append((card, f"needs {short.get('shares')} {tk}, "
-                                  f"{shares_left.get(tk, 0.0):g} left after earlier cards"))
-            continue
-
-        cash_left -= want_cash
-        for s in sells:
+    def commit(self, fund: dict) -> None:
+        self.cash_ils += float((fund or {}).get("from_cash_ils") or 0.0)
+        for s in (fund or {}).get("sells", []):
             tk = str(s.get("ticker") or "").upper()
-            shares_left[tk] = shares_left.get(tk, 0.0) - float(s.get("shares") or 0)
-        keep_idx.add(i)
-
-    return [c for i, c in enumerate(cards or []) if i in keep_idx], dropped
+            self.shares[tk] = self.shares.get(tk, 0.0) + float(s.get("shares") or 0.0)
