@@ -167,6 +167,34 @@ def test_no_benchmark_means_no_equal_risk_claim():
     assert out["excess_at_equal_risk_pct"] is None
 
 
+# --------------------------------------------------------------------- tax
+def test_the_blend_reports_its_tax_drag():
+    """bt.run() adds gross_cagr_pct and tax_drag_pct AFTER _metrics, so a blend
+    built on _metrics alone silently had none -- and a consumer reading None
+    renders nothing, which looks exactly like a strategy that pays no tax.
+    Caught live by smoke-t3."""
+    out = blend.measure_blend(SERIES, _one(SPEC_A), benchmark=BENCH)
+    assert out["gross_cagr_pct"] is not None
+    assert out["tax_drag_pct"] is not None
+    assert out["cgt_rate_pct"] == pytest.approx(25.0)
+    # Tax can only cost; gross must be at least net.
+    assert out["gross_cagr_pct"] >= out["cagr_pct"] - 1e-9
+    assert out["tax_drag_pct"] >= -1e-9
+
+
+def test_the_blend_tax_drag_matches_the_strategy_path():
+    solo = bt.run(SERIES, SPEC_A, benchmark=BENCH)
+    mixed = blend.measure_blend(SERIES, _one(SPEC_A), benchmark=BENCH)
+    assert mixed["gross_cagr_pct"] == solo["gross_cagr_pct"]
+    assert mixed["tax_drag_pct"] == solo["tax_drag_pct"]
+
+
+def test_the_light_sweep_reports_tax_as_unknown_not_as_zero():
+    out = blend.measure_blend(SERIES, _one(SPEC_A), benchmark=BENCH, detail=False)
+    assert out["tax_drag_pct"] is None      # not 0.0 -- it was never computed
+    assert out["gross_cagr_pct"] is None
+
+
 # ------------------------------------------------------------------- core
 def test_core_weights_exclude_every_ticker_a_sleeve_claims():
     held = {"V": 5000.0, "MSFT": 3000.0, "TQQQ": 2000.0}

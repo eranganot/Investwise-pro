@@ -491,14 +491,31 @@ async def solve_for(session: AsyncSession, user: User, *,
     cap = float(effective_caps(plan)["concentration_cap"])
     floor = float(cash_floor_pct(getattr(plan, "objective", None), plan))
 
-    from app.services.intake_service import list_positions
+    from app.services.intake_service import is_cash_position, list_positions
+    from app.services.strategy_service import _snapshot
     positions = await list_positions(session, user)
-    held = {}
-    for p in positions:
-        px = float(p.current_price or 0.0)
-        if px > 0:
-            tk = p.ticker.upper()
-            held[tk] = held.get(tk, 0.0) + float(p.quantity) * px
+
+    # NAV comes from the app's OWN snapshot, not from a sum computed here. Two
+    # implementations of NAV is two numbers that can disagree on one screen, and
+    # this one has to line up with the sleeve path that sizes the funding.
+    nav = float(_snapshot(positions).get("nav") or 0.0)
+
+    # CASH is a real position row (ticker CASH, market TASE) with a price of 1.
+    # It must NOT enter the core basket: a backtest of the core would try to
+    # fetch ten years of history for CASH and abstain, and cash is already
+    # modelled -- the blend's weights sum to under 1 and _simulate leaves the
+    # remainder uninvested. Excluded by the app's own predicate rather than by
+    # a ticker string, so a rename cannot quietly reintroduce it.
+    held, unpriced = {}, []
+    for pos in positions:
+        if is_cash_position(pos.ticker, pos.meta):
+            continue
+        px = float(pos.current_price or 0.0)
+        tk = pos.ticker.upper()
+        if px <= 0:
+            unpriced.append(tk)     # surfaced below, never silently dropped
+            continue
+        held[tk] = held.get(tk, 0.0) + float(pos.quantity) * px
     sleeve_tks = await sv.sleeve_tickers(session, user)
     core = blend.core_spec(blend.core_weights_from(held, sleeve_tks))
 
@@ -510,23 +527,19 @@ async def solve_for(session: AsyncSession, user: User, *,
     out = await offload(_solve_blocking, sorted(needed), bench_tk, sleeves, core,
                         target_excess_pct, max_drawdown_pct, floor, cap)
 
+    if unpriced:
+        # A holding with no price is not a holding worth zero. Report it: it
+        # changes NAV, which changes every shekel figure on the card.
+        out["degraded"] = sorted(set((out.get("degraded") or []) + ["price"]))
+        out["unpriced_holdings"] = sorted(set(unpriced))
+
     # T3 -- what it costs, attached only when there IS a size to cost.
     if out.get("measured"):
-        nav = sum(held.values()) + float(await _cash(session, user))
         horizon = float(getattr(plan, "horizon_years", None) or 10)
         out["cost"] = cost_of(out["measured"], nav_ils=nav, horizon_years=horizon)
         out["cost"]["funding"] = await _funding_preview(
             session, user, sleeves, out.get("solved_total_sleeve_pct"), nav)
     return out
-
-
-async def _cash(session, user) -> float:
-    try:
-        from app.services.intake_service import get_cash
-        return float(await get_cash(session, user) or 0.0)
-    except Exception:  # noqa: BLE001
-        logger.warning("target: cash unavailable; NAV excludes it", exc_info=False)
-        return 0.0
 
 
 async def _funding_preview(session, user, sleeves, solved_pct, nav) -> dict | None:

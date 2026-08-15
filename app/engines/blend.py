@@ -48,6 +48,13 @@ COMPONENT_ABSTAINED = "COMPONENT_ABSTAINED"
 INSUFFICIENT_HISTORY = "INSUFFICIENT_HISTORY"
 NO_OVERLAP = "NO_OVERLAP"
 
+# Bump when a change would alter a blended number OR add a field to one. b1 -> b2
+# added gross_cagr_pct / tax_drag_pct / cgt_rate_pct, which b1 never produced at
+# all: a consumer read None and rendered nothing, indistinguishable from a
+# strategy that pays no tax. Same rule the backtest ENGINE_VERSION follows, and
+# for the same reason it was missed there at a2.
+BLEND_ENGINE = "b2"
+
 _EPS = 1e-9
 _MAX_EQUAL_RISK_LEVERAGE = 5.0
 
@@ -279,7 +286,10 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
         out["cash_drag_pct"] = None
         out["excess_at_equal_risk_pct"] = None
         out["equal_risk_leverage"] = None
-        out["blend_engine"] = "b1"
+        out["gross_cagr_pct"] = None
+        out["tax_drag_pct"] = None
+        out["cgt_rate_pct"] = None
+        out["blend_engine"] = BLEND_ENGINE
         return out
 
     # Each component measured ALONE over the same window, at full weight. This
@@ -311,6 +321,18 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
     else:
         out["cash_drag_pct"] = 0.0
 
+    # Tax drag: the same path re-run tax-free, differenced. bt.run() computes
+    # this AFTER _metrics, so a blend built on _metrics alone silently had no
+    # gross_cagr_pct, tax_drag_pct or cgt_rate_pct at all -- every consumer read
+    # None and rendered nothing, which looks identical to a strategy that
+    # happens to pay no tax. Caught live by smoke-t3 T3 "no tax drag reported".
+    gross = _simulate(px, blended, cost_bps=cost_bps, cgt_rate=0.0)
+    gross_cagr = cagr(gross["values"]) * 100
+    out["gross_cagr_pct"] = round(gross_cagr, 2)
+    out["tax_drag_pct"] = round(gross_cagr - out["cagr_pct"], 2)
+    out["cgt_rate_pct"] = round(cgt_rate * 100, 1)
+    out["cost_bps"] = cost_bps
+
     # The leverage-proof verdict. Only computable against a benchmark, because
     # "equal risk" means equal to something.
     out["excess_at_equal_risk_pct"] = None
@@ -325,5 +347,5 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
             out["excess_at_equal_risk_pct"] = round(
                 cagr(path) * 100 - cagr(list(bench)) * 100, 2)
 
-    out["blend_engine"] = "b1"
+    out["blend_engine"] = BLEND_ENGINE
     return out

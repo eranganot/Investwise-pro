@@ -301,6 +301,18 @@ if ($sol -and $sol.measured) {
         Ok "diversification delta $($m.diversification_delta_pct) points (near zero is expected - leveraged sleeves fall with the core)"
     } else { Bad "no diversification delta - the blend is asserting, not measuring" }
 
+    # CASH is a real position row (ticker CASH, market TASE, price 1). It must
+    # never reach the core basket: the backtest would ask for ten years of
+    # history for it and abstain, and cash is already modelled as the weight the
+    # blend does not allocate.
+    $tks = @()
+    if ($m.peak_weight_pct_by_ticker) {
+        $tks = $m.peak_weight_pct_by_ticker.PSObject.Properties.Name
+    }
+    if ($tks -contains 'CASH') { Bad "CASH is being held as a component - cash is the unallocated remainder, not a holding" }
+    elseif ($tks) { Ok "no CASH component; the book's tickers are $($tks -join ', ')" }
+    else { Skip "no per-ticker peaks to inspect" }
+
     if ($null -ne $m.excess_at_equal_risk_pct) {
         Ok "raw excess $($m.excess_cagr_pct)%/yr, at EQUAL RISK $($m.excess_at_equal_risk_pct)%/yr (leverage $($m.equal_risk_leverage)x)"
     } else { Skip "no equal-risk figure - the blend may be safer than the benchmark at any leverage" }
@@ -326,8 +338,12 @@ if ($sol -and $sol.cost) {
         else { Bad "no probability of real loss" }
     } else { Skip "no projection (NAV is zero?)" }
 
-    if ($null -ne $c.tax.drag_pct_per_year) { Ok "tax drag to STAY in it: $($c.tax.drag_pct_per_year)%/yr at $($c.tax.cgt_rate_pct)% CGT" }
-    else { Bad "no tax drag reported" }
+    # A blend built on _metrics alone never produced these at all, and a null
+    # renders identically to a strategy that pays no tax. Null is the failure;
+    # a measured zero would be fine and would say 0.
+    if ($null -ne $c.tax.drag_pct_per_year) {
+        Ok "tax drag to STAY in it: $($c.tax.drag_pct_per_year)%/yr at $($c.tax.cgt_rate_pct)% CGT (gross $($c.tax.gross_cagr_pct), net $($c.tax.net_cagr_pct))"
+    } else { Bad "no tax drag reported - the blend never computed it, which reads as 'pays no tax'" }
 
     if ($c.funding) {
         if ($c.funding.degraded) { Bad "the funding preview is degraded: $($c.funding.note)" }
@@ -336,6 +352,27 @@ if ($sol -and $sol.cost) {
     } else { Skip "no funding preview" }
 } elseif ($sol -and $sol.measured) { Bad "a measured blend with no cost block - T3 did not attach" }
 else { Skip "no cost to check without a measured blend" }
+
+# =========================================================================== #
+Sec "T3.1  the solver's NAV is the app's NAV"
+# =========================================================================== #
+# Two implementations of NAV is two numbers that can disagree on one screen.
+# The drawdown block is denominated in shekels, so it pins the NAV the solver
+# used -- and that has to match what /portfolio reports.
+if ($sol -and $sol.cost -and $sol.cost.drawdown.pct -gt 0 -and $after.p) {
+    $implied = [math]::Round($sol.cost.drawdown.ils / ($sol.cost.drawdown.pct / 100.0), 2)
+    $reported = [double]$after.p.nav
+    if ($reported -le 0) { Skip "/portfolio reports no NAV to compare against" }
+    elseif ([math]::Abs($implied - $reported) -le [math]::Max(1.0, $reported * 0.01)) {
+        Ok "the solver priced the book at $implied ILS, matching /portfolio ($reported)"
+    } else {
+        Bad "NAV disagreement: the solver used $implied ILS, /portfolio says $reported"
+    }
+} else { Skip "no drawdown in shekels to cross-check NAV against" }
+
+if ($sol -and ($sol.degraded -contains 'price')) {
+    Bad "unpriced holdings ($($sol.unpriced_holdings -join ', ')) - NAV understates the book, and every shekel figure with it"
+} elseif ($sol) { Ok "every holding was priced" }
 
 # =========================================================================== #
 if (-not $SkipChain) {
