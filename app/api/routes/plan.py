@@ -282,6 +282,91 @@ async def target_solve(excess_pct: float, max_drawdown_pct: float,
         max_drawdown_pct=float(max_drawdown_pct))
 
 
+class TargetApplyRequest(BaseModel):
+    """Exactly what the card read, echoed back.
+
+    `resizes` is `would_execute.resizes` from the solve, VERBATIM -- including
+    `from_pct`. Sending the sizes the recommendation was measured against is what
+    lets the server refuse a plan whose premise has since changed, rather than
+    silently overwriting the current book with one solved for a different one.
+    Re-deriving `from_pct` server-side would throw that check away.
+    """
+    resizes: list[dict]
+    context: dict | None = None
+
+
+@router.post("/plan/target/apply",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def target_apply(body: TargetApplyRequest, confirm: bool = False,
+                       session: AsyncSession = Depends(get_session),
+                       user: User = Depends(acting_user)) -> dict:
+    """Accept the solver's answer, on the TRACKED BOOK ONLY.
+
+    **No brokerage order is placed. Nothing is bought or sold.** This writes
+    `plan_sleeves` -- intended percentages -- and nothing else. That boundary is
+    `investing-discipline` section 5, and it is the reason T0-T5 were read-only:
+    a return target one tap from a book change is the C5 slider bug with higher
+    stakes. Relaxing it costs an explicit `confirm`, a staleness check, an
+    all-or-nothing write, and a recorded way back.
+
+    `confirm=true` is required. Refusals return before any row is touched, and
+    the session is only committed on success -- so a refusal leaves the book
+    byte-identical rather than partly rewritten.
+    """
+    from app.services.target_apply import apply_target
+    out = await apply_target(session, user, resizes=body.resizes,
+                             context=body.context, confirm=confirm)
+    if out.get("ok"):
+        await session.commit()
+    else:
+        # Explicit. `apply_target` can return ok=False AFTER flushing some steps
+        # (a mid-plan refusal), and only a rollback makes "nothing was written"
+        # true rather than merely intended.
+        await session.rollback()
+    return out
+
+
+@router.post("/plan/target/undo",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def target_undo(confirm: bool = False,
+                      session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
+    """Restore the sizes the last apply replaced. Also places no order."""
+    from app.services.target_apply import undo_last
+    out = await undo_last(session, user, confirm=confirm)
+    if out.get("ok"):
+        await session.commit()
+    else:
+        await session.rollback()
+    return out
+
+
+@router.get("/plan/target/applications")
+async def target_applications(limit: int = 20,
+                              session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """Every automated change to this book, newest first. Read-only.
+
+    A size on the book with no record of which question produced it is
+    unanswerable a month later, which is the state everything before Phase A
+    was in.
+    """
+    from sqlalchemy import select
+
+    from app.models.tables import PlanApplication
+    rows = (await session.execute(
+        select(PlanApplication).where(PlanApplication.subject == user.email)
+        .order_by(PlanApplication.created_at.desc())
+        .limit(max(1, min(int(limit), 100))))).scalars().all()
+    return {"ok": True, "count": len(rows), "entries": [
+        {"id": str(r.id), "action": r.action, "at": r.created_at.isoformat() if r.created_at else None,
+         "before": dict(r.before_state or {}), "after": dict(r.after_state or {}),
+         "context": dict(r.context or {}),
+         "allocated_pct_after": r.allocated_pct_after,
+         "apply_version": r.apply_version}
+        for r in rows]}
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)

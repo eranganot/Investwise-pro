@@ -1,7 +1,99 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-16 by Claude (T0–T5 + Phase N — the target solver, real history, and the instruction the card was missing)._
+_Last updated: 2026-08-16 by Claude (T0–T5, N, N2, A — the solver, real history, the instruction, and the button that acts on it)._
 _Seeded from git history + prior transcripts._
+
+## ✅ PHASE A + N2 — the button that acts, and the card that stops reconstructing
+
+**Status:** in the working tree, **pending QA**. `ship-a.ps1` / `smoke/smoke-a.ps1`.
+22 tests in `tests/test_target_apply.py`. Migration `0017_plan_applications`.
+
+### PHASE A — the first write in the T line
+
+**SYMPTOM.** Eran: *"the card is very good but still missing the most important
+thing — the button that takes the action and follows the recommendation."* The
+card could say "set your sleeves to 65%" and then leave him to type it.
+
+**WHY IT WAS READ-ONLY.** T0–T5 wrote nothing, deliberately: *a return target one
+tap from a book change is the C5 slider bug with higher stakes.* Relaxing that
+is the risky part of this phase, so what makes it safe is enumerated rather than
+assumed.
+
+**THE BOUNDARY, UNMOVED.** `plan_sleeves` only — intended PERCENTAGES. No order,
+no quantity, no price, no broker. `investing-discipline` §5. Asserted on the
+**import graph** (`test_the_apply_module_cannot_reach_a_broker`): a module that
+imports nothing capable of execution cannot execute. *The first version of that
+check was a text search for "order" and it failed on this module's own
+docstrings — sentences denying that it places one. A check that fires on its own
+safety notes is one someone deletes for being noisy, and then nothing guards the
+boundary.*
+
+**THE FOUR FAILURE MODES, each handled before any row is touched:**
+
+1. **Half-applied writes.** `(40,40) → (70,20)` applied in the solve's own order
+   raises the first sleeve to 70% while the second still holds 40% → 110% →
+   `sleeve_service.validate` refuses **that call** → the book is left at
+   `(40,20)`. Neither plan, no error anyone asked for, and **every individual
+   call behaved correctly**, which is exactly why nothing else in the repo
+   catches it. `plan_apply` orders every DECREASE before every INCREASE, then
+   *walks its own step list* and refuses if any intermediate total would breach
+   — proving the rule rather than trusting it.
+   → `test_a_raise_before_a_drop_would_half_apply`
+2. **A plan solved against a book that has since moved.** The quietest one: the
+   card's numbers describe a book changed in another tab, so "accepting" is
+   really "overwrite with an answer computed for something else". No exception,
+   entirely reasonable-looking sizes. `from_pct` is echoed from the solve
+   **verbatim** so the server can compare it to the live row and refuse.
+   → `stale_against`, `test_a_plan_solved_against_a_different_book_is_detected`
+3. **A write with no way back.** `plan_applications` stores before/after
+   **snapshots, not diffs** — a diff needs a base, and the base is exactly what
+   a later reader will not have. `undo` is a read of the last row.
+4. **A write nobody asked for.** `confirm=true` required; a refusal `rollback`s
+   explicitly, because `apply_target` can return `ok=False` *after* flushing
+   steps and only a rollback makes "nothing was written" true rather than
+   intended.
+
+**BLAST RADIUS.** New: `target_apply.py`, `0017`, `PlanApplication`, three routes
+(`apply` / `undo` / `applications`). `index.html` gains `tgtAccept` / `tgtUndo`.
+Nothing existing changed behaviour.
+
+### N2 — the Today card stops reconstructing
+
+**SYMPTOM.** Third time asked: *"the graph on Today is still not representing MY
+ACCOUNT."*
+
+**EVIDENCE.** `nav-history` → `ok=false, points=1, needs=3`. `index.html:732`
+falls through to the backfill exactly as written.
+
+**RULED OUT.** `drawTodayReal` missing — smoke N.7 found it in the served shell,
+3/3 markers. Fallback unlabelled — it rendered *"This is not your account
+history"* and *"1 of 3 days"*. History could start earlier — `Transaction(` still
+has zero writers outside the models; past NAV is **unrecoverable**, not merely
+unqueried.
+
+**ROOT CAUSE.** Not a defect: one recorded day, `MIN_POINTS_FOR_SERIES = 3`. But
+the card was still wrong to draw anything. **A drawn curve outranks the caption
+under it** — so it answered "what would this book have done" while appearing to
+answer "what did my money do", and the disclaimer lost that argument three times
+running.
+
+**FIX.** The Today card draws NOTHING until `nav_snapshots` can produce a real
+series; it shows the days recorded, a "record today now" button, and why history
+cannot be backfilled. The reconstruction stays on the **Performance tab**, where
+it is the actual subject, and on the solver seed, which needs the ten-year
+window — deleting either would over-apply the decision. `ship-a.ps1` asserts both
+survived.
+
+### THE LINT GATE — why CI went red twice
+
+`ship-*.ps1` ran pytest and `py_compile`. **Neither is a linter.** CI runs
+`ruff check app tests`, which no ship script had ever invoked — so #148 and #149
+pushed red while ship-n and ship-t5 both reported green on a 899-test suite. Two
+`E702`s (semicolon-joined statements) in `nav_history.time_weighted`.
+
+`ship-a.ps1` now runs **`ruff check app tests` first**, the same command
+`ci.yml` runs. It caught an unused `pytest` import in this phase's own test file
+before the push, which is the shortest possible argument for its existence.
 
 ## ✅ T5 — the card ends in an instruction
 

@@ -93,8 +93,13 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
         d = str(p.get("as_of"))
         nav = float(p.get("nav_ils") or 0.0)
         if prev is None:
-            out["dates"].append(d); out["pct"].append(0.0)
-            out["nav_ils"].append(round(nav, 2)); out["flows_ils"].append(0.0)
+            # The first snapshot is a BASELINE, not a return: 0.0%, no flow.
+            # There is no prior value to measure against, and seeding it with
+            # anything else would make day one look like performance.
+            out["dates"].append(d)
+            out["pct"].append(0.0)
+            out["nav_ils"].append(round(nav, 2))
+            out["flows_ils"].append(0.0)
             prev = (d, nav)
             continue
         f = net_flow_between(flows, prev[0], d)

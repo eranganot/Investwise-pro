@@ -537,3 +537,37 @@ class StrategySignalState(Base, PKMixin, TimestampMixin):
         DateTime(timezone=True), nullable=True)
     previous_target: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PlanApplication(Base, PKMixin, TimestampMixin):
+    """Every automated change to the tracked book, and what it replaced.
+
+    Phase A is the first thing in the T line that writes. The rule it relaxes --
+    "read-only, without exception" -- existed because a return target one tap
+    from a book change is the C5 slider bug with higher stakes. This table is
+    half of what makes the relaxation safe: an application that cannot be
+    reversed is one the user has to be certain about BEFORE pressing, and
+    nobody is.
+
+    ``before_state`` and ``after_state`` are ``{strategy_id: sleeve_pct}``
+    snapshots, not diffs. A diff needs a base to be meaningful, and the base is
+    exactly what a later reader will not have.
+
+    ``context`` carries what the user was answering when they accepted -- the
+    target excess, the ceiling, the solver version -- so a size on the book can
+    be traced back to the question that produced it. Without it, "why is this
+    sleeve 39%" is unanswerable a month later.
+
+    **Nothing here records a trade.** No order is placed by any path that writes
+    this table; these are intended percentages, not executions.
+    """
+    __tablename__ = "plan_applications"
+
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    action: Mapped[str] = mapped_column(String(16), default="apply")  # apply | undo
+    before_state: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    after_state: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    context: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+    allocated_pct_after: Mapped[float] = mapped_column(Float, default=0.0)
+    apply_version: Mapped[str] = mapped_column(String(16), default="")
+    note: Mapped[str] = mapped_column(Text, default="")

@@ -730,71 +730,64 @@ async function loadTodayPerf(){
     TDPERF.cache["N:"+r]=real;
   }
   if(real&&real.ok){ return drawTodayReal(real); }
-  TDPERF.pending=real;   // why there is no real series yet, shown under the backfill
-  // Cached per range: each call is one provider fetch PER HOLDING, so flicking
-  // between ranges uncached would fan out the same request over and over.
-  let d=TDPERF.cache[r];
-  if(!d){
-    cap.textContent="Measuring…"; TDPERF.busy=true;
-    try{ d=await(await fetch(`/api/v1/portfolio/performance?range=${r}`,{method:"POST"})).json(); }
-    catch(e){ d={ok:false,reason:String(e)}; }
-    TDPERF.busy=false; TDPERF.cache[r]=d;
+  // ------------------------------------------------------------------ N2
+  // NO RECONSTRUCTION. Until nav_snapshots can produce a real series this card
+  // draws NOTHING and says what it has.
+  //
+  // The backfill used to render here -- today's holdings priced back through
+  // their own past. It was correct, it was labelled "This is not your account
+  // history", and it was still the wrong thing on this card, three times over:
+  // a drawn curve outranks a caption underneath it, so the card answered a
+  // question ("what would this book have done") that had not been asked while
+  // appearing to answer the one that had. It is still available on the
+  // Performance tab, where the reconstruction IS the point.
+  //
+  // What replaces it is smaller and true: the figures that are actually his,
+  // and a countdown to the day the real line can be drawn. An empty state that
+  // says why is worth more than a full one that is about something else.
+  const c=$("ch_today"); if(c)c.style.display="none";
+  const _t2=$("tdTitle"); if(_t2)_t2.textContent="Your account history";
+  const since=real&&real.recorded_since, have=(real&&real.points)||0,
+        need=(real&&real.needs)||3;
+  let head;
+  if(!since){
+    head=`<div><b>Recording has not started yet.</b> Tonight's 22:10 job writes the
+      first day, or you can start it now.</div>`;
+  }else{
+    head=`<div><b>${have} of ${need} days recorded</b>, since ${since}. The chart
+      appears on the ${need}th day and shows only what your money actually did.</div>`;
   }
-  if(!d.ok){
-    // "not enough overlapping sessions" is a real answer for 1W over a holiday
-    // week. Say which window failed rather than blanking the card.
-    cap.innerHTML=`<span class="warn">No chart for ${r}: ${d.reason||"not measurable"}.</span>`;
-    return;
-  }
-  // The server re-bases per window (index_series normalises to the first value
-  // in the series it fetched), so index-100 is the change ACROSS THIS RANGE and
-  // not since some earlier start. That is the whole reason the range is a server
-  // parameter rather than a client-side slice.
-  const pct=d.portfolio_index.map(v=>+(v-100).toFixed(2));
-  const chg=pct.length?pct[pct.length-1]:0;
-  // One line, your book, nothing to compare it against. The benchmark lives on
-  // the Explore card and on the target card, where a comparison is the point.
-  // Coloured by direction so the trend reads before any number does.
-  const col=chg>=0?"#22c55e":"#ef4444";
-  drawChart("ch_today","line",{labels:d.dates,datasets:[
-      {label:"% change",data:pct,borderColor:col,backgroundColor:col+"22",
-       fill:true,pointRadius:0,tension:.12,borderWidth:2}]},{
-    plugins:{legend:{display:false},
-             tooltip:{callbacks:{title:c=>d.dates[c[0].dataIndex],
-                                 label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`}}},
-    scales:{x:{ticks:{color:"#8b97a8",maxRotation:0,autoSkip:true,maxTicksLimit:6,
-                      // Dates arrive as YYYY-MM-DD. Shown as "2 Jul" so a month
-                      // of daily points does not turn the axis into a smear.
-                      callback:function(v,i){const d=this.getLabelForValue(v);
-                        if(!d)return"";const p=String(d).split("-");
-                        if(p.length<3)return d;
-                        const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-                        return `${+p[2]} ${M[+p[1]-1]||""}`;}},
-               grid:{display:false}},
-            y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`},
-               grid:{color:"#182130"}}}});
+  cap.innerHTML=head+
+    `<div class="mk" style="margin-top:6px">Past value cannot be backfilled &mdash; there is no
+      trade ledger to reconstruct it from, so this history can only start, never be recovered.
+      Every day the job runs is one more real point.</div>`+
+    `<div class="mk" style="margin-top:6px">Your total gain is on the card above; it is measured
+      against what you actually put in. For what today's holdings would have done over ten years,
+      see the Performance tab &mdash; that is a reconstruction, and it is labelled as one.</div>`+
+    `<div style="margin-top:8px"><button onclick="startRecording()">Record today now</button></div>`;
+}
 
-  const _t=$("tdTitle"); if(_t)_t.textContent="How today's holdings have moved";
-  const pend=TDPERF.pending;
-  const pendNote=(pend&&!pend.ok)
-    ? `<div class="warn" style="margin-top:4px">Your real account history is being recorded`+
-      (pend.recorded_since?` since ${pend.recorded_since} — ${pend.points||0} of ${pend.needs||3} days.`:` — no days yet.`)+
-      ` It will replace this chart automatically. It cannot be backfilled.</div>` : "";
-  cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${d.observations} sessions`+
-    (d.window?` (${d.window.start} to ${d.window.end})`:"")+
-    `<div style="margin-top:2px"><b>This is not your account history.</b> It prices the holdings you own
-     TODAY back through their own past &mdash; so it shows what this book would have done, not what your
-     money did. It will not match your total gain, and it does not know about deposits.
-     Valued in ${d.base_currency||"ILS"}${d.fx_basis==="spot"?" at today's rate":""}.</div>`+
-    ((d.degraded&&d.degraded.includes("fx"))
-      ? `<div class="bad">No FX rate for ${(d.unconverted_holdings||[]).map(u=>u.ticker).join(", ")} &mdash; shown unconverted.</div>` : "")+
-    pendNote;
+// One tap so the first day starts on the day the user asks, rather than at
+// 22:10 tonight. Idempotent within a day: it updates today's row rather than
+// adding one. This is a WRITE, but only of a measurement of the book -- it
+// changes no holding, no sleeve and no cash.
+async function startRecording(){
+  const cap=$("todayPerfCap"); if(cap)cap.innerHTML="Recording today's value...";
+  try{
+    await fetch("/api/v1/portfolio/nav-history/snapshot",{method:"POST"});
+  }catch(e){}
+  TDPERF.cache={};          // the ok=false answer is now out of date
+  drawToday();
 }
 
 function drawTodayReal(h){
   // What the money ACTUALLY did. Time-weighted, so a deposit moves the value
   // without moving the line -- see services/nav_history.time_weighted.
   const _t=$("tdTitle"); if(_t)_t.textContent="Your account history";
+  // Un-hidden here, because the empty state above hides it. Chart.js draws into
+  // a display:none canvas without complaining and without showing anything, so
+  // forgetting this reads as "the real series never arrived".
+  const _c=$("ch_today"); if(_c)_c.style.display="";
   const cap=$("todayPerfCap");
   const chg=h.total_pct||0, col=chg>=0?"#22c55e":"#ef4444";
   drawChart("ch_today","line",{labels:h.dates,datasets:[
@@ -1468,7 +1461,7 @@ function coreRow(pct){
 // Two inputs, and NEVER a slider. A slider implies every position on it is
 // attainable; the entire point of this card is that most of them are not, and
 // that saying so is the answer rather than a failure to answer.
-let TGT={excess:null,ceiling:null,res:null,busy:false,seeded:false,err:null};
+let TGT={excess:null,ceiling:null,res:null,busy:false,seeded:false,err:null,applied:null};
 
 // UNREACHABLE and DRAWDOWN_BOUND render as `warn`, never `bad`. They are
 // correct answers and must not look like the app broke.
@@ -1524,11 +1517,56 @@ async function _seedTarget(){
 // deliberately inert here: it is the Phase A handoff, and a button that looked
 // like it resized a sleeve while doing nothing would be worse than no button.
 function tgtApply(kind,value){
-  if(value==null) return;
-  if(kind==="set_ceiling"){ TGT.ceiling=value; const el=$("tgtCeiling"); if(el) el.value=value; }
-  else if(kind==="set_target"){ TGT.excess=value; const el=$("tgtExcess"); if(el) el.value=value; }
+  if(kind==="set_ceiling"){ if(value==null)return; TGT.ceiling=value; const el=$("tgtCeiling"); if(el) el.value=value; }
+  else if(kind==="set_target"){ if(value==null)return; TGT.excess=value; const el=$("tgtExcess"); if(el) el.value=value; }
+  else if(kind==="set_sleeves"){ return tgtAccept(); }
   else return;
   solveTarget();
+}
+
+// PHASE A -- the only thing in this app that writes the book from a solve.
+//
+// It writes plan_sleeves: intended PERCENTAGES. No brokerage order is placed,
+// nothing is bought or sold, and the confirm text says so in those words rather
+// than in a euphemism -- a user unsure what "apply" does will assume the more
+// alarming reading, and they would be right to.
+//
+// `would_execute.resizes` is sent VERBATIM, from_pct included. That is what lets
+// the server refuse a plan whose premise changed since it was solved.
+async function tgtAccept(){
+  const res=TGT.res, we=res&&res.would_execute;
+  if(!we||!we.resizes||!we.resizes.length){ TGT.err="There is no sleeve change to apply."; return _tgtRender(); }
+  const lines=we.resizes.map(r=>`  ${_stratName(r.strategy_id)}: ${r.from_pct}% -> ${r.to_pct}%`).join("\n");
+  const total=we.resizes.reduce((a,r)=>a+(+r.to_pct||0),0).toFixed(1);
+  if(!confirm(`Apply this to your tracked book?\n\n${lines}\n\nSleeves total ${total}%, core ${(100-total).toFixed(1)}%.\n\n`+
+              `This changes your PLAN only. No brokerage order is placed and nothing is bought or sold.\n`+
+              `You can undo it.`)) return;
+  TGT.busy=true; TGT.err=null; _tgtRender();
+  try{
+    const r=await fetch("/api/v1/plan/target/apply?confirm=true",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({resizes:we.resizes,
+        context:{excess_pct:res.target&&res.target.excess_pct,
+                 ceiling_pct:res.target&&res.target.max_drawdown_pct,
+                 outcome:res.outcome,solver_version:res.solver_version,
+                 solved_total_sleeve_pct:res.solved_total_sleeve_pct}})});
+    TGT.applied=await r.json();
+    if(!TGT.applied.ok) TGT.err=`${TGT.applied.reason}: ${TGT.applied.detail||""}`;
+  }catch(e){ TGT.err=String(e); }
+  TGT.busy=false; _tgtRender();
+  if(TGT.applied&&TGT.applied.ok){ try{ typeof loadSleeves==="function"&&loadSleeves(); }catch(e){} }
+}
+
+async function tgtUndo(){
+  if(!confirm("Restore the sleeve sizes this replaced?\n\nAgain: plan only, no order.")) return;
+  TGT.busy=true; _tgtRender();
+  try{
+    const r=await fetch("/api/v1/plan/target/undo?confirm=true",{method:"POST"});
+    const u=await r.json();
+    if(u.ok){ TGT.applied=null; } else { TGT.err=`${u.reason}: ${u.detail||""}`; }
+  }catch(e){ TGT.err=String(e); }
+  TGT.busy=false; _tgtRender();
+  try{ typeof loadSleeves==="function"&&loadSleeves(); }catch(e){}
 }
 
 function _tgtRecommendation(res){
@@ -1544,15 +1582,31 @@ function _tgtRecommendation(res){
   out+=`<div class="mk" style="margin-bottom:4px">WHAT TO DO</div>
     <div class="${tone}" style="font-weight:700;font-size:15px">${r.headline}</div>
     <div style="margin-top:4px">${r.because}</div>`;
-  const acts=(r.actions||[]).filter(a=>a.kind==="set_ceiling"||a.kind==="set_target");
+  // set_sleeves is now a REAL button. It was inert through T5 because Phase T
+  // was read-only; Phase A is what makes it act, and it acts on the plan only.
+  const acts=(r.actions||[]).filter(a=>a.kind==="set_ceiling"||a.kind==="set_target"||a.kind==="set_sleeves");
   if(acts.length){
     out+=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">`+
-      acts.map(a=>`<button onclick="tgtApply('${a.kind}',${a.value==null?"null":a.value})"
-        ${a.value==null?"disabled":""} title="${(a.detail||"").replace(/"/g,"&quot;")}">${a.label}</button>`).join("")+
+      acts.map(a=>{
+        const isAct=a.kind==="set_sleeves";
+        return `<button onclick="tgtApply('${a.kind}',${a.value==null?"null":a.value})"
+          ${(a.value==null&&!isAct)?"disabled":""}
+          style="${isAct?"background:#16a34a;border-color:#16a34a;color:#fff;font-weight:700":""}"
+          title="${(a.detail||"").replace(/"/g,"&quot;")}">${isAct?"Accept &mdash; "+a.label:a.label}</button>`;
+      }).join("")+
       `</div>`;
     out+=(r.actions||[]).filter(a=>a.detail).map(a=>`<div class="mk" style="margin-top:4px">${a.label}: ${a.detail}</div>`).join("");
   }else{
     out+=(r.actions||[]).map(a=>`<div class="mk" style="margin-top:6px"><b>${a.label}</b> &mdash; ${a.detail||""}</div>`).join("");
+  }
+  // The receipt. A write with no visible confirmation is one the user repeats.
+  const ap=TGT.applied;
+  if(ap&&ap.ok){
+    const rows=(ap.applied||[]).map(x=>`${_stratName(x.strategy_id)} ${x.from_pct}% &rarr; <b>${x.to_pct}%</b>`).join(" &middot; ");
+    out+=`<div class="ok" style="margin-top:8px;padding-top:8px;border-top:1px solid #1e2a3a">
+      <b>Applied to your tracked book.</b> ${rows}
+      <div class="mk" style="margin-top:2px">Sleeves now ${ap.allocated_pct}%, core ${ap.core_pct}%. ${ap.note||""}</div>
+      <div style="margin-top:6px"><button onclick="tgtUndo()">Undo</button></div></div>`;
   }
   return out+`</div>`;
 }
@@ -1568,7 +1622,9 @@ async function solveTarget(){
     TGT.err="Both are required. Without a drawdown ceiling the answer is always the most leveraged blend allowed.";
     return _tgtRender();
   }
-  TGT.busy=true; TGT.res=null; _tgtRender();
+  // A receipt from a previous solve must not survive into a new one -- it
+  // would sit under an answer it was never about.
+  TGT.busy=true; TGT.res=null; TGT.applied=null; _tgtRender();
   try{
     const r=await fetch(`/api/v1/plan/target?excess_pct=${TGT.excess}&max_drawdown_pct=${TGT.ceiling}`);
     TGT.res=await r.json();
