@@ -539,6 +539,12 @@ async def solve_for(session: AsyncSession, user: User, *,
         out["cost"] = cost_of(out["measured"], nav_ils=nav, horizon_years=horizon)
         out["cost"]["funding"] = await _funding_preview(
             session, user, sleeves, out.get("solved_total_sleeve_pct"), nav)
+
+    # T5 -- attached LAST, so it can see everything the solve produced, including
+    # `cost` and `degraded`. Derived from the verdict, never recomputed: if the
+    # recommendation and the figures above it could disagree, the card would be
+    # arguing with itself.
+    out["recommendation"] = recommend(out, benchmark=out.get("benchmark") or bench_tk)
     return out
 
 
@@ -602,3 +608,231 @@ def _solve_blocking(tickers, bench_tk, sleeves, core, target_excess_pct,
                 cash_floor=floor, concentration_cap=cap)
     out["benchmark"] = bench_tk
     return out
+
+
+# --------------------------------------------------------------------------
+# T5 -- the recommendation
+# --------------------------------------------------------------------------
+# A card that ends in a diagnosis and no instruction leaves the reader to do the
+# inference, which is the part they came here to avoid. Five outcomes were the
+# right way to model the ANSWER; they are not an answer to "so what do I do".
+#
+# This is a pure function over the verdict on purpose. It is the sentence the
+# user acts on, so it has to be testable without a database, a price feed or a
+# browser -- and every number in it has to be one the solve already measured.
+# Nothing here computes a new figure; it only chooses which measured figure is
+# the one that matters and what to do about it.
+#
+# `actions` are declarative, and Phase T stays read-only: `set_ceiling` and
+# `set_target` refill the card's own inputs and re-solve, `set_sleeves` is the
+# handoff Phase A will wire to the tracked book. Nothing here writes anything.
+
+_HEADROOM_PCT = 0.0   # the recommended ceiling is the measured fall, rounded up
+                      # to the next whole percent -- not padded. A ceiling with
+                      # invented headroom is the card choosing risk for you.
+
+
+def _g(x, dflt: str = "?") -> str:
+    """Format a measured number, or say so when it is absent.
+
+    recommend() must be TOTAL. It runs at the end of every solve, and an
+    instruction is decoration on top of a measurement -- if a missing figure can
+    raise here, a solve that measured fine returns a 500 and the user loses the
+    card entirely. That trade is never worth it, so every interpolation goes
+    through this.
+    """
+    if x is None:
+        return dflt
+    try:
+        return f"{float(x):g}"
+    except (TypeError, ValueError):
+        return dflt
+
+
+def _signed(x) -> str:
+    """Same as _g, but keeps the sign that makes an excess readable."""
+    if x is None:
+        return "?"
+    try:
+        return f"{float(x):+g}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _ceil_pct(x) -> float | None:
+    """The measured fall, rounded UP to the next whole percent.
+
+    Rounding UP matters: a recommended ceiling below what the book already does
+    comes straight back as DRAWDOWN_BOUND, so the one-tap would be a button that
+    changes nothing. Returns None rather than raising when there is no figure --
+    the caller then offers no action instead of a broken one.
+    """
+    if x is None:
+        return None
+    try:
+        return float(math.ceil(float(x) + _HEADROOM_PCT))
+    except (TypeError, ValueError):
+        return None
+
+
+def _equal_risk_warning(m: dict, benchmark: str) -> str | None:
+    """The finding that outranks the solve, when it is present.
+
+    Excess at equal risk is leverage-proof: both sides scaled to the same
+    drawdown. If it is negative, the book is not being paid for the risk it
+    already carries, and NO sleeve size fixes that -- it is a statement about
+    the core. That has to be said whichever of the five outcomes came back,
+    because it is the more expensive problem in every one of them.
+    """
+    er = m.get("excess_at_equal_risk_pct")
+    if er is None or er >= 0:
+        return None
+    return (f"At equal risk to {benchmark} your book is {abs(er):.2f}%/yr BEHIND. "
+            f"That is measured with both sides scaled to the same drawdown, so it "
+            f"is not a risk-taking difference -- it is the core underperforming. "
+            f"No sleeve size repairs it.")
+
+
+def recommend(v: dict, *, benchmark: str = "the benchmark") -> dict:
+    """One imperative sentence, the measurement behind it, and the taps.
+
+    Returns {headline, because, actions[], severity, equal_risk_warning}.
+    Never invents a figure: every number comes from the verdict it was given.
+    """
+    outcome = v.get("outcome")
+    m = v.get("measured") or {}
+    tgt = v.get("target") or {}
+    t_excess = tgt.get("excess_pct")
+    ceiling = tgt.get("max_drawdown_pct")
+    warn = _equal_risk_warning(m, benchmark)
+
+    def out(headline, because, actions, severity):
+        # An action whose value could not be computed is dropped, not rendered
+        # disabled. A greyed-out button still reads as "there is a lever here",
+        # and there isn't one -- offering nothing is the more honest empty state.
+        # `set_sleeves` is exempt: it carries no numeric lever in Phase T, it is
+        # the Phase A handoff, and it is inert by design.
+        actions = [a for a in actions
+                   if a.get("value") is not None or a["kind"] in ("set_sleeves", "set_target")]
+        return {"headline": headline, "because": because, "actions": actions,
+                "severity": severity, "equal_risk_warning": warn,
+                "solver_version": SOLVER_VERSION}
+
+    # ---------------------------------------------------------------- nothing
+    if outcome == NOT_MEASURABLE:
+        reason = v.get("reason") or "the solve could not run"
+        detail = {
+            "NO_SLEEVES": "You have no sleeves, so there is nothing to size. "
+                          "Add a strategy to a sleeve first.",
+            "UNKNOWN_STRATEGY": "A sleeve points at a strategy that is not in "
+                                "the catalog. Fix the sleeve, then re-solve.",
+        }.get(reason, "Re-run once prices are available.")
+        return out("There is nothing to solve yet.", f"{reason}: {detail}", [], "warn")
+
+    # ------------------------------------------------------------- it reaches
+    if outcome == REACHED:
+        size = v.get("display_total_sleeve_pct")
+        dd = m.get("max_drawdown_pct")
+        return out(
+            f"Set your sleeves to {_g(size)}% of the book, together.",
+            (f"That is the SMALLEST allocation that reaches +{_g(t_excess)}%/yr over "
+             f"{benchmark}, and it did so at a {_g(dd)}% worst fall against your "
+             f"{_g(ceiling)}% ceiling. Anything larger buys return you did not ask for "
+             f"at risk you did not agree to."),
+            [{"kind": "set_sleeves", "label": f"Size sleeves to {_g(size)}%",
+              "value": size,
+              "detail": "Phase A applies this to the tracked book. It never places an order."}],
+            "ok")
+
+    # ---------------------------------------------- reaches, but past the cap
+    if outcome == REACHED_ABOVE_CAP:
+        bc = v.get("binding_constraint") or {}
+        cap = bc.get("cap_pct")
+        tk = bc.get("ticker")
+        need = bc.get("would_reach_pct")
+        return out(
+            f"Raise your concentration cap above {_g(need)}%, or lower the target.",
+            (f"The target is reachable and inside your drawdown ceiling, but it puts "
+             f"{_g(need)}% of the book into {tk} alone, against a {_g(cap)}% cap. The cap is "
+             f"the only thing refusing this -- it is a rule you set, not a measurement."),
+            [{"kind": "set_target", "label": "Lower the target instead",
+              "value": None,
+              "detail": "Re-solve at a lower excess to find the largest target the cap allows."}],
+            "warn")
+
+    # ------------------------------------------ the ceiling is what refuses it
+    if outcome == DRAWDOWN_BOUND:
+        bc = v.get("binding_constraint") or {}
+        need = bc.get("would_require_pct")
+        floor = v.get("floor") or {}
+        best = v.get("best_within_ceiling")
+
+        # THE case that reads as a dead end today: the core alone already exceeds
+        # the ceiling, so the sleeves are not the constraint and resizing them
+        # cannot help. Sending the reader back to the slider here is the single
+        # most misleading thing this card could do.
+        if floor.get("breaches_ceiling"):
+            base_dd = floor.get("max_drawdown_pct")
+            rec_ceiling = _ceil_pct(base_dd)
+            return out(
+                f"Your sleeves are not the problem. Raise the ceiling to at least "
+                f"{_g(rec_ceiling)}%, or change the core.",
+                (f"With NO sleeve at all your book still falls {_g(base_dd)}%, against the "
+                 f"{_g(ceiling)}% ceiling you set. That is the core, which is most of the "
+                 f"book -- so no sleeve size, including zero, can bring the blend under "
+                 f"this ceiling. Until the ceiling admits what the core already does, "
+                 f"the solver has nothing it is allowed to show you."),
+                [{"kind": "set_ceiling",
+                  "label": f"Raise the ceiling to {_g(rec_ceiling)}% and re-solve",
+                  "value": rec_ceiling,
+                  "detail": (f"{_g(rec_ceiling)}% is what your core already costs you. This is a "
+                             f"permission, not a return -- it does not add a single percent, "
+                             f"it stops the solver refusing to show you the options above "
+                             f"{_g(ceiling)}%.")}],
+                "bad")
+
+        # The ordinary case: the sleeves CAN get there, but only past the ceiling.
+        actions = [{"kind": "set_ceiling",
+                    "label": f"Raise the ceiling to {_g(_ceil_pct(need))}% and re-solve",
+                    "value": _ceil_pct(need),
+                    "detail": "A permission, not a return. The risk is real and measured."}]
+        alt = ""
+        if best and best.get("excess_pct") is not None:
+            actions.append({"kind": "set_target",
+                            "label": f"Or accept +{_g(best['excess_pct'])}%/yr instead",
+                            "value": best["excess_pct"],
+                            "detail": (f"The best your sleeves reach at {_g(best['total_sleeve_pct'])}% "
+                                       f"without breaching {_g(ceiling)}%.")})
+            alt = (f" Inside the ceiling you set, the most your sleeves reach is "
+                   f"+{_g(best['excess_pct'])}%/yr at {_g(best['total_sleeve_pct'])}% sleeves.")
+        return out(
+            f"Choose: raise the ceiling to {_g(_ceil_pct(need))}%, or take a smaller target.",
+            (f"+{_g(t_excess)}%/yr is reachable on return, but only at a {_g(need)}% worst fall "
+             f"against your {_g(ceiling)}% ceiling.{alt} This is the useful outcome: your "
+             f"strategies are not too weak, your risk tolerance is what binds."),
+            actions, "warn")
+
+    # ------------------------------------------------- nothing reaches it, ever
+    if outcome == UNREACHABLE:
+        bc = v.get("binding_constraint") or {}
+        best = m.get("excess_cagr_pct")
+        size = v.get("display_total_sleeve_pct")
+        actions = []
+        if best is not None:
+            actions.append({"kind": "set_target",
+                            "label": f"Lower the target to +{_g(best)}%/yr",
+                            "value": best,
+                            "detail": f"The most any admissible size reached, at {_g(size)}% sleeves."})
+        why = (f"No sleeve size between 0% and 100% reaches +{_g(t_excess)}%/yr inside your "
+               f"{_g(ceiling)}% ceiling.")
+        if bc.get("kind") == "component_excess":
+            why += (f" The sleeve holding it down is {bc['component']}, which measured "
+                    f"{_g(bc['component_cagr_pct'])}%/yr against {benchmark} at "
+                    f"{_g(bc['benchmark_cagr_pct'])}%/yr -- {_signed(bc.get('component_excess_pct'))}%/yr. "
+                    f"That is a rule to fix or replace, not a slider to drag.")
+        headline = (f"Lower the target to +{_g(best)}%/yr, or add a strategy that can carry it."
+                    if best is not None
+                    else "Nothing in your catalog reaches this. The catalog is what has to change.")
+        return out(headline, why, actions, "bad")
+
+    return out("No recommendation.", f"Unrecognised outcome: {outcome}", [], "warn")
