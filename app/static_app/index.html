@@ -295,7 +295,7 @@
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <b>How today's holdings have moved</b>
+        <b id="tdTitle">How today's holdings have moved</b>
         <div class="stgoal" id="tdRanges" style="flex-wrap:nowrap;overflow-x:auto"></div>
       </div>
       <canvas id="ch_today" height="170" style="margin-top:8px"></canvas>
@@ -718,6 +718,19 @@ function tdSetRange(r){ if(TDPERF.range===r&&TDPERF.cache[r])return; TDPERF.rang
 async function loadTodayPerf(){
   tdRangeButtons();
   const r=TDPERF.range, cap=$("todayPerfCap"); if(!cap)return;
+
+  // REAL history first. nav_snapshots is what the book was actually worth on
+  // days the job recorded; the backfill below is a reconstruction of today's
+  // holdings. They are different claims, so the card says which one it drew.
+  let real=TDPERF.cache["N:"+r];
+  if(!real){
+    cap.textContent="Reading your recorded history...";
+    try{ real=await(await fetch(`/api/v1/portfolio/nav-history?range=${r}`)).json(); }
+    catch(e){ real={ok:false,reason:String(e)}; }
+    TDPERF.cache["N:"+r]=real;
+  }
+  if(real&&real.ok){ return drawTodayReal(real); }
+  TDPERF.pending=real;   // why there is no real series yet, shown under the backfill
   // Cached per range: each call is one provider fetch PER HOLDING, so flicking
   // between ranges uncached would fan out the same request over and over.
   let d=TDPERF.cache[r];
@@ -749,10 +762,24 @@ async function loadTodayPerf(){
     plugins:{legend:{display:false},
              tooltip:{callbacks:{title:c=>d.dates[c[0].dataIndex],
                                  label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`}}},
-    scales:{x:{ticks:{display:false},grid:{display:false}},
+    scales:{x:{ticks:{color:"#8b97a8",maxRotation:0,autoSkip:true,maxTicksLimit:6,
+                      // Dates arrive as YYYY-MM-DD. Shown as "2 Jul" so a month
+                      // of daily points does not turn the axis into a smear.
+                      callback:function(v,i){const d=this.getLabelForValue(v);
+                        if(!d)return"";const p=String(d).split("-");
+                        if(p.length<3)return d;
+                        const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                        return `${+p[2]} ${M[+p[1]-1]||""}`;}},
+               grid:{display:false}},
             y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`},
                grid:{color:"#182130"}}}});
 
+  const _t=$("tdTitle"); if(_t)_t.textContent="How today's holdings have moved";
+  const pend=TDPERF.pending;
+  const pendNote=(pend&&!pend.ok)
+    ? `<div class="warn" style="margin-top:4px">Your real account history is being recorded`+
+      (pend.recorded_since?` since ${pend.recorded_since} — ${pend.points||0} of ${pend.needs||3} days.`:` — no days yet.`)+
+      ` It will replace this chart automatically. It cannot be backfilled.</div>` : "";
   cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${d.observations} sessions`+
     (d.window?` (${d.window.start} to ${d.window.end})`:"")+
     `<div style="margin-top:2px"><b>This is not your account history.</b> It prices the holdings you own
@@ -760,7 +787,50 @@ async function loadTodayPerf(){
      money did. It will not match your total gain, and it does not know about deposits.
      Valued in ${d.base_currency||"ILS"}${d.fx_basis==="spot"?" at today's rate":""}.</div>`+
     ((d.degraded&&d.degraded.includes("fx"))
-      ? `<div class="bad">No FX rate for ${(d.unconverted_holdings||[]).map(u=>u.ticker).join(", ")} &mdash; shown unconverted.</div>` : "");
+      ? `<div class="bad">No FX rate for ${(d.unconverted_holdings||[]).map(u=>u.ticker).join(", ")} &mdash; shown unconverted.</div>` : "")+
+    pendNote;
+}
+
+function drawTodayReal(h){
+  // What the money ACTUALLY did. Time-weighted, so a deposit moves the value
+  // without moving the line -- see services/nav_history.time_weighted.
+  const _t=$("tdTitle"); if(_t)_t.textContent="Your account history";
+  const cap=$("todayPerfCap");
+  const chg=h.total_pct||0, col=chg>=0?"#22c55e":"#ef4444";
+  drawChart("ch_today","line",{labels:h.dates,datasets:[
+      {label:"% change",data:h.pct,borderColor:col,backgroundColor:col+"22",
+       fill:true,pointRadius:0,tension:.12,borderWidth:2}]},{
+    plugins:{legend:{display:false},
+             tooltip:{callbacks:{title:c=>h.dates[c[0].dataIndex],
+               label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`+
+                        (h.nav_ils?`  (${h.nav_ils[c.dataIndex]} ILS)`:"")}}},
+    scales:{x:{ticks:{color:"#8b97a8",maxRotation:0,autoSkip:true,maxTicksLimit:6,
+                      callback:function(v,i){const d=this.getLabelForValue(v);
+                        if(!d)return"";const p=String(d).split("-");
+                        if(p.length<3)return d;
+                        const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                        return `${+p[2]} ${M[+p[1]-1]||""}`;}},
+               grid:{display:false}},
+            y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`},
+               grid:{color:"#182130"}}}});
+
+  // Both numbers, always. The gap between them IS the deposits, and showing
+  // only the simple one is how a bank transfer reads as a good month.
+  const simple=h.simple_change_pct, flow=h.flow_total_ils||0;
+  cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${h.dates.length} recorded days `+
+    `(${h.window.start} to ${h.window.end})`+
+    (Math.abs(flow)>0.5
+      ? `<div style="margin-top:2px">Your value moved <b>${simple>=0?"+":""}${simple}%</b>, but
+         <b>${flow>=0?"+":""}${flow} ILS</b> of that was money you moved in or out. The
+         <b>${chg>=0?"+":""}${chg}%</b> above is what your investments did, with deposits
+         taken out.</div>`
+      : `<div style="margin-top:2px">No deposits or withdrawals in this window, so this is
+         simply what your money did.</div>`)+
+    `<div class="mk" style="margin-top:2px">Recorded daily since ${h.recorded_since}. This is your
+     actual account, not a reconstruction.</div>`+
+    ((h.gaps&&h.gaps.length)
+      ? `<div class="warn">Not recorded on every day: ${h.gaps.map(g=>`${g.from} to ${g.to} (${g.days}d)`).join(", ")}. The line joins across the gap rather than inventing the days between.</div>`
+      : "");
 }
 
 async function loadToday(){
@@ -1418,16 +1488,73 @@ async function _seedTarget(){
   // behalf, and this card exists to stop that.
   if(TGT.seeded) return; TGT.seeded=true;
   try{
-    const p=await(await fetch("/api/v1/portfolio/performance",{method:"POST"})).json();
+    // range=MAX, NOT the 252-day default. THE BUG THIS FIXES: the solver measures
+    // over ten years of closes, and the seed was measuring over one. A ceiling
+    // seeded from a calm twelve months and then judged against a window
+    // containing 2020 and 2022 can only ever come back breached -- the card was
+    // reporting a window mismatch as if it were a fact about the book.
+    const p=await(await fetch("/api/v1/portfolio/performance?range=MAX",{method:"POST"})).json();
     if(p&&p.ok){
-      if(TGT.excess==null)  TGT.excess=_n(p.excess_cagr_pct,null);
+      // The CEILING is seeded from the risk the book already carries, measured
+      // over the same window the solver uses. That figure is the honest floor:
+      // anything below it is a ceiling your own core already breaches.
       if(TGT.ceiling==null) TGT.ceiling=_n(p.max_drawdown_pct,null);
+      // The TARGET is floored at 0. Seeding it with the excess you already earn
+      // asks "what would it take to stand still", whose answer is always
+      // "nothing" -- a tautology dressed as a solve. 0 is the least ambitious
+      // question worth asking: match the index. Your actual figure is in the
+      // note below, so nothing is hidden by this.
+      if(TGT.excess==null){
+        const cur=_n(p.excess_cagr_pct,null);
+        TGT.excess=(cur==null)?null:Math.max(0,Math.ceil(cur));
+      }
       TGT.seedNote=(p.excess_cagr_pct!=null)
-        ? `seeded from your book: ${p.excess_cagr_pct}%/yr vs ${p.benchmark} over ${p.observations} days, ${p.max_drawdown_pct}% drawdown`
+        ? `your book: ${p.excess_cagr_pct}%/yr vs ${p.benchmark} at a ${p.max_drawdown_pct}% drawdown, `
+          +`over ${p.observations} sessions &mdash; the same window the solver measures. `
+          +`The ceiling starts at the risk you already carry; the target starts at "match the index".`
         : null;
     }
   }catch(e){ /* leave the fields empty rather than invent a number */ }
   _tgtRender();
+}
+
+// One tap: refill an input and re-solve. Phase T is read-only WITHOUT EXCEPTION,
+// and this keeps it that way -- it edits the two boxes on this card, nothing in
+// your plan, your sleeves, your holdings or your cash. `set_sleeves` is
+// deliberately inert here: it is the Phase A handoff, and a button that looked
+// like it resized a sleeve while doing nothing would be worse than no button.
+function tgtApply(kind,value){
+  if(value==null) return;
+  if(kind==="set_ceiling"){ TGT.ceiling=value; const el=$("tgtCeiling"); if(el) el.value=value; }
+  else if(kind==="set_target"){ TGT.excess=value; const el=$("tgtExcess"); if(el) el.value=value; }
+  else return;
+  solveTarget();
+}
+
+function _tgtRecommendation(res){
+  const r=res.recommendation; if(!r) return "";
+  const tone={ok:"ok",warn:"warn",bad:"bad"}[r.severity]||"muted";
+  // The equal-risk warning goes ABOVE the instruction when it fires, because it
+  // outranks it: a book that is behind at equal risk has a problem no sleeve
+  // size solves, and burying that under a sizing instruction would be the card
+  // answering the smaller question first.
+  let out=`<div style="margin-top:10px;padding-top:8px;border-top:1px solid #1e2a3a">`;
+  if(r.equal_risk_warning)
+    out+=`<div class="bad" style="margin-bottom:6px">${r.equal_risk_warning}</div>`;
+  out+=`<div class="mk" style="margin-bottom:4px">WHAT TO DO</div>
+    <div class="${tone}" style="font-weight:700;font-size:15px">${r.headline}</div>
+    <div style="margin-top:4px">${r.because}</div>`;
+  const acts=(r.actions||[]).filter(a=>a.kind==="set_ceiling"||a.kind==="set_target");
+  if(acts.length){
+    out+=`<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">`+
+      acts.map(a=>`<button onclick="tgtApply('${a.kind}',${a.value==null?"null":a.value})"
+        ${a.value==null?"disabled":""} title="${(a.detail||"").replace(/"/g,"&quot;")}">${a.label}</button>`).join("")+
+      `</div>`;
+    out+=(r.actions||[]).filter(a=>a.detail).map(a=>`<div class="mk" style="margin-top:4px">${a.label}: ${a.detail}</div>`).join("");
+  }else{
+    out+=(r.actions||[]).map(a=>`<div class="mk" style="margin-top:6px"><b>${a.label}</b> &mdash; ${a.detail||""}</div>`).join("");
+  }
+  return out+`</div>`;
 }
 
 function _tgtRender(){ const b=$("tgtBox"); if(b) b.innerHTML=targetBody(); }
@@ -1521,7 +1648,8 @@ function targetBody(){
   let out=form+`<div style="margin-top:10px"><span class="rk ${cls}" style="font-weight:700">${label}</span></div>`;
 
   if(res.outcome==="NOT_MEASURABLE"){
-    return out+`<div class="muted" style="margin-top:6px">${res.reason||""} ${res.detail||""}</div>`;
+    return out+`<div class="muted" style="margin-top:6px">${res.reason||""} ${res.detail||""}</div>`
+      +_tgtRecommendation(res);
   }
   if(res.solved_total_sleeve_pct!=null && (res.outcome==="REACHED"||res.outcome==="REACHED_ABOVE_CAP"||res.outcome==="DRAWDOWN_BOUND")){
     out+=`<div style="margin-top:6px">Your sleeves together would have to be
@@ -1545,6 +1673,10 @@ function targetBody(){
     if(m.components&&m.components.length)
       out+=`<div class="mk" style="margin-top:4px">Blend: ${m.components.map(c=>`${_stratName(c.id)==="__core__"?"core":_stratName(c.id)} ${c.weight_pct}%`).join(", ")}${m.cash_pct>0?`, cash ${m.cash_pct}%`:""}</div>`;
   }
+  // The instruction sits between the measurement and its cost: you read what is
+  // true, then what to do, then what doing it costs. Putting it last would bury
+  // the only line on this card that is actionable.
+  out+=_tgtRecommendation(res);
   out+=_tgtCost(res.cost);
 
   if(res.degraded&&res.degraded.length)

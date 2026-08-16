@@ -477,6 +477,40 @@ class PlanSleeve(Base, PKMixin, TimestampMixin):
     is_core: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class NavSnapshot(Base, PKMixin, TimestampMixin):
+    """What the book was worth on one day. The only source of real history.
+
+    Everything historical before this table was a BACKFILL -- today's holdings
+    priced back through their own past, which answers "what would this book have
+    done", not "what did my money do". Past NAV cannot be recovered: the
+    `transactions` table has never been written (grep for `Transaction(` outside
+    the models returns nothing), so there is no trade ledger to reconstruct
+    from. History can only start.
+
+    ``invested_ils`` is the contributions ledger total AS OF that day, stored
+    beside the value on purpose: a NAV that jumped because money arrived is not
+    a return, and without the deposit total on the same row a later reader
+    cannot tell the two apart. The return arithmetic lives in
+    ``services/nav_history.time_weighted``.
+
+    One row per subject per day (``as_of`` is a YYYY-MM-DD string, matching the
+    convention ``strategy_backtests.period_start`` already uses), so a job that
+    runs twice updates rather than duplicating.
+    """
+    __tablename__ = "nav_snapshots"
+    __table_args__ = (UniqueConstraint("subject", "as_of",
+                                       name="uq_nav_snapshots_subject_day"),)
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    as_of: Mapped[str] = mapped_column(String(10), index=True)      # YYYY-MM-DD
+    nav_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    cash_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    # Contributions-to-date. The flow detector; see the class docstring.
+    invested_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    positions: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="job")  # job|manual
+    engine_version: Mapped[str] = mapped_column(String(16), default="")
+
+
 class StrategySignalState(Base, PKMixin, TimestampMixin):
     """What the user's active rule-based strategy said it should hold, last time.
 

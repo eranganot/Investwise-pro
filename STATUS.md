@@ -1,7 +1,336 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-13 by Claude (Phase C6 — the core is a choice)._
+_Last updated: 2026-08-16 by Claude (T0–T5 + Phase N — the target solver, real history, and the instruction the card was missing)._
 _Seeded from git history + prior transcripts._
+
+## ✅ T5 — the card ends in an instruction
+
+**Status:** in the working tree, **pending QA**. `ship-t5.ps1` / `smoke/smoke-t5.ps1`.
+28 tests in `tests/test_target_recommend.py`.
+
+**SYMPTOM.** Eran, looking at the shipped card: *"I see the card and the
+explanation, I don't understand what is the agent's recommendation and the
+action item I need to do."* Every figure on it was correct. It still did not
+tell him what to do.
+
+**EVIDENCE.** His card, 2026-08-16: `DRAWDOWN_BOUND`, sleeves solved to **0%**,
+core 97% / cash 3%, measured **−2.88%/yr over SPY at a 31.89% drawdown**, excess
+at equal risk **−2.07%/yr**, ceiling **13.3%**, footer `1729 sessions ·
+2019-09-26 to 2026-08-14`, seed note `over 250 days, 13.26% drawdown`.
+
+**ROOT CAUSE — three, compounding.**
+
+1. **Window mismatch in the seed.** `_seedTarget()` called
+   `POST /portfolio/performance` with no `range`, which defaults to **252 days**
+   (`intake.py:287`). The solver measures **~1729 sessions**. A ceiling seeded
+   from a calm twelve months, then judged against a window containing 2020 and
+   2022, can only come back breached. The card was reporting a *window
+   difference* as though it were a fact about the book.
+2. **Tautological target seed.** `TGT.excess` was seeded from
+   `p.excess_cagr_pct` — the excess he already earns. The first solve therefore
+   asked "what would it take to stand still". Answer: nothing, 0% sleeves. That
+   is not advice, and it is why both sleeves read 0%.
+3. **No instruction existed.** Five outcomes was the right model of the
+   *answer*; it is not an answer to *"so what do I do"*.
+
+**WHY SILENT.** Each defect produces a *plausible* card. A breached ceiling and
+a 0% sleeve are both legitimate outputs, so nothing looked broken — the card was
+answering a different question from the one being asked, in a voice that sounded
+like it had answered.
+
+**THE FIX.** `target_solver.recommend(v, *, benchmark)` — a **pure function over
+the verdict**, so the sentence the user acts on is testable without a database, a
+price feed or a browser. It computes nothing: every figure traces to something
+the solve already measured, and
+`test_the_recommendation_invents_no_figure_the_solve_did_not_measure` enforces
+exactly that by extracting every numeral from the rendered text and requiring it
+to be in the allowed set.
+
+Two failure modes are held **by name**, because an instruction carries more
+authority than a diagnosis:
+
+- **Never point at the slider when the core is what binds.** When
+  `floor.breaches_ceiling` is true, the core alone exceeds the ceiling, so no
+  sleeve size — *including zero* — can help. Recommending a resize there points
+  at a control that provably cannot move the outcome.
+  → `test_it_does_not_send_him_back_to_the_sleeve_slider`
+- **A ceiling is a permission, not a return.** Raising it adds no return; it
+  stops the solver refusing to show options above it. The copy must say so in
+  those words. → `test_a_raised_ceiling_is_described_as_a_permission_not_a_return`
+
+Excess at equal risk, when negative, renders **above** the instruction. A book
+behind per unit of risk has a problem no sleeve size solves, and answering the
+smaller question first would bury the larger one.
+
+**CAUGHT DURING THE BUILD (would have been a regression, not a fix).**
+`recommend()` raised `TypeError` on a verdict with a missing figure — every
+`{x:g}` interpolation. It runs at the *end* of every solve, so a solve that
+measured perfectly well would have returned **500** and the user would have lost
+the whole card. Strictly worse than the missing instruction. Fixed with `_g()` /
+`_signed()` (render `?`, never raise), `_ceil_pct(None) → None`, and actions
+with no computable value **dropped rather than rendered disabled** — a greyed-out
+button still reads as "there is a lever here". Six parametrised totality tests
+now cover it.
+
+**STILL READ-ONLY, WITHOUT EXCEPTION.** `tgtApply()` refills this card's own two
+inputs and re-solves. It issues no `POST`/`PUT`/`DELETE`/`PATCH`, and
+`set_sleeves` is deliberately **inert** — it is the Phase A handoff, and a button
+that looks like it resizes a sleeve while doing nothing is worse than no button.
+Both properties are asserted against the *served* shell in `smoke-t5.ps1`.
+
+**BLAST RADIUS.** `target_solver.py` (+~180 lines, additive), `index.html`
+(+~70), `sw.js` v22→v23. No existing figure changed; the solve path is untouched.
+
+**OPEN.** The seed window fix assumes `performance?range=MAX` (2600 days) and the
+solver's ~10-year fetch land within 10% of each other. `smoke-t5.ps1` T5.1
+measures both and fails if they diverge — **INFERRED until that runs against
+production.**
+
+
+## ✅ PHASE T0–T4 + N — the target solver, and the day history started
+
+**Shipped:** `b2d5e98` (T0.3) → `87a47a0` (T0) → `0315b47` (T1) → `df0d85e` (T2)
+→ `211682a` (T3) → `0df481f` (T3 fix) → `6edebc5` + `10d8b40` (T4). Phase N and
+the T4 follow-up are in the working tree, **pending QA**.
+Suite 856 passed / 4 skipped, ruff clean.
+
+The Plan screen could offer a sleeve size but never said what the size bought.
+`BEAT_MARKET_TARGET_SOLVER_PLAN.md` is the plan; this is what it cost.
+
+### The framing that changed everything downstream
+The target is **excess over the benchmark at a bounded drawdown**, not an
+absolute return and not raw excess. Raw excess is bought with leverage — anyone
+beats SPY holding 1.3× SPY — and every sleeve in this family is leveraged or
+concentrated, so a solver maximising it returns the most leveraged admissible
+blend every time. The drawdown ceiling constrains the ADMISSIBLE SET; it is not
+a figure reported afterwards.
+
+### T0.3 — the performance backfill was adding shekels to dollars
+**Root cause:** `performance()` projected positions to `(ticker, quantity)`,
+dropping `market` and `meta` — the only two inputs `price_currency` takes. The
+worker was not ignoring FX; it had been handed no way to apply it. The
+projection exists to keep ORM objects off the worker thread (MissingGreenlet):
+**the safety fix caused the currency bug.**
+**Reproduced** on the real function: 1 TASE holding + 10 MSFT gave a start value
+64.3% low and an excess vs SPY of 8.33% against a true 12.62%.
+**Ruled out:** "design choice, not defect" — nine other modules FX-normalise
+through the same two helpers; only this one did not, while labelling its output
+`_ils`.
+**Why silent:** no test called `_performance_from`, and `test_performance.py`
+uses two NYSE tickers — a single-currency book, where the defect cannot appear.
+Rate is spot held constant (`guarded_fx` has no historical series), reported as
+`fx_basis`, and a missing rate now reports `degraded:["fx"]` instead of passing
+1.0 off as parity.
+
+### T0 — two benchmarks, provenance, staleness
+A strategy is measured against **the thing it levers** (`base`: QQQ for the TQQQ
+sleeves, SMH for SOXL) as well as against the book benchmark, in separate
+fields. A rule can beat its base while the book still loses to SPY — roughly the
+current picture — and one number cannot show both. Every payload carries
+`{start, end, sessions, kind}`. `strategy_backtests.benchmark_ticker` (migration
+0015) makes `_is_stale` fire on a benchmark change: an excess rendered under a
+benchmark it was not measured against is a *wrong* number, not a stale one.
+`ENGINE_VERSION` a3 → a4.
+
+### T1 — blend by simulating, not by averaging
+`0.7×core + 0.3×sleeve` is not the CAGR of the blend, and for drawdown it is
+worse: averaging two max-drawdowns assumes they never bottom on the same day,
+and a leveraged sleeve bottoms on exactly the same days as its core. Instead the
+daily target vectors are summed and the existing `_simulate` runs once, so the
+true correlation falls out of the simulation. **The identity test is the
+load-bearing one:** a blend of one component at full weight reproduces `bt.run`
+exactly. `excess_at_equal_risk_pct` is the leverage-proof scoreboard, solved by
+bisection because drawdown is not linear in exposure.
+
+### T2 — five outcomes, three of which are "no"
+`REACHED`, `REACHED_ABOVE_CAP`, `DRAWDOWN_BOUND`, `UNREACHABLE`,
+`NOT_MEASURABLE`. Read-only without exception; `smoke-t3` fingerprints sleeves,
+positions and cash either side of a solve and compares.
+**Two defects the tests found, both real:**
+1. The concentration cap was judged **book-wide**, so an already-concentrated
+   core vetoed every sleeve size *including zero* — an answer that says nothing
+   about the decision and hides the sleeve actually breaching. Now judged
+   against `blend.claimable_tickers` (basket + base + risk_off; a gate ticker is
+   not a position).
+2. "Nothing admissible" meant two opposite things. A `floor` block now reports
+   the drawdown at zero sleeve and whether it already breaches the ceiling, so
+   *shrink the sleeve* and *raise the ceiling* stop looking identical.
+
+### T3 — what it costs, and the conversion that would have been silent
+Drawdown in shekels with its recovery figure (down 45% needs +82%), the
+distribution with **median beside mean**, and the tax to stay.
+**The subtle part:** `SimulationEngine` draws `exp((mu - sigma^2/2)T + ...)`, so
+`mu` is the arithmetic drift and the MEDIAN lands at `exp((mu - sigma^2/2)T)`. A
+measured CAGR is a *geometric* return, so it belongs on the median. Feeding it
+in as `mu` would shift every percentile down by the volatility drag — by more
+the more volatile the blend — and nothing on the card would look broken.
+`geometric_to_arithmetic_pct` converts explicitly; a test pins it.
+On a 45%-vol blend over 10 years the median lands ~64% below the mean.
+
+### T3 fix — three defects, one caught live by the smoke
+**Root cause 1 (PROVEN, observed on the deployed app):** `bt.run()` adds
+`gross_cagr_pct` / `tax_drag_pct` / `cgt_rate_pct` **after** `_metrics` returns,
+and `measure_blend` calls `_metrics` directly — so the blend path never had
+them. **Why silent:** a null tax figure renders blank, and blank reads as "pays
+no tax" rather than "never measured".
+**Root cause 2 and 3 (mechanism proven in code; impact on the live book
+INFERRED):** `solve_for` summed every priced position *and* added `get_cash()`
+— cash is a real position row with `current_price = 1`. And `CASH` would have
+entered the core basket, where `is_cash_position`'s own docstring warns it is
+also a real listing (Pathward Financial, NASDAQ) — so the fetch would have
+**succeeded** and backtested the shekels as a US bank stock. NAV now comes from
+`strategy_service._snapshot`, the app's single source; cash is excluded by the
+app's own predicate rather than a ticker string. Unpriced holdings now report
+`degraded:["price"]` instead of vanishing from NAV.
+`BLEND_ENGINE` b1 → b2.
+
+### T4 — the card, and the repo hygiene that made it verifiable
+Two inputs, **never a slider** — a slider implies every position on it is
+attainable. Both defaults are measured (current excess, current drawdown); if
+that read fails the fields stay empty rather than filling with a plausible
+number. `UNREACHABLE` and `DRAWDOWN_BOUND` render `warn`, never `bad`.
+**T4.0:** `frontend/node_modules` had **2,463 files tracked** with no ignore
+rule, and `.gitattributes` declares `*.ps1` checkout-CRLF, so every
+`node_modules/.bin/*.ps1` was re-flagged on every git operation. `git status`
+timed out at 40s — and, the expensive part, `git status --short` returned an
+**empty view while five files sat staged**. A clean tree was very nearly
+reported on that basis. `.gitattributes` already said EOL noise is "part of why
+`git add -A` is banned in this repo"; that ban was treating the symptom.
+After: `git status` 0.2s.
+**Also in T4:** a Today chart of % change with server-side ranges
+(1W/1M/1Q/1Y/MAX). The range is a **request parameter, not a client-side slice**
+— `index_series` normalises to the first value in the series it fetched, and a
+downsampled ten-year series is one point per ~16 sessions, so "last week" would
+be two points sixteen sessions apart drawn as a week.
+
+### 🚧 PHASE N — what the money actually did (in tree, PENDING QA)
+**The finding that decides the design:** `grep` for `Transaction(` across `app/`
+outside the models returns **zero hits** — the trade ledger has never been
+written — and `whs_snapshots` stores health scores, not value, and is never
+written either. **Past NAV cannot be recovered, only started.** Every day
+without a snapshot is a day of real history that will never exist.
+
+**The correctness issue that dominates it:** deposits are not performance. Put
+₪5,000 into a ₪20,000 book and a naive endpoint-to-endpoint percentage reads
++25% — the chart announcing a great day when there was a bank transfer.
+`nav_history.time_weighted` chains sub-period returns across every cash-flow
+boundary using the dated `contributions` ledger. Measured on the real function:
+a ₪5,000 deposit followed by genuine +5% growth reports **5.00%** where the
+naive figure says **31.25%**. Without this the feature is *worse* than the
+backfill it replaces — same wrongness, more authority, erring in the flattering
+direction.
+
+`nav_snapshots` (migration 0016), a daily 22:10 job, `GET
+/portfolio/nav-history`, and a manual `POST .../snapshot` so history starts on
+deploy day rather than tomorrow. The Today chart prefers real history and falls
+back to the backfill, saying which it drew and how many days remain.
+**The job also writes `whs_snapshots`** — the table already existed for it and
+nothing wrote it, which is why "my score was 92 last week, what changed?" has no
+answer. The row now carries the **caps** alongside the score, because a stricter
+yardstick and a worse book need opposite responses.
+
+### Known sharp edges added this batch
+- **PowerShell is the unverified surface.** Five script defects this batch
+  (`git commit -m` shattering, `Measure-Object -Line` counting blank lines as
+  zero, piping a here-string to `python -`, `git add -u` after `git rm --cached`,
+  a truncation floor that went stale once the bulk shipped) against three code
+  defects. The code is executed before delivery; the `.ps1` cannot be. Four are
+  now in `ship-it`'s failure playbook.
+- Engine a4 marks every stored backtest stale on purpose — cards read *stale*,
+  not wrong, until the 03:30 job reruns.
+
+### Open questions / pending QA
+- **Health score 92 → 82 (unexplained).** Mechanism located: both caps come from
+  `effective_caps(plan)` at `workflows.py:43`, so `plan.risk_tolerance` moves the
+  score with no change to the book. High → Medium tightens concentration
+  0.40 → 0.25 = 37.5 diversification points × weight 0.25 = **−9.4 total**,
+  which is the observed drop almost exactly. **INFERRED** — needs the four
+  component chips and `GET /plan.risk_tolerance` to confirm.
+- Phase N + the T4 follow-up are in the tree, not yet shipped.
+
+---
+
+## ✅ CARD CLAIMS — a card may not claim a change it does not produce
+
+**790 passed, 4 skipped (was 731 before this work), ruff clean on `app` and
+`tests`. Shipped as `f127d25` → `453188e` → `ddd0d81`, merged `cb2b72b`,
+`30a3752`, `98c8b26`.**
+
+Eran opened Today and asked one question — _"how do these recommendations align
+with my strategies? isn't it contradict the logic?"_ — about three cards that
+each proposed **buying Equities to move Equities from 97% toward an 80% target,
+funded by selling Equities**. Net class movement: zero.
+
+### Root cause
+The prose and the arithmetic were assembled in different places, so nothing
+forced them to agree. Six defects followed from that one gap:
+
+1. The buy gate asked *"does the plan hold this class"* (`target_w <= 0`), not
+   *"does the plan want more of it"*. 97% against an 80% target passed it.
+2. `size_purchase(nav, ticker_weight, class_target, cap)` took two floats both
+   named "...weight", so a TICKER weight was measured against an ASSET CLASS
+   target. Confirmed on the live book: `class_gap_ils` = 0 while `name_room_ils`
+   = 6,149 — the card sizes were pure cap headroom.
+3. `describe_funding`'s honesty clause was dead code on this path — the
+   parameter had a default and Today never passed it.
+4. `impact` was rendered from trade size (`buyable/nav`), never a gap delta.
+5. Funding sold **sleeve holdings**: the cards raised money from TQQQ and SOXL,
+   which are `btm_swing_dip` and `btm_trend_soxl` on this book. C3 forbade
+   exactly this for sleeve funding; Today was ignoring it.
+6. `plan_funding` filled a **gross** target and subtracted tax at the end, so
+   nearly every card announced a shortfall it did not have (4,708 − 4,290 = 418
+   + 11 tax = the "still leaves ₪430 short" line).
+
+### Ruled out
+* **The signal layer.** SCHD was DISPLAYED on the Bulletproof path in production
+  throughout; the divergence signal was fine. The failure was entirely in the
+  plan-fit narration.
+* **The sizing arithmetic itself.** `size_purchase` was internally consistent —
+  it was being handed the wrong argument.
+
+### Why it was silent
+**Every test in the area asserted on strings.** `test_c3_funding.py:353` guarded
+the exact sentence — on the *other* consumer of the same code. The C3 fix had
+been applied at the call site rather than at the boundary, so `recommendations.py`
+inherited none of it and shipped the same bug through a different door. Text can
+agree with itself while the arithmetic disagrees with both.
+
+### What now holds
+* `propose_funded_buy()` is the only way to build a funded buy: it sizes from the
+  class gap, funds it, **simulates the post-trade mix**, and derives the impact
+  sentence from the measured before/after. It refuses a buy into a class at or
+  over target, and any buy that increases total drift.
+* `describe_funding(fund, buying_class)` — no default. Omitting it is a TypeError.
+* `size_purchase` deleted, split into `class_gap_ils` and `name_room_ils`.
+* `plan_funding` raises **net** proceeds, spends **one** overweight budget per
+  class, and will not sell a class that is already underweight.
+* One `FundingLedger` per build, so no two cards spend the same shares.
+* `tests/test_card_claims.py` asserts on **portfolio state, not wording** — it
+  applies each card's own `apply` spec and re-measures, across five adversarial
+  books plus two war-room tests driven end to end.
+
+### The regression, and how it was caught
+The first cut of cross-card netting ran *after* every card was built and
+**dropped** any card whose funding legs an earlier card had claimed. On the live
+book that left Today with two cards and none actionable — the geo card took 2
+MSFT and both the war-room and commodities cards were deleted, while ₪7,863 of V
+sat untouched. `smoke-p0.ps1` P0.4 and `smoke-beat-market.ps1` §14 both caught it
+(`agents degraded: funding`). Fixed by netting at **build** time: a card whose
+first choice of funding is gone is re-sourced, never deleted.
+
+Found by running `investigate-issue` against production rather than by reading
+code. The six defects above were diagnosed correctly from the source, but the
+regression was only visible in the live `/api/v1/recommendations` response.
+
+### Verified live on `98c8b26`
+`Swap into SCHD — ₪4,227` / "Does not move your Equities weight. Swaps which
+equities you hold." Funded by 4 V. No TQQQ, no SOXL. Shortfall 0. `degraded: []`.
+
+### Known-remaining
+* The card quotes the mix **excluding cash** (100% equities) while `/api/v1/mix`
+  includes it (96.98%). Both live, both true of different denominators — but two
+  screens quoting different numbers for the same thing is the species of
+  inconsistency this phase existed to remove. Not yet reconciled.
 
 ## ✅ PHASE C6 — the core stops being an anonymous remainder
 
@@ -1785,6 +2114,12 @@ Phase 13's second pass reallocates an *unfillable class's* budget, but it is gat
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-08-16 — **Phase N: history starts.** `nav_snapshots` + a 22:10 daily job + time-weighted returns across the contributions ledger, so a deposit moves the value without moving the line (₪5k into ₪20k then +5% real growth reports 5.00%, not 31.25%). Past NAV is unrecoverable — `Transaction(` has zero writers, `whs_snapshots` was never written — so the job also snapshots the health score WITH its caps, because a stricter yardstick and a worse book need opposite responses. Today's chart prefers real history, falls back to the backfill, and says which. In tree, pending QA.
+- 2026-08-16 — **T4: the target card + Today chart.** Two typed inputs and no slider; defaults measured, empty when unmeasurable. T4.0 untracked 2,463 `frontend/node_modules` files that had made `git status` time out at 40s and, once, return an EMPTY view while five files were staged. `git status` now 0.2s. Chart ranges are a server parameter, not a client slice. `6edebc5`, `10d8b40`.
+- 2026-08-16 — **T3 fix.** The blend never computed its tax drag (`bt.run` adds it after `_metrics`; `measure_blend` calls `_metrics` directly) — a null renders identically to "pays no tax". Caught live by smoke-t3. Plus cash double-counted in NAV, and `CASH` — also a real NASDAQ listing — would have been backtested as a US bank stock inside the core. `0df481f`.
+- 2026-08-16 — **T0–T3: the target solver.** Excess over benchmark at a bounded drawdown, because raw excess is bought with leverage. Blend by simulating rather than averaging (identity test pins it). Five outcomes, three of which are "no". Median beside mean, with the geometric→arithmetic conversion that would otherwise have shifted every percentile down silently. `87a47a0`, `0315b47`, `df0d85e`, `211682a`.
+- 2026-08-15 — **T0.3: the performance backfill was adding shekels to dollars.** `performance()` projected away `market` and `meta`, the only inputs `price_currency` takes — the safety fix that keeps ORM objects off the worker thread caused the currency bug. Reproduced at 64.3% understated start value and 8.33% vs a true 12.62% excess. `b2d5e98`.
+- 2026-08-15 — **Card claims: a card may not claim a portfolio change it does not produce.** Three Today cards proposed buying Equities to move Equities from 97% toward an 80% target, funded by selling Equities — net movement zero. Root cause: prose and arithmetic assembled in different places. Six defects (direction never checked; ticker weight measured against a class target; the honesty clause dead on this path; impact rendered from trade size; funding raiding sleeve holdings TQQQ/SOXL; a gross-vs-net shortfall on nearly every card). Silent because every test in the area asserted on strings — including one guarding the exact sentence on the other consumer of the same code, where the C3 fix had been applied at the call site instead of the boundary. Now: `propose_funded_buy` simulates the post-trade mix and derives its own claim; `describe_funding` requires `buying_class`; `size_purchase` split into `class_gap_ils` / `name_room_ils`; `plan_funding` raises net proceeds, spends one overweight budget per class, and won't sell an underweight class; one `FundingLedger` per build so no two cards spend the same shares. `tests/test_card_claims.py` asserts on portfolio state by applying each card's `apply` spec and re-measuring. A first cut of the netting DROPPED cards whose legs were taken and briefly left Today with nothing actionable — caught by smoke P0.4 / §14 (`agents degraded: funding`) and fixed by netting at build time so a card is re-sourced, not deleted. 790 passed, 4 skipped. Verified live on `98c8b26`.
 - 2026-08-10 — **Beat the Market P0 (safety) written, not yet run.** All four items from `BEAT_MARKET_NEXT_PLAN.md` P0 are in the working tree: (0.1) `load_basket` no longer deletes the book — `mode="fund"` is the new default for the rule-based family and raises only the sleeve's shortfall through the existing funding engine (spendable cash to the objective floor, then worst-fit holdings), abstaining with a stated reason rather than half-executing; `mode="replace"` survives for the four static families behind a confirm that now lists every position and its value; both modes gained `dry_run`. (0.2) `measuredProfile` reads `metrics.cagr_pct` before `ok`, so a card that kept its numbers through a failed refresh shows chips plus "refresh has been failing since X" instead of "Couldn't measure". (0.3) freshness became **three** states, not two — the original bug was that FMP stamps `_now()` on every quote, so a delisted holding looked freshly traded; `Quote.as_of_source` now distinguishes a venue timestamp from a request timestamp, FMP reads its real `timestamp`, and where the primary can't say, Yahoo is asked purely for the trade time. A quote older than 5 **trading** days no longer overwrites the price; the position is flagged, badged in Holdings, reported in `/portfolio.stale_positions`, and surfaced on Today as guidance — never an automatic write-off. (0.4) suggested protective rules reach Today as one card wired to `create_rules`. Plus `smoke-p0.ps1` and two new test files. **The sandbox VM died before any of it could be executed** — see the ⛔ block at the top of this file.
 - 2026-08-03 — Weekly status review: 🎉 **busiest week of the four repos — 11 commits, `d42f38c`→`86760ff`.** The entire 5-issue bug batch (phases 1–11) is committed AND verified live (`smoke-all.ps1` 29/30); rewrote the "Uncommitted (2026-08-02)" section as "Last shipped" with a phase→commit table, resolving last week's uncommitted-work flag. Working tree **clean**. Merged the duplicated "Open items" list into "Next" and gave Next a priority order. ⚠️ Flagged: the **Phases 0–5 alignment-batch QA has now gone two weeks unrun** and its SW update path (`iw-v10`) is stale — the app is on `iw-v11`; decide whether the 08-03 smoke pass subsumes it. Broker integration still unstarted after 3 weeks as the "next initiative". The one failing smoke check (`subscriptions: 0`) is a device action, not a defect.
 - 2026-07-27 — Weekly status review: quiet week — no commits since `9e2cd01` (2026-07-18); tree clean; STATUS in sync. Pending QA flagged: Phases 0–5 alignment batch + notification alignment on the Pixel 9.

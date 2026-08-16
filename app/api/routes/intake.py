@@ -293,6 +293,47 @@ async def portfolio_performance(range: str | None = None,
     return out
 
 
+@router.get("/portfolio/nav-history")
+async def portfolio_nav_history(range: str = "1M",
+                                session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """Recorded account history: what the money ACTUALLY did.
+
+    Distinct from /portfolio/performance, which backfills today's holdings
+    through their own past. This reads `nav_snapshots` -- days the job actually
+    recorded -- and returns a TIME-WEIGHTED percentage series, so a deposit
+    moves the value without moving the return.
+
+    Returns ok=false with `recorded_since` and `points` until there are enough
+    days. Never seeded from the backfill: a seeded curve is the reconstruction
+    wearing the real thing's label.
+    """
+    from app.services.nav_history import series_for
+    return await series_for(session, user, range_key=range)
+
+
+@router.post("/portfolio/nav-history/snapshot",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def portfolio_nav_snapshot(session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """Record today's snapshot now, instead of waiting for tonight's job.
+
+    Idempotent within a day -- it updates today's row rather than adding one.
+    Exists so the first day of history starts the moment you deploy, not
+    tomorrow: every day without a snapshot is a day that can never be recovered.
+    """
+    from app.services.nav_history import record_for, record_health_for
+    out = await record_for(session, user, source="manual")
+    try:
+        out["health"] = await record_health_for(session, user)
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal: losing the score row must not cost the NAV row, which is
+        # the one that cannot be recovered.
+        out["health"] = {"ok": False, "reason": f"{type(exc).__name__}"}
+    await session.commit()
+    return out
+
+
 @router.delete("/portfolio/position")
 async def remove_position(ticker: str, market: str | None = None,
                           session: AsyncSession = Depends(get_session),

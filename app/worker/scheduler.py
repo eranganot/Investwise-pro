@@ -151,6 +151,22 @@ def start_scheduler() -> None:
     # network to do inside a page load, so the numbers are precomputed and the
     # route only ever reads stored rows. Nightly is ample -- one more session
     # cannot move a ten-year CAGR, and a stale row renders as stale anyway.
+    # Phase N: one NAV row and one health row per user, daily. Runs at 22:10 UTC,
+    # after the 30-minute price refresh has repriced the book and well after any
+    # US close, so the value recorded is a settled one rather than mid-session.
+    #
+    # This is the only job whose output cannot be recomputed later. A missed
+    # backtest is recomputed tonight; a missed day of NAV is gone permanently,
+    # which is why its misfire grace is long.
+    try:
+        from app.services.nav_history import run_nav_snapshot_blocking
+        _scheduler.add_job(_guarded("nav_snapshot", run_nav_snapshot_blocking),
+                           "cron", hour=22, minute=10, id="nav_snapshot",
+                           misfire_grace_time=43200)
+        logger.info("NAV snapshot scheduled (22:10 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("NAV snapshot job not scheduled.", exc_info=False)
+
     try:
         from app.services.backtest_service import run_backtest_refresh_blocking
         _scheduler.add_job(_guarded("backtest_refresh", run_backtest_refresh_blocking),
