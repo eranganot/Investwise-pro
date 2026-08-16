@@ -295,7 +295,7 @@
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <b>Your portfolio over time</b>
+        <b>How today's holdings have moved</b>
         <div class="stgoal" id="tdRanges" style="flex-wrap:nowrap;overflow-x:auto"></div>
       </div>
       <canvas id="ch_today" height="170" style="margin-top:8px"></canvas>
@@ -738,22 +738,27 @@ async function loadTodayPerf(){
   // not since some earlier start. That is the whole reason the range is a server
   // parameter rather than a client-side slice.
   const pct=d.portfolio_index.map(v=>+(v-100).toFixed(2));
-  const ds=[{label:"Your portfolio",data:pct,borderColor:"#3b82f6",fill:false,pointRadius:0,tension:.12,borderWidth:2}];
-  if(d.benchmark_index)
-    ds.push({label:d.benchmark,data:d.benchmark_index.map(v=>+(v-100).toFixed(2)),
-             borderColor:"#8b97a8",borderDash:[5,4],fill:false,pointRadius:0,tension:.12,borderWidth:1.5});
-  drawChart("ch_today","line",{labels:d.dates,datasets:ds},{
-    plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}},
-             tooltip:{callbacks:{label:c=>`${c.dataset.label}: ${c.parsed.y>=0?"+":""}${c.parsed.y}%`}}},
-    scales:{x:{ticks:{display:false},grid:{display:false}},
-            y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`}}}});
-
   const chg=pct.length?pct[pct.length-1]:0;
-  const ex=d.excess_return_pct;
+  // One line, your book, nothing to compare it against. The benchmark lives on
+  // the Explore card and on the target card, where a comparison is the point.
+  // Coloured by direction so the trend reads before any number does.
+  const col=chg>=0?"#22c55e":"#ef4444";
+  drawChart("ch_today","line",{labels:d.dates,datasets:[
+      {label:"% change",data:pct,borderColor:col,backgroundColor:col+"22",
+       fill:true,pointRadius:0,tension:.12,borderWidth:2}]},{
+    plugins:{legend:{display:false},
+             tooltip:{callbacks:{title:c=>d.dates[c[0].dataIndex],
+                                 label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`}}},
+    scales:{x:{ticks:{display:false},grid:{display:false}},
+            y:{ticks:{color:"#8b97a8",callback:v=>`${v>0?"+":""}${v}%`},
+               grid:{color:"#182130"}}}});
+
   cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${d.observations} sessions`+
     (d.window?` (${d.window.start} to ${d.window.end})`:"")+
-    (ex!=null?` &middot; vs ${d.benchmark} <b class="${ex>=0?'ok':'bad'}">${ex>=0?"+":""}${ex}%</b>`:"")+
-    `<div style="margin-top:2px">Backfill of the holdings you have TODAY, priced back through their own history &mdash; not a record of what you traded. Valued in ${d.base_currency||"ILS"}${d.fx_basis==="spot"?" at today's rate":""}.</div>`+
+    `<div style="margin-top:2px"><b>This is not your account history.</b> It prices the holdings you own
+     TODAY back through their own past &mdash; so it shows what this book would have done, not what your
+     money did. It will not match your total gain, and it does not know about deposits.
+     Valued in ${d.base_currency||"ILS"}${d.fx_basis==="spot"?" at today's rate":""}.</div>`+
     ((d.degraded&&d.degraded.includes("fx"))
       ? `<div class="bad">No FX rate for ${(d.unconverted_holdings||[]).map(u=>u.ticker).join(", ")} &mdash; shown unconverted.</div>` : "");
 }

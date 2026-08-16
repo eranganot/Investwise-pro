@@ -768,6 +768,64 @@ Stated so the next session does not quietly add it:
 
 ---
 
+## Phase N — what your money actually did
+
+Separate from T4, and it cannot borrow from it: T4's Today chart is a
+reconstruction, and this is the real thing.
+
+### The finding that decides the design
+
+`grep` for `Transaction(` across `app/`, excluding the models: **zero hits.**
+The table and its relationship exist; nothing has ever written a row.
+`whs_snapshots` stores health scores, not value, and nothing writes it on a
+schedule either. `contributions` holds one dated entry.
+
+**So past NAV cannot be recovered — only started.** Every day without a snapshot
+is a day of real history that never exists. That is the whole argument for
+building this early rather than well-placed in a queue.
+
+### The correctness issue that dominates it
+
+**Deposits must not read as performance.** Put ₪5,000 into a ₪20,000 book and a
+naive endpoint-to-endpoint percentage shows +25% — the chart says you had a
+great day when you had a bank transfer. The `contributions` ledger is dated
+precisely so this can be neutralised: chain sub-period returns across each
+cash-flow boundary (a time-weighted return) rather than comparing the ends.
+
+Without that this feature is **worse than the backfill it replaces**, because it
+carries the authority of real data while being wrong in the direction that
+flatters. It is the reason this is a phase and not a chart tweak.
+
+### Shape
+
+* **`nav_snapshots`** — subject, date, `nav_ils`, `cash_ils`, `invested_ils`,
+  `source`. One row per user per day. A migration, guarded against `create_all`
+  the way 0013–0015 are.
+* **A daily job** on the scheduler that already runs (`backtest_refresh` 03:30,
+  `strategy_signals` 06:15). NAV from `strategy_service._snapshot` — the same
+  single source T3 was corrected to use, so the chart and the solver can never
+  disagree about what the book is worth.
+* **Time-weighted return** across contribution boundaries, computed from the
+  snapshots plus the ledger. Money-weighted (which answers a different, also
+  useful question) is a later addition, not a substitute.
+* **An honest empty state.** "Recording since <date> — N days" until there is
+  enough to draw. Never interpolate, never seed it with the backfill: a seeded
+  curve is the reconstruction wearing the real thing's label, which is exactly
+  the confusion this phase exists to end.
+* **The swap.** Today's chart moves to snapshots once N days exist, and says
+  which one it is showing. The backfill does not disappear — it answers "what
+  would this book have done", which is a real question, just not this one.
+
+### Its own smoke, per the standing rule
+
+The snapshot job must be provably running (a job with a next-fire time, and rows
+appearing), the series must be gap-aware rather than silently interpolating, and
+a synthetic deposit must move NAV **without** moving the return line. That last
+one is the check that proves the time-weighting works, and it is the only one
+that would have caught the failure mode.
+
+---
+
 ## Phase A — acting on the answer, against the tracked book
 
 A separate phase, deliberately not a `T`. Phase T's smoke asserts that a solve
