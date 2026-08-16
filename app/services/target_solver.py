@@ -836,3 +836,230 @@ def recommend(v: dict, *, benchmark: str = "the benchmark") -> dict:
         return out(headline, why, actions, "bad")
 
     return out("No recommendation.", f"Unrecognised outcome: {outcome}", [], "warn")
+
+
+# --------------------------------------------------------------------------
+# T6a -- size each sleeve on its own axis
+# --------------------------------------------------------------------------
+# T2 sweeps the TOTAL at the ratio the book already runs. This sweeps the
+# simplex: every sleeve on its own axis. The plan's constraints, applied here
+# rather than paraphrased:
+#
+#   - rank on the out-of-sample split `backtest_service` ALREADY computes,
+#     never on the full sample the winner was chosen from
+#   - show the fit/test gap on every ranked row
+#   - print how many blends were searched next to the winner
+#
+# COST. Two simulations per point (in-sample, out-of-sample) instead of one, on
+# a ~55-point grid for two sleeves. That is why this is an explicit button and
+# not something the card runs on load.
+
+def slice_series(series: dict, *, before: str | None = None,
+                 since: str | None = None) -> dict:
+    """Rows before / on-or-after a date. Plain data in, plain data out.
+
+    `series` is `{ticker: [(YYYY-MM-DD, price), ...]}`, so the split is a string
+    comparison -- the same shape `backtest_service` already slices on, and the
+    reason `OOS_SPLIT` can be a bare date string in the first place.
+    """
+    out = {}
+    for tk, rows in (series or {}).items():
+        kept = [r for r in rows
+                if (before is None or str(r[0]) < before)
+                and (since is None or str(r[0]) >= since)]
+        if len(kept) >= 3:
+            out[tk] = kept
+    return out
+
+
+def solve_split(series: dict, *, sleeves: list[dict], core: dict | None,
+                benchmark: list | None, max_drawdown_pct: float,
+                cash_floor: float = 0.0, concentration_cap: float = 1.0,
+                oos_split: str | None = None) -> dict:
+    """The simplex search. Pure: price data in, verdict out."""
+    from app.services import split_solver as sp
+
+    if not sleeves:
+        return {"ok": False, "reason": "NO_SLEEVES",
+                "detail": "this book runs no sleeves, so there is nothing to split"}
+
+    split_date = oos_split
+    if split_date is None:
+        from app.services.backtest_service import OOS_SPLIT
+        split_date = OOS_SPLIT
+
+    max_total = max(0.0, 100.0 - cash_floor * 100.0)
+    cap_pct = concentration_cap * 100.0
+    sleeve_tickers = set()
+    for s_ in sleeves:
+        sleeve_tickers |= blend.claimable_tickers(s_["spec"])
+
+    ins = slice_series(series, before=split_date)
+    oos = slice_series(series, since=split_date)
+    b_ins = [r for r in (benchmark or []) if str(r[0]) < split_date] or None
+    b_oos = [r for r in (benchmark or []) if str(r[0]) >= split_date] or None
+    if not ins or not oos:
+        return {"ok": False, "reason": "NO_OOS_WINDOW",
+                "detail": (f"the history does not span {split_date}, so there is no "
+                           f"out-of-sample window to rank on")}
+
+    def components_for(point):
+        core_pct = max(0.0, max_total - sum(point))
+        comps = [{"id": s["id"], "spec": s["spec"], "weight": w / 100.0}
+                 for s, w in zip(sleeves, point)]
+        if core and core.get("weights"):
+            comps.append({"id": "__core__", "spec": core, "weight": core_pct / 100.0})
+        return comps
+
+    def one(feed, bench, comps):
+        m = blend.measure_blend(feed, comps, benchmark=bench, detail=False)
+        return m if m.get("ok") else None
+
+    def measure(point):
+        comps = components_for(point)
+        if not comps:
+            return None
+        a = one(ins, b_ins, comps)
+        b = one(oos, b_oos, comps)
+        if a is None or b is None:
+            return None
+        by_tk = b.get("peak_weight_pct_by_ticker") or {}
+        peaks = [w for tk, w in by_tk.items() if tk in sleeve_tickers]
+        peak = max(peaks) if peaks else 0.0
+        # Admissibility during the SWEEP uses the worse of the two windows. That
+        # is a LOWER BOUND on the true full-window drawdown -- a fall that spans
+        # the split boundary is larger than either half sees. Declared in the
+        # payload, and the winner is re-measured in full below before it is
+        # reported, exactly as T2's _verdict re-measures its chosen point.
+        dd = max(float(a.get("max_drawdown_pct") or 0.0),
+                 float(b.get("max_drawdown_pct") or 0.0))
+        return {"excess_pct": a.get("excess_cagr_pct"),
+                "oos_excess_pct": b.get("excess_cagr_pct"),
+                "max_drawdown_pct": round(dd, 2),
+                "admissible": (dd <= max_drawdown_pct + 1e-9
+                               and peak <= cap_pct + 1e-9)}
+
+    found = sp.search(measure, n=len(sleeves), max_total=max_total)
+    if not found.get("ok"):
+        return found
+
+    # Re-measure the winner over the WHOLE window, with detail on. The sweep's
+    # drawdown is a lower bound; if the full window breaches the ceiling the
+    # point is not admissible however well it ranked, and reporting it would be
+    # the card claiming a figure the sweep never computed.
+    best_point = tuple(found["best"]["split_pct"])
+    full = blend.measure_blend(series, components_for(best_point),
+                               benchmark=benchmark, detail=True)
+    verified = bool(full.get("ok")) and \
+        float(full.get("max_drawdown_pct") or 0.0) <= max_drawdown_pct + 1e-9
+    found["full_window"] = full if full.get("ok") else None
+    found["verified_in_full"] = verified
+    found["sweep_note"] = (
+        "the sweep judged the ceiling on the worse of the two half-windows, which "
+        "is a LOWER bound -- a fall spanning the split is larger than either half "
+        "sees. The winner is re-measured over the whole window before it is shown.")
+    if not verified:
+        found["warning"] = (
+            f"the best-ranked split measures "
+            f"{full.get('max_drawdown_pct')}% over the whole window, past your "
+            f"{max_drawdown_pct:g}% ceiling. It ranked well on the halves and is "
+            f"not admissible on the full history.")
+    found["oos_split"] = split_date
+    found["would_execute"] = _would_execute_split(sleeves, best_point)
+    found["execution_plan"] = None          # applying is Phase A, not this
+    return found
+
+
+def _would_execute_split(sleeves, point) -> dict:
+    """The diff, in the shape `target_apply.plan_apply` already takes.
+
+    Same schema as `_would_execute` so the Accept button needs no second code
+    path -- and `from_pct` is carried so the staleness check keeps working.
+    """
+    return {
+        "resizes": [{"strategy_id": s["id"],
+                     "from_pct": round(float(s.get("current_pct") or 0.0), 2),
+                     "to_pct": round(float(w), 2)}
+                    for s, w in zip(sleeves, point)],
+        "legs": None,
+        "legs_reason": "priced at apply time; see Phase A",
+    }
+
+
+async def _book_for_solve(session: AsyncSession, user: User):
+    """The book's shape, loaded exactly once and shared by both solvers.
+
+    Factored out when T6a arrived rather than copied: two loaders would be two
+    answers to "what is in this book", and the CASH exclusion below is the kind
+    of detail that gets fixed in one copy and not the other. (It already was
+    once -- CASH is also Pathward Financial on NASDAQ, so a copy that forgot the
+    predicate would fetch ten years of a US bank stock and backtest shekels as
+    equity, successfully and silently.)
+    """
+    plan = await get_plan(session, user)
+    caps = effective_caps(plan)
+    cap = float(caps["concentration_cap"])
+    floor = float(await cash_floor_pct(session, user))
+    rows = await sv.list_sleeves(session, user)
+    sleeves = []
+    for r in rows:
+        if getattr(r, "is_core", False):
+            continue
+        spec = strategy_catalog.spec_for(r.strategy_id)
+        if spec is None:
+            return (None, None, None, None, None, None,
+                    {"ok": False, "outcome": NOT_MEASURABLE,
+                     "reason": "UNKNOWN_STRATEGY",
+                     "detail": f"sleeve '{r.strategy_id}' is not in the catalog"})
+        sleeves.append({"id": r.strategy_id, "spec": spec,
+                        "current_pct": float(r.sleeve_pct or 0.0)})
+    if not sleeves:
+        return (None, None, None, None, None, None,
+                {"ok": False, "outcome": NOT_MEASURABLE, "reason": "NO_SLEEVES",
+                 "detail": "this book runs no sleeves, so there is nothing to split"})
+
+    from app.services.intake_service import list_positions
+    from app.services.strategy_service import is_cash_position
+    positions = await list_positions(session, user)
+    held = {}
+    for pos in positions:
+        if is_cash_position(pos.ticker, pos.meta):
+            continue
+        px = float(pos.current_price or 0.0)
+        if px <= 0:
+            continue
+        tk = pos.ticker.upper()
+        held[tk] = held.get(tk, 0.0) + float(pos.quantity) * px
+    sleeve_tks = await sv.sleeve_tickers(session, user)
+    core = blend.core_spec(blend.core_weights_from(held, sleeve_tks))
+    bench_tk = get_settings().benchmark_ticker
+    needed = set()
+    for s_ in sleeves:
+        needed |= set(bt.tickers_needed(s_["spec"]))
+    needed |= set(core.get("weights") or {})
+    return sleeves, floor, cap, core, bench_tk, needed, None
+
+
+
+async def solve_split_for(session: AsyncSession, user: User, *,
+                          max_drawdown_pct: float) -> dict:
+    """The T6a search for the acting user's book. Read-only."""
+    sleeves, floor, cap, core, bench_tk, needed, err = await _book_for_solve(session, user)
+    if err:
+        return err
+    out = await offload(_split_blocking, sorted(needed), bench_tk, sleeves, core,
+                        max_drawdown_pct, floor, cap)
+    out["benchmark"] = bench_tk
+    return out
+
+
+def _split_blocking(tickers, bench_tk, sleeves, core, max_drawdown_pct, floor, cap):
+    series, missing = _fetch(sorted(set(tickers) | {bench_tk}))
+    if missing:
+        return {"ok": False, "reason": bt.MISSING_TICKER,
+                "detail": f"no price history for {', '.join(missing)}"}
+    bench = (series.get(bench_tk) if bench_tk in tickers
+             else series.pop(bench_tk, None))
+    return solve_split(series, sleeves=sleeves, core=core, benchmark=bench,
+                       max_drawdown_pct=max_drawdown_pct,
+                       cash_floor=floor, concentration_cap=cap)

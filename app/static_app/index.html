@@ -1461,7 +1461,7 @@ function coreRow(pct){
 // Two inputs, and NEVER a slider. A slider implies every position on it is
 // attainable; the entire point of this card is that most of them are not, and
 // that saying so is the answer rather than a failure to answer.
-let TGT={excess:null,ceiling:null,res:null,busy:false,seeded:false,err:null,applied:null};
+let TGT={excess:null,ceiling:null,res:null,busy:false,seeded:false,err:null,applied:null,split:null};
 
 // UNREACHABLE and DRAWDOWN_BOUND render as `warn`, never `bad`. They are
 // correct answers and must not look like the app broke.
@@ -1557,6 +1557,73 @@ async function tgtAccept(){
   if(TGT.applied&&TGT.applied.ok){ try{ typeof loadSleeves==="function"&&loadSleeves(); }catch(e){} }
 }
 
+// T6a -- the wider search, on an explicit button because it costs minutes.
+async function tgtSplit(){
+  const dd=parseFloat($("tgtCeiling").value);
+  if(isNaN(dd)||dd<=0){ TGT.err="Set a drawdown ceiling first."; return _tgtRender(); }
+  TGT.busy=true; TGT.err=null; TGT.split=null; _tgtRender();
+  const cap=$("tgtBox");
+  if(cap) cap.insertAdjacentHTML("beforeend",
+    `<div class="mk" style="margin-top:6px">Searching every split on a 10-point grid, twice per point (before and after 2022) &mdash; this takes a while.</div>`);
+  try{
+    const r=await fetch(`/api/v1/plan/target/split?max_drawdown_pct=${dd}`);
+    TGT.split=await r.json();
+    if(!TGT.split.ok) TGT.err=`${TGT.split.reason}: ${TGT.split.detail||""}`;
+  }catch(e){ TGT.err=String(e); }
+  TGT.busy=false; _tgtRender();
+}
+
+function _tgtSplitBody(){
+  const s=TGT.split; if(!s||!s.ok) return "";
+  const b=s.best||{}, cov=s.coverage||{}, sp=s.spread||{}, ft=s.fit_test||{};
+  const names=(b.split_pct||[]).map((w,i)=>`${_stratName((s.would_execute.resizes[i]||{}).strategy_id)} <b>${w}%</b>`).join(" &middot; ");
+  let out=`<div style="margin-top:10px;padding-top:8px;border-top:1px solid #1e2a3a">
+    <div class="mk" style="margin-bottom:4px">BEST SPLIT FOUND</div>
+    <div style="font-weight:700;font-size:15px">${names}</div>
+    <div style="margin-top:2px">Out-of-sample excess <b>${b.oos_excess_pct}%/yr</b>,
+      in-sample ${b.excess_pct}%/yr, worst fall ${b.max_drawdown_pct}%.</div>`;
+  // Every claim about how much to trust this, together, above the button.
+  out+=`<div class="mk" style="margin-top:6px">${s.ranked_on_note||""}</div>`;
+  out+=`<div class="mk">Searched ${cov.coarse_points} splits on a ${cov.step_pct}-point grid`+
+       `${cov.step_was_coarsened?" (coarsened to fit a budget)":""}, ${cov.measured_points} measured, `+
+       `${cov.admissible_points} admissible. ${cov.method}</div>`;
+  if(sp.best_pct!=null)
+    out+=`<div class="mk">Across everything searched: best ${sp.best_pct}%, median ${sp.median_pct}%, worst ${sp.worst_pct}%.`+
+         `${sp.is_noise?` <span class="warn">Best and median differ by ${sp.best_minus_median_pct} points &mdash; that is inside the noise floor, so the "best" split is a coin landing, not a decision.</span>`:""}</div>`;
+  if(ft.ok)
+    out+=`<div class="${ft.winner_decays_more_than_typical?"bad":"mk"}" style="margin-top:4px">
+      Fit/test gap: winner gives up ${ft.winner_gap_pct} points between windows, typical candidate ${ft.median_gap_pct}. ${ft.note}</div>`;
+  if(s.warning) out+=`<div class="bad" style="margin-top:4px">${s.warning}</div>`;
+  else if(s.verified_in_full===false) out+=`<div class="bad" style="margin-top:4px">not verified over the full window</div>`;
+  if((s.top||[]).length>1){
+    out+=`<div class="mk" style="margin-top:6px">Top splits, out-of-sample first &mdash; the gap column is the point:</div>
+      <div class="mk" style="font-family:monospace;white-space:pre">`+
+      s.top.map(r=>`  ${r.split_pct.map(x=>String(x).padStart(5)).join(" /")}  oos ${String(r.oos_excess_pct).padStart(7)}  in ${String(r.excess_pct).padStart(7)}  gap ${String(r.gap_pct).padStart(7)}  dd ${r.max_drawdown_pct}`).join("\n")+
+      `</div>`;
+  }
+  // Accept reuses Phase A verbatim -- same endpoint, same staleness check, same
+  // confirm text. A second apply path would be a second set of guards.
+  const ok=s.verified_in_full && !(sp.is_noise);
+  out+=`<div style="margin-top:8px">
+    <button onclick="tgtAcceptSplit()" ${ok?"":"disabled"}
+      style="${ok?"background:#16a34a;border-color:#16a34a;color:#fff;font-weight:700":""}">Accept this split</button>
+    ${ok?"":`<div class="mk" style="margin-top:4px">Disabled: ${s.verified_in_full?"the winner is inside the noise floor, so there is nothing here worth acting on":"the winner did not verify over the full window"}.</div>`}
+  </div>`;
+  return out+`</div>`;
+}
+
+async function tgtAcceptSplit(){
+  const s=TGT.split; if(!s||!s.ok||!s.would_execute) return;
+  const saved=TGT.res;
+  // Borrow the Phase A path by handing it this solve's would_execute. Same
+  // endpoint, same confirm, same staleness refusal.
+  TGT.res={would_execute:s.would_execute,
+           target:{excess_pct:null,max_drawdown_pct:parseFloat($("tgtCeiling").value)},
+           outcome:"SPLIT_SEARCH",solver_version:s.split_version,
+           solved_total_sleeve_pct:(s.best||{}).total_pct};
+  try{ await tgtAccept(); } finally { TGT.res=saved; }
+}
+
 async function tgtUndo(){
   if(!confirm("Restore the sleeve sizes this replaced?\n\nAgain: plan only, no order.")) return;
   TGT.busy=true; _tgtRender();
@@ -1624,7 +1691,7 @@ async function solveTarget(){
   }
   // A receipt from a previous solve must not survive into a new one -- it
   // would sit under an answer it was never about.
-  TGT.busy=true; TGT.res=null; TGT.applied=null; _tgtRender();
+  TGT.busy=true; TGT.res=null; TGT.applied=null; TGT.split=null; _tgtRender();
   try{
     const r=await fetch(`/api/v1/plan/target?excess_pct=${TGT.excess}&max_drawdown_pct=${TGT.ceiling}`);
     TGT.res=await r.json();
@@ -1733,6 +1800,9 @@ function targetBody(){
   // true, then what to do, then what doing it costs. Putting it last would bury
   // the only line on this card that is actionable.
   out+=_tgtRecommendation(res);
+  out+=`<div style="margin-top:8px"><button onclick="tgtSplit()">Find the best split (slower)</button>
+    <div class="mk" style="margin-top:2px">T2 sizes your sleeves together at the ratio you already run. This sizes each one on its own axis.</div></div>`;
+  out+=_tgtSplitBody();
   out+=_tgtCost(res.cost);
 
   if(res.degraded&&res.degraded.length)

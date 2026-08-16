@@ -367,6 +367,32 @@ async def target_applications(limit: int = 20,
         for r in rows]}
 
 
+@router.get("/plan/target/split")
+async def target_split(max_drawdown_pct: float,
+                       session: AsyncSession = Depends(get_session),
+                       user: User = Depends(acting_user)) -> dict:
+    """T6a -- size each sleeve on its own axis instead of at the ratio you run.
+
+    READ-ONLY, and NOT run on card load: two simulations per grid point over a
+    ~55-point simplex is minutes of work, so this is an explicit button.
+
+    No `excess_pct` parameter, deliberately. T2 asks "what would it take to reach
+    X" and needs a target; this asks "what is the best split at all", which has
+    no target to miss -- only a ceiling to respect. Accepting one here would
+    invite the reader to think the answer was tuned to it.
+
+    Ranked on `backtest_service.OOS_SPLIT`, never on the full sample the winner
+    was chosen from, and every ranked row carries its fit/test gap.
+    """
+    from app.services import target_solver
+    if max_drawdown_pct <= 0:
+        return {"ok": False, "reason": "NO_CEILING",
+                "detail": "a drawdown ceiling above 0% is required - without one "
+                          "the answer is always the most leveraged split allowed"}
+    return await target_solver.solve_split_for(
+        session, user, max_drawdown_pct=float(max_drawdown_pct))
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)

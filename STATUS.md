@@ -1,7 +1,84 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-16 by Claude (T0–T5, N, N2, A — the solver, real history, the instruction, and the button that acts on it)._
+_Last updated: 2026-08-16 by Claude (T0–T4, N, N2, A, T6a — plus the plan's last open question, resolved)._
 _Seeded from git history + prior transcripts._
+
+## ✅ T6a — size each sleeve on its own axis, ranked out-of-sample
+
+**Status:** in the working tree, **pending QA**. `ship-t6a.ps1` / `smoke/smoke-t6a.ps1`.
+33 tests in `tests/test_split_solver.py`.
+
+**T6a IS THE FIRST QUARTER OF PLAN-T6.** It does the per-sleeve split search. It
+does **not** add strategies not currently held, vary the core, or discover the
+sleeve count — those are **T6b**, and nothing in the code or the card pretends
+otherwise. Eran chose this split deliberately, so that the Accept button stays
+legitimate: there is still ONE answer, not a ranked list, and the plan's *"no
+auto-apply, ever, from a ranked list"* is not yet in tension with it.
+
+**WHAT T2 LEFT.** `_split()`'s own docstring: *"Sizing each independently is a
+wider search, not this one. That search is T6."* T2 sweeps the TOTAL at the ratio
+the book already runs; this sweeps the simplex.
+
+**THE RISK IS NOT THE ARITHMETIC.** Picking the best of ~55 splits scored on one
+history is in-sample optimisation. Search hard enough over one window and
+something always wins, and that it won says little about whether it wins again —
+and the output ends at a green button where a curve-fit looks exactly like a
+finding. Every guard below is from the plan, applied rather than paraphrased:
+
+- **Ranked out-of-sample** on `backtest_service.OOS_SPLIT`, **imported not
+  restated** so two answers to "which window is out of sample" cannot drift. When
+  no OOS figure exists it falls back and *says* it fell back.
+- **The caveat travels.** `OOS_SPLIT`'s own comment is *"the only real bear market
+  these instruments have seen."* One bear market is a sample of one, and the card
+  says so instead of borrowing the authority of the phrase "out of sample".
+- **Fit/test gap on every row**, with the winner's gap beside the **median** gap.
+  If every candidate decays alike, that is the instruments; if the winner decays
+  more, it was learned from the fitting window.
+- **Spread** — best against median. Inside the noise floor the "optimum" is a coin
+  landing, and **the Accept button is disabled**.
+- **Coverage** — how many splits, what grid, whether the grid was coarsened, and
+  in the *payload* (not a comment) that the result is the best point **REACHED**,
+  never a proven global optimum. A grid too large is **coarsened, never
+  truncated**: truncating searches a corner and reports the winner as though the
+  whole space had been tried.
+
+**THE APPROXIMATION, DECLARED.** The sweep judges the ceiling on the worse
+half-window — a **lower bound**, since a fall spanning the split is larger than
+either half sees. The winner is re-measured over the whole window before it is
+shown, the same pattern `_verdict` already uses; if it breaches there, the payload
+says so and the button stays disabled.
+
+**REUSE, NOT A SECOND PATH.** `tgtAcceptSplit` delegates to `tgtAccept` — same
+endpoint, same staleness refusal, same confirm text. A second apply path would be
+a second set of guards, and they would diverge. `ship-t6a.ps1` fails if
+`tgtAcceptSplit` ever calls `fetch` directly.
+
+**COST.** Two simulations per grid point instead of one. That is why it is an
+explicit button and not something the card runs on load.
+
+### The plan's last open question — resolved
+
+*Which window leads the card headline?* Open since 14 Aug, and **Phase N changed
+the answer rather than settling the argument**: the 250-day backfill was only ever
+a proxy for "how am I doing", and that question now has a real measurement.
+
+- The solver card leads with the **ten-year** window — it asks "what would it
+  take", which is a question about the rules and the blend.
+- **"How am I doing" belongs to the Today card**, which as of Phase N is actual
+  recorded account history.
+- The 250-day backfill **headlines nowhere**. It lives on the Performance tab,
+  labelled.
+
+### Plan status after this phase
+
+| phase | state |
+|---|---|
+| T0–T4, N | shipped |
+| N2, A | in tree, pending QA |
+| **T6a** | **this entry** |
+| **plan-T5 — the war room** | **NOT STARTED.** The solver becomes a constraint the Risk / Decision / Adversary agents read; not an eighth agent, not the decision maker. *What shipped earlier under the name "T5" was the recommendation block, which is not a numbered phase in the plan and took the label from work still outstanding.* |
+| **T6b** | not started — catalog strategies not held, varying the core, discovered sleeve count, top-N ranking |
+| **Phase W** | not started — walk-forward sweeps, the `vol_target` regime-gate re-decision, contribution modelling |
 
 ## ✅ PHASE A + N2 — the button that acts, and the card that stops reconstructing
 
