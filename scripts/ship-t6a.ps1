@@ -44,6 +44,43 @@ function Step([string]$name, [scriptblock]$body) {
 Step "T6a.0  ruff check app tests (the gate CI runs)" { & $Py -m ruff check app tests }
 
 # --- the three guards, by name ----------------------------------------------
+# --- T6a.0b  the checks that would have caught the 500 --------------------
+# The split endpoint 500'd in 0.1s on the first deploy -- before any simulation.
+# `_book_for_solve` had been re-written FROM MEMORY while the working original
+# sat forty lines above it in the same file, and got three names wrong:
+#   strategy_catalog.spec_for   does not exist (it is .get)
+#   is_cash_position            lives in intake_service, not strategy_service
+#   cash_floor_pct              is not async, and takes (objective, plan)
+# No test resolved any of those names, so nothing failed until production did.
+Step "T6a.0b  the dependency signatures actually resolve" {
+    & $Py -m pytest "tests/test_target_apply.py::test_the_apply_module_calls_its_dependencies_with_the_right_signatures" -q
+}
+
+Step "T6a.0b  a missing cash floor refuses instead of assuming zero" {
+    # The same wrong signature was live in SHIPPED Phase A code, inside a bare
+    # `except: floor = 0.0`. It raised on every call and silently fell back to a
+    # ZERO cash floor -- so the Accept button would have let the sleeves take
+    # 100% of the book while the user's floor said otherwise, with no error
+    # anywhere. A constraint that quietly becomes zero has stopped existing.
+    & $Py -m pytest "tests/test_target_apply.py::test_a_missing_cash_floor_refuses_instead_of_assuming_zero" -q
+}
+
+Step "T6a.0b  there is ONE book loader, not two" {
+    # The root cause was duplication, so the check is against duplication --
+    # not against the three particular names, which is the shape of the bug
+    # rather than its cause. _book_for_solve's docstring CLAIMED it had been
+    # "factored out rather than copied" while being a copy; this makes the
+    # claim testable.
+    $s = Get-Content app\services\target_solver.py -Raw
+    $loaders = ([regex]::Matches($s, 'strategy_catalog\.get\(')).Count
+    if ($loaders -ne 1) { throw "$loaders catalog lookups - the book loader has been duplicated again" }
+    if ($s -notmatch '(?s)async def solve_for\(.{0,900}?_book_for_solve\(session, user\)') {
+        throw "solve_for no longer calls the shared loader - the two can drift again"
+    }
+    if ($s -match 'spec_for\(r\.strategy_id\)') { throw "spec_for is back, and it does not exist" }
+    $global:LASTEXITCODE = 0
+}
+
 Step "T6a.1  the winner is chosen out-of-sample, not in-sample" {
     & $Py -m pytest "tests/test_split_solver.py::test_the_winner_is_chosen_out_of_sample_not_in_sample" -q
 }

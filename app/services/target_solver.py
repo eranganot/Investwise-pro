@@ -467,63 +467,19 @@ def cost_of(measured: dict, *, nav_ils: float, horizon_years: float = 10.0,
 
 async def solve_for(session: AsyncSession, user: User, *,
                     target_excess_pct: float, max_drawdown_pct: float) -> dict:
-    """Gather the book's shape, then solve. Reads only."""
-    rows = await sv.list_sleeves(session, user)
-    if not rows:
-        return {"outcome": NOT_MEASURABLE, "reason": "NO_SLEEVES",
-                "detail": "add a sleeve before asking what size it would have to be",
-                "execution_plan": None}
+    """Gather the book's shape, then solve. Reads only.
 
-    sleeves = []
-    for r in rows:
-        spec = strategy_catalog.get(r.strategy_id)
-        if not spec:
-            return {"outcome": NOT_MEASURABLE, "reason": "UNKNOWN_STRATEGY",
-                    "detail": f"{r.strategy_id} is not in the catalog",
-                    "execution_plan": None}
-        sleeves.append({"id": r.strategy_id,
-                        "spec": {k: spec[k] for k in
-                                 ("id", "weights", "base", "risk_off", "overlay")
-                                 if k in spec},
-                        "current_pct": float(r.sleeve_pct or 0.0)})
-
-    plan = await get_plan(session, user)
-    cap = float(effective_caps(plan)["concentration_cap"])
-    floor = float(cash_floor_pct(getattr(plan, "objective", None), plan))
-
-    from app.services.intake_service import is_cash_position, list_positions
-    from app.services.strategy_service import _snapshot
-    positions = await list_positions(session, user)
-
-    # NAV comes from the app's OWN snapshot, not from a sum computed here. Two
-    # implementations of NAV is two numbers that can disagree on one screen, and
-    # this one has to line up with the sleeve path that sizes the funding.
-    nav = float(_snapshot(positions).get("nav") or 0.0)
-
-    # CASH is a real position row (ticker CASH, market TASE) with a price of 1.
-    # It must NOT enter the core basket: a backtest of the core would try to
-    # fetch ten years of history for CASH and abstain, and cash is already
-    # modelled -- the blend's weights sum to under 1 and _simulate leaves the
-    # remainder uninvested. Excluded by the app's own predicate rather than by
-    # a ticker string, so a rename cannot quietly reintroduce it.
-    held, unpriced = {}, []
-    for pos in positions:
-        if is_cash_position(pos.ticker, pos.meta):
-            continue
-        px = float(pos.current_price or 0.0)
-        tk = pos.ticker.upper()
-        if px <= 0:
-            unpriced.append(tk)     # surfaced below, never silently dropped
-            continue
-        held[tk] = held.get(tk, 0.0) + float(pos.quantity) * px
-    sleeve_tks = await sv.sleeve_tickers(session, user)
-    core = blend.core_spec(blend.core_weights_from(held, sleeve_tks))
-
-    bench_tk = get_settings().benchmark_ticker
-    needed = set()
-    for s in sleeves:
-        needed |= set(bt.tickers_needed(s["spec"]))
-    needed |= set(core.get("weights") or {})
+    The gathering lives in `_book_for_solve` and is SHARED with the T6a split
+    search -- not duplicated. When it was duplicated, the copy had three wrong
+    signatures and 500'd in production.
+    """
+    book, err = await _book_for_solve(session, user)
+    if err:
+        return err
+    sleeves, core = book["sleeves"], book["core"]
+    cap, floor, nav = book["cap"], book["floor"], book["nav"]
+    bench_tk, needed, unpriced = book["bench_tk"], book["needed"], book["unpriced"]
+    plan = book["plan"]
     out = await offload(_solve_blocking, sorted(needed), bench_tk, sleeves, core,
                         target_excess_pct, max_drawdown_pct, floor, cap)
 
@@ -987,69 +943,101 @@ def _would_execute_split(sleeves, point) -> dict:
 
 
 async def _book_for_solve(session: AsyncSession, user: User):
-    """The book's shape, loaded exactly once and shared by both solvers.
+    """The book's shape. ONE loader, used by both solvers.
 
-    Factored out when T6a arrived rather than copied: two loaders would be two
-    answers to "what is in this book", and the CASH exclusion below is the kind
-    of detail that gets fixed in one copy and not the other. (It already was
-    once -- CASH is also Pathward Financial on NASDAQ, so a copy that forgot the
-    predicate would fetch ten years of a US bank stock and backtest shekels as
-    equity, successfully and silently.)
+    THIS FUNCTION WAS WRONG ON FIRST WRITE, and the way it was wrong is the
+    lesson. Its previous docstring claimed it had been "factored out rather than
+    copied" -- and it had in fact been RE-WRITTEN FROM MEMORY while the working
+    original sat forty lines above it in the same file. Three signatures were
+    wrong, none of them caught by a test:
+
+        strategy_catalog.spec_for(...)      does not exist -- it is .get()
+        is_cash_position                    lives in intake_service, not
+                                            strategy_service
+        cash_floor_pct(session, user)       is not async and takes
+                                            (objective, plan)
+
+    The endpoint 500'd in 0.1s, before a single simulation. `investigate-issue`
+    names this exactly: "code I wrote minutes ago is the least-checked code in
+    the session. Freshness feels like knowledge."
+
+    It is now the ONLY loader -- `solve_for` calls it too, so a fourth
+    divergence is not expressible rather than merely discouraged.
+
+    Returns (book, err). `book` carries everything either solver needs.
     """
-    plan = await get_plan(session, user)
-    caps = effective_caps(plan)
-    cap = float(caps["concentration_cap"])
-    floor = float(await cash_floor_pct(session, user))
     rows = await sv.list_sleeves(session, user)
+    if not rows:
+        return None, {"outcome": NOT_MEASURABLE, "reason": "NO_SLEEVES",
+                      "detail": "add a sleeve before asking what size it would have to be",
+                      "execution_plan": None}
+
     sleeves = []
     for r in rows:
-        if getattr(r, "is_core", False):
-            continue
-        spec = strategy_catalog.spec_for(r.strategy_id)
-        if spec is None:
-            return (None, None, None, None, None, None,
-                    {"ok": False, "outcome": NOT_MEASURABLE,
-                     "reason": "UNKNOWN_STRATEGY",
-                     "detail": f"sleeve '{r.strategy_id}' is not in the catalog"})
-        sleeves.append({"id": r.strategy_id, "spec": spec,
+        spec = strategy_catalog.get(r.strategy_id)
+        if not spec:
+            return None, {"outcome": NOT_MEASURABLE, "reason": "UNKNOWN_STRATEGY",
+                          "detail": f"{r.strategy_id} is not in the catalog",
+                          "execution_plan": None}
+        sleeves.append({"id": r.strategy_id,
+                        "spec": {k: spec[k] for k in
+                                 ("id", "weights", "base", "risk_off", "overlay")
+                                 if k in spec},
                         "current_pct": float(r.sleeve_pct or 0.0)})
-    if not sleeves:
-        return (None, None, None, None, None, None,
-                {"ok": False, "outcome": NOT_MEASURABLE, "reason": "NO_SLEEVES",
-                 "detail": "this book runs no sleeves, so there is nothing to split"})
 
-    from app.services.intake_service import list_positions
-    from app.services.strategy_service import is_cash_position
+    plan = await get_plan(session, user)
+    cap = float(effective_caps(plan)["concentration_cap"])
+    floor = float(cash_floor_pct(getattr(plan, "objective", None), plan))
+
+    from app.services.intake_service import is_cash_position, list_positions
+    from app.services.strategy_service import _snapshot
     positions = await list_positions(session, user)
-    held = {}
+
+    # NAV comes from the app's OWN snapshot, not from a sum computed here. Two
+    # implementations of NAV is two numbers that can disagree on one screen.
+    nav = float(_snapshot(positions).get("nav") or 0.0)
+
+    # CASH is a real position row (ticker CASH, market TASE) with a price of 1.
+    # It must NOT enter the core basket: a backtest of the core would fetch ten
+    # years of history for CASH and abstain, and cash is already modelled.
+    # Excluded by the app's own predicate rather than by a ticker string, so a
+    # rename cannot quietly reintroduce it.
+    held, unpriced = {}, []
     for pos in positions:
         if is_cash_position(pos.ticker, pos.meta):
             continue
         px = float(pos.current_price or 0.0)
-        if px <= 0:
-            continue
         tk = pos.ticker.upper()
+        if px <= 0:
+            unpriced.append(tk)     # surfaced by the caller, never dropped
+            continue
         held[tk] = held.get(tk, 0.0) + float(pos.quantity) * px
     sleeve_tks = await sv.sleeve_tickers(session, user)
     core = blend.core_spec(blend.core_weights_from(held, sleeve_tks))
+
     bench_tk = get_settings().benchmark_ticker
     needed = set()
     for s_ in sleeves:
         needed |= set(bt.tickers_needed(s_["spec"]))
     needed |= set(core.get("weights") or {})
-    return sleeves, floor, cap, core, bench_tk, needed, None
-
+    return {"sleeves": sleeves, "plan": plan, "cap": cap, "floor": floor,
+            "core": core, "bench_tk": bench_tk, "needed": needed,
+            "nav": nav, "unpriced": unpriced}, None
 
 
 async def solve_split_for(session: AsyncSession, user: User, *,
                           max_drawdown_pct: float) -> dict:
     """The T6a search for the acting user's book. Read-only."""
-    sleeves, floor, cap, core, bench_tk, needed, err = await _book_for_solve(session, user)
+    book, err = await _book_for_solve(session, user)
     if err:
-        return err
-    out = await offload(_split_blocking, sorted(needed), bench_tk, sleeves, core,
-                        max_drawdown_pct, floor, cap)
-    out["benchmark"] = bench_tk
+        return {"ok": False, **err}
+    out = await offload(_split_blocking, sorted(book["needed"]), book["bench_tk"],
+                        book["sleeves"], book["core"], max_drawdown_pct,
+                        book["floor"], book["cap"])
+    out["benchmark"] = book["bench_tk"]
+    if book["unpriced"]:
+        out["degraded"] = sorted(set((out.get("degraded") or []) + ["price"]))
+        out["unpriced_holdings"] = sorted(set(book["unpriced"]))
     return out
 
 
