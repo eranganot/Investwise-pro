@@ -3,6 +3,7 @@
 The theme: a number that is technically correct and not worth acting on, or a
 guard that protects one door and not the next.
 """
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 
 import pytest
@@ -108,14 +109,18 @@ async def test_a_primary_without_timestamps_is_counted(monkeypatch):
     primary is ever switched and supplies no venue timestamp, the whole
     staleness guard silently rests on Yahoo being reachable. Count it so that
     shows up in the response and the log instead of being invisible."""
+    # The timestamp must stay INSIDE the freshness window, so it is relative to
+    # now. Hardcoded to 2026-08-10, this test began failing on its own a week
+    # later -- a red gate that says nothing about the code under test.
+    _fresh = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
     monkeypatch.setattr(ps, "market_provider", lambda: NS(name="fmp"))
     monkeypatch.setattr(ps, "guarded_quote", lambda tk: Quote(
         ticker=tk, market="US", price=100.0, currency="USD",
-        as_of="2026-08-10T12:00:00+00:00", as_of_source="request"))
+        as_of=_fresh, as_of_source="request"))
     monkeypatch.setattr(ps, "YahooMarketDataProvider", lambda: NS(
         name="yahoo", get_quote=lambda tk: Quote(
             ticker=tk, market="US", price=100.0, currency="USD",
-            as_of="2026-08-10T12:00:00+00:00", as_of_source="market")))
+            as_of=_fresh, as_of_source="market")))
 
     eng, Session = _session()
     try:

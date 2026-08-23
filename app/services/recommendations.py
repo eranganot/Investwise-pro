@@ -2049,10 +2049,28 @@ def _buy_ideas(snap) -> list[dict]:
 
 
 async def _rebalance_to(session, user, rows, objective: str) -> None:
-    """Scale holdings so each asset class hits the core's target weight (NAV held constant)."""
+    """Scale holdings so each asset class hits the core's target weight (NAV held constant).
+
+    **Every value here is ILS.** It used to sum ``quantity * current_price`` raw and
+    call that NAV -- adding USD-priced holdings to an ILS cash row as if they were
+    the same unit. The class factors were then computed against that mixed number
+    and written straight back into share counts, so an Accept on a rebalance card
+    minted shares out of the arithmetic: +4.8% of NAV per tap on a USD book, no
+    trade, no cash movement. The docstring said "NAV held constant"; only the
+    docstring did. It is now asserted below rather than claimed here.
+    """
     from collections import defaultdict
+
+    from app.services.fx import fx_rate, price_currency
+
     target = await _core_target(session, user, objective)
-    nav = sum(float(p.quantity) * float(p.current_price or 0) for p in rows)
+
+    def _ils(p) -> float:
+        meta = p.meta if isinstance(p.meta, dict) else {}
+        return (float(p.quantity) * float(p.current_price or 0)
+                * fx_rate(price_currency(p.market, meta)))
+
+    nav = sum(_ils(p) for p in rows)
     if not nav:
         return
     byc = defaultdict(list)
@@ -2062,13 +2080,26 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
     for c, rowsc in byc.items():
         w = target.get(c, 0.0)
         desired = (w / present_weight) * nav  # classes absent from target -> 0 (sold down)
-        cur = sum(float(p.quantity) * float(p.current_price or 0) for p in rowsc)
+        cur = sum(_ils(p) for p in rowsc)
         for p in rowsc:
             price = float(p.current_price or 0)
             if price <= 0:
                 continue
-            share = (float(p.quantity) * price / cur) if cur > 0 else 1.0 / len(rowsc)
-            await update_position(session, user, str(p.id), quantity=round(desired * share / price, 4))
+            rate = fx_rate(price_currency(p.market, p.meta if isinstance(p.meta, dict) else {}))
+            share = (_ils(p) / cur) if cur > 0 else 1.0 / len(rowsc)
+            # desired * share is ILS; convert back to shares through the same rate.
+            await update_position(session, user, str(p.id),
+                                  quantity=round(desired * share / (price * rate), 6))
+
+    # A reshuffle is not a source of money. Rounding each leg to 6dp is the only
+    # licensed drift; anything larger means the arithmetic moved value and the
+    # book must not be left holding it.
+    await session.flush()
+    after = sum(_ils(p) for p in await list_positions(session, user))
+    if abs(after - nav) > max(1.0, nav * 1e-6):
+        raise ValueError(
+            f"rebalance would have moved NAV by {after - nav:+.2f} ILS with no trade "
+            f"({nav:.2f} -> {after:.2f}); refusing to write it")
 
 
 def _sale_value_ils(qty: float, price: float, basis: float, market, meta) -> tuple[float, float]:
@@ -2214,20 +2245,11 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
     card and accepting it can only shorten the list -- it can never spend money
     that isn't there.
     """
-    from decimal import Decimal
-
     from app.providers.registry import guarded_quote
-    from app.schemas.intake import IntakePosition
     from app.services.fx import fx_rate
-    from app.services.intake_service import (
-        ensure_account, ensure_entity, get_cash, set_cash, upsert_positions,
-    )
+    from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     cash = await get_cash(session, user)
-    rows = await list_positions(session, user)
-    by_ticker = {p.ticker: p for p in rows}
-    entity = await ensure_entity(session, user, "Personal", "Personal")
-    account = await ensure_account(session, entity, "Main")
 
     bought, skipped = [], []
     for leg in (spec.get("legs") or []):
@@ -2252,25 +2274,16 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
         if shares <= 0:
             skipped.append({"ticker": tk, "reason": "amount too small for one share"})
             continue
-        existing = by_ticker.get(tk)
-        if existing is not None:
-            # Blend the basis so gain/loss stays honest after topping up.
-            old_qty, old_basis = float(existing.quantity), float(existing.cost_basis or 0)
-            new_qty = old_qty + shares
-            existing.quantity = Decimal(str(round(new_qty, 6)))
-            if new_qty > 0:
-                existing.cost_basis = Decimal(str(round(
-                    (old_qty * old_basis + shares * float(q.price)) / new_qty, 6)))
-            existing.current_price = Decimal(str(q.price))
-        else:
-            await upsert_positions(session, user, entity.name, "Personal", account.name, [
-                IntakePosition(ticker=tk, market=getattr(q, "market", None) or "NASDAQ",
-                               quantity=shares, cost_basis=float(q.price),
-                               spot_price=float(q.price)),
-            ])
+        # One shared implementation: blends into a held position, creates one
+        # otherwise. The `else` branch here used to call `upsert_positions` with
+        # six arguments against its three-argument signature -- a TypeError that
+        # only fires on a leg for a ticker you do not already own.
+        is_new = await buy_into_book(
+            session, user, ticker=tk, market=getattr(q, "market", None) or "NASDAQ",
+            price=float(q.price), shares=shares, depth=3)
         cash = round(cash - amount, 2)
         bought.append({"ticker": tk, "shares": shares, "amount_ils": round(amount, 2),
-                       "price": float(q.price), "new_position": existing is None})
+                       "price": float(q.price), "new_position": is_new})
     await set_cash(session, user, cash)
     await session.commit()
     return {"bought": bought, "skipped": skipped, "cash_remaining_ils": round(cash, 2),
@@ -2284,12 +2297,9 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     live rather than assumed. Nothing is bought that can't be funded.
     """
     from app.providers.registry import guarded_quote
-    from app.schemas.intake import IntakePosition
     from app.schemas.state_machine import Market
     from app.services.fx import fx_rate
-    from app.services.intake_service import (
-        ensure_account, ensure_entity, get_cash, set_cash, upsert_positions,
-    )
+    from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     sold, tax_total, raised = [], 0.0, 0.0
     rows = await list_positions(session, user)
@@ -2313,7 +2323,11 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
         sold.append(f"{int(shares)} {p.ticker}")
 
     cash_before = await get_cash(session, user)
-    budget = round(float(spec.get("from_cash_ils") or 0.0) + raised, 2)
+    # Spend only cash that exists. The card was built against an earlier book, so
+    # `from_cash_ils` can outrun the balance; the old code clamped the debit at
+    # zero AFTER buying the full amount, which is a purchase funded by arithmetic.
+    from_cash = min(float(spec.get("from_cash_ils") or 0.0), max(0.0, cash_before))
+    budget = round(from_cash + raised, 2)
     if budget <= 0:
         return {"bought": None, "note": "Nothing could be funded, so nothing was bought."}
 
@@ -2335,17 +2349,17 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     native = budget / (fx_rate(ccy) or 1.0)
     qty = native / price
     mk = spec.get("market") if spec.get("market") in {m.value for m in Market} else "NYSE"
-    ip = IntakePosition(ticker=ticker, market=Market(mk), depth=1, spot_price=price,
-                        listing_price=price, quantity=qty, cost_basis=price,
-                        asset_class=spec.get("asset_class") or "Equities")
-    entity = await ensure_entity(session, user, "Personal", "Personal")
-    account = await ensure_account(session, entity, "Main")
-    await upsert_positions(session, account, [ip])
+    # Blend, never overwrite. This used to call `upsert_positions`, which SETS
+    # quantity -- so "Swap into SCHD" on a book already holding SCHD replaced the
+    # whole position with just the shares bought and deleted the rest.
+    await buy_into_book(session, user, ticker=ticker, market=mk, price=price,
+                        shares=qty, asset_class=spec.get("asset_class") or "Equities")
     await session.commit()
     # Cash pays only its share; sale proceeds went straight into the buy.
-    await set_cash(session, user, max(0.0, cash_before - float(spec.get("from_cash_ils") or 0.0)))
+    await set_cash(session, user, round(cash_before - from_cash, 2))
     return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": ticker,
-            "shares": round(qty, 4), "value_ils": round(budget, 2)}
+            "shares": round(qty, 4), "value_ils": round(budget, 2),
+            "from_cash_ils": round(from_cash, 2)}
 
 
 async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) -> dict | None:
@@ -2385,10 +2399,9 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     than creating a mis-priced holding.
     """
     from app.providers.registry import guarded_quote
-    from app.schemas.intake import IntakePosition
     from app.schemas.state_machine import Market
     from app.services.fx import fx_rate
-    from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
+    from app.services.intake_service import buy_into_book
 
     sell_tk, buy_tk = spec.get("sell"), spec.get("buy")
     p = by_ticker.get(sell_tk)
@@ -2412,13 +2425,10 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     native = net_ils / (fx_rate(ccy) or 1.0)  # ILS proceeds -> the buy's trading currency
     qty = native / price
     mk = p.market if p.market in {m.value for m in Market} else "NYSE"
-    ip = IntakePosition(ticker=buy_tk.upper(), market=Market(mk), depth=1,
-                        spot_price=price, listing_price=price, quantity=qty, cost_basis=price,
-                        asset_class=spec.get("asset_class") or "Equities",
-                        expense_ratio_pct=spec.get("buy_expense_ratio_pct"))
-    entity = await ensure_entity(session, user, "Personal", "Personal")
-    account = await ensure_account(session, entity, "Main")
-    await upsert_positions(session, account, [ip])
+    # Blend if the cheaper fund is already held -- a fee swap into something you
+    # own must add to it, not replace it.
+    await buy_into_book(session, user, ticker=buy_tk.upper(), market=mk, price=price,
+                        shares=qty, asset_class=spec.get("asset_class") or "Equities")
     await session.commit()
     return {"swapped": True, "sold": [sell_tk], "bought": buy_tk.upper(),
             "value_ils": round(net_ils, 2), "tax_ils": round(tax, 2)}

@@ -96,6 +96,54 @@ async def upsert_positions(
     return len(positions)
 
 
+async def buy_into_book(
+    session: AsyncSession, user: User, *, ticker: str, market: str, price: float,
+    shares: float, asset_class: str = "Equities", depth: int = 1,
+) -> bool:
+    """Add `shares` of `ticker` at `price` (native currency) to the user's book.
+
+    THE ONE implementation of "top up a holding", because there were three and two
+    of them were wrong.
+
+    `upsert_positions` **replaces** ``row.quantity`` (see line 91) -- correct for an
+    intake, catastrophic for a purchase: buying more of something you already own
+    overwrote the whole position with just the shares bought. It also scopes its
+    `existing` lookup to ONE account, so a buy landing in a different account than
+    the original silently created a duplicate row and double-counted NAV. This
+    looks the ticker up across the whole book and blends, so neither can happen.
+
+    Returns True if a NEW position was created, False if an existing one grew.
+    """
+    from app.schemas.state_machine import Market
+
+    tk = (ticker or "").upper()
+    if shares <= 0 or price <= 0 or not tk:
+        raise ValueError(f"refusing to book {shares} of {tk!r} at {price}")
+
+    rows = await list_positions(session, user)
+    existing = next((p for p in rows if (p.ticker or "").upper() == tk), None)
+    if existing is not None:
+        # Blend the basis so gain/loss stays honest after topping up.
+        old_qty, old_basis = float(existing.quantity), float(existing.cost_basis or 0)
+        new_qty = old_qty + shares
+        existing.quantity = Decimal(str(round(new_qty, 6)))
+        if new_qty > 0:
+            existing.cost_basis = Decimal(str(round(
+                (old_qty * old_basis + shares * price) / new_qty, 6)))
+        existing.current_price = Decimal(str(price))
+        await session.flush()
+        return False
+
+    mk = market if market in {m.value for m in Market} else "NASDAQ"
+    entity = await ensure_entity(session, user, "Personal", "Personal")
+    account = await ensure_account(session, entity, "Main")
+    await upsert_positions(session, account, [IntakePosition(
+        ticker=tk, market=Market(mk), depth=depth, spot_price=price,
+        listing_price=price, quantity=shares, cost_basis=price,
+        asset_class=asset_class)])
+    return True
+
+
 async def list_positions(
     session: AsyncSession, user: User, entity_name: str | None = None
 ) -> list[Position]:

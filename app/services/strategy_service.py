@@ -38,7 +38,7 @@ from app.services.funding_service import (
 from app.services.funding_service import buying_class_of as _buying_class
 from app.services.fx import fx_rate, price_currency
 from app.services.intake_service import (
-    delete_position, ensure_account, ensure_entity, get_cash,
+    buy_into_book, delete_position, ensure_account, ensure_entity, get_cash,
     is_cash_position, list_positions, set_cash, upsert_positions)
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 from app.services.portfolio_analytics import compute_snapshot
@@ -826,11 +826,12 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
                      "reason": leg.get("reason")})
     await session.flush()
 
-    budget = round(float(fund.get("from_cash_ils") or 0.0) + raised, 2)
-    entity = await ensure_entity(session, user, "Personal", "Personal")
-    account = await ensure_account(session, entity, "Main")
-    rows = await list_positions(session, user)
-    by_ticker = {(p.ticker or "").upper(): p for p in rows}
+    # Spend only cash that exists. `from_cash_ils` was planned against the book as
+    # it was when the preview ran; clamping the debit at zero afterwards would fund
+    # a purchase out of nothing.
+    cash_now = await get_cash(session, user)
+    from_cash = round(min(float(fund.get("from_cash_ils") or 0.0), max(0.0, cash_now)), 2)
+    budget = round(from_cash + raised, 2)
 
     bought, skipped = [], []
     for leg in legs:
@@ -853,27 +854,13 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
         shares = spend / price_ils
-        existing = by_ticker.get(tk)
-        if existing is not None:
-            # Blend the basis so gain/loss stays honest after topping up.
-            old_qty, old_basis = float(existing.quantity), float(existing.cost_basis or 0)
-            new_qty = old_qty + shares
-            existing.quantity = Decimal(str(round(new_qty, 6)))
-            if new_qty > 0:
-                existing.cost_basis = Decimal(str(round(
-                    (old_qty * old_basis + shares * price) / new_qty, 6)))
-            existing.current_price = Decimal(str(price))
-        else:
-            mk = getattr(q, "market", None)
-            mk = mk if mk in {m.value for m in Market} else "NASDAQ"
-            await upsert_positions(session, account, [IntakePosition(
-                ticker=tk, market=Market(mk), depth=3, spot_price=price,
-                listing_price=price, quantity=shares, cost_basis=price,
-                asset_class="Equities")])
+        is_new = await buy_into_book(session, user, ticker=tk,
+                                     market=getattr(q, "market", None) or "NASDAQ",
+                                     price=price, shares=shares, depth=3)
         budget = round(budget - spend, 2)
         bought.append({"ticker": tk, "shares": round(shares, 6),
                        "amount_ils": round(spend, 2), "price": price,
-                       "new_position": existing is None})
+                       "new_position": is_new})
     await session.flush()
 
     # Cash pays only its own share; the sale proceeds went straight into the buy.
@@ -881,13 +868,12 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
     # evaporating -- money that vanishes is the bug class this whole phase exists
     # to remove.
     leftover = round(max(0.0, budget), 2)
-    from_cash = round(float(fund.get("from_cash_ils") or 0.0), 2)
-    cash_now = await get_cash(session, user)
-    await set_cash(session, user, max(0.0, round(cash_now - from_cash + leftover, 2)))
+    cash_after = round(cash_now - from_cash + leftover, 2)
+    await set_cash(session, user, cash_after)
     await session.commit()
     return {"sold": sold, "bought": bought, "skipped": skipped,
             "tax_ils": round(tax_total, 2), "unspent_ils": leftover,
-            "cash_ils": round(max(0.0, cash_now - from_cash + leftover), 2)}
+            "from_cash_ils": from_cash, "cash_ils": cash_after}
 
 
 # --------------------------------------------------------------------------- #
