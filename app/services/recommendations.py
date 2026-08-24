@@ -2243,7 +2243,60 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     if kind not in _ACTIONABLE_KINDS:
         return {"applied": "none", "advisory": True, "title": rec["title"],
                 "note": "Marked as done. This one is guidance -- nothing was bought or sold."}
+
+    # ONE ledger call, at the boundary, for every actionable kind. Deliberately
+    # here rather than inside each branch: `Transaction` went unwritten for the
+    # life of the app precisely because "each handler records its own" is a rule
+    # that a new handler silently opts out of. Anything that reaches this line
+    # changed the book, so anything that reaches this line is recorded.
+    await _record_apply(session, user, kind, rec_id, detail)
     return {"applied": kind, "title": rec["title"], **detail}
+
+
+async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> None:
+    """Translate whatever the handler returned into ledger legs.
+
+    The apply handlers grew independently and describe their work in three
+    different shapes -- a list of ticker strings, a list of dicts, a single
+    bought ticker with its share count. Normalising here keeps that history out
+    of the ledger, and keeps a handler from having to know the ledger exists.
+    """
+    from app.services import ledger_service as ledger
+
+    src = kind[:40]
+    note = f"card {rec_id}"[:255]
+    try:
+        sold_raw = detail.get("sold") or []
+        sells: list[dict] = []
+        for s in sold_raw:
+            if isinstance(s, dict):
+                sells.append(s)
+            elif isinstance(s, str):
+                # "trim"/"sell_losers" report ticker strings, sometimes as
+                # "4 V" from the funded-buy path.
+                parts = s.split()
+                if len(parts) == 2 and parts[0].replace(".", "", 1).isdigit():
+                    sells.append({"ticker": parts[1], "shares": float(parts[0])})
+                else:
+                    sells.append({"ticker": s, "shares": detail.get("shares") or 0})
+        if sells:
+            # A single reported tax figure covers the whole card; attribute it to
+            # the first leg rather than repeating it on each, so the ledger's tax
+            # column still sums to what the card actually charged.
+            tax = float(detail.get("tax_ils") or 0.0)
+            for i, s in enumerate(sells):
+                s.setdefault("tax_ils", tax if i == 0 else 0.0)
+        buys: list[dict] = []
+        if isinstance(detail.get("bought"), list):
+            buys = [b for b in detail["bought"] if isinstance(b, dict)]
+        elif isinstance(detail.get("bought"), str):
+            buys = [{"ticker": detail["bought"], "shares": detail.get("shares") or 0,
+                     "amount_ils": detail.get("value_ils") or 0}]
+        await ledger.record_legs(session, user, sold=sells, bought=buys,
+                                 source=src, note=note)
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must not cost a trade
+        logger.warning("ledger: could not record %s (%s): %s", kind, rec_id, exc)
 
 
 

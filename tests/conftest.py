@@ -4,6 +4,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/iw_test_app.db")
 os.environ.setdefault("AUTO_CREATE_TABLES", "true")
 os.environ.setdefault("DEBUG", "false")
 
+import pytest
 import pytest_asyncio
 
 
@@ -61,3 +62,42 @@ async def _isolate_db():
     finally:
         await eng.dispose()
     yield
+
+
+@pytest.fixture
+def own_session():
+    """A session on a throwaway NullPool engine created in the TEST's own loop.
+
+    Reaching for `AsyncSessionLocal` beside a `TestClient` passes on SQLite and
+    fails on Postgres: the client has already driven the app's shared pooled
+    engine in its own loop, so asyncpg rejects the connection with "attached to
+    a different loop". This has now caused a red `test-postgres` twice, in two
+    different test files, after the rule was written down in CLAUDE.md -- which
+    is the evidence that a documented rule is not enough and it has to be the
+    path of least resistance instead.
+
+    Usage:
+
+        async with own_session() as s:
+            ...
+    """
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession, async_sessionmaker, create_async_engine,
+    )
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
+
+    @asynccontextmanager
+    async def _factory():
+        eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        try:
+            maker = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+            async with maker() as session:
+                yield session
+        finally:
+            await eng.dispose()
+
+    return _factory

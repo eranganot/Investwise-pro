@@ -460,3 +460,63 @@ async def write_contribution(body: ContributionRequest,
     else:
         total = await record_contribution(session, user, body.amount_ils, note=body.note)
     return {"ok": True, "total_ils": total, "mode": body.mode}
+
+
+# --------------------------------------------------------------------------- #
+# Reconciliation (PR 3)
+# --------------------------------------------------------------------------- #
+@router.get("/portfolio/reconcile/preview")
+async def portfolio_reconcile_preview(session: AsyncSession = Depends(get_session),
+                                      user: User = Depends(acting_user)) -> dict:
+    """READ-ONLY. What the book is, and what each anchor would make it.
+
+    Deliberately a GET with no side effects, so it can be run and re-run while
+    you decide. `apply` is a separate call and requires the scale by name.
+    """
+    from app.services.reconcile_service import preview
+    return await preview(session, user)
+
+
+class ReconcileApply(BaseModel):
+    scale: float | None = None
+    ticker: str | None = None
+    true_quantity: float | None = None
+    confirm: bool = False
+    note: str = ""
+
+
+@router.post("/portfolio/reconcile/apply",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def portfolio_reconcile_apply(body: ReconcileApply,
+                                    session: AsyncSession = Depends(get_session),
+                                    user: User = Depends(acting_user)) -> dict:
+    """Rewrite share counts by a scale you name. Requires `confirm: true`.
+
+    `confirm` is not ceremony. This endpoint rewrites every holding on the book,
+    and a write that fires on a bare POST is one a stray retry can trigger -- the
+    same reasoning that guards the Phase A plan apply.
+
+    Give either `scale`, or a `ticker` plus the `true_quantity` you know it
+    should be, in which case the scale is derived from that one holding.
+    """
+    from app.services.reconcile_service import (
+        apply as _apply, preview as _preview, scale_from_share_count,
+    )
+
+    scale = body.scale
+    if scale is None and body.ticker and body.true_quantity:
+        snap = await _preview(session, user)
+        row = next((p for p in snap.get("positions", [])
+                    if (p["ticker"] or "").upper() == body.ticker.upper()), None)
+        if row is None:
+            raise HTTPException(status_code=404,
+                                detail=f"{body.ticker} is not on the book")
+        scale = scale_from_share_count(row["quantity"], body.true_quantity)
+    if scale is None:
+        raise HTTPException(
+            status_code=400,
+            detail="give either scale, or ticker + true_quantity")
+    if not body.confirm:
+        return {"ok": False, "would_scale_by": round(float(scale), 6),
+                "note": "nothing written. Re-send with confirm=true to apply."}
+    return await _apply(session, user, scale=float(scale), note=body.note)

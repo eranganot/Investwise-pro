@@ -109,20 +109,56 @@ class Position(Base, PKMixin, TimestampMixin):
     meta: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
 
     account: Mapped["Account"] = relationship(back_populates="positions")
+    # NO delete-orphan. The ORM cascade deletes children in Python whatever the
+    # FK says, so `SET NULL` on transactions.position_id would have been quietly
+    # overruled and selling out of a holding would still have erased the record
+    # of the sale. `passive_deletes` hands the decision to the database, which is
+    # the only place it can be enforced consistently.
     transactions: Mapped[list["Transaction"]] = relationship(
-        back_populates="position", cascade="all, delete-orphan"
+        back_populates="position", cascade="save-update, merge",
+        passive_deletes=True,
     )
 
 
 class Transaction(Base, PKMixin, TimestampMixin):
+    """What the money actually did. One row per leg, written by `ledger_service`.
+
+    **This table had zero writers for the entire life of the app** -- nothing
+    outside the models ever constructed a `Transaction`. So `nav_history` had no
+    flow data, every book change read as market performance, and the accepts on
+    2026-08-21 that inflated NAV by 7,388 left no trace whatsoever. Phase N's own
+    docstring recorded that as the reason past NAV could not be reconstructed.
+
+    Two schema problems had to be fixed before it could be written to:
+
+    * ``position_id`` was NOT NULL with ``ondelete="CASCADE"``. A full exit
+      deletes the position -- and would have taken the record of the sale with
+      it, so the ledger erased precisely the events it exists to remember. Now
+      nullable with SET NULL, and the identifying fields are denormalised so a
+      row still says what it was once its position is gone.
+    * There was nowhere to put the ILS value, the tax, or the cause. A ledger
+      that cannot be reconciled against NAV is a list, not a ledger.
+    """
+
     __tablename__ = "transactions"
-    position_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("positions.id", ondelete="CASCADE"), index=True
+    position_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("positions.id", ondelete="SET NULL"), index=True, nullable=True
     )
-    txn_type: Mapped[str] = mapped_column(String(16))  # Buy|Sell
+    # Denormalised on purpose: the row must outlive the position it describes.
+    subject: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    ticker: Mapped[str | None] = mapped_column(String(24), index=True, nullable=True)
+    market: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    txn_type: Mapped[str] = mapped_column(String(16))  # Buy|Sell|Adjust
     quantity: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     price: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
     fees: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    # ILS is the base currency everywhere else; the ledger has to agree with NAV
+    # or it cannot be reconciled against it.
+    value_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    tax_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    # What caused this leg: the accept kind, or "reconcile".
+    source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
     executed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -23,7 +23,6 @@ that must abstain, not round.
 """
 import logging
 import os
-from contextlib import asynccontextmanager
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
@@ -33,35 +32,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app.main as m  # noqa: E402
 
 TOLERANCE_ILS = 1.0
-
-
-@asynccontextmanager
-async def _own_session():
-    """A session on a throwaway NullPool engine created in THIS event loop.
-
-    Reaching for ``AsyncSessionLocal`` here passes on SQLite and fails on
-    Postgres: ``TestClient`` has already driven the app's shared pooled engine
-    in its own loop, so asyncpg rejects the connection with "attached to a
-    different loop" while SQLite shrugs. That is the exact trap CLAUDE.md lists
-    under Known sharp edges, and conftest's ``_isolate_db`` fixture already
-    solves it the same way. It cost this file a red `test-postgres` on 5a6dfef
-    while `test` and `lint` were both green -- which is precisely what that job
-    exists to catch.
-    """
-    from sqlalchemy.ext.asyncio import (
-        AsyncSession, async_sessionmaker, create_async_engine,
-    )
-    from sqlalchemy.pool import NullPool
-
-    from app.core.config import get_settings
-
-    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
-    try:
-        maker = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
-        async with maker() as session:
-            yield session
-    finally:
-        await eng.dispose()
 
 
 PRICES = {"V": 371.04, "MSFT": 483.24, "SCHD": 35.11, "TQQQ": 71.17}
@@ -126,7 +96,7 @@ def _nav(c):
 # the named regressions, each pinned on its own so a failure names its cause
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_rebalance_to_objective_does_not_mint_shares():
+async def test_rebalance_to_objective_does_not_mint_shares(own_session):
     """`_rebalance_to` reshuffles weights. A reshuffle has no NAV of its own."""
     from sqlalchemy import select
 
@@ -139,7 +109,7 @@ async def test_rebalance_to_objective_does_not_mint_shares():
         with TestClient(m.app) as c:
             _seed_usd(c)
             before = _nav(c)
-            async with _own_session() as s:
+            async with own_session() as s:
                 user = (await s.execute(select(User))).scalars().first()
                 await _rebalance_to(s, user, await list_positions(s, user), "Grow")
                 await s.commit()
@@ -152,7 +122,7 @@ async def test_rebalance_to_objective_does_not_mint_shares():
 
 
 @pytest.mark.asyncio
-async def test_buying_more_of_a_held_ticker_adds_to_it(pinned_prices):
+async def test_buying_more_of_a_held_ticker_adds_to_it(pinned_prices, own_session):
     """A funded buy into a position you already hold must BLEND, never replace."""
     from sqlalchemy import select
 
@@ -166,7 +136,7 @@ async def test_buying_more_of_a_held_ticker_adds_to_it(pinned_prices):
             before = _nav(c)
             held_before = next(p for p in c.get("/api/v1/portfolio").json()["positions"]
                                if p["ticker"] == "SCHD")
-            async with _own_session() as s:
+            async with own_session() as s:
                 user = (await s.execute(select(User))).scalars().first()
                 detail = await _apply_buy_funded(s, user, {
                     "kind": "buy_funded", "ticker": "SCHD", "market": "NYSE",
@@ -188,7 +158,7 @@ async def test_buying_more_of_a_held_ticker_adds_to_it(pinned_prices):
 
 
 @pytest.mark.asyncio
-async def test_a_buy_never_spends_cash_that_is_not_there(pinned_prices):
+async def test_a_buy_never_spends_cash_that_is_not_there(pinned_prices, own_session):
     """`from_cash_ils` is planned against an older book. It may not overdraw.
 
     The debit used to be clamped at zero AFTER the full amount had been bought,
@@ -205,7 +175,7 @@ async def test_a_buy_never_spends_cash_that_is_not_there(pinned_prices):
         with TestClient(m.app) as c:
             _seed_usd(c)
             before = _nav(c)
-            async with _own_session() as s:
+            async with own_session() as s:
                 user = (await s.execute(select(User))).scalars().first()
                 # Claim ten times the cash the book actually holds.
                 detail = await _apply_buy_funded(s, user, {

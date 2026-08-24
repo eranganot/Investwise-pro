@@ -74,6 +74,48 @@ async def lifespan(app: FastAPI):
                     # P4: strategy_signal rules pin the strategy they follow.
                     "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
                     "strategy_id VARCHAR(40)",
+                    # PR 3: the trade ledger becomes writable. `transactions`
+                    # already existed (unwritten), so create_all will not touch
+                    # it -- these columns have to be added by hand, and
+                    # position_id must stop being NOT NULL/CASCADE or a full
+                    # exit deletes the record of its own sale.
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "subject VARCHAR(255)",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "ticker VARCHAR(24)",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "market VARCHAR(16)",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "value_ils NUMERIC(20, 6) DEFAULT 0",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "tax_ils NUMERIC(20, 6) DEFAULT 0",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "source VARCHAR(40)",
+                    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS "
+                    "note VARCHAR(255)",
+                    "ALTER TABLE transactions ALTER COLUMN position_id "
+                    "DROP NOT NULL",
+                    # And the CASCADE itself. Dropping NOT NULL is not enough:
+                    # the constraint still says "delete the row when its position
+                    # goes", which erases the record of the very sale that
+                    # removed it. The name is generated, so it has to be looked
+                    # up rather than guessed.
+                    "DO $$ DECLARE c text; BEGIN "
+                    "SELECT conname INTO c FROM pg_constraint "
+                    "WHERE conrelid = 'transactions'::regclass AND contype = 'f' "
+                    "AND conname <> 'fk_transactions_position' LIMIT 1; "
+                    "IF c IS NOT NULL THEN "
+                    "EXECUTE format('ALTER TABLE transactions DROP CONSTRAINT %I', c); "
+                    "END IF; "
+                    "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+                    "WHERE conname = 'fk_transactions_position') THEN "
+                    "ALTER TABLE transactions ADD CONSTRAINT fk_transactions_position "
+                    "FOREIGN KEY (position_id) REFERENCES positions(id) "
+                    "ON DELETE SET NULL; END IF; END $$;",
+                    "CREATE INDEX IF NOT EXISTS ix_transactions_subject "
+                    "ON transactions (subject)",
+                    "CREATE INDEX IF NOT EXISTS ix_transactions_ticker "
+                    "ON transactions (ticker)",
                     # C1 (plan_sleeves) needs no entry here. create_all above
                     # DOES build a missing table; what it never does is add a
                     # column to a table that already exists, which is the whole
