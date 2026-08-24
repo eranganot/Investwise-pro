@@ -150,11 +150,28 @@ async def get_portfolio(entity: str | None = None,
     # The contributions ledger is the only writer of this number now; the old
     # estimate survives solely for users who have never recorded a deposit, so
     # nobody is shown a confident "₪0 put in".
+    # BOTH numbers, each named for what it is. One `invested_ils` that could mean
+    # either was the bug: on 2026-08-23 this response carried `invested_ils:
+    # 20000` from a contributions ledger holding a single row, while the
+    # positions' OWN cost basis in the same payload summed to 27,387.81. The
+    # headline read +8,496.54 (+42.48%); the book had actually gained 1,108.73
+    # (+4.0%). The 7,387.81 between them was cost basis with no deposit behind it,
+    # minted by an FX bug in `_rebalance_to` -- and folding it into "gain" is what
+    # let a defect masquerade as performance for two days.
+    #
+    # So: `gain_vs_basis` answers "did my holdings make money", `gain_vs_
+    # contributions` answers "is the book worth more than I paid in", and
+    # `unexplained_basis_ils` is the gap that should be ~0 and is the thing to
+    # watch. `invested_ils` / `gain_ils` keep their old meaning for existing
+    # consumers.
+    cost_basis_ils = invested_ils
     contributed = await total_contributed(session, user)
     invested_source = "contributions" if contributed is not None else "cost_basis_estimate"
     if contributed is not None:
         invested_ils = contributed
     gain_ils = nav_ils - invested_ils
+    gain_vs_basis_ils = nav_ils - cost_basis_ils
+    unexplained = (cost_basis_ils - contributed) if contributed is not None else None
     return {
         "count": len(positions),
         "base_currency": base,
@@ -164,6 +181,14 @@ async def get_portfolio(entity: str | None = None,
         "invested_source": invested_source,
         "gain_ils": round(gain_ils, 2),
         "gain_pct": (round(gain_ils / invested_ils * 100, 2) if invested_ils else None),
+        # What the holdings themselves did -- the honest performance number.
+        "cost_basis_ils": round(cost_basis_ils, 2),
+        "gain_vs_basis_ils": round(gain_vs_basis_ils, 2),
+        "gain_vs_basis_pct": (round(gain_vs_basis_ils / cost_basis_ils * 100, 2)
+                              if cost_basis_ils else None),
+        # What you actually paid in, and the difference that nothing accounts for.
+        "contributed_ils": (round(contributed, 2) if contributed is not None else None),
+        "unexplained_basis_ils": (round(unexplained, 2) if unexplained is not None else None),
         "cash_ils": round(sum(o["value_ils"] for o in out
                               if (o["asset_class"] or "").lower() == "cash"
                               or (o["ticker"] or "").upper() == "CASH"), 2),

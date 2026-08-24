@@ -311,34 +311,64 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
 # --------------------------------------------------------------------------
 
 def run_nav_snapshot_blocking() -> dict:
-    """Daily: one NAV row and one health row per user with holdings."""
+    """Daily: one NAV row and one health row per user with holdings.
+
+    **Its own engine, created inside its own event loop.** Two separate reasons,
+    and this one function managed to need both.
+
+    It imported ``async_session`` from ``app.core.database``, where the name is
+    ``AsyncSessionLocal``. The import sits INSIDE the function, so nothing at
+    import time and no linter ever touched it -- and no test called this
+    function at all. It failed **7 nights out of 7** from the day it shipped,
+    silently, leaving one line of ``last_error`` on a status endpoint nobody
+    reads. Every one of those nights is a day of history that cannot be
+    reconstructed, which is exactly what makes this the one job whose failure is
+    permanent.
+
+    Renaming it alone would not have been enough. APScheduler runs this in a
+    worker thread via ``asyncio.run()``, so borrowing the app's shared pooled
+    engine hands asyncpg a connection created in another loop and it refuses --
+    green on SQLite, dead on Postgres, the trap CLAUDE.md lists first under
+    Known sharp edges. So: a throwaway NullPool engine in this loop, the pattern
+    ``pricing_service`` has run 332 times without a failure.
+    """
     import asyncio
 
     async def _run() -> dict:
         from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession, async_sessionmaker, create_async_engine,
+        )
+        from sqlalchemy.pool import NullPool
 
-        from app.core.database import async_session
+        from app.core.config import get_settings
         from app.models.tables import User
+
         done, failed, health = 0, 0, 0
-        async with async_session() as session:
-            users = (await session.execute(select(User))).scalars().all()
-            for u in users:
-                try:
-                    r = await record_for(session, u)
-                    if r.get("ok"):
-                        done += 1
-                except Exception as exc:  # noqa: BLE001
-                    failed += 1
-                    logger.warning("nav snapshot failed for %s: %s", u.email, exc)
-                try:
-                    # Non-fatal on purpose: losing the score row must not cost
-                    # the NAV row, which is the one that cannot be recovered.
-                    h = await record_health_for(session, u)
-                    if h.get("ok"):
-                        health += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("health snapshot failed for %s: %s", u.email, exc)
-            await session.commit()
+        engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with factory() as session:
+                users = (await session.execute(select(User))).scalars().all()
+                for u in users:
+                    try:
+                        r = await record_for(session, u)
+                        if r.get("ok"):
+                            done += 1
+                    except Exception as exc:  # noqa: BLE001
+                        failed += 1
+                        logger.warning("nav snapshot failed for %s: %s", u.email, exc)
+                    try:
+                        # Non-fatal on purpose: losing the score row must not cost
+                        # the NAV row, which is the one that cannot be recovered.
+                        h = await record_health_for(session, u)
+                        if h.get("ok"):
+                            health += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("health snapshot failed for %s: %s", u.email, exc)
+                await session.commit()
+        finally:
+            await engine.dispose()
         return {"nav_rows": done, "health_rows": health, "failed": failed}
 
     return asyncio.run(_run())

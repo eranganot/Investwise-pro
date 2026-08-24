@@ -211,7 +211,16 @@ _DISMISS_TTL_DAYS = 7
 # NOT forever. A permanent hide-list is exactly what caused the original
 # notification/Today mismatch (push kept firing for cards the app had buried), so
 # completed items still age out, and the UI shows the count with its own restore.
-_DONE_TTL_DAYS = 90
+#
+# 90 days was far too long, and the reason is the ID rather than the number: a
+# card's id is sha1(category|ticker), with no amount and no date in it, so the
+# card you complete today and the card the same condition generates tomorrow
+# are THE SAME id. On 2026-08-20/21 five Accepts muted the tax card, the
+# sell-Equities card and the SOXL cold-start card until mid-November -- while
+# /mix went on asking to sell 5,078 of Equities and /health-check went on
+# flagging an unrealised loss as HIGH. 14 days caps the damage; making the id
+# carry its own content is the actual fix and is a separate change.
+_DONE_TTL_DAYS = 14
 
 
 def _dismiss_key(user: User) -> str:

@@ -476,11 +476,20 @@ async def diagnostics(session: AsyncSession, user: User) -> dict:
         blockers.append(f"Push library unavailable ({library_error}).")
     if not sched.get("scheduler_running"):
         blockers.append("Scheduler is not running in this process — no job can fire.")
+    # EVERY job, not a hardcoded two. This loop read ("push_evaluate",
+    # "push_digest") only, so `nav_snapshot` sat at 7 failures out of 7 -- every
+    # night since it shipped -- while this endpoint answered "Nothing obviously
+    # broken". A health summary that cannot see a dead job is worse than no
+    # summary, because it is the thing you check INSTEAD of looking.
+    history = sched.get("history", {}) or {}
+    for jid in sorted(history):
+        h = history.get(jid) or {}
+        if not h.get("last_ok"):
+            blockers.append(
+                f"Job {jid} last failed ({h.get('failures', 0)} of {h.get('runs', 0)} "
+                f"runs): {h.get('last_error')}")
     for jid in ("push_evaluate", "push_digest"):
-        h = sched.get("history", {}).get(jid)
-        if h and not h.get("last_ok"):
-            blockers.append(f"Job {jid} last failed: {h.get('last_error')}")
-        if h is None and sched.get("scheduler_running"):
+        if jid not in history and sched.get("scheduler_running"):
             blockers.append(f"Job {jid} has not run yet since this process started.")
 
     return {

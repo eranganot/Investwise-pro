@@ -15,7 +15,10 @@ Personal investing dashboard / wealth system. Python, branch `main`. This is the
 - **Funding may only sell what the plan says you have too much of.** One overweight budget per asset class, spent down as the loop sells; a class at or under target is not a funding source while anything else is over.
 
 ## Known sharp edges
-- **Postgres test isolation:** per-test fixtures must create a throwaway `NullPool` engine in the test's own event loop — borrowing the app's shared async engine makes `asyncpg` reject the cross-loop connection (SQLite tolerates it, Postgres doesn't).
+- **Cross-loop sessions:** anything opening a session from a loop the app did not create must build a throwaway `NullPool` engine in *that* loop — borrowing the shared async engine makes `asyncpg` reject the connection (SQLite tolerates it, Postgres doesn't). This covers per-test fixtures, a test running beside `TestClient`, and any APScheduler job using `asyncio.run()`. `pricing_service.py` and `nav_history.py` both build their own for this reason.
+- **Run the Postgres job before pushing. It IS reproducible locally** — `apt-get install -y postgresql`, `service postgresql start`, create the `investwise` role + database, point `DATABASE_URL` at `postgresql+asyncpg://investwise:investwise@127.0.0.1:5432/investwise`, `pytest -q`. postgres:16 is already in the image. This file used to say the job could not be run locally, and that claim is why `5a6dfef` shipped with three cross-loop failures only `test-postgres` could see, while `test` and `lint` were green. The SQLite job proves less than it looks like it does.
+- **CI is not an enforcing gate.** Railway deploys on push regardless of the workflow result: `5a6dfef` was live and serving while `test-postgres` was red. Treat a red run as an incident, not a queue — the bad build is already out.
+- **A job nothing calls is a job nobody has tested.** `run_nav_snapshot_blocking` imported a name that does not exist and failed 7 nights out of 7 from the day it shipped; the import was inside the function, so neither import time nor ruff saw it, and no test invoked it. Every scheduled job needs one test that actually runs it.
 - Lint is ruff — no stray semicolons / unused imports; CI will fail on them.
 
 ## Response style (token-saving)

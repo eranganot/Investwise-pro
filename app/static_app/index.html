@@ -1258,16 +1258,36 @@ async function toggleRule(id){
 // Total value alone doesn't answer "am I up?" — show what went in, what it's worth
 // now, and the gap between them. All figures arrive ILS-normalized from the API.
 function navSummary(p){
-  const nav=p.nav_ils||0, inv=p.invested_ils||0, g=p.gain_ils||0, gp=p.gain_pct;
-  const up=g>=0, cash=p.cash_ils||0;
+  // The HEADLINE gain is what the HOLDINGS did -- value against their own cost
+  // basis. It used to be NAV minus the contributions ledger, which is a
+  // different question wearing the same label: with 27,388 of basis behind a
+  // 20,000 ledger it read +42.48% on a book that had gained 4.0%. Deposits are
+  // shown separately, and when the two disagree by more than a rounding the gap
+  // is named rather than absorbed into performance.
+  const nav=p.nav_ils||0, cash=p.cash_ils||0;
+  const basis=(p.cost_basis_ils!=null)?p.cost_basis_ils:(p.invested_ils||0);
+  const g=(p.gain_vs_basis_ils!=null)?p.gain_vs_basis_ils:(p.gain_ils||0);
+  const gp=(p.gain_vs_basis_pct!=null)?p.gain_vs_basis_pct:p.gain_pct;
+  const up=g>=0;
   const chg=(gp==null)?"":`<div class="${up?'up':'down'}" style="font-size:15px;margin-top:2px">
-      ${up?'▲':'▼'} ${ils(Math.abs(g))} (${up?'+':'-'}${Math.abs(gp).toFixed(2)}%)</div>`;
+      ${up?'▲':'▼'} ${ils(Math.abs(g))} (${up?'+':'-'}${Math.abs(gp).toFixed(2)}%)</div>
+      <div class="mk">on ${ils(basis)} of cost basis</div>`;
+  const contributed=p.contributed_ils;
+  const putIn=(contributed!=null)
+    ? `<div class="mk" style="margin-top:6px">You put in ${ils(contributed)}</div>`
+    : `<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
+  const gapVal=p.unexplained_basis_ils;
+  const gap=(gapVal!=null && Math.abs(gapVal)>1)
+    ? `<div class="mk" style="margin-top:6px;color:var(--warn,#e5b857)">
+         ${ils(Math.abs(gapVal))} of cost basis ${gapVal>0?"has no recorded deposit behind it":"more was deposited than the book shows"}
+       </div>` : "";
   const cashRow=`<div class="mk" style="margin-top:8px">💵 Liquid cash ${ils(cash)}${nav?` · ${(cash/nav*100).toFixed(1)}% of portfolio`:""}</div>`;
   return `<div class="card" style="text-align:center">
     <div class="mk">Total portfolio value (${p.base_currency||"₪"})</div>
     <div class="nm" style="font-size:24px">${ils(nav)}</div>
     ${chg}
-    <div class="mk" style="margin-top:6px">You put in ${ils(inv)}</div>
+    ${putIn}
+    ${gap}
     ${cashRow}
   </div>`;
 }
