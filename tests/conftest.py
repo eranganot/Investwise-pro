@@ -61,7 +61,41 @@ async def _isolate_db():
                 await conn.execute(table.delete())
     finally:
         await eng.dispose()
+
+    await _drop_app_pool()
     yield
+    await _drop_app_pool()
+
+
+async def _drop_app_pool() -> None:
+    """Empty the APP engine's connection pool around every test.
+
+    The cross-loop trap has now cost three red `test-postgres` runs in three
+    different files, and the `own_session` fixture below only covers the shape I
+    knew about: a test opening `AsyncSessionLocal` beside a client. It does not
+    cover this one -- a `TestClient` used WITHOUT `with` runs every request in
+    its own anyio portal loop, so request 2 borrows the pooled connection
+    request 1 left behind and asyncpg rejects it with "attached to a different
+    loop".
+
+    Note who pays. Not the test that did it: whichever LATER test is first to
+    touch the app engine. So it reads as an unrelated random failure, in a file
+    nobody edited, and only ever on Postgres. That is why writing the rule down
+    keeps not working.
+
+    A pool with nothing in it cannot hand a connection across a loop boundary,
+    which makes the whole family structurally impossible rather than documented.
+    Costs one connect per test; this suite is bound by the provider stubs, not
+    by that.
+    """
+    try:
+        from app.core.database import engine
+    except Exception:  # noqa: BLE001 -- no app engine configured; nothing to drop
+        return
+    try:
+        await engine.dispose()
+    except Exception:  # noqa: BLE001 -- disposal must never fail a test
+        pass
 
 
 @pytest.fixture

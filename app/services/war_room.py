@@ -139,7 +139,17 @@ def build_war_room(observations, portfolio_tickers=None, settings=None, *,
         t.append({"agent": "UX", "role": "Decision Feed",
                   "says": f"Approved on the {display.path} path: {display.title}.",
                   "detail": {"path": display.path, "title": display.title}})
-        sessions.append({"ticker": det.ticker, "outcome": "DISPLAYED", "source": "portfolio" if det.ticker in portfolio_tickers else "market",
+        # `action_type` travels with the session. It never did, so the guard in
+        # `_war_room_recs` that routes a REBALANCE signal to the trim branch --
+        # `if s.get("action_type") == "REBALANCE" or ...` -- read None every
+        # time and was dead code. A trim signal on a name you do NOT hold fell
+        # through into the BUY branch and got sized as a purchase. Note also
+        # that `path` is "Bulletproof" exactly when the signal is NOT a BUY, so
+        # a card headed "approved on the Bulletproof path" was, by definition,
+        # never a buy thesis.
+        sessions.append({"ticker": det.ticker, "outcome": "DISPLAYED",
+                         "source": "portfolio" if det.ticker in portfolio_tickers else "market",
+                         "action_type": getattr(det.action_type, "value", det.action_type),
                          "outcome_label": display.path, "title": display.title, "transcript": t})
 
     generated_at = datetime.now(timezone.utc).isoformat()

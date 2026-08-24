@@ -21,17 +21,26 @@ is the whole reason this can be repaired without a broker statement.
 **Why this module refuses to pick `s` for you.** Three anchors are available and
 they disagree, and the disagreement is information rather than noise:
 
-  `deposits`  securities basis should equal what you actually paid in. Gives the
-              LARGEST s -- it over-corrects, because `sell_losers` legitimately
-              re-stamped cost basis at market when it sold the losing positions,
-              and that is a real basis increase, not phantom.
-  `snapshot`  the last NAV recorded before the first bad accept. Gives the
-              truest reading IF nothing legitimate changed the book in between --
-              but a real sale did, so it is a floor rather than an answer.
+  `deposits`  securities basis should equal what you actually paid in.
+              Contaminated in BOTH directions by an unbounded amount: selling a
+              winner and reinvesting re-stamps basis at today's price and raises
+              it, selling a loser lowers it, and this book did both. So it is
+              not a bound, despite an earlier version of this file claiming it
+              was an upper one.
+  `snapshot`  NAV now over the last NAV recorded before the first bad accept.
+              The better of the two -- a sale is NAV-neutral, so the only
+              contamination is real market movement over the window, which is
+              bounded at a few percent.
   `manual`    you supply `s`, or one holding's true share count.
 
-The honest answer is bracketed by the first two. `preview()` computes all of
-them and returns the arithmetic; `apply()` writes only the one you name.
+`preview()` computes all of them and returns the arithmetic; `apply()` writes
+only the one you name, and refuses a scale that would move the gap further from
+zero than it already is.
+
+**When to stop.** After the repair, cost basis above deposits is normal
+accounting, not residue: any book that has rebalanced carries some, because
+reinvesting a realised gain re-stamps the new lot at market. `set_baseline()`
+draws that line explicitly rather than scaling shares again to satisfy a label.
 """
 from __future__ import annotations
 
@@ -86,11 +95,14 @@ async def preview(session, user) -> dict:
     contributed = round(sum(float(c["amount_ils"]) for c in
                             await list_contributions(session, user)), 2)
     nav_ils = round(sec_value + cash_ils, 2)
+    # Basis accepted as the starting point, if the line has been drawn.
+    baseline = await get_baseline(session, user)
+    baseline_ils = float(baseline.get("amount_ils") or 0.0)
 
     anchors = []
 
     # 1) Deposits. Cash is not scaled by the bug, so it comes off both sides.
-    sec_contributed = contributed - cash_ils
+    sec_contributed = contributed + baseline_ils - cash_ils
     if sec_contributed > 0 and sec_basis > 0:
         s = sec_basis / sec_contributed
         anchors.append({
@@ -99,10 +111,12 @@ async def preview(session, user) -> dict:
                      f"{contributed:,.2f} - cash {cash_ils:,.2f})",
             "resulting_nav_ils": round(sec_value / s + cash_ils, 2),
             "resulting_basis_ils": round(sec_basis / s + cash_ils, 2),
-            "caveat": ("OVER-corrects. Selling a position re-stamps the basis of what "
-                       "you buy with the proceeds at today's price, so some of the gap "
-                       "is a real basis increase rather than phantom shares. Treat this "
-                       "as the upper bound on s."),
+            "caveat": ("Contaminated in BOTH directions by an unbounded amount, so it "
+                       "is not a bound at all. Selling a winner and reinvesting "
+                       "re-stamps basis at today's price and raises it; selling a "
+                       "loser lowers it. This book did both. (An earlier version of "
+                       "this string called it an upper bound -- that was asserting a "
+                       "direction it cannot know.)"),
         })
 
     # 2) The last NAV recorded before the first bad accept.
@@ -121,10 +135,12 @@ async def preview(session, user) -> dict:
                 "basis": f"NAV now {nav_ils:,.2f} / NAV recorded {when} {then_nav:,.2f}",
                 "resulting_nav_ils": round(sec_value / s + cash_ils, 2),
                 "resulting_basis_ils": round(sec_basis / s + cash_ils, 2),
-                "caveat": ("A FLOOR, not an answer. It assumes nothing legitimate moved "
-                           "the book since that date -- and a real sale did, on "
-                           "2026-08-21. It also treats genuine market movement since "
-                           f"{when} as if it were part of the error."),
+                "caveat": ("The better anchor of the two: a sale is NAV-neutral "
+                           "(proceeds become cash), so the ONLY thing contaminating "
+                           f"this is real market movement since {when} -- a bounded, "
+                           "few-percent error, against the unbounded basis creep in "
+                           "the deposits anchor. If the market rose over that window, "
+                           "true s is slightly BELOW this."),
             })
 
     return {
@@ -133,7 +149,10 @@ async def preview(session, user) -> dict:
         "securities_value_ils": round(sec_value, 2),
         "securities_basis_ils": round(sec_basis, 2),
         "contributed_ils": contributed,
-        "unexplained_basis_ils": round(sec_basis + cash_ils - contributed, 2),
+        "unexplained_basis_ils": round(
+            sec_basis + cash_ils - contributed - baseline_ils, 2),
+        "baseline_ils": round(baseline_ils, 2) if baseline else None,
+        "baseline_as_of": baseline.get("as_of"),
         "positions": positions,
         "anchors": anchors,
         "note": ("The bug scaled every holding in a class by ONE factor and never "
@@ -154,7 +173,71 @@ def scale_from_share_count(current_qty: float, true_qty: float) -> float:
     return float(current_qty) / float(true_qty)
 
 
-async def apply(session, user, *, scale: float, note: str = "") -> dict:
+def baseline_key(user) -> str:
+    return f"basis_baseline:{getattr(user, 'email', '')}"
+
+
+async def get_baseline(session, user) -> dict:
+    """The basis that was accepted as the starting point, if one was set."""
+    import json
+
+    from app.models.tables import KVSetting
+
+    row = await session.get(KVSetting, baseline_key(user))
+    if not row:
+        return {}
+    try:
+        return json.loads(row.value) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+async def set_baseline(session, user, *, amount_ils: float, note: str = "") -> dict:
+    """Accept today's residual basis as the starting point, and say so.
+
+    **Why this exists rather than another share-scaling pass.** After the repair
+    the live book showed 350.16 of cost basis above recorded deposits. That is
+    not phantom, and scaling shares again to make it vanish would delete real
+    holdings to satisfy a label. Cost basis legitimately exceeds deposits in any
+    book that has ever rebalanced: selling a winner and reinvesting re-stamps
+    the new lot at today's price, so basis rises with no new money. Every real
+    brokerage account does this.
+
+    It is also inside the reconciliation's own error bars -- 350 on 20,350 is
+    1.7%, and the two anchors that produced the scale were 1.8% apart. So it
+    cannot be distinguished from estimation error, and forcing it to zero would
+    be false precision dressed as a fix.
+
+    What is true is that nothing before the trade ledger existed can be
+    reconstructed. So this draws the line explicitly: basis as of today is
+    accepted, the ledger measures divergence from here, and the label stops
+    calling normal accounting "unexplained".
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from app.models.tables import KVSetting
+    from app.services import ledger_service as ledger
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    payload = {"amount_ils": round(float(amount_ils), 2), "as_of": today,
+               "note": note or "accepted as the starting point"}
+    row = await session.get(KVSetting, baseline_key(user))
+    if row:
+        row.value = json.dumps(payload)
+    else:
+        session.add(KVSetting(key=baseline_key(user), value=json.dumps(payload)))
+    # Visible in the ledger, like every other correction.
+    await ledger.record_leg(
+        session, user, ticker=None, txn_type=ledger.ADJUST, quantity=0,
+        value_ils=0.0, source="baseline",
+        note=f"basis baseline {payload['amount_ils']:,.2f} as of {today}"[:255])
+    await session.commit()
+    return {"ok": True, **payload}
+
+
+async def apply(session, user, *, scale: float, note: str = "",
+                force: bool = False) -> dict:
     """Divide every non-cash share count by `scale`, and record it as a ledger leg.
 
     Cash is left alone: it is ILS-native and the bug did not scale it -- it
@@ -172,6 +255,30 @@ async def apply(session, user, *, scale: float, note: str = "") -> dict:
         return {"ok": False, "error": "scale must be positive"}
     if abs(scale - 1.0) < 1e-9:
         return {"ok": False, "error": "a scale of 1.0 would change nothing"}
+
+    # REFUSE A SCALE THAT MAKES THE GAP WORSE. This is not hypothetical: on
+    # 2026-08-24 the same 1.360168 was applied twice in a row, taking a book
+    # from a 350 gap to a -4,874 one, because the operation reads as idempotent
+    # and is a plain multiply. The smoke caught it AFTER the write; this catches
+    # it before. `force` exists for the deliberate second pass, and has to be
+    # asked for by name.
+    snap = await preview(session, user)
+    if snap.get("ok"):
+        gap_now = float(snap.get("unexplained_basis_ils") or 0.0)
+        sec_basis = float(snap.get("securities_basis_ils") or 0.0)
+        cash = float(snap.get("cash_ils") or 0.0)
+        contributed = float(snap.get("contributed_ils") or 0.0)
+        gap_after = (sec_basis / float(scale)) + cash - contributed
+        if not force and abs(gap_after) > abs(gap_now) + 0.01:
+            return {
+                "ok": False,
+                "error": (f"refusing: this would move the unexplained gap from "
+                          f"{gap_now:,.2f} to {gap_after:,.2f} -- further from zero, "
+                          f"not closer. If the book has already been reconciled, a "
+                          f"second pass at the same scale double-corrects it. Pass "
+                          f"force=true if you mean it."),
+                "gap_now": round(gap_now, 2), "gap_after": round(gap_after, 2),
+            }
 
     rows = await list_positions(session, user)
     changed = []

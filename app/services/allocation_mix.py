@@ -9,13 +9,33 @@ OBJ_TARGET = {
 }
 
 
+# The commodity ETFs the screener actually returns. Without these, `classify`
+# fell through to "Equities" for every one of them -- so `_redeploy_cash_recs`
+# looked for a leg whose class was "Commodities", never found one however many
+# commodity ideas the screener produced, and the leg landed in `unplaced` every
+# time. The Today screen showed COW, NIB and USO as ideas it could not act on,
+# which reads as the app having no opinion rather than as a lookup miss.
+COMMODITY_TICKERS = frozenset({
+    "DBC", "DBA", "DBB", "DBE", "DBO", "DBP", "DBS",      # broad + sector baskets
+    "GLD", "IAU", "SLV", "PPLT", "PALL",                   # metals
+    "USO", "UNG", "BNO", "UGA",                            # energy
+    "CORN", "WEAT", "SOYB", "CANE", "COW", "NIB", "JO",    # agriculture
+    "PDBC", "COMT", "GSG", "FTGC", "BCI",                  # broad commodity funds
+})
+
+FIXED_INCOME_TICKERS = frozenset({
+    "BND", "AGG", "TIP", "SHY", "IEF", "TLT", "LQD", "HYG", "BIL", "SHV", "MUB",
+})
+
+
 def classify(ticker: str, market: str, asset_class: str | None = None) -> str:
     if asset_class:
         return asset_class
     t = (ticker or "").upper()
-    if any(k in t for k in ("BOND", "BND", "AGG", "GOV", "GILT")):
+    if t in FIXED_INCOME_TICKERS or any(k in t for k in ("BOND", "BND", "AGG", "GOV", "GILT")):
         return "Fixed Income"
-    if market == "SPOT" or any(k in t for k in ("GOLD", "OIL", "SILVER")):
+    if (t in COMMODITY_TICKERS or market == "SPOT"
+            or any(k in t for k in ("GOLD", "OIL", "SILVER"))):
         return "Commodities"
     return "Equities"
 

@@ -606,6 +606,17 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                     "action": action or "Review this holding.",
                     "rule_id": str(r.id),
                     "apply": {**(plan or {"kind": "none"}), "rule_id": str(r.id)},
+                    # WHEN this firing happened travels with the card.
+                    #
+                    # Without it a consumer can only ask "is this rule
+                    # triggered", never "is this the SAME firing I already dealt
+                    # with". The suppression path in `recommendations` needs the
+                    # second question: dismissing a card says "I handled THIS
+                    # firing", and a later firing is new information that has to
+                    # reach the screen rather than being auto-acknowledged
+                    # against a dismissal from three weeks ago.
+                    "meta": {"triggered_at": (r.last_triggered_at.isoformat()
+                                              if r.last_triggered_at else None)},
                     "how": how})
     if _cleared:
         # Persist the re-arm, or the next render latches it all over again and

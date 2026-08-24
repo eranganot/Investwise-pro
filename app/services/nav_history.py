@@ -232,8 +232,21 @@ async def record_health_for(session, user) -> dict:
         return {"ok": False, "reason": "nav is zero"}
     caps = effective_caps(await get_plan(session, user))
     sc = health_scores(snap, caps["concentration_cap"], caps.get("volatility_cap"))
-    ent = getattr(rows[0], "account", None)
-    entity_id = getattr(getattr(ent, "entity_id", None), "hex", None) or getattr(ent, "entity_id", None)
+    # Query the account rather than walking `rows[0].account`. That attribute is
+    # a lazy relationship, and touching it outside an await raises
+    # MissingGreenlet under asyncio -- which is exactly what this returned in
+    # production: `health: {ok: False, reason: MissingGreenlet}` on every
+    # snapshot since it shipped. The NAV row survived because losing the score
+    # row is non-fatal by design, so the failure sat in a field nobody reads.
+    # Same shape as the import error that killed the whole job: silent, and only
+    # visible in the one place it reports itself.
+    from sqlalchemy import select as _select
+
+    from app.models.tables import Account
+
+    entity_id = (await session.execute(
+        _select(Account.entity_id).where(Account.id == rows[0].account_id)
+    )).scalar_one_or_none()
     if entity_id is None:
         return {"ok": False, "reason": "no entity to attach the score to"}
     session.add(WhsSnapshot(

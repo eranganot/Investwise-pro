@@ -37,6 +37,14 @@ def _seed(c, cash=621.79, contributed=20000):
                json={"amount_ils": contributed, "kind": "deposit", "note": "opening"})
 
 
+# The deposit total that makes a scale of 1.25 the CORRECTING one on this seed.
+# The re-apply guard refuses a scale that moves the gap further from zero, so a
+# test that scales an already-consistent book is now testing the guard by
+# accident. Seeding the inflation the scale is supposed to undo keeps each test
+# about the thing it names.
+_INFLATED_BY_125 = 16668.88
+
+
 def _client():
     logging.disable(logging.CRITICAL)
     return TestClient(m.app)
@@ -197,7 +205,7 @@ def test_applying_a_scale_shrinks_every_holding_and_leaves_cash_alone():
     """
     try:
         with _client() as c:
-            _seed(c)
+            _seed(c, contributed=_INFLATED_BY_125)
             before = {p["ticker"]: p for p in c.get("/api/v1/portfolio").json()["positions"]}
             r = c.post("/api/v1/portfolio/reconcile/apply",
                        json={"scale": 1.25, "confirm": True}).json()
@@ -224,7 +232,7 @@ async def test_the_correction_records_itself_in_the_ledger(own_session):
 
     try:
         with _client() as c:
-            _seed(c)
+            _seed(c, contributed=_INFLATED_BY_125)
             c.post("/api/v1/portfolio/reconcile/apply",
                    json={"scale": 1.25, "confirm": True, "note": "anchor=deposits"})
             async with own_session() as s:
@@ -258,3 +266,106 @@ def test_a_scale_that_would_zero_a_holding_is_refused():
     finally:
         logging.disable(logging.NOTSET)
     assert r["ok"] is False and "refusing" in r["error"]
+
+
+# --------------------------------------------------------------------------- #
+# what going live taught us
+# --------------------------------------------------------------------------- #
+def test_a_second_pass_at_the_same_scale_is_refused():
+    """The one that actually happened.
+
+    `-Scale 1.360168 -Apply` was run twice. The operation reads as idempotent --
+    "reconcile the book" sounds like a state, not a delta -- and it is a plain
+    multiply, so the second pass took a 350 gap to -4,874 and the smoke script
+    only noticed AFTER the write. A guard that fires before the write is the
+    difference between a warning and a restore.
+    """
+    try:
+        with _client() as c:
+            _seed(c, contributed=_INFLATED_BY_125)
+            first = c.post("/api/v1/portfolio/reconcile/apply",
+                           json={"scale": 1.25, "confirm": True}).json()
+            assert first["ok"] is True, first
+            second = c.post("/api/v1/portfolio/reconcile/apply",
+                            json={"scale": 1.25, "confirm": True}).json()
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert second["ok"] is False, "the second pass was allowed to double-correct"
+    assert "further from zero" in second["error"]
+    assert abs(second["gap_after"]) > abs(second["gap_now"])
+
+
+def test_a_deliberate_second_pass_is_still_possible_with_force():
+    """A guard you cannot override is a guard that gets deleted.
+
+    There are real reasons to correct twice -- two separate errors, or a first
+    pass at the wrong anchor. `force` makes the second pass a thing you asked
+    for by name instead of a thing you did by accident.
+    """
+    try:
+        with _client() as c:
+            _seed(c, contributed=_INFLATED_BY_125)
+            c.post("/api/v1/portfolio/reconcile/apply", json={"scale": 1.25, "confirm": True})
+            forced = c.post("/api/v1/portfolio/reconcile/apply",
+                            json={"scale": 1.25, "confirm": True, "force": True}).json()
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert forced["ok"] is True, forced
+
+
+@pytest.mark.asyncio
+async def test_a_baseline_stops_calling_normal_accounting_unexplained(own_session):
+    """Cost basis above deposits is not a bug, and scaling it away deletes shares.
+
+    Selling a winner and reinvesting re-stamps the new lot at today's price, so
+    basis rises with no new money -- every rebalanced book does this. The honest
+    move is to draw a line and measure divergence from it, not to remove real
+    holdings until a warning goes quiet.
+    """
+    try:
+        with _client() as c:
+            _seed(c)
+            before = c.get("/api/v1/portfolio").json()
+            assert before["unexplained_basis_ils"] != 0, "this test needs a gap to accept"
+
+            r = c.post("/api/v1/portfolio/reconcile/baseline",
+                       json={"confirm": True, "note": "accepted after the repair"}).json()
+            assert r["ok"] is True, r
+
+            after = c.get("/api/v1/portfolio").json()
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert after["basis_baseline_ils"] == pytest.approx(r["amount_ils"], abs=0.02)
+    assert after["basis_baseline_as_of"] == r["as_of"]
+    assert after["unexplained_basis_ils"] == pytest.approx(0.0, abs=0.02), (
+        "the accepted baseline should absorb the residual, not hide it")
+    # and the correction is itself visible, like every other one
+    assert after["cost_basis_ils"] == pytest.approx(before["cost_basis_ils"], abs=0.02), (
+        "accepting a baseline must not move a single share")
+
+
+@pytest.mark.asyncio
+async def test_a_baseline_is_recorded_in_the_ledger(own_session):
+    """A correction that is itself invisible leaves the next reader where we started."""
+    from sqlalchemy import select
+
+    from app.models.tables import Transaction
+
+    try:
+        with _client() as c:
+            _seed(c)
+            c.post("/api/v1/portfolio/reconcile/baseline", json={"confirm": True})
+            async with own_session() as s:
+                rows = (await s.execute(
+                    select(Transaction).where(Transaction.source == "baseline")
+                )).scalars().all()
+    finally:
+        logging.disable(logging.NOTSET)
+
+    assert len(rows) == 1
+    assert rows[0].txn_type == "Adjust"
+    assert float(rows[0].quantity) == 0, "a baseline moves no shares"
+    assert "basis baseline" in (rows[0].note or "")

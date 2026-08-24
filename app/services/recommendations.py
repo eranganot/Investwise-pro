@@ -298,7 +298,7 @@ async def load_dismissed(session: AsyncSession, user: User) -> set[str]:
 
 
 async def load_completed(session: AsyncSession, user: User) -> set[str]:
-    """Cards the user marked as DONE (90-day window, tracked separately).
+    """Cards the user marked as DONE (``_DONE_TTL_DAYS`` window, tracked separately).
 
     Ignore and Done mean different things: "not now" vs "handled". Filing them in
     one bucket made "Mark as done" look identical to "Ignore" -- the card landed
@@ -371,15 +371,33 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
     # 1) One rebalance, one card.
     rebal = [r for r in recs if (r.get("apply") or {}).get("kind") == "rebalance_to_objective"]
     if len(rebal) > 1:
-        legs = [r["title"] for r in rebal]
+        # Titles AND amounts captured before anything is mutated. `keep` IS
+        # `rebal[0]`, so writing `keep["title"]` rewrites the first leg in place
+        # -- and the action string built afterwards read the mutated list, so
+        # the merged card listed itself as one of its own legs: "One rebalance
+        # covers the whole move: Rebalance toward your target mix (~7,696);
+        # Sell Equities (~5,694)". The first leg's real name was gone, which is
+        # the one thing this card exists to tell you.
+        legs = [(r["title"], abs(r.get("est_amount") or 0)) for r in rebal]
         keep = rebal[0]
+        # THE MERGED CARD GETS ITS OWN ID, built from every leg it absorbed.
+        #
+        # It used to keep `rebal[0]`'s id -- and `rebal[0]` is whichever leg
+        # sorted first, on this book "SELL Equities". So completing a card whose
+        # title said SELL also filed the BUY Commodities leg riding inside it,
+        # and the user reported never having dismissed a buy card because he
+        # never saw one. He was right. Two legs merged into one card must
+        # produce one id that is neither leg's, or accepting the merge silently
+        # retires something else.
+        keep["id"] = _rid("rebal_merged", *sorted(
+            (r.get("apply") or {}).get("asset_class")
+            or r.get("title", "") for r in rebal))
         keep["title"] = "Rebalance toward your target mix"
         keep["action"] = ("One rebalance covers the whole move: "
-                          + "; ".join(f"{r['title']} (~{_ils(abs(r.get('est_amount') or 0))})"
-                                      for r in rebal) + ".")
+                          + "; ".join(f"{t} (~{_ils(amt)})" for t, amt in legs) + ".")
         keep["why"] = ("Your mix has drifted from your plan's target across more than one asset "
                        "class. These move together, so they're one decision, not several.")
-        keep["meta"] = {**(keep.get("meta") or {}), "merged_legs": legs}
+        keep["meta"] = {**(keep.get("meta") or {}), "merged_legs": [t for t, _ in legs]}
         for r in rebal[1:]:
             drop.add(r["id"])
 
@@ -499,7 +517,14 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
                        ((pos.meta or {}).get("asset_class") if pos is not None else None))
         weight = snap.get("exposure_ticker", {}).get(tk, 0.0)
 
-        if s.get("action_type") == "REBALANCE" or (pos is not None and weight > cap):
+        # `ActionType.REBALANCE.value` is "Rebalance", not "REBALANCE". So even
+        # once war_room started emitting `action_type` (it never did, which is
+        # the other half of this fix) the comparison would still have missed and
+        # a trim signal would still have been sized as a purchase. Upper-case
+        # both sides rather than pinning the check to one serialization of the
+        # enum -- the guard should not break again if the wire format changes.
+        _act = str(s.get("action_type") or "").upper()
+        if _act in ("REBALANCE", "SELL") or (pos is not None and weight > cap):
             # Already held and over the cap -> a concrete trim back to the cap.
             if pos is None or not nav:
                 continue
@@ -752,7 +777,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                       f" Worth weighing: that means selling {_ils(_sell_value)} of "
                       f"holdings to save {_ils(save)}, and giving up the position "
                       f"for the wash-sale window.")
-        recs.append({"id": _rid("tax"), "dimension": "tax",
+        recs.append({"id": _rid("tax", *sorted(losers)), "dimension": "tax",
                      "severity": _sev,
                      "title": ("Harvest a tax loss" if _sev != "LOW"
                                else f"A small tax loss to harvest ({_ils(save)})"),
@@ -777,7 +802,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     mix, _ = current_mix(rows)
     target = await _core_target(session, user, objective)
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
-    for a in report.rebalance_actions[:2]:
+    # Every action past the drift threshold, not the first two. The slice meant
+    # `_rid("rebal","Fixed Income")` was never GENERATED on a book drifted in
+    # three classes -- not suppressed, not filtered, simply never built. A card
+    # that does not exist cannot be restored, and nothing said it was missing.
+    for a in report.rebalance_actions:
         recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
                      "title": f"{a.action_type.title()} {a.asset_class}",
                      "why": f"Your {a.asset_class} weight ({mix.get(a.asset_class, 0):.0%}) has drifted from your "
@@ -920,6 +949,34 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("hedge")
     recs += await _offload(_momentum_recs, rows, snap)
     _tm.mark("momentum")
+
+    # AN OPEN CIRCUIT IS A DEGRADED AGENT, and has to say so here.
+    #
+    # These read `guarded_history` / `_fundamentals` per ticker and swallow the
+    # failure per ticker -- one bad symbol must not sink the scan. Correct, and
+    # it means a breaker OPEN for EVERY symbol produces an empty list and no
+    # exception, so nothing above appends to `degraded` and the response claims
+    # health. Live on 2026-08-23: the history breaker was OPEN, the war-room,
+    # momentum and verdict agents returned nothing, and `degraded` was `[]`.
+    # The rule this project already holds is that a degraded agent means a
+    # MISSING card says nothing about the underlying state -- the guarantee an
+    # empty list quietly broke.
+    try:
+        from app.providers.registry import provider_health
+        _ph = provider_health()
+        _open = {n for n in ("history", "fundamentals")
+                 if (_ph.get(n) or {}).get("circuit_state") == "OPEN"}
+        if "history" in _open:
+            for _a in ("holding_verdicts", "momentum", "war_room"):
+                if _a not in degraded:
+                    degraded.append(_a)
+        if "fundamentals" in _open:
+            for _a in ("holding_verdicts", "hedge"):
+                if _a not in degraded:
+                    degraded.append(_a)
+    except Exception:  # noqa: BLE001 -- reporting health must never break Today
+        logger.warning("provider health unavailable for degraded[]", exc_info=False)
+
     recs += _income_cost_recs(pdicts, snap, objective)
     _tm.mark("income_cost")
     # Surplus cash gets a sized, executable home. Emitted after the income agent
@@ -971,7 +1028,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 _sh = int(_need / _c["price_ils"]) if _c["price_ils"] else 0
                 if _sh > 0:
                     recs.append({
-                        "id": _rid("raise_cash"), "dimension": "liquidity", "severity": "MEDIUM",
+                        "id": _rid("raise_cash", round(_need / 250) * 250),
+                        "dimension": "liquidity", "severity": "MEDIUM",
                         "title": f"Raise {_ils(_need)} of cash",
                         "why": (f"You hold {_ils(_cash_ils)} liquid against a "
                                 f"{_fs2.cash_floor_pct(objective, plan):.0%} floor for a {objective} "
@@ -1187,7 +1245,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 # made it count toward "N rules triggered" while the server
                 # correctly ignored it: banner 1, cards 2, and a FAIL in three
                 # separate smoke sections.
-                "id": _rid("rules_suggested"), "dimension": "discipline", "severity": "MEDIUM",
+                "id": _rid("rules_suggested", *sorted(r.get("ticker", "") for r in _flat)),
+                "dimension": "discipline", "severity": "MEDIUM",
                 "title": (f"{len(_flat)} protective rules ready to arm"
                           if len(_flat) > 1 else "1 protective rule ready to arm"),
                 "why": ("Every level below is derived from the holding's own realized "
@@ -1241,18 +1300,49 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     completed = await load_completed(session, user)
     suppressed = done_count = 0
     if dismissed or completed:
+        # The two mark maps, id -> when-it-was-marked. `load_dismissed` and
+        # `load_completed` throw the timestamp away and return bare id sets, and
+        # "which id" alone cannot answer "is this the same card I marked" --
+        # which is the only question that matters below.
+        _dis_map = await _load_map(session, _dismiss_key(user))
+        _done_map = await _load_map(session, _done_key(user))
+        _marks = {**_dis_map, **_done_map}
+
         # Self-heal a deadlock before suppressing: a rule can sit latched
         # `triggered` while its card is hidden by an earlier dismissal, so the
         # red "N trading rules triggered" banner counts work with nothing left to
         # click. Any rule acted on before rule-clearing shipped is in exactly
         # that state, and would stay there for the life of the rule. Being
         # suppressed means the user already dealt with it, so resolve it.
+        _refired: set[str] = set()
         _hidden_rules = {r.get("id") for r in recs
                          if str(r.get("id", "")).startswith("rule_")} & (dismissed | completed)
         if _hidden_rules:
             from app.services.rules_service import resolve_rule
+
+            # ONLY heal a rule that has not fired AGAIN since you dealt with it.
+            #
+            # The self-heal was unconditional, and `build_recommendations` runs
+            # on every hourly push evaluation -- so a max_weight rule that keeps
+            # breaching was re-resolved as `acknowledged` within a second of each
+            # firing, forever. Observed live: V at 38% against a 30% cap, MSFT 24
+            # against 20, both firing every 30 minutes, both marked handled, and
+            # `rule_banner.triggered` rendering empty. One dismissal in August
+            # had become permanent consent to a condition that recurs.
+            #
+            # Dismissing a card says "I have dealt with THIS firing". A later
+            # firing is new information and has to reach the screen.
             for _hid in _hidden_rules:
                 try:
+                    _fired = next(((r.get("meta") or {}).get("triggered_at")
+                                   for r in recs if r.get("id") == _hid), None)
+                    _dealt = _marks.get(_hid)
+                    if _fired and _dealt and _parse_dt(str(_fired)) > _parse_dt(str(_dealt)):
+                        # Fired again since. Do not resolve it, and do not
+                        # suppress its card either -- healing it while still
+                        # hiding it is the deadlock this block exists to break.
+                        _refired.add(_hid)
+                        continue
                     await resolve_rule(session, user, _hid[5:], "acknowledged")
                 except Exception:  # noqa: BLE001 -- never break Today over cleanup
                     logger.warning("could not self-heal rule %s", _hid, exc_info=False)
@@ -1276,6 +1366,32 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                         await resolve_signal(session, user, _sid)
             except Exception:  # noqa: BLE001 -- never break Today over cleanup
                 logger.warning("could not clear a handled strategy signal", exc_info=False)
+        # A MUTE MUST NOT OUTLIVE THE CONDITION.
+        #
+        # Two ways it did. First, a rule that fired again after you dealt with
+        # it: same card id, new event, and the old mark went on hiding it --
+        # collected in `_refired` above.
+        #
+        # Second, "Done" on a HIGH card. Done is the stronger statement and gets
+        # the longer window, which is right for a MEDIUM nudge and wrong for a
+        # HIGH one: HIGH means the app thinks this is hurting you now, and if it
+        # is STILL saying that a week after you filed it, the filing was
+        # premature and you should see it again. So a HIGH card gets the ignore
+        # window, not the done window.
+        #
+        # Note what this deliberately does NOT do: make HIGH cards
+        # undismissable. That was on the table and it is worse -- a button that
+        # visibly does nothing teaches you to distrust every other button. The
+        # structural fix for a mute landing on the wrong card is the
+        # content-bearing id, which is elsewhere in this change; this is only
+        # about a mute on the RIGHT card outliving the thing it muted.
+        _high = {r.get("id") for r in recs if r.get("severity") == "HIGH"}
+        _high_cut = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+        _stale_high = {rid for rid in (completed & _high)
+                       if _parse_dt(str(_done_map.get(rid) or _now_iso())) < _high_cut}
+        dismissed = dismissed - _refired
+        completed = completed - _refired - _stale_high
+
         _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
         suppressed = _n - len(recs)
@@ -2020,7 +2136,8 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
                    + ([f"Use {_ils(fund['from_cash_ils'])} of cash"] if fund.get("from_cash_ils") else []))
             apply_spec = buy.apply_spec
             gap_ils = affordable
-    out.append({"id": _rid("commodity_add"), "dimension": "diversification", "severity": "LOW",
+    out.append({"id": _rid("commodity_add", pick_tk, round(gap_ils / 250) * 250),
+                "dimension": "diversification", "severity": "LOW",
                 "title": f"Add a commodities sleeve — {_ils(gap_ils)} of {pick_tk}",
                 "action": action,
                 "why": (f"Commodities tend to move differently from equities and bonds, so a small "

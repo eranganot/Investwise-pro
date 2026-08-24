@@ -1276,11 +1276,21 @@ function navSummary(p){
   const putIn=(contributed!=null)
     ? `<div class="mk" style="margin-top:6px">You put in ${ils(contributed)}</div>`
     : `<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
+  // Only the part ABOVE an accepted baseline is worth a warning. Cost basis
+  // exceeding deposits is normal accounting in any book that has rebalanced:
+  // reinvesting a realised gain re-stamps the new lot at market, so basis rises
+  // with no new money. Calling that "unexplained" cried wolf on 350 shekels of
+  // ordinary bookkeeping.
   const gapVal=p.unexplained_basis_ils;
-  const gap=(gapVal!=null && Math.abs(gapVal)>1)
-    ? `<div class="mk" style="margin-top:6px;color:var(--warn,#e5b857)">
+  const baseAt=p.basis_baseline_as_of;
+  let gap="";
+  if(gapVal!=null && Math.abs(gapVal)>1){
+    gap=`<div class="mk" style="margin-top:6px;color:var(--warn,#e5b857)">
          ${ils(Math.abs(gapVal))} of cost basis ${gapVal>0?"has no recorded deposit behind it":"more was deposited than the book shows"}
-       </div>` : "";
+       </div>`;
+  } else if(baseAt){
+    gap=`<div class="mk" style="margin-top:6px">Basis reconciled ${baseAt}</div>`;
+  }
   const cashRow=`<div class="mk" style="margin-top:8px">💵 Liquid cash ${ils(cash)}${nav?` · ${(cash/nav*100).toFixed(1)}% of portfolio`:""}</div>`;
   return `<div class="card" style="text-align:center">
     <div class="mk">Total portfolio value (${p.base_currency||"₪"})</div>

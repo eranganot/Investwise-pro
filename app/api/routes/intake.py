@@ -171,7 +171,15 @@ async def get_portfolio(entity: str | None = None,
         invested_ils = contributed
     gain_ils = nav_ils - invested_ils
     gain_vs_basis_ils = nav_ils - cost_basis_ils
-    unexplained = (cost_basis_ils - contributed) if contributed is not None else None
+    # Basis accepted as the starting point, if that line has been drawn. Cost
+    # basis above deposits is NORMAL in any book that has rebalanced -- selling a
+    # winner and reinvesting re-stamps the new lot at market, so basis rises with
+    # no new money. Only the part above an accepted baseline is worth flagging.
+    from app.services.reconcile_service import get_baseline as _get_baseline
+    _bl = await _get_baseline(session, user)
+    baseline_ils = float(_bl.get("amount_ils") or 0.0)
+    unexplained = ((cost_basis_ils - contributed - baseline_ils)
+                   if contributed is not None else None)
     return {
         "count": len(positions),
         "base_currency": base,
@@ -189,6 +197,8 @@ async def get_portfolio(entity: str | None = None,
         # What you actually paid in, and the difference that nothing accounts for.
         "contributed_ils": (round(contributed, 2) if contributed is not None else None),
         "unexplained_basis_ils": (round(unexplained, 2) if unexplained is not None else None),
+        "basis_baseline_ils": (round(baseline_ils, 2) if _bl else None),
+        "basis_baseline_as_of": _bl.get("as_of"),
         "cash_ils": round(sum(o["value_ils"] for o in out
                               if (o["asset_class"] or "").lower() == "cash"
                               or (o["ticker"] or "").upper() == "CASH"), 2),
@@ -482,6 +492,12 @@ class ReconcileApply(BaseModel):
     ticker: str | None = None
     true_quantity: float | None = None
     confirm: bool = False
+    force: bool = False
+    note: str = ""
+
+
+class ReconcileBaseline(BaseModel):
+    confirm: bool = False
     note: str = ""
 
 
@@ -519,4 +535,37 @@ async def portfolio_reconcile_apply(body: ReconcileApply,
     if not body.confirm:
         return {"ok": False, "would_scale_by": round(float(scale), 6),
                 "note": "nothing written. Re-send with confirm=true to apply."}
-    return await _apply(session, user, scale=float(scale), note=body.note)
+    return await _apply(session, user, scale=float(scale), note=body.note,
+                        force=body.force)
+
+
+@router.post("/portfolio/reconcile/baseline",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def portfolio_reconcile_baseline(body: ReconcileBaseline,
+                                       session: AsyncSession = Depends(get_session),
+                                       user: User = Depends(acting_user)) -> dict:
+    """Accept today's residual cost basis as the starting point.
+
+    Not a way to make a warning disappear. Cost basis above deposits is normal
+    in any book that has rebalanced -- reinvesting a realised gain re-stamps the
+    new lot at market, so basis rises with no new money. What is NOT knowable is
+    anything from before the trade ledger existed, so this draws the line
+    explicitly: basis as of today is accepted, and the ledger measures
+    divergence from here.
+
+    Scaling shares again to force the number to zero would delete real holdings
+    to satisfy a label, and would be inside the reconciliation's own error bars
+    anyway.
+    """
+    from app.services.reconcile_service import preview as _preview, set_baseline
+
+    snap = await _preview(session, user)
+    if not snap.get("ok"):
+        raise HTTPException(status_code=400, detail=snap.get("error", "cannot read the book"))
+    residual = float(snap.get("unexplained_basis_ils") or 0.0)
+    if abs(residual) < 0.01:
+        return {"ok": True, "note": "nothing to accept -- basis already matches deposits."}
+    if not body.confirm:
+        return {"ok": False, "would_accept_ils": round(residual, 2),
+                "note": "nothing written. Re-send with confirm=true to accept."}
+    return await set_baseline(session, user, amount_ils=residual, note=body.note)
