@@ -1258,46 +1258,53 @@ async function toggleRule(id){
 // Total value alone doesn't answer "am I up?" — show what went in, what it's worth
 // now, and the gap between them. All figures arrive ILS-normalized from the API.
 function navSummary(p){
-  // The HEADLINE gain is what the HOLDINGS did -- value against their own cost
-  // basis. It used to be NAV minus the contributions ledger, which is a
-  // different question wearing the same label: with 27,388 of basis behind a
-  // 20,000 ledger it read +42.48% on a book that had gained 4.0%. Deposits are
-  // shown separately, and when the two disagree by more than a rounding the gap
-  // is named rather than absorbed into performance.
+  // LEAD WITH WHAT YOUR MONEY DID: NAV against what you actually paid in.
+  //
+  // This card led with gain-vs-cost-basis, and that was right while the book
+  // carried 7,388 of positions an FX bug had minted -- NAV was wrong, so
+  // NAV-minus-deposits read +42.48% on a book that had gained 4%. The metric
+  // was never the problem; the NAV was. On a repaired book the question an
+  // owner actually asks is "I put in 20,000, what is it worth now", and the
+  // answer is 21,339 -- up 1,339, +6.69%.
+  //
+  // Cost basis moves to the second line, where the difference between the two
+  // is named for what it is: REALISED gain, already banked and re-deployed into
+  // lots that were re-stamped at the price paid for them. Every rebalanced book
+  // does this. So the amber "no recorded deposit behind it" warning goes, and
+  // so does the basis baseline that existed only to silence it.
   const nav=p.nav_ils||0, cash=p.cash_ils||0;
   const basis=(p.cost_basis_ils!=null)?p.cost_basis_ils:(p.invested_ils||0);
-  const g=(p.gain_vs_basis_ils!=null)?p.gain_vs_basis_ils:(p.gain_ils||0);
-  const gp=(p.gain_vs_basis_pct!=null)?p.gain_vs_basis_pct:p.gain_pct;
+  const contributed=p.contributed_ils;
+  const haveContrib=(contributed!=null && contributed>0
+                     && p.gain_vs_contributions_ils!=null);
+
+  const g  = haveContrib ? p.gain_vs_contributions_ils
+           : ((p.gain_vs_basis_ils!=null)?p.gain_vs_basis_ils:(p.gain_ils||0));
+  const gp = haveContrib ? p.gain_vs_contributions_pct
+           : ((p.gain_vs_basis_pct!=null)?p.gain_vs_basis_pct:p.gain_pct);
   const up=g>=0;
   const chg=(gp==null)?"":`<div class="${up?'up':'down'}" style="font-size:15px;margin-top:2px">
       ${up?'▲':'▼'} ${ils(Math.abs(g))} (${up?'+':'-'}${Math.abs(gp).toFixed(2)}%)</div>
-      <div class="mk">on ${ils(basis)} of cost basis</div>`;
-  const contributed=p.contributed_ils;
-  const putIn=(contributed!=null)
-    ? `<div class="mk" style="margin-top:6px">You put in ${ils(contributed)}</div>`
-    : `<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
-  // Only the part ABOVE an accepted baseline is worth a warning. Cost basis
-  // exceeding deposits is normal accounting in any book that has rebalanced:
-  // reinvesting a realised gain re-stamps the new lot at market, so basis rises
-  // with no new money. Calling that "unexplained" cried wolf on 350 shekels of
-  // ordinary bookkeeping.
-  const gapVal=p.unexplained_basis_ils;
-  const baseAt=p.basis_baseline_as_of;
-  let gap="";
-  if(gapVal!=null && Math.abs(gapVal)>1){
-    gap=`<div class="mk" style="margin-top:6px;color:var(--warn,#e5b857)">
-         ${ils(Math.abs(gapVal))} of cost basis ${gapVal>0?"has no recorded deposit behind it":"more was deposited than the book shows"}
-       </div>`;
-  } else if(baseAt){
-    gap=`<div class="mk" style="margin-top:6px">Basis reconciled ${baseAt}</div>`;
+      <div class="mk">${haveContrib?`on ${ils(contributed)} you put in`:`on ${ils(basis)} of cost basis`}</div>`;
+
+  // The second line, and the only place cost basis appears now.
+  let secondary;
+  if(haveContrib){
+    const realised=basis-contributed, unreal=nav-basis;
+    secondary=`<div class="mk" style="margin-top:6px">${ils(Math.abs(unreal))} unrealised on ${ils(basis)} of cost basis`
+      + ((Math.abs(realised)>1)
+         ? ` &middot; ${ils(Math.abs(realised))} ${realised>=0?"realised and reinvested":"drawn down"}`
+         : "")
+      + `</div>`;
+  } else {
+    secondary=`<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
   }
   const cashRow=`<div class="mk" style="margin-top:8px">💵 Liquid cash ${ils(cash)}${nav?` · ${(cash/nav*100).toFixed(1)}% of portfolio`:""}</div>`;
   return `<div class="card" style="text-align:center">
     <div class="mk">Total portfolio value (${p.base_currency||"₪"})</div>
     <div class="nm" style="font-size:24px">${ils(nav)}</div>
     ${chg}
-    ${putIn}
-    ${gap}
+    ${secondary}
     ${cashRow}
   </div>`;
 }

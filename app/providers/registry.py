@@ -21,12 +21,14 @@ _MARKET = {"builtin": BuiltinMarketDataProvider, "yahoo": YahooMarketDataProvide
 _FX = {"builtin": BuiltinFXProvider, "frankfurter": FrankfurterFXProvider}
 
 
-def _tier(cache_ttl_sec: float | None = None) -> ResilienceTier:
+def _tier(cache_ttl_sec: float | None = None, stale_ttl_sec: float = 0.0) -> ResilienceTier:
     s = get_settings()
     return ResilienceTier(
         breaker=CircuitBreaker(s.provider_cb_failure_threshold, s.provider_cb_recovery_sec),
         bucket=TokenBucket(s.provider_rate_limit_per_sec, s.provider_rate_limit_per_sec),
-        cache=TTLCache(s.provider_cache_ttl_sec if cache_ttl_sec is None else cache_ttl_sec),
+        cache=TTLCache(s.provider_cache_ttl_sec if cache_ttl_sec is None else cache_ttl_sec,
+                       stale_ttl=stale_ttl_sec),
+        failure_cooloff=s.provider_failure_cooloff_sec,
     )
 
 
@@ -55,9 +57,34 @@ def _tiers() -> dict:
     s = get_settings()
     return {"market": _tier(), "fx": _tier(), "economic": _tier(),
             # Same resilience, longer memory: slow-moving data should not be
-            # refetched at quote cadence.
-            "history": _tier(s.provider_history_cache_ttl_sec),
-            "fundamentals": _tier(s.provider_fundamentals_cache_ttl_sec)}
+            # refetched at quote cadence. These two also keep an expired copy as
+            # emergency stock -- daily bars and quarterly filings do not change
+            # between fetches, so a stale one is the same answer. `market` and
+            # `fx` deliberately do NOT: a stale PRICE misvalues the book.
+            "history": _tier(s.provider_history_cache_ttl_sec,
+                             s.provider_history_stale_ttl_sec),
+            "fundamentals": _tier(s.provider_fundamentals_cache_ttl_sec,
+                                  s.provider_fundamentals_stale_ttl_sec)}
+
+
+# The provider's own range ladder, mirrored. `get_history(tk, days)` maps days
+# onto one of Yahoo's ranges, so 130, 200 and 252 days all produce the SAME
+# upstream URL -- but the cache key was `hist:{ticker}:{days}`, so they were
+# three separate entries and three separate fetches of identical data. Across
+# eight call sites asking for 130/200/252/2600, one ticker cost up to four
+# requests that shared nothing.
+#
+# Keying on the bucket instead means the cache key changes exactly when the
+# upstream request changes, which is the only thing it was ever supposed to
+# track. On a 25-name scan that is the difference between 25 requests and 100.
+_HISTORY_BUCKETS = (260, 520, 1300, 2600)
+
+
+def _history_bucket(days: int) -> int:
+    for b in _HISTORY_BUCKETS:
+        if days <= b:
+            return b
+    return _HISTORY_BUCKETS[-1]
 
 
 def guarded_quote(ticker: str):
@@ -65,7 +92,23 @@ def guarded_quote(ticker: str):
 
 
 def guarded_history(ticker: str, days: int = 252):
-    return _tiers()["history"].call(f"hist:{ticker}:{days}", lambda: market_provider().get_history(ticker, days))
+    """One fetch per (ticker, upstream range), sliced to what the caller asked.
+
+    A longer series already in cache answers a shorter request for free -- a
+    backtest that pulled ten years a minute ago means the 200-day trend costs
+    nothing rather than another round trip.
+    """
+    tier = _tiers()["history"]
+    want = _history_bucket(days)
+    for b in _HISTORY_BUCKETS:
+        if b < want:
+            continue
+        cached = tier.cached(f"hist:{ticker}:{b}")
+        if cached is not None:
+            return cached[-days:]
+    series = tier.call(f"hist:{ticker}:{want}",
+                       lambda: market_provider().get_history(ticker, want))
+    return series[-days:]
 
 
 def guarded_fundamentals(ticker: str):
@@ -81,9 +124,23 @@ def guarded_events():
 
 
 def provider_health() -> dict:
-    out = {}
+    """State AND cause.
+
+    This returned `{"circuit_state": ...}` and nothing else. So `history` could
+    sit OPEN for a week and the endpoint that exists to explain provider health
+    could not say which key failed, what the error was, when it last worked, or
+    whether anything was succeeding alongside it -- which is the difference
+    between diagnosing an outage and inferring one from source code.
+    `circuit_state` is kept at the top level because the smoke scripts read it.
+    """
+    out: dict = {}
     for name, tier in _tiers().items():
-        out[name] = {"circuit_state": tier.breaker.state if tier.breaker else "n/a"}
+        if tier.breaker is None:
+            out[name] = {"circuit_state": "n/a"}
+            continue
+        snap = tier.breaker.snapshot()
+        snap["stale_served"] = tier.stale_served
+        out[name] = snap
     out["market_data_provider"] = market_provider().name
     out["fx_provider"] = fx_provider().name
     return out

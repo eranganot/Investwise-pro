@@ -171,6 +171,22 @@ async def get_portfolio(entity: str | None = None,
         invested_ils = contributed
     gain_ils = nav_ils - invested_ils
     gain_vs_basis_ils = nav_ils - cost_basis_ils
+    # WHAT YOUR MONEY DID -- and the headline, now that the book is repaired.
+    #
+    # PR 2 deliberately moved AWAY from this number, and was right to at the
+    # time: NAV then contained 7,388 of positions an FX bug had minted, so
+    # NAV-minus-deposits was measuring phantom holdings against real cash and
+    # reported +42.48%. The metric was never wrong; the NAV was. On a repaired
+    # book it is the number the owner actually asked for -- 21,339 against
+    # 20,000 paid in is +6.69%.
+    #
+    # The 350 by which cost basis exceeds deposits is REALISED GAIN, not a
+    # discrepancy: sell a winner, reinvest the proceeds, and the new lot is
+    # stamped at a price that already contained the gain. Basis rises with no
+    # new money. Every brokerage account does this, and gain-vs-contributions
+    # counts it correctly -- which is why the "unexplained" warning and the
+    # basis baseline built to silence it both come out with this change.
+    gain_vs_contrib_ils = (nav_ils - contributed) if contributed is not None else None
     # Basis accepted as the starting point, if that line has been drawn. Cost
     # basis above deposits is NORMAL in any book that has rebalanced -- selling a
     # winner and reinvesting re-stamps the new lot at market, so basis rises with
@@ -194,8 +210,16 @@ async def get_portfolio(entity: str | None = None,
         "gain_vs_basis_ils": round(gain_vs_basis_ils, 2),
         "gain_vs_basis_pct": (round(gain_vs_basis_ils / cost_basis_ils * 100, 2)
                               if cost_basis_ils else None),
-        # What you actually paid in, and the difference that nothing accounts for.
+        # THE HEADLINE: what your money did against what you paid in.
         "contributed_ils": (round(contributed, 2) if contributed is not None else None),
+        "gain_vs_contributions_ils": (round(gain_vs_contrib_ils, 2)
+                                      if gain_vs_contrib_ils is not None else None),
+        "gain_vs_contributions_pct": (round(gain_vs_contrib_ils / contributed * 100, 2)
+                                      if gain_vs_contrib_ils is not None and contributed
+                                      else None),
+        # Kept as a diagnostic, no longer an alarm. Basis above deposits is
+        # realised gain that has been re-stamped into new lots, which is what a
+        # rebalanced book looks like -- not something to be explained away.
         "unexplained_basis_ils": (round(unexplained, 2) if unexplained is not None else None),
         "basis_baseline_ils": (round(baseline_ils, 2) if _bl else None),
         "basis_baseline_as_of": _bl.get("as_of"),

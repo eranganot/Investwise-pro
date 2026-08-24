@@ -974,6 +974,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             for _a in ("holding_verdicts", "hedge"):
                 if _a not in degraded:
                     degraded.append(_a)
+        # Cards built on an expired series are not the same claim as cards built
+        # on today's, even when the numbers are identical -- and for daily bars
+        # they usually are. Naming it separately keeps "we served you something
+        # older" distinct from "we have nothing", which are the two very
+        # different things an empty `degraded` used to conflate.
+        if any((_ph.get(n) or {}).get("stale_served") for n in ("history", "fundamentals")):
+            if "history_stale" not in degraded:
+                degraded.append("history_stale")
     except Exception:  # noqa: BLE001 -- reporting health must never break Today
         logger.warning("provider health unavailable for degraded[]", exc_info=False)
 

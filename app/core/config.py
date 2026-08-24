@@ -80,7 +80,19 @@ class Settings(BaseSettings):
     # moves: daily bars for an hour, quarterly fundamentals for six.
     provider_history_cache_ttl_sec: float = 3600.0        # daily bars
     provider_fundamentals_cache_ttl_sec: float = 21600.0  # quarterly filings
-    redis_url: str = ""               # if set, Celery uses Redis; else runs eager (synchronous)
+    # HOW LONG AN EXPIRED ANSWER STAYS BETTER THAN NO ANSWER.
+    #
+    # Serving a stale series is a judgement about the DATA, not about the cache:
+    # daily closes do not change between fetches, so a six-hour-old history is
+    # the same history. Quotes are the opposite, which is why this is wired only
+    # to the history and fundamentals tiers -- a stale PRICE would silently
+    # misvalue the book, and that is the one failure this app must not have.
+    provider_history_stale_ttl_sec: float = 21600.0       # 6h of emergency stock
+    provider_fundamentals_stale_ttl_sec: float = 86400.0  # 24h
+    # A failed key is remembered this long, so callers queued behind it inherit
+    # the error instead of each sending their own request upstream.
+    provider_failure_cooloff_sec: float = 20.0
+    redis_url: str = ""             # if set, Celery uses Redis; else runs eager (synchronous)
     enable_scheduler: bool = True     # start APScheduler cron jobs in-process (hourly market refresh)
     # Google sign-in (Phase A)
     google_oauth_client_id: str = ""
