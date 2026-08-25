@@ -234,6 +234,18 @@ def solve(series: dict, *, sleeves: list[dict], core: dict | None,
 
     def _out(v: dict) -> dict:
         v["ceiling_check"] = ceiling_check
+        # The other half of the pair. See `solve_split`'s `question` block: the
+        # two searches answer different questions and their numbers differ for
+        # that reason alone.
+        v["question"] = {
+            "asks": "smallest_share_that_reaches_target",
+            "text": (f"the SMALLEST sleeve share that reaches +{target_excess_pct:g}%/yr "
+                     f"over the benchmark. Anything larger buys return you did not ask "
+                     f"for at risk you did not agree to."),
+            "differs_from": ("Find the best split asks the opposite question - the "
+                             "largest excess your ceiling allows, with no target - so "
+                             "its answer is normally larger. Neither is wrong."),
+        }
         return v
 
     # 1. Reached, inside every constraint.
@@ -983,6 +995,56 @@ def solve_split(series: dict, *, sleeves: list[dict], core: dict | None,
             f"{max_drawdown_pct:g}% ceiling. It ranked well on the halves and is "
             f"not admissible on the full history.")
     found["oos_split"] = split_date
+
+    # WHICH constraint is doing the clipping. `split_solver` detects THAT the
+    # winner is on a boundary but deliberately cannot say which one -- it knows
+    # nothing about caps. This does.
+    if found.get("boundary", {}).get("on_boundary") and full.get("ok"):
+        by_tk = (full.get("peak_weight_pct_by_ticker") or {})
+        mine = {tk: w for tk, w in by_tk.items() if tk in sleeve_tickers}
+        tk = max(mine, key=mine.get) if mine else None
+        at = mine.get(tk, 0.0) if tk else 0.0
+        if tk and at >= cap_pct - 1e-9:
+            found["binding_constraint"] = {
+                "kind": "concentration_cap",
+                "ticker": tk,
+                "cap_pct": round(cap_pct, 2),
+                "at_pct": round(at, 2),
+                "note": (f"{tk} reaches {at:.1f}% of the book at this split, which is "
+                         f"your {cap_pct:.0f}% concentration cap. Each sleeve here holds "
+                         f"one ticker, so a sleeve at the cap IS that ticker at the cap "
+                         f"- the search stopped because the cap stopped it, not because "
+                         f"a larger sleeve measured worse."),
+            }
+        elif found["boundary"].get("at_max_total"):
+            found["binding_constraint"] = {
+                "kind": "cash_floor",
+                "at_pct": round(max_total, 2),
+                "note": (f"the winner uses the whole {max_total:.0f}% your cash floor "
+                         f"leaves investable, so the floor is what stopped it."),
+            }
+        else:
+            found["binding_constraint"] = {
+                "kind": "drawdown_ceiling",
+                "ceiling_pct": round(max_drawdown_pct, 2),
+                "note": ("neighbouring splits breached your drawdown ceiling, so the "
+                         "ceiling is what stopped the search."),
+            }
+
+    # WHICH QUESTION THIS ANSWERS, on the payload. T2 and T6a return different
+    # numbers for the same book -- 65% and 80% on the live one -- and both are
+    # correct answers to DIFFERENT questions. Two green Accept buttons with
+    # different numbers and nothing saying so is the card-claim invariant
+    # broken across two cards instead of inside one.
+    found["question"] = {
+        "asks": "largest_excess_within_ceiling",
+        "text": ("the LARGEST measured excess your ceiling allows, at any split. "
+                 "It has no return target to hit."),
+        "differs_from": ("the Target card asks the opposite question - the SMALLEST "
+                         "sleeve share that reaches the excess you typed - so its "
+                         "answer is normally smaller. Neither is wrong: one asks "
+                         "'what is enough', this asks 'what is most'."),
+    }
     found["would_execute"] = _would_execute_split(sleeves, best_point)
     found["execution_plan"] = None          # applying is Phase A, not this
     return found

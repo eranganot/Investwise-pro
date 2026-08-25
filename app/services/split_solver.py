@@ -341,8 +341,56 @@ def search(measure, *, n: int, max_total: float,
 
     items = admissible_items()
     excesses = [m[rank_key] for _, m in items]
+
+    # WHY DID THE SEARCH STOP HERE? An optimum sitting on the edge of the
+    # admissible region means something different from one sitting in the middle
+    # of it, and the payload used to render them identically.
+    #
+    # On the live book every one of the top eight splits had 40 in the first
+    # column, because each sleeve is a single ticker and the concentration cap
+    # is 0.40 -- so a 40% sleeve IS that ticker at exactly the cap. The search
+    # did not find an interior optimum; it ran into a wall and stopped. "The
+    # best point REACHED" was already in the payload and true, and still left a
+    # reader to conclude the blend had been optimised rather than clipped.
+    #
+    # Detected GENERICALLY, by probing the winner's own neighbourhood: this
+    # module knows nothing about caps or ceilings -- `measure` reports
+    # admissibility and that is deliberate. Naming WHICH constraint binds is the
+    # caller's job, because only the caller knows what it enforced.
+    finest = min(refine_steps) if refine_steps else used_step
+    probed = neighbours(best_p, finest, max_total)
+    blocked = 0
+    measurable = 0
+    for q in probed:
+        m = scored.get(tuple(round(x, 4) for x in q))
+        if m is None:
+            continue
+        measurable += 1
+        if not m.get("admissible"):
+            blocked += 1
+    at_max_total = abs(sum(best_p) - max_total) <= 1e-9
+    on_boundary = bool(blocked) or at_max_total
+    boundary = {
+        "on_boundary": on_boundary,
+        "at_max_total": at_max_total,
+        "blocked_neighbours": blocked,
+        "probed_neighbours": measurable,
+        "step_pct": finest,
+        "note": (
+            ("The winner sits on the edge of what your constraints allow: "
+             f"{blocked} of {measurable} neighbouring splits were inadmissible"
+             + (" and it already uses the whole investable share" if at_max_total else "")
+             + ". A best point on a boundary usually means the search wanted more "
+               "than a constraint permits, so read it as clipped rather than "
+               "optimised.")
+            if on_boundary else
+            "The winner is interior: every neighbouring split was admissible and "
+            "none was better, so no constraint is doing the choosing."),
+    }
+
     return {
         "ok": True,
+        "boundary": boundary,
         "best": {"split_pct": list(best_p),
                  "total_pct": round(sum(best_p), 2),
                  **{k: v for k, v in best_m.items() if k != "admissible"}},

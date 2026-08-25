@@ -1815,6 +1815,23 @@ function _tgtSplitBody(){
     <div style="font-weight:700;font-size:15px">${names}</div>
     <div style="margin-top:2px">Out-of-sample excess <b>${b.oos_excess_pct}%/yr</b>,
       in-sample ${b.excess_pct}%/yr, worst fall ${b.max_drawdown_pct}%.</div>`;
+  // WHICH QUESTION THIS ANSWERS. This card and the one above it return
+  // different numbers for the same book -- 65% and 80% on the live one -- and
+  // both are correct answers to DIFFERENT questions. Two green Accept buttons
+  // with different numbers and nothing saying why is the card-claim invariant
+  // broken across two cards instead of inside one.
+  if(s.question)
+    out+=`<div class="mk" style="margin-top:6px">This answers ${s.question.text}
+      <span class="warn">${s.question.differs_from}</span></div>`;
+  // AND WHETHER THE SEARCH WAS CLIPPED RATHER THAN OPTIMISED. On this book every
+  // top split had 40 in the first column because each sleeve holds one ticker
+  // and the concentration cap is 40% -- the search ran into a wall. "The best
+  // point REACHED" was already true and still read as "optimised".
+  if(s.boundary&&s.boundary.on_boundary){
+    const bc=s.binding_constraint;
+    out+=`<div class="warn" style="margin-top:6px">${s.boundary.note}`+
+         `${bc&&bc.note?` <b>${bc.note}</b>`:""}</div>`;
+  }
   // Every claim about how much to trust this, together, above the button.
   out+=`<div class="mk" style="margin-top:6px">${s.ranked_on_note||""}</div>`;
   out+=`<div class="mk">Searched ${cov.coarse_points} splits on a ${cov.step_pct}-point grid`+
@@ -1882,6 +1899,10 @@ function _tgtRecommendation(res){
   out+=`<div class="mk" style="margin-bottom:4px">WHAT TO DO</div>
     <div class="${tone}" style="font-weight:700;font-size:15px">${r.headline}</div>
     <div style="margin-top:4px">${r.because}</div>`;
+  // The pair of this card's question, stated once here and once on the split
+  // block, so neither number can be read as the other's answer.
+  const _q=TGT.res&&TGT.res.question;
+  if(_q) out+=`<div class="mk" style="margin-top:4px">This answers ${_q.text}</div>`;
   // set_sleeves is now a REAL button. It was inert through T5 because Phase T
   // was read-only; Phase A is what makes it act, and it acts on the plan only.
   const acts=(r.actions||[]).filter(a=>a.kind==="set_ceiling"||a.kind==="set_target"||a.kind==="set_sleeves");
@@ -1997,16 +2018,24 @@ function targetBody(){
   // It is NOT re-seeded here. Silently moving a risk constraint the user owns
   // is worse than leaving it wrong. The mismatch is shown; the number stays
   // theirs to change, in the field two lines up.
+  //
+  // "SOLVED AGAINST", not "your ceiling". The input is uncontrolled, so a typed
+  // value does not reach TGT.ceiling until Solve reads it -- which means this
+  // line can legitimately name a different number from the box directly above
+  // it. Reported live: box 43.1, line 58.6, and the line was right about the
+  // solve it describes. Naming the solve removes the contradiction without
+  // pretending to know what is in the box.
   const _cc=TGT.res&&TGT.res.ceiling_check;
   const stale=(_cc&&_cc.book_already_breaches)
-    ? `<div class="bad" style="margin-top:8px">Your ceiling is <b>${_cc.ceiling_pct}%</b> and this book `
+    ? `<div class="bad" style="margin-top:8px">Solved against a <b>${_cc.ceiling_pct}%</b> ceiling, and this book `
       +`has already measured <b>${_cc.book_measured_pct}%</b> over the same window, unchanged `
       +`&mdash; ${_cc.gap_pct} points over. Every answer below is bounded by a ceiling the book `
       +`already breaches, so a "no" here is about this number before it is about any strategy. `
       +`Change it above and press Solve.</div>`
     : (_cc&&_cc.known!==false
-        ? `<div class="mk" style="margin-top:6px">Ceiling ${_cc.ceiling_pct}%; this book measures `
-          +`${_cc.book_measured_pct}% over the same window, so you are inside it.</div>`
+        ? `<div class="mk" style="margin-top:6px">Solved against a ${_cc.ceiling_pct}% ceiling; this book `
+          +`measures ${_cc.book_measured_pct}% over the same window, so you are inside it. `
+          +`Change the box above and press Solve to re-measure.</div>`
         : "");
   const form=`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
       <label style="flex:1;min-width:150px"><div class="mk">BEAT THE BENCHMARK BY</div>
