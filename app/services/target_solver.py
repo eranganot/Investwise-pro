@@ -501,6 +501,20 @@ async def solve_for(session: AsyncSession, user: User, *,
     # recommendation and the figures above it could disagree, the card would be
     # arguing with itself.
     out["recommendation"] = recommend(out, benchmark=out.get("benchmark") or bench_tk)
+
+    # T5. WRITE IT DOWN. Nothing stored a verdict, so nothing outside this
+    # function could act on one -- and the war room, which is where the plan
+    # wanted the constraint consulted, cannot afford to call this: a solve is a
+    # coarse-then-fine grid of ten-year simulations, and the war room already
+    # costs 6,726 ms on /recommendations while every other agent is under 50 ms.
+    #
+    # Best-effort by construction. A solve that answered must not fail on its
+    # receipt, so `record` swallows and logs.
+    try:
+        from app.services import solver_store
+        await solver_store.record(session, user, out, source="on_demand")
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 

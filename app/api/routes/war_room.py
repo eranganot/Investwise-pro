@@ -54,11 +54,26 @@ async def _war_room_payload(session: AsyncSession, user: User, positions=None, *
         observations, grounded = list(DEFAULT_OBSERVATIONS), False
 
     ps = plan_settings(await get_plan(session, user))
+    # T5. The solver's LAST verdict, read from the store rather than recomputed.
+    # A solve is a coarse-then-fine grid of ten-year simulations and this is
+    # already the slowest agent in the app -- running one here would be the
+    # wrong trade by an order of magnitude. `as_constraint` carries the age, and
+    # a verdict too old to be trusted keeps its finding and loses its teeth.
+    constraint = {"known": False, "blocks": False}
+    try:
+        from app.services import solver_store
+        constraint = solver_store.as_constraint(await solver_store.latest(session, user))
+    except Exception:  # noqa: BLE001 -- a missing constraint must not cost the war room
+        logger.warning("solver constraint unavailable", exc_info=False)
+
     # narrate=True makes a real Gemini call; even with it off this is the
     # slowest agent in the app (5.4s cold, per STATUS).
     out = await offload(build_war_room, observations, portfolio_tickers=port_tickers,
-                        settings=ps, narrate=narrate)
+                        settings=ps, narrate=narrate, constraint=constraint)
     out["grounded"] = grounded
+    # On the payload as well as inside the transcripts, so a smoke test can see
+    # whether the constraint was consulted without parsing English.
+    out["solver_constraint"] = constraint
     out["signal_basis"] = ("Live price history: each name's latest close against its own "
                            "50-day trend. Divergence is measured, not forecast."
                            if grounded else "SAMPLE DATA - not real prices.")

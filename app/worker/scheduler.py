@@ -174,6 +174,18 @@ def start_scheduler() -> None:
                            misfire_grace_time=21600)
         logger.info("Strategy backtest refresh scheduled (03:30 daily).")
     except Exception:  # noqa: BLE001
+        logger.warning("Strategy backtest refresh not scheduled.", exc_info=False)
+
+    try:
+        # T5. 04:10, after the 03:30 backtest refresh, because a re-solve reads
+        # the measurements that job writes -- solving first would answer from
+        # yesterday's numbers and stamp today's timestamp on them.
+        from app.services.solver_store import run_solver_refresh_blocking
+        _scheduler.add_job(_guarded("solver_refresh", run_solver_refresh_blocking),
+                           "cron", hour=4, minute=10, id="solver_refresh",
+                           misfire_grace_time=21600)
+        logger.info("Target solver refresh scheduled (04:10 daily).")
+    except Exception:  # noqa: BLE001
         logger.warning("Backtest refresh job not scheduled.", exc_info=False)
 
     # Evaluate the active rule-based strategy once a day, after the US close has

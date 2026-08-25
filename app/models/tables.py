@@ -577,6 +577,51 @@ class StrategySignalState(Base, PKMixin, TimestampMixin):
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class SolverVerdict(Base, PKMixin, TimestampMixin):
+    """What the target solver last concluded, so something else can read it.
+
+    T5 asks the war-room agents to treat the solver's answer as a CONSTRAINT.
+    They could not, and not for want of a function call: nothing anywhere stored
+    a verdict. `GET /plan/target` recomputed from scratch on every request --
+    a coarse-then-fine grid sweep, each point one simulation of ten years of
+    daily closes. The war room already costs 6,726 ms on /recommendations while
+    every other agent comes in under 50 ms, so calling the solver from inside it
+    would have put a multi-second sweep on the slowest path in the app.
+
+    A stored verdict decouples the two: the solver writes when it runs (either
+    because someone opened the target card, or because the nightly job ran) and
+    every reader gets the last answer plus its age. Age is not a footnote --
+    a verdict is a statement about a specific book, and this one is allowed to
+    BLOCK a card, so a reader that cannot say how old it is has no business
+    acting on it.
+
+    Only the fields a constraint needs are columns; the rest of the solver's
+    output lands in ``detail``. Denormalising the whole result would make this
+    table a second copy of something that is recomputed anyway -- the exact
+    failure PR 8 removed one layer down.
+    """
+    __tablename__ = "solver_verdicts"
+
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    solver_version: Mapped[str] = mapped_column(String(16), default="")
+    # REACHED | REACHED_ABOVE_CAP | DRAWDOWN_BOUND | UNREACHABLE | NOT_MEASURABLE
+    outcome: Mapped[str] = mapped_column(String(32), index=True, default="")
+    target_excess_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_drawdown_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The sleeve size the solver says the target needs, on the fine grid.
+    solved_total_sleeve_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # THE ONE THAT MATTERS MOST. True means the book breaches its own ceiling at
+    # ZERO sleeve -- i.e. the core alone is the problem and no sleeve size,
+    # including none at all, repairs it. It is why "change the core" is a card.
+    floor_breaches_ceiling: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Why it stopped: concentration_cap | drawdown_ceiling | component_excess.
+    binding_constraint: Mapped[str] = mapped_column(String(32), default="")
+    # How the verdict was produced, so a stale one can be attributed:
+    # "on_demand" (someone opened the target card) | "scheduled".
+    source: Mapped[str] = mapped_column(String(16), default="on_demand")
+    detail: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
+
+
 class PlanApplication(Base, PKMixin, TimestampMixin):
     """Every automated change to the tracked book, and what it replaced.
 

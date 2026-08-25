@@ -100,9 +100,30 @@ class StateMachine:
     def _adv_veto(self, vetted: VettedSignal, note: AdversaryNote) -> VetoedSignal:
         return VetoedSignal(source=vetted, reason="ADVERSARY " + note.critique)
 
+    def blocks_now(self, note: AdversaryNote | None) -> bool:
+        """Does this finding stop the pipeline? ONE answer, for both callers.
+
+        `cross_examine` had this rule inline four times as `enforce and
+        note.blocks`, and `build_war_room` -- the path that produces the Today
+        cards -- had it nowhere at all. It calls `vet` / `optimize` / `rank` /
+        `display` individually and appends the Adversary's findings as
+        transcript PROSE, branching on nothing. So `adversary_enforce_veto`,
+        which defaults to True, was honoured on exactly one route
+        (/api/v1/decision-feed) and on the route that actually shows people
+        cards it was decoration.
+
+        `test_war_room_includes_cross_examination_lines` did not catch it: it
+        asserts the Adversary lines exist and carry a severity field, which was
+        true the whole time and says nothing about whether anything acts on
+        them. Coverage that looks like coverage.
+        """
+        return bool(note is not None and note.blocks
+                    and self.settings.adversary_enabled
+                    and self.settings.adversary_enforce_veto)
+
     # --- cross-examined pipeline (Phase 1.3) ---
     def cross_examine(self, signal: DetectedSignal) -> ExaminationResult:
-        adv, enforce = self.adversary, self.settings.adversary_enforce_veto
+        adv = self.adversary
         examine = self.settings.adversary_enabled
         notes: list[AdversaryNote] = []
 
@@ -110,7 +131,7 @@ class StateMachine:
         if examine:
             nd = adv.examine_detected(signal)
             notes.append(nd)
-            if enforce and nd.blocks:
+            if self.blocks_now(nd):
                 vetted = VettedSignal(source=signal, veto_flag=True,
                                       risk_critique="ADVERSARY " + nd.critique)
                 return ExaminationResult(outcome=VetoedSignal(source=vetted, reason=nd.critique), notes=notes)
@@ -124,7 +145,7 @@ class StateMachine:
             return ExaminationResult(
                 outcome=VetoedSignal(source=vetted, reason=vetted.risk_critique or "Risk veto"),
                 notes=notes)
-        if examine and enforce and notes and notes[-1].blocks:
+        if notes and self.blocks_now(notes[-1]):
             return ExaminationResult(outcome=self._adv_veto(vetted, notes[-1]), notes=notes)
 
         # Stage 3: Optimized (Tax)
@@ -132,7 +153,7 @@ class StateMachine:
         if examine:
             no = adv.examine_optimized(optimized)
             notes.append(no)
-            if enforce and no.blocks:
+            if self.blocks_now(no):
                 return ExaminationResult(outcome=self._adv_veto(vetted, no), notes=notes)
 
         # Stage 4: Ranked (Decision)
@@ -140,7 +161,7 @@ class StateMachine:
         if examine:
             nr = adv.examine_ranked(ranked)
             notes.append(nr)
-            if enforce and nr.blocks:
+            if self.blocks_now(nr):
                 return ExaminationResult(outcome=self._adv_veto(vetted, nr), notes=notes)
 
         # Stage 5: Display gate

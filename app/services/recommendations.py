@@ -584,6 +584,16 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
         # ("Add to 4,708 of SCHD"), which is what shipped. Two forms.
         verb = "Add" if pos is not None else "Buy"
         title_kind = "Swap into" if buy.is_swap else ("Add to" if pos is not None else "Buy")
+        # T5 -- ONE TAP, NOT THE CARD. `blocked_by` is set by the war room when
+        # the solver's stored verdict says this book cannot reach its target and
+        # the signal would ADD risk. The card still renders, with the finding on
+        # it; what it loses is the ability to execute in a single press.
+        #
+        # Suppressing it instead would be the PR 4 failure mode -- eleven cards
+        # went missing there -- and a card deleted because of a background
+        # measurement the user cannot see is strictly worse than one that
+        # explains itself and refuses.
+        _bb = s.get("blocked_by") or None
         out.append({
             "id": _rid("warroom_buy", tk), "dimension": "signal", "severity": "MEDIUM",
             "title": f"{title_kind} {tk} — {_ils(buy.amount_ils)}",
@@ -610,7 +620,16 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
                        if buy.is_swap else [])
                     + ["Signals are trend-divergence based, not a price forecast"]),
             "est_amount": buy.amount_ils,
-            "apply": buy.apply_spec,
+            # The one-tap is what the constraint takes away. `kind: "none"` makes
+            # `_is_actionable` False, so the button reads "Mark as done" and the
+            # apply dispatcher cannot execute it -- the same mechanism every
+            # advisory card already uses, rather than a new bypassable flag.
+            "apply": ({"kind": "none"} if _bb else buy.apply_spec),
+            "blocked_by": _bb,
+            "notes": ([f"{_bb.get('headline') or ''} {_bb.get('reason') or ''}".strip()
+                       + (f" (solver ran {_bb['age_hours']:.0f}h ago)"
+                          if _bb.get("age_hours") is not None else "")]
+                      if _bb else []),
             "meta": {"source": "war_room", "ticker": tk, "impact": impact,
                      "kind": buy.kind,
                      "class_before": buy.class_before, "class_after": buy.class_after,
