@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 9 — one target, scoped cards, no self-contradiction)._
+_Last updated: 2026-08-25 by Claude (PR 10 — the app can finally buy a bond)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -19,7 +19,109 @@ _Seeded from git history + prior transcripts._
 | 7b | The core picker says what each family is FOR | ✅ this entry |
 | 8 | Delete `plans.strategy` / `plans.strategy_sleeve_pct` | ✅ this entry |
 | 9 | One target, scoped cards, no self-contradiction | ✅ this entry |
-| 10 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+| 10 | The app could not buy a bond | ✅ this entry |
+| 11 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+
+---
+
+## ✅ PR 10 — the app could not buy a bond, on any book, ever
+
+**Shipped 2026-08-25.** No migration.
+
+`universe.full_universe()` returned 83 candidates: **64 Equities, 19
+Commodities, zero Fixed Income** — on an app whose objective presets have wanted
+bonds since the first commit (Grow 10%, Balanced 30%, Income 50%, Preserve 60%).
+So `_redeploy_cash_recs` searched `_buy_ideas` for a Fixed Income candidate,
+never found one, and filed the money under `unplaced` with the reason *"you hold
+no Fixed Income and no candidate was available"* — accurate, and reported on
+every scan, for every book, forever.
+
+PR 9 is what made it urgent rather than merely wrong. The live core targets 40%
+Fixed Income of a 36% core = **14.4% of the book, ~₪3,054**, and the rebalance
+card finally asked for the right number while the app still could not name one
+thing to buy.
+
+**Now:** `Redeploy ₪3,115 of idle cash → ₪1,917 into BND; ₪1,198 into CANE`,
+with `unplaced` empty. Verified end to end on a book rebuilt to match his.
+
+### What a bond catalogue has to carry that an equity one does not
+
+**Duration**, because it is the entire risk — SGOV moves ~0.1% when rates move
+1%, TLT moves ~16%. **Credit**, separately, because credit risk is equity risk
+wearing a bond's name: high yield fell *with* stocks in 2008, 2020 and 2022, so a
+book buying ballast against a 64% leveraged-equity sleeve and getting handed HYG
+has bought more of what it was hedging. And **caveats** — every fund is USD-
+denominated, so on an ILS book the "safe" asset carries FX risk.
+
+All 24 entries verified against the live Yahoo provider on 2026-08-25: 251 daily
+bars each, ending on the previous close. The stated durations correlate with
+measured annualised volatility at **r = 0.94** — evidence the metadata is sane,
+and the reason it is still never quoted to the user *as* a measurement.
+
+### Three bugs found by building on the existing code
+
+**1. Eleven bond ETFs would have been counted as Equities.** `classify` falls
+through to "Equities" for anything it does not recognise, and
+`FIXED_INCOME_TICKERS` was missing VGSH, VGIT, VGLT, USFR, SCHP, VTIP, VCSH,
+VCIT, USHY, EMB and VTEB — every Vanguard and Schwab ticker, which is to say all
+the cheap ones. The leg would have looked filled while the gap it was meant to
+close went untouched. Exactly the commodity `classify` bug PR 4 fixed, one asset
+class over.
+
+**2. `_pct_ranks` did not handle ties, and it is shared by every screen.**
+`sorted` breaks ties by list position, so eight funds all charging 0.03% were
+handed percentiles from 100 down to 70 *by their order in a data file*. Moving a
+line changed the recommendation. Fixed to share the mean rank across each run of
+equal values; `rank_equities` and `rank_commodities` inherit the fix.
+
+**3. A rate-limited call was treated as a delisted ticker.** PR 5b's liveness
+fix dropped any candidate whose history call raised — but `CircuitOpenError` and
+`RateLimitedError` say nothing about the ticker. Reproduced while building this:
+ranking bonds three times in one process rate-limited the later calls, twenty of
+twenty-four candidates silently vanished, and all three rankings came back
+**identical and wrong**, including a 6-year fund recommended for a 0.3-year
+mandate. The ranking changed with transport luck and nothing said so. The
+resilience tier already draws the line (`is_no_data` — a `ValueError` means the
+provider answered); this stops throwing that answer away, in both screens.
+
+### The ranking, and why it is not the commodity ranking
+
+`rank_commodities` scores 2:1 on trailing momentum. Copying that was the obvious
+move and it is backwards: a bond fund's trailing return is almost entirely *what
+rates did*, so ranking on it buys the most duration right after the move that
+rewarded it — maximum sensitivity, worst entry.
+
+The first attempt scored duration fit against cost as percentiles, 2:1. That
+failed on a real case: **SGOV, a near-exact match for a cash-like mandate, lost
+to a fund with nineteen times its rate sensitivity, on six basis points of fee** —
+because percentile ranks discard magnitude, so 6bp cost the same 42 points a
+46bp difference would. Every weight ratio that fixed it was reverse-engineered
+from the answer I wanted.
+
+The structure was wrong, not the weights. Missing the duration is a *risk* error;
+paying more is a *return* error; for ballast the risk error is the entire point
+of holding the thing. So **duration is a gate and cost ranks what survives it**,
+with fit as the tiebreak. A mandate nothing matches widens the band and flags
+every pick `outside-mandate-band` rather than silently returning a 6-year fund
+for a 30-year ask.
+
+| mandate | pick | why |
+|---|---|---|
+| ~6y (his core) | BND / AGG | the aggregate funds, 0.03% |
+| ~2y | VGSH | short Treasury, not a 6-year fund |
+| ~0.3y | SGOV | T-bills — the case that forced the redesign |
+| ~15y | VGLT | same job as TLT at 0.03% vs 0.15% |
+
+**US municipals are withheld from a non-USD book.** VTEB charges 0.03% at 6.5
+years, so it beats most Treasuries on every factor this ranker measures. What it
+sells is exemption from US federal income tax — and that exemption is priced
+*into the yield*, so a non-US holder takes the lower yield and gets nothing back.
+Gated on `plan.currency`, not on an assumption about who is reading.
+
+**NOT fixed here:** the commodity screen is still trend-ranked and knows nothing
+about the core's basket, so with All-Weather chosen (IAU 15% + DBC 10%) the
+redeploy card offered **CANE** — sugar. It is a live commodity and the screen is
+working as designed; the design is what is wrong. Backlog below.
 
 ---
 
@@ -276,6 +378,27 @@ a measurement behind it.
 
 ---
 
+## 🔴 BACKLOG — the commodity screen does not know what the core wants
+
+**NOT STARTED.** Found 2026-08-25 verifying PR 10.
+
+With `bal_all_weather` chosen, the core's commodity leg is **IAU 15% + DBC 10%**
+— gold and a broad basket. The redeploy card offered **CANE**. Sugar.
+
+Nothing is malfunctioning: `screen_commodities` ranks 2:1 on six-month trend
+against cost across all 19 candidates, and sugar had the trend. The design is
+what is wrong — the screener has no idea a core was chosen or what basket it
+names, so it answers "which commodity has momentum" when the question was "what
+fills my core's commodity allocation".
+
+PR 10 solved the same problem for bonds by making the *mandate* a gate. The
+equivalent here is to prefer the core's own basket tickers when a core names
+them, and fall back to the screen only for the part the basket does not cover.
+That is a change to what the commodity card is FOR, so it gets its own change
+rather than riding along in a bond PR.
+
+---
+
 ## 🔴 BACKLOG — a rule note freezes its creation-day price and calls it "today"
 
 **NOT STARTED.** Found 2026-08-25 in the same live pull as PR 9.
@@ -376,20 +499,20 @@ exactly like one that was screened.
 
 **A SECOND GAP, FOUND FROM THE SAME CARD.** The redeploy-idle-cash card reads:
 
-> WARNING: 1,224 could not be placed - you hold no Fixed Income and no candidate
-> was available
+> ⚠ ₪1,224 could not be placed — you hold no Fixed Income and no candidate was
+> available
 
 It is not that no *good* bond was found. **There are no bond candidates at all.**
 `universe.full_universe()` returns 58 Equities and 25 Commodities and **zero**
 Fixed Income. So a Grow plan targeting 10% bonds can never place that leg, on any
-book, ever - the money silently stays in cash and the card reports an unplaceable
-remainder every single time. The catalogue has a curated commodities list and a
-curated equity list and simply never grew the third one.
+book, ever — the money silently stays in cash and the card reports an
+unplaceable remainder every single time. The catalogue has a curated commodities
+list and a curated equity list and simply never grew the third one.
 
 Fixing it is not "add BND": the same liveness question applies, the ranking
-factors for bonds are duration and credit and yield rather than trend and expense
-ratio, and `rank_commodities` / `rank_equities` have no third sibling. Deciding
-what a bond candidate list is scored on is the work.
+factors for bonds are duration and credit and yield rather than trend and
+expense ratio, and `rank_commodities` / `rank_equities` have no third sibling.
+Deciding what a bond candidate list is scored on is the work.
 
 **NOT SHIPPED (the gate), and why it is its own piece of work.**
 
@@ -409,26 +532,6 @@ what a bond candidate list is scored on is the work.
   ETN and being *sold* one are different claims: a legacy position must still
   classify as a commodity for allocation and risk, or it gets risk-scored as a
   32%-volatility single name (that note is already in the file). Tested.
-
-## 🔴 OPS ACTIONS (Eran only) — with age
-
-_Dates are when the item was FIRST flagged, and are carried forward, never reset.
-These are owner-only: none is a code task, and none can be closed from a session._
-
-| first flagged | age | item |
-|---|---|---|
-| 2026-07-13 | **5 weeks** | 🔴 **`AGENT_API_KEY` still not rotated.** It was pasted into a chat transcript. A credential known to be exposed has now been left live for five weeks; this outranks every feature item on this page and takes about a minute. |
-| 2026-07-12 | **5 weeks** | 🔴 **Notifications still not enabled on the Pixel 9** — `subscriptions: 0`, the single failing check in `smoke-all`, and the blocker on BOTH the 07-12 notification-alignment QA and the 5-issue batch sign-off. Two QA documents and one smoke failure all wait on one device toggle. |
-| 2026-07-27 | **3 weeks** | 🔴 **Alignment batch (Phases 0–5) QA still unrun on the Pixel 9**, and the SW has moved `iw-v10` → `iw-v11` → `iw-v15`+ since the checklist was written, so its update path is now twice stale. **Decide it or delete it** — run it, or rule that the 08-03 smoke pass subsumes it and strike it from Pending QA. Carrying it a fourth week without a decision IS the failure mode. |
-| 2026-07-13 | **5 weeks** | 🔴 **Broker integration has been "the next initiative", unstarted, for five weeks** (`BROKER_INTEGRATION_PLAN.md`). Meanwhile 67 commits went into the T-line. The roadmap says one thing and the commit log says another — reconcile them: start it, or stop calling it next. |
-| 2026-08-03 | 2 weeks | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway — currently DB-generated, so a DB reset invalidates every push subscription at once. Compounds the notification item above. |
-| 2026-08-10 | 1 week | P0 safety Pixel QA (`qa/QA-2026-08-10-p0-safety.md`, 8 sections ~10 min) + `smoke-p1.ps1 -Apply`. Fresh — but it is the fourth QA doc now queued behind the same device. |
-
-⚠️ **The pattern, stated once:** this repo is the most productive of the four by an
-order of magnitude (67 commits this week) and **every blocked item on it is a console
-click or a phone tap.** Shipping is not the constraint here; the five-minute manual
-tail after shipping is.
-
 
 ## ✅ T6a — size each sleeve on its own axis, ranked out-of-sample
 
@@ -2624,7 +2727,7 @@ goes in this deploy. Then run `.\scripts\smoke\smoke-p0.ps1`.
 - Opportunity screener agent + fundamentals layer + expanded holdings recommendations; expanded commodity catalog (advisor reasons grounded, never invents numbers, "Not financial advice").
 - Legacy "Advanced" dashboard restored behind the auth gate.
 - Test suite ≈259 passing as of 07-14, plus ~75 alignment-batch tests (Phases 0–5: cash 7, honesty 5, reconcile/shell 10, signals+done 27, funding 17, profiles 9); lint (ruff, now gated) + test + test-postgres CI jobs green.
-- ~~HEAD `86760ff` (2026-08-03). SW at **`iw-v11`**. Working tree clean.~~ → **superseded** (noted in the 2026-08-17 weekly review): this section records the state as of 2026-08-03 and is kept for that record only. Live HEAD is `e405aec` (2026-08-16, T6a). Read the top of this file, not this line.
+- HEAD `86760ff` (2026-08-03). SW at **`iw-v11`**. Working tree clean.
 
 ## Last shipped — bug batch phases 1–11, ALL COMMITTED (2026-08-02 → 08-03)
 ✅ **The whole batch is on `main`** — 11 commits `d42f38c`…`86760ff` (HEAD, 2026-08-03), and **verified live** by `smoke-all.ps1` (29/30, see below). This section was carried as "Uncommitted / not yet tested" last week; that flag is now resolved. SW at `iw-v11`.
@@ -2710,7 +2813,6 @@ Phase 13's second pass reallocates an *unfillable class's* budget, but it is gat
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
-- 2026-08-17 — Weekly status review: 🎉 **67 commits in seven days (`0315b47`…`e405aec`, 08-10 → 08-16) — by far the busiest repo of the four; AdaptiveFit and WealthOS shipped nothing and Job Hunter has been quiet four weeks.** The whole T-line (T0.3→T6a) plus Phase N/N2/A landed and STATUS already describes it accurately, so no drift to correct at the top of the file. Three things flagged, not fixed: (1) **`e405aec` and `337d083` carry an identical message** *"T6a: size each sleeve on its own axis, ranked out-of-sample"* — the same duplicate-commit-pair pattern noted on 07-20 and again in WealthOS; harmless to the tree, unreadable in history. (2) The mid-file **"Now (on main, CI green)" section still claimed HEAD `86760ff` / SW `iw-v11`** from 08-03 — now struck through and pointed at the top of the file rather than rewritten, since it is a dated record. (3) Working tree carries **5 modified + 9 untracked** (`candidate_search.py` + its test, seven `ship-*.ps1`/`fix-*.ps1` scripts) — one day old, T6b work in flight, so a note and not an escalation; it becomes one if it is still here next week. Added an **OPS ACTIONS (Eran only) — with age** table: six owner-only items, four of them ≥3 weeks, led by the **unrotated `AGENT_API_KEY` (5 weeks)**. Pruned the changelog tail: everything older than ~6 weeks (07-06 → 06-29) collapsed into one historical line.
 - 2026-08-16 — **Phase N: history starts.** `nav_snapshots` + a 22:10 daily job + time-weighted returns across the contributions ledger, so a deposit moves the value without moving the line (₪5k into ₪20k then +5% real growth reports 5.00%, not 31.25%). Past NAV is unrecoverable — `Transaction(` has zero writers, `whs_snapshots` was never written — so the job also snapshots the health score WITH its caps, because a stricter yardstick and a worse book need opposite responses. Today's chart prefers real history, falls back to the backfill, and says which. In tree, pending QA.
 - 2026-08-16 — **T4: the target card + Today chart.** Two typed inputs and no slider; defaults measured, empty when unmeasurable. T4.0 untracked 2,463 `frontend/node_modules` files that had made `git status` time out at 40s and, once, return an EMPTY view while five files were staged. `git status` now 0.2s. Chart ranges are a server parameter, not a client slice. `6edebc5`, `10d8b40`.
 - 2026-08-16 — **T3 fix.** The blend never computed its tax drag (`bt.run` adds it after `_metrics`; `measure_blend` calls `_metrics` directly) — a null renders identically to "pays no tax". Caught live by smoke-t3. Plus cash double-counted in NAV, and `CASH` — also a real NASDAQ listing — would have been backtested as a US bank stock inside the core. `0df481f`.
@@ -2726,4 +2828,6 @@ Postgres per-test isolation fixture (throwaway NullPool engine, own event loop);
 - 2026-07-14 — **Trading-rules UI redesign (grouped by holding).** The rules list was a flat stack of fat cards — ticker repeated on every row, same-holding rules scattered, no colour coding, duplicates unflagged. Rebuilt as a `Positions | Rules` segmented sub-tab inside Holdings (no new bottom-nav tab): rules now group under one card per holding (ticker + live price header), each rule a compact colour-coded row (stop-loss red / take-profit green / trailing blue / max-weight amber) with a distance-to-trigger bar. Adds filter chips (all/triggered/armed/paused), sort (closest/holding/type), duplicate detection with a one-click remove, and triggered rules pinned + highlighted on top of their group (and their group floated first). Count badge on the Rules tab; Today's rule-alert banner deep-links straight into the Rules pane. Client-side only (regroups the existing `/api/v1/rules` payload) — no backend change.
 - 2026-07-14 — **Actionable trend cards + per-holding suggested rules.** The downtrend/uptrend momentum cards were advice-only (`apply: none`) — Accept did nothing user-visible. They now arm a concrete rule: downtrend → stop-loss at a volatility-derived price (≈8–15% below today); uptrend → trailing stop (10–20%) plus a max-weight cap when the name is already a large slice. Accept returns an "Armed …" summary; the rule then fires the normal alert + Today to-do. Added `stop_buffer_pct` (levels grounded in each holding's own realized volatility, never invented), a `create_rules` apply-kind, `rules_service.suggest_rules_for_holdings` + `GET /api/v1/rules/suggestions`, and a "Suggested rules" UI panel (add each / arm-all). +5 tests (`test_trading_rule_suggestions.py`); changed surfaces green locally, full suite gated by CI on push.
 - 2026-07-13 — Weekly status review: the Accept-executes + notification-alignment work landed as `67f7da3` (2026-07-12), resolving that week's uncommitted-work flag.
-- 2026-06-22→2026-07-12 (consolidated, >6 wks — detail pruned 2026-08-17) — **Foundations, Accept-executes, and notification alignment.** Installable PWA + web push with 7-day-TTL server dismissals; price-provider hardening (FMP + keyless Yahoo fallback); Markets tab with the Yahoo futures risk-on/off regime feeding the agents; Gemini portfolio/holding/macro summaries; the trading-rules engine (stop-loss / take-profit / trailing / price-alert / buy-dip / max-weight); 30-min reprice with a truthful data-source label; NAV/goal alignment and ILS FX normalization; opportunity screener + fundamentals; Postgres test-isolation fix. Then **Accept began actually executing** (sells credit net-of-CGT proceeds to a visible CASH holding, fee-swaps buy the cheaper fund at a live price, trims credit the sold portion), and the **notification ↔ Today mismatch** was root-caused to a *permanent* `localStorage` hide-list outliving the server's 7-day dismissal — replaced with a TTL-matched `iw_snoozed_v2` store, with notifications split into `action` vs `info`. SW `iw-v2`→`iw-v3`. All of this is described in **Now**; the durable lessons live in **Corrections worth remembering**.
+- 2026-07-06 — **Accept now executes recommendations.** The Today-view "Accept" applied nothing user-visible: sells just deleted holdings (value vanished) and fee/other cards were `apply:none`. Now sells credit net-of-CGT proceeds to a visible **CASH** holding (liquidity you can see/redeploy), `trim` credits the sold portion, and fee-swap cards actually sell the high-fee fund and buy the cheaper equivalent at a live price (falls back to cash if unpriceable). Accept returns a "what changed" summary the UI now shows. Tests: sell→cash added.
+- 2026-07-12 — **Notification ↔ Today alignment + why/impact recommendations.** Root cause of "push says do X, app says nothing to do": the app hid cards via a *permanent* `localStorage` list while server dismissals (which gate push) expire after 7 days — so a resurfaced item re-notified while the app hid it forever. Replaced the permanent list with a TTL-matched (7-day) local store keyed by `iw_snoozed_v2`; the server dismissal is now the single source of truth. Notifications are now categorised `action` (maps 1:1 to a Today card) vs `info` (price moves + weekly digest, reworded as FYI, `silent`/no-nag in the SW). Added actionable region/currency/liquidity diversification cards so every pushed alert maps to a card. Every recommendation now carries plain-language `why` + `impact` (rendered in the card); the goal-gap contribution card, the digest and the home "Where this could end up" panel now share one Monte-Carlo projection instead of diverging. SW cache bumped `iw-v2`→`iw-v3`. Ships alongside the previously-uncommitted Accept-executes work.
+- 2026-06-22→06-29 (consolidated) — **Foundations.** Installable PWA (manifest, SW, mobile bottom-nav) + web push (recs, risk alerts, price moves, daily digest) with server-side 7-day-TTL dismissals; price-provider hardening (FMP stable + keyless Yahoo fallback). Markets tab: Yahoo futures risk-on/off regime feeding the agents; Gemini portfolio / holding / macro summaries + grounded deep-research-per-holding. Trading-rules engine (stop-loss / take-profit / trailing / price-alert / buy-dip / max-weight → alerts + to-dos + management UI). Scheduled 30-min reprice with a truthful data-source label. Earlier still: NAV/goal alignment, FX normalization, opportunity screener + fundamentals, commodities advisor context, advanced dashboard restore, Postgres test-isolation fix. STATUS.md + CLAUDE.md seeded.
