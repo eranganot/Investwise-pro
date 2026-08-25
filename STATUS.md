@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 10 — the app can finally buy a bond)._
+_Last updated: 2026-08-25 by Claude (PR 11 / T5 — the war room reads the solver)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -20,7 +20,103 @@ _Seeded from git history + prior transcripts._
 | 8 | Delete `plans.strategy` / `plans.strategy_sleeve_pct` | ✅ this entry |
 | 9 | One target, scoped cards, no self-contradiction | ✅ this entry |
 | 10 | The app could not buy a bond | ✅ this entry |
-| 11 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+| 11 | T5 — the war room reads the solver | ✅ this entry |
+| 12 | T6b → Phase W | 🔴 not started, each needs its own plan |
+
+---
+
+## ✅ PR 11 / T5 — the war room reads the solver, and the red team can finally veto
+
+**Shipped 2026-08-25.** Migration `0020_solver_verdicts`.
+
+`STATUS.md:79` said T5 was *"the solver becomes a constraint the Risk / Decision
+/ Adversary agents read; not an eighth agent, not the decision maker."* Reading
+the code first turned up two things the plan did not know.
+
+### 1. The Adversary could not veto anything on the card path
+
+`build_war_room()` runs `vet` / `optimize` / `rank` / `display` individually and
+appended the Adversary's findings as transcript **prose**, branching on nothing.
+`adversary_enforce_veto` defaults to **True** and was honoured in exactly one
+function — `StateMachine.cross_examine` — reachable only from
+`/api/v1/decision-feed`. **The route that produces the cards people actually see
+had no veto at all.** A `Severity.BLOCK` finding was a sentence.
+
+`test_war_room_includes_cross_examination_lines` did not catch it. It asserts
+the Adversary lines exist and carry a severity field — true the whole time, and
+silent on whether anything acts on them. Coverage that looks like coverage.
+
+The rule now lives in **one** place, `StateMachine.blocks_now()`. `cross_examine`
+had it inline four times as `enforce and note.blocks`; the war room had it
+nowhere. Both call the same function, so the two paths cannot drift apart again —
+the same argument as PR 8's columns and PR 9's target.
+
+### 2. Nothing stored a solver verdict, so nothing could act on one
+
+`GET /plan/target` recomputed from scratch on every request: a coarse-then-fine
+grid sweep, each point one simulation of ten years of daily closes. Meanwhile:
+
+| | cost |
+|---|---|
+| war room | **6,726 ms** on `/recommendations` |
+| every other agent | **< 50 ms** |
+
+So "the agents consult the solver" could not mean "call the solver" — that puts
+a multi-second sweep on the slowest path in the app. The solver now **writes**
+(`solver_verdicts`) and the war room **reads**.
+
+Two properties make a stored verdict safe to act on:
+
+- **Age travels with the answer.** A verdict is a statement about one book at one
+  moment and this one can disable a button, so `as_constraint()` returns the age
+  and every card that acts on it prints it.
+- **Stale stops blocking, it does not stop speaking.** Past 36 hours — about 1.5
+  nightly runs, so a missed job — the constraint keeps its finding and drops its
+  teeth. Letting a week-old measurement go on refusing things is how an app
+  starts saying no for reasons nobody can reconstruct.
+
+Only `UNREACHABLE` and `DRAWDOWN_BOUND` block. `REACHED_ABOVE_CAP` deliberately
+does not: it means *reachable, past your concentration cap*, which is a different
+conversation and not one that should disable anything.
+
+### What a blocked card does
+
+**It keeps the card and loses the one tap.** `apply.kind` is demoted to `"none"`,
+which is the same mechanism every advisory card already uses — `_is_actionable`
+reads it, so nothing new can forget to check a new flag. The finding, and the
+verdict's age, land in `notes` on the card.
+
+Suppressing it was the alternative and it is the PR 4 failure mode: eleven cards
+went missing there, and a card deleted because of a background measurement the
+user cannot see is strictly worse than one that explains itself and refuses.
+
+**Scoped to signals that ADD risk.** A trim, a hedge or a de-risking rebalance is
+exactly what a book that cannot reach its target should be doing; blocking those
+would turn a safety feature into a trap. Keyed off `action_type`, not the path
+label — `path` is "Bulletproof" for everything that is not a BUY, and that label
+has already been misread once (PR 4).
+
+**And the transcript says the constraint was consulted even when it does not
+bite.** Silence is indistinguishable from "nobody asked", which is the state this
+whole phase exists to end.
+
+### The nightly re-solve
+
+04:10, after the 03:30 backtest refresh, because a re-solve reads the
+measurements that job writes — solving first would answer from yesterday's
+numbers and stamp today's timestamp on them.
+
+**It does not invent a question.** A solve needs a target excess and a drawdown
+ceiling; neither is stored on the plan (the UI passes them as query parameters,
+so they exist only in the answer). The job re-runs the **last verdict's own
+parameters**. A book whose owner has never opened the target card has no stored
+question, gets no verdict, and its war room says *"no solve on record"* rather
+than being handed a ceiling nobody chose. A constraint strong enough to disable a
+button has to come from a number the user actually set.
+
+Its own `NullPool` engine inside its own loop, per `pricing_service` — handing an
+APScheduler thread a connection from the app's shared pool is the cross-loop
+asyncpg rejection that has already cost this repo three incidents.
 
 ---
 
