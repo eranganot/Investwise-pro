@@ -6,6 +6,7 @@ book with real liquidity, and the liquidity score used a generic default.
 """
 import os
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+import pytest
 from fastapi.testclient import TestClient
 import app.main as m
 
@@ -98,11 +99,28 @@ def test_accepting_a_sell_credits_cash_with_a_sane_cost_basis():
         trim = next((r for r in c.get("/api/v1/recommendations").json()["recommendations"]
                      if (r.get("apply") or {}).get("kind") == "trim"), None)
         if trim is None:
-            return                                  # no concentration trim on this book
+            # A SILENT `return` HERE MADE A GREEN RUN MEANINGLESS. This book is
+            # 97.5% one holding, so a concentration trim is expected -- and when
+            # one is not generated, that is itself worth knowing rather than
+            # being reported as a pass. Same rule the smoke scripts follow: a
+            # SKIP is never a PASS.
+            pytest.skip("no trim card generated for this book - the regression "
+                        "below was NOT exercised")
         assert c.post(f"/api/v1/recommendations/{trim['id']}/accept").status_code == 200
         after = c.get("/api/v1/portfolio").json()
         assert after["cash_ils"] > 0                # proceeds are visible as cash
         # Selling doesn't create invested capital: the total must not balloon.
-        assert after["invested_ils"] <= before["invested_ils"] + 1.0
+        #
+        # The message carries the ROWS, because this assertion failed once in CI
+        # (`192360.0 <= 41000.0 + 1.0`) and could not be reproduced from the
+        # number alone -- a bare comparison says the total ballooned but not
+        # which holding did it, which is the only fact that would have located
+        # the cause.
+        _rows = ", ".join(
+            f"{p['ticker']} qty={p.get('quantity')} basis={p.get('cost_basis')} "
+            f"invested={p.get('invested_ils')}" for p in after["positions"])
+        assert after["invested_ils"] <= before["invested_ils"] + 1.0, (
+            f"invested ballooned {before['invested_ils']} -> {after['invested_ils']} "
+            f"after accepting {trim['title']!r} ({trim.get('apply')}); rows: {_rows}")
         cash_row = next(p for p in after["positions"] if p["ticker"].upper() == "CASH")
         assert cash_row["invested_ils"] == cash_row["value_ils"]   # basis 1.0 x qty
