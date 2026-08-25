@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 13b / T6b — discover the sleeve count)._
+_Last updated: 2026-08-25 by Claude (PR 14 — the ceiling is yours)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -24,7 +24,71 @@ _Seeded from git history + prior transcripts._
 | 12 | The job that lied, the card that was missing, the severity that never moved | ✅ this entry |
 | 13 | T6b — the solver varies the core | ✅ this entry |
 | 13b | T6b — discover the sleeve count | ✅ this entry |
-| 14 | Phase W | 🔴 not started, needs its own plan |
+| 14 | The ceiling went stale and nothing noticed | ✅ this entry |
+| 14b | Two Accept buttons, two answers; the split pinned at the cap | 🔴 not started |
+| 15 | Phase W | 🔴 not started, needs its own plan |
+
+---
+
+## ✅ PR 14 — the ceiling went stale, and every answer for a week was about the number
+
+**Shipped 2026-08-25.** No migration.
+
+`index.html:1727` seeds the drawdown ceiling **once**, from
+`performance(range=MAX).max_drawdown_pct` — *"the risk the book already
+carries"* — and only when it is null. After that it lives in the stored verdict,
+and PR 11's nightly job re-runs *"the LAST verdict's own parameters"*, so
+whatever was seeded propagates forever.
+
+A **13.3%** ceiling survived on this book from an era when the history provider
+returned a short window. The same endpoint now measures **58.59%** over 2,513
+sessions. Every answer the solver gave was "no" — because of the number:
+
+| search | at 13.3% | at 58.6% |
+|---|---|---|
+| T2 | `DRAWDOWN_BOUND` | `REACHED` |
+| T6b core | `NONE_ADMISSIBLE`, all 15 breach | `RANKED`, current holdings 3rd of 15 |
+| T6b2 count | `BASELINE_BREACHES_CEILING` | `BELOW_NOISE_FLOOR`, count 2 converged |
+
+Nothing about the book changed between those two runs.
+
+### It does not re-seed
+
+Silently moving a risk constraint the user owns is worse than leaving it wrong —
+the rule PR 11 already states: *"a constraint strong enough to disable a button
+has to come from a number the user actually set."* So `solve()` **measures** the
+mismatch and says it; the number stays theirs.
+
+`ceiling_check` rides on **every** exit path of `solve()`, not three of four — a
+field present on some outcomes is a field no reader can rely on. `as_constraint`
+exposes it with an explicit `known` flag, because "we did not check" and
+"checked, nothing wrong" are different claims and a pre-PR-14 verdict can only
+say the first.
+
+### The card names one cause, in precedence order
+
+Its action has been rewritten three times in one day — PR 12 said *change the
+core*, PR 13 measured that and said *the sleeves*, PR 14 measured that and says
+*check your ceiling first* — so it stopped being a branch each time and became
+one ordering, in `_ceiling_cause`:
+
+1. **The ceiling**, when the book already breaches it unchanged. It bounds every
+   finding underneath, so naming anything else first answers a question the
+   reader cannot act on yet.
+2. **The sleeves**, when T6b measured every core and none clears.
+3. **The core** — the only case where "change the core" is supported.
+
+An *unchecked* ceiling never seizes the headline. The precedence is total and
+asserted parametrically: a card that can name two causes will name both.
+
+### My own contribution to the problem
+
+`13.3` was a **default parameter** in three of my smoke scripts, so every
+`-Solve` run fed it back into the stored verdict. They now read the ceiling off
+the stored verdict and skip loudly when there is none.
+
+**Verification:** 16 new tests. SQLite 1216 / 4 skipped; Postgres 16 1212 / 12
+skipped; `ruff check app tests` clean.
 
 ---
 
