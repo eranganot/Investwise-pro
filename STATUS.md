@@ -1,7 +1,62 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-16 by Claude (T0–T4, N, N2, A, T6a — plus the plan's last open question, resolved)._
+_Last updated: 2026-08-25 by Claude (PR 4 cards, PR 5 history provider + gain headline)._
 _Seeded from git history + prior transcripts._
+
+## 🔴 BACKLOG — a card may not name a ticker that is not trading
+
+**NOT STARTED.** Opened 2026-08-25 from a live defect. The immediate symptom is
+fixed; the gate that would have prevented it does not exist.
+
+**SYMPTOM.** Eran: *"I'm always getting the COW recommendation, though the COW
+price is irrelevant and not updating for more than 6 months."* Both halves true,
+and the second explains the first.
+
+**WHAT WAS ACTUALLY WRONG — two independent defects that happened to compose.**
+
+1. **Four delisted ETNs sat in the buy catalogue.** JJN, JO, NIB and COW are
+   iPath ETNs Barclays has redeemed. Checked against Yahoo on 2026-08-25: the
+   other 25 catalogue entries returned 251 daily bars ending on the previous
+   close; those four returned **none**. `commodities.py` opens with the words
+   *"real, live-priced, retail-investable instruments"* — a promise nothing
+   verified. They are the same four symbols that opened the history circuit
+   breaker (see PR 5), so one dead-ticker problem produced two unrelated-looking
+   outages.
+
+2. **Missing data scored as strength.** `rank_commodities` scores 2:1 trend
+   against cost; `_trend_pct` returns `None` with no history; and `_mean`
+   **drops** the `None`s rather than penalising them. So a candidate with no
+   price data is scored **on its expense ratio alone**. COW's 0.45% is among the
+   cheapest in the catalogue, so a dead ETN beat every live commodity that
+   happened to be falling — deterministically, every scan. That is why it was
+   *always* COW.
+
+**SHIPPED NOW (the symptom).** The four are removed from `CATALOG` and recorded
+in a `DELISTED` map with reasons, guarded by a test so re-adding one fails.
+`screen_commodities` drops candidates the provider cannot price instead of
+scoring them, so the *next* ETN to die is caught without anyone noticing. And
+`_commodity_recs` abstains when nothing can be ranked rather than falling back
+to a hardcoded `DBC` — a card that names a ticker chosen by no process reads
+exactly like one that was screened.
+
+**NOT SHIPPED (the gate), and why it is its own piece of work.**
+
+- **Liveness is not checked anywhere, for any asset class.** The equity universe
+  has the same exposure: 58 hand-maintained tickers, no freshness check. The fix
+  is one rule applied at the boundary — *no card may name a ticker without a
+  close within N trading days* — which needs a decision on N, a cheap way to
+  ask (a quote is cheaper than a 252-day history), and a policy for what a
+  candidate list does when it thins out.
+- **`_mean` dropping `None` is a scoring bug wherever it appears**, not just in
+  commodities. `rank_equities` uses the same helper across fundamentals that are
+  routinely missing for some names. Whether the right answer is a neutral
+  penalty, exclusion, or a confidence weight per candidate is a real modelling
+  decision, and it changes every equity score in the app — so it does not get
+  made inside a bug fix.
+- **`strategy_profile._COMMODITY` still lists COW** on purpose. Holding a dead
+  ETN and being *sold* one are different claims: a legacy position must still
+  classify as a commodity for allocation and risk, or it gets risk-scored as a
+  32%-volatility single name (that note is already in the file). Tested.
 
 ## ✅ T6a — size each sleeve on its own axis, ranked out-of-sample
 

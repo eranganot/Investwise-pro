@@ -61,8 +61,14 @@ def test_screener_endpoint():
 def test_expanded_commodity_catalog():
     tickers = {c["ticker"] for c in cat.CATALOG}
     assert {"SLV", "CORN", "DBC", "USO"} <= tickers            # originals preserved
-    assert {"PALL", "URA", "LIT", "JO", "GDX", "BNO"} <= tickers  # new additions
+    # JO was in this list and has been REMOVED. It is the iPath Coffee ETN,
+    # redeemed by Barclays, and Yahoo returns an empty series for it -- so this
+    # line was asserting that the app still offers a delisted product, and it
+    # would have gone red the moment anyone checked. See commodities.DELISTED
+    # and tests/test_live_candidates.py.
+    assert {"PALL", "URA", "LIT", "GDX", "BNO"} <= tickers     # new additions
     assert len(cat.CATALOG) >= 25
+    assert not ({c["ticker"] for c in cat.CATALOG} & set(cat.DELISTED))
 
 
 def test_universe_is_deduped_and_typed():

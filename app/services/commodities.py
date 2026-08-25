@@ -3,6 +3,13 @@
 We use liquid ETFs (clean USD prices, no futures account needed). Untradeable
 "commodities" people ask about (salt, potatoes) have no financial market; we say
 so and point to the closest real exposure (the broad agriculture basket).
+
+"LIVE-PRICED" IS A PROMISE THIS FILE MADE AND DID NOT KEEP. Four delisted iPath
+ETNs sat in the catalogue being recommended for months -- see DELISTED below.
+Nothing verifies that an entry here still trades, and nothing anywhere stops a
+card naming a ticker with no recent close. That gate is a backlog item
+(STATUS.md, "a card may not name a ticker that is not trading"); until it
+exists, this catalogue is hand-maintained and DELISTED is the record of why.
 """
 from __future__ import annotations
 
@@ -17,7 +24,6 @@ CATALOG: list[dict] = [
     {"ticker": "GLTR", "name": "Precious metals basket", "category": "Precious Metals", "expense_ratio_pct": 0.60},
     {"ticker": "GDX", "name": "Gold miners", "category": "Precious Metals", "expense_ratio_pct": 0.51},
     {"ticker": "CPER", "name": "Copper", "category": "Industrial Metals", "expense_ratio_pct": 0.88},
-    {"ticker": "JJN", "name": "Nickel", "category": "Industrial Metals", "expense_ratio_pct": 0.45},
     {"ticker": "LIT", "name": "Lithium & battery", "category": "Industrial Metals", "expense_ratio_pct": 0.75},
     {"ticker": "URA", "name": "Uranium miners", "category": "Industrial Metals", "expense_ratio_pct": 0.69},
     {"ticker": "DBB", "name": "Base metals basket", "category": "Industrial Metals", "expense_ratio_pct": 0.75},
@@ -25,9 +31,6 @@ CATALOG: list[dict] = [
     {"ticker": "WEAT", "name": "Wheat", "category": "Agriculture", "expense_ratio_pct": 1.00},
     {"ticker": "SOYB", "name": "Soybeans", "category": "Agriculture", "expense_ratio_pct": 1.00},
     {"ticker": "CANE", "name": "Sugar", "category": "Agriculture", "expense_ratio_pct": 1.00},
-    {"ticker": "JO", "name": "Coffee", "category": "Agriculture", "expense_ratio_pct": 0.45},
-    {"ticker": "NIB", "name": "Cocoa", "category": "Agriculture", "expense_ratio_pct": 0.45},
-    {"ticker": "COW", "name": "Livestock", "category": "Agriculture", "expense_ratio_pct": 0.45},
     {"ticker": "DBA", "name": "Agriculture basket", "category": "Agriculture", "expense_ratio_pct": 0.93},
     {"ticker": "USO", "name": "Crude oil", "category": "Energy", "expense_ratio_pct": 0.60},
     {"ticker": "BNO", "name": "Brent crude oil", "category": "Energy", "expense_ratio_pct": 1.00},
@@ -38,6 +41,30 @@ CATALOG: list[dict] = [
     {"ticker": "GSG", "name": "Broad commodities (GSG)", "category": "Diversified", "expense_ratio_pct": 0.75},
     {"ticker": "COMT", "name": "Broad commodities (COMT)", "category": "Diversified", "expense_ratio_pct": 0.48},
 ]
+
+# DELISTED, and this list is the reason they cannot quietly come back.
+#
+# All four are iPath ETNs Barclays has redeemed. Yahoo answers for every one of
+# them with an empty series -- not an error, just nothing -- and the app went on
+# recommending them for months. Eran: "I'm always getting the COW recommendation,
+# though the COW price is irrelevant and not updating for more than 6 months."
+#
+# He was seeing a real defect and it was not a coincidence that COW won every
+# time. `rank_commodities` scores 2:1 trend-to-cost, `_trend_pct` returns None
+# when there is no history, and `_mean` DROPS the Nones instead of penalising
+# them -- so a ticker with no price data is scored on its expense ratio alone.
+# COW's 0.45% is among the cheapest in the catalogue, so a dead ETN beat every
+# live commodity that happened to be falling, every single scan. Absence of
+# evidence was scoring as strength.
+#
+# Checked against Yahoo on 2026-08-25: the other 25 all returned 251 daily bars
+# ending on the previous close. These four returned none.
+DELISTED = {
+    "JJN": "iPath Nickel ETN -- redeemed; no prices since 2023",
+    "JO": "iPath Coffee ETN -- redeemed; no prices since 2023",
+    "NIB": "iPath Cocoa ETN -- redeemed; no prices since 2023",
+    "COW": "iPath Livestock ETN -- redeemed; no prices since 2023",
+}
 
 CATEGORY_ORDER = ["Precious Metals", "Industrial Metals", "Agriculture", "Energy", "Diversified"]
 _BY_TICKER = {c["ticker"]: c for c in CATALOG}

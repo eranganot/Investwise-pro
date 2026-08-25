@@ -2114,9 +2114,19 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
         picks = OpportunityAgent().screen_commodities(top_n=3)
     except Exception:  # noqa: BLE001
         picks = []
+    # NO SCREEN, NO CARD. This fell back to a hardcoded "DBC" whenever the
+    # screener returned nothing -- so a card headed "Add a commodities sleeve"
+    # could name a ticker that had been chosen by no process at all, while
+    # reading exactly like the screened recommendation it usually is. Now that
+    # candidates without price history are dropped rather than scored, an empty
+    # result is the normal signal that nothing could be evaluated, and the
+    # honest response to that is to say nothing.
+    if not picks:
+        logger.info("no rankable commodity candidates; abstaining from the sleeve card")
+        return out
     names = [(f"{p.ticker} ({p.name})" if getattr(p, "name", "") else p.ticker) for p in picks][:3]
-    pick = picks[0] if picks else None
-    pick_tk = getattr(pick, "ticker", None) or "DBC"
+    pick = picks[0]
+    pick_tk = pick.ticker
     pick_name = getattr(pick, "name", "") or "a broad commodity basket"
     alts = ", ".join(names[1:3]) if len(names) > 1 else "GLD (gold) or DBA (agriculture)"
     gap_ils = round(max(0.0, target - com_w) * nav, 2)
