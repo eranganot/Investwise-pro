@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.engines import regime as rg
 from app.engines import strategy_backtest as bt
-from app.models.tables import Plan, StrategySignalState, User
+from app.models.tables import StrategySignalState, User
 from app.services import strategy_catalog
 from app.services.intake_service import list_positions
 from app.services.backtest_service import _fetch
@@ -137,12 +137,10 @@ async def active_strategy_ids(session: AsyncSession, user: User) -> list[str]:
 
     ids = [s.strategy_id for s in await sv.list_sleeves(session, user)
            if strategy_catalog.get(s.strategy_id)]
-    if ids:
-        return ids
-    plan = (await session.execute(
-        select(Plan).where(Plan.user_id == user.id))).scalars().first()
-    sid = getattr(plan, "strategy", None) if plan is not None else None
-    return [sid] if sid and strategy_catalog.get(sid) else []
+    # No fallback to `plans.strategy`. One id in a column cannot describe a
+    # book running two sleeves, and on 2026-08-25 it named the smaller of them
+    # at a size 23 points out of date.
+    return ids
 
 
 async def active_strategy_id(session: AsyncSession, user: User) -> str | None:

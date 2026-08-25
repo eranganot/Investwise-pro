@@ -53,9 +53,15 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
-                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS strategy VARCHAR(40)",
-                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS "
-                    "strategy_sleeve_pct DOUBLE PRECISION",
+                    # plans.strategy / strategy_sleeve_pct are DROPPED here, not
+                    # added. They were the single-sleeve model and `plan_sleeves`
+                    # replaced them; the last thing they said in production was
+                    # 23 points out of date. Dropped in the same list that used
+                    # to create them, because this list -- not alembic -- is what
+                    # actually runs against production. IF EXISTS so a database
+                    # that never had them, or a redeploy, is a no-op.
+                    "ALTER TABLE plans DROP COLUMN IF EXISTS strategy",
+                    "ALTER TABLE plans DROP COLUMN IF EXISTS strategy_sleeve_pct",
                     # create_all builds missing TABLES but never adds a column
                     # to one that already exists, so a model that gains a field
                     # leaves production reading a schema it does not have.
@@ -151,22 +157,6 @@ async def lifespan(app: FastAPI):
                         await conn.execute(text(ddl))
                     except Exception:  # noqa: BLE001
                         pass
-        # C1: backfill the single strategy the `plans` columns can hold into one
-        # sleeve row, so the new table agrees with the old columns on day one.
-        # One-shot and idempotent -- see sleeve_service.BACKFILL_KEY for why it
-        # is deliberately not a per-boot self-heal. Never allowed to break
-        # startup: this release changes no behaviour, so a failed backfill must
-        # not cost a deploy.
-        try:
-            from app.services.sleeve_service import backfill_core_once, backfill_once
-            async with AsyncSessionLocal() as _session:
-                await backfill_once(_session)
-                # C6: the half C1 skipped -- a plans.strategy naming a STATIC
-                # family becomes the core row. Its own one-shot key, because
-                # C1's has already been spent on every live deploy.
-                await backfill_core_once(_session)
-        except Exception:  # noqa: BLE001
-            logger.warning("plan_sleeves backfill skipped", exc_info=True)
     if settings.environment == "production":
         if settings.auto_create_tables:
             logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")

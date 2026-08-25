@@ -97,12 +97,6 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
                 "target_roi_pct": None, "target_roi_period": "yearly",
                 "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
-                # Which strategy is applied. The column has existed since
-                # 0007_plan_strategy and apply_strategy writes it, but this
-                # serializer never returned it -- so nothing outside
-                # /strategies/{id}/preview could tell which one was active, and
-                # applying one looked like a no-op from every other caller.
-                "strategy": None, "strategy_sleeve_pct": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = _auto_target(nav, plan)
@@ -112,12 +106,6 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_roi_pct": plan.target_roi_pct, "target_roi_period": plan.target_roi_period or "yearly",
                 "target_yield_pct": plan.target_yield_pct, "target_yield_period": plan.target_yield_period or "yearly",
                 "preferred_depth": plan.preferred_depth,
-                "strategy": plan.strategy,
-                # How much of the book that strategy governs. Serialising the id
-                # without the size repeats the bug that hid `strategy` itself:
-                # a field the app stores, writes and acts on, that no caller
-                # could read back.
-                "strategy_sleeve_pct": plan.strategy_sleeve_pct,
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]
@@ -158,16 +146,16 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
     have not claimed, still governed by the objective exactly as today. It is
     computed, not stored, because in this model the core is not a row.
 
-    ``legacy`` carries the old columns unchanged. Until C2 makes ``apply`` write
-    a sleeve row, a strategy applied after the one-shot backfill ran will show
-    up there and nowhere else, and a reader that could not see that would think
-    the book had no strategy at all.
+    There is no ``legacy`` block any more. It carried ``plans.strategy`` and
+    ``plans.strategy_sleeve_pct`` through the C1-C4 transition so a reader could
+    see a strategy that existed only in the columns. Both columns are gone, and
+    the last thing they said on the live book was "btm_swing_dip at 15%" while
+    the sleeve row said 38.4% -- a second answer that had quietly gone wrong.
     """
     from app.services import sleeve_service as sv
 
     from app.services import strategies as static_cat
 
-    plan = await get_plan(session, user)
     sleeves = await sv.list_sleeves(session, user)
     core_row = await sv.get_core(session, user)
     core = None
@@ -208,8 +196,6 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
         # Still true, and still worth saying: the core is a remainder. C6 gave it
         # a name, not a percentage of its own.
         "core_is_implicit": True,
-        "legacy": {"strategy": getattr(plan, "strategy", None),
-                   "strategy_sleeve_pct": getattr(plan, "strategy_sleeve_pct", None)},
     }
 
 

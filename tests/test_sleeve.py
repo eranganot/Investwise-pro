@@ -56,9 +56,12 @@ def test_applying_remembers_the_sleeve():
         _seed(c)
         r = c.post("/api/v1/strategies/btm_trend_tqqq/apply?sleeve_pct=15")
         assert r.status_code == 200
-        plan = c.get("/api/v1/plan").json()
-        assert plan["strategy"] == "btm_trend_tqqq"
-        assert plan["strategy_sleeve_pct"] == 15.0
+        # Read from the sleeve table, not `plans.strategy_sleeve_pct`. 0019
+        # dropped that column; the size the user chose lives in exactly one
+        # place now, which is what makes "remembers" mean anything.
+        sleeves = c.get("/api/v1/plan/sleeves").json()["sleeves"]
+        assert [(s["strategy_id"], s["sleeve_pct"]) for s in sleeves] == [
+            ("btm_trend_tqqq", 15.0)]
 
 
 def test_the_card_carries_both_the_current_and_the_suggested_sleeve():

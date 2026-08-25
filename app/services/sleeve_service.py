@@ -41,7 +41,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.tables import KVSetting, Plan, PlanSleeve, User
+from app.models.tables import PlanSleeve, User
 
 logger = logging.getLogger(__name__)
 
@@ -388,103 +388,16 @@ async def clear_core(session: AsyncSession, user: User) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Backfill
+# Backfill -- REMOVED with the columns it read.
+#
+# `backfill_once` and `backfill_core_once` turned `plans.strategy` into sleeve
+# and core rows. Both were one-shot, guarded by their own KVSetting key, and
+# both have been spent on every live deploy -- production logs "0 sleeve(s)
+# created" and "0 core row(s) created" on every boot. With the columns gone
+# there is nothing left for them to read, and a migration helper that outlives
+# its source is just an unreachable branch that still has to be understood.
+#
+# BACKFILL_KEY / CORE_BACKFILL_KEY are deliberately NOT deleted from the KV
+# store. They are the record that the migration happened, and removing them
+# would make a future re-introduction look like it had never run.
 # --------------------------------------------------------------------------- #
-async def backfill_once(session: AsyncSession) -> dict:
-    """Turn each ``plans.strategy`` into one sleeve row. Runs exactly once, ever.
-
-    Called at startup rather than from the migration: the ids are UUIDs and the
-    subject is ``users.email``, so doing this in cross-dialect SQL means
-    generating keys and joining in a way that differs per backend. Running
-    alembic by hand against this deploy has also failed twice, so the startup
-    path is the one that actually executes.
-
-    The old ``plans`` columns are left in place and still authoritative for
-    everything that reads them -- this release changes no behaviour, it only
-    makes the new table agree with the old one.
-    """
-    if await session.get(KVSetting, BACKFILL_KEY) is not None:
-        return {"ran": False, "reason": "already backfilled"}
-
-    rows = (await session.execute(
-        select(Plan, User.email).join(User, User.id == Plan.user_id)
-        .where(Plan.strategy.isnot(None)))).all()
-
-    existing = {(s.subject, s.strategy_id) for s in
-                (await session.scalars(select(PlanSleeve))).all()}
-
-    created = 0
-    for plan, email in rows:
-        sid = (plan.strategy or "").strip()
-        if not sid or not email or (email, sid) in existing:
-            continue
-        # A plan carrying a strategy but no size predates 0012. Falling back to
-        # the catalog's suggested sleeve rather than to 100% is the same refusal
-        # `sleeve_basket` makes: putting a whole book into a 3x fund because the
-        # model basket says so in isolation is not a default anyone wants.
-        pct = plan.strategy_sleeve_pct
-        if pct is None:
-            from app.services import strategy_catalog
-            pct = (strategy_catalog.get(sid) or {}).get("sleeve_pct")
-        if pct is None:
-            # A static family, not a sleeve. It governs the book through the
-            # objective, and inventing a percentage for it would put a number
-            # on a card that nobody chose.
-            continue
-        session.add(PlanSleeve(subject=email, strategy_id=sid,
-                               sleeve_pct=float(pct), is_core=False))
-        existing.add((email, sid))
-        created += 1
-
-    session.add(KVSetting(key=BACKFILL_KEY, value=str(created)))
-    await session.commit()
-    logger.info("plan_sleeves backfill: %s sleeve(s) created", created)
-    return {"ran": True, "created": created}
-
-
-async def backfill_core_once(session: AsyncSession) -> dict:
-    """The other half of C1's backfill: a ``plans.strategy`` naming a STATIC
-    family becomes the core row. Runs exactly once, ever.
-
-    C1's backfill skipped these on purpose -- it had nowhere to put them, since
-    a static family has no sleeve size and inventing one would have put a number
-    on a card nobody chose. C6 gives them a home.
-
-    **Why a one-shot and not a read-through fallback.** The tempting version is
-    "no core row? then read ``plans.strategy``" -- no migration, no key, works
-    for every existing book. It breaks the moment C6 adds *clear the core*:
-    ``plans.strategy`` still names the family, so the next page load hands the
-    choice straight back. That is the same trap the sleeve backfill's own comment
-    describes, and it is worth paying a second KV key not to fall into it twice.
-    """
-    if await session.get(KVSetting, CORE_BACKFILL_KEY) is not None:
-        return {"ran": False, "reason": "already backfilled"}
-
-    from app.services import strategies as static_cat
-
-    have_core = {r.subject for r in (await session.scalars(
-        select(PlanSleeve).where(PlanSleeve.is_core.is_(True)))).all()}
-
-    rows = (await session.execute(
-        select(Plan, User.email).join(User, User.id == Plan.user_id)
-        .where(Plan.strategy.isnot(None)))).all()
-
-    created = 0
-    for plan, email in rows:
-        sid = (plan.strategy or "").strip()
-        if not sid or not email or email in have_core:
-            continue
-        # Only a static family. A rule-based id here means the last thing applied
-        # was a sleeve, which says nothing about the core -- that ambiguity in
-        # `plans.strategy` is exactly what C6 exists to remove.
-        if static_cat.get(sid) is None:
-            continue
-        session.add(PlanSleeve(subject=email, strategy_id=sid,
-                               sleeve_pct=0.0, is_core=True))
-        have_core.add(email)
-        created += 1
-
-    session.add(KVSetting(key=CORE_BACKFILL_KEY, value=str(created)))
-    await session.commit()
-    logger.info("plan_sleeves core backfill: %s core row(s) created", created)
-    return {"ran": True, "created": created}

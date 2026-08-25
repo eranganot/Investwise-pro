@@ -317,16 +317,17 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
 
     # The legacy columns are still written for one more release: a rollback to
     # C1 must not lose the applied strategy, and everything not yet converted to
-    # read plan_sleeves (the signal service, the drift card) still reads them.
-    # With N sleeves one column cannot represent the book, so it holds the most
-    # recently applied -- a pointer, no longer the truth. C4 removes the readers;
-    # the columns go after that.
+    # THE LEGACY POINTER IS GONE. `plans.strategy` + `plans.strategy_sleeve_pct`
+    # held the most recently applied strategy -- a pointer, never the truth once
+    # a book could run more than one sleeve. C4 removed the last reader and this
+    # removes the write. Measured on the live book the day it went: the columns
+    # said "btm_swing_dip at 15%" while `plan_sleeves` said 38.4%. Two answers to
+    # one question, and the older one was wrong by 23 points.
     #
     # objective / risk_tolerance only for a static family. See the docstring.
     _guardrails = {} if is_sleeve else {"objective": s["objective"],
                                         "risk_tolerance": s["risk_tolerance"]}
     await upsert_plan(session, user, preferred_depth=s.get("preferred_depth"),
-                      strategy=strategy_id, strategy_sleeve_pct=s.get("sleeve_pct"),
                       **_guardrails)
     await session.commit()
     # The sleeve stops being decorative here: it becomes an enforced ceiling.
@@ -381,15 +382,6 @@ async def retire_sleeve(session: AsyncSession, user: User, strategy_id: str) -> 
     if not removed.get("ok"):
         return removed
     caps = await _arm_sleeve_caps(session, user)
-
-    # The legacy pointer cannot outlive the sleeve it names, or /plan would go on
-    # reporting a strategy the book no longer runs.
-    plan = await get_plan(session, user)
-    if plan is not None and getattr(plan, "strategy", None) == strategy_id:
-        remaining = await sv.list_sleeves(session, user)
-        plan.strategy = remaining[-1].strategy_id if remaining else None
-        plan.strategy_sleeve_pct = remaining[-1].sleeve_pct if remaining else None
-        await session.commit()
 
     return {**removed, "sleeve_caps": caps,
             "retired_caps": [c["ticker"] for c in caps if c["action"] == "retired"],
@@ -458,10 +450,6 @@ async def load_basket(session: AsyncSession, user: User, strategy_id: str,
                     if x.strategy_id == strategy_id), None)
         if row is not None:
             sleeve_pct = float(row.sleeve_pct)
-        else:
-            _plan = await get_plan(session, user)
-            if _plan is not None and getattr(_plan, "strategy", None) == strategy_id:
-                sleeve_pct = getattr(_plan, "strategy_sleeve_pct", None)
     s = cat.get(strategy_id) or strategy_catalog.as_legacy_strategy(strategy_id, sleeve_pct)
     if not s:
         return {"ok": False, "error": "unknown strategy"}

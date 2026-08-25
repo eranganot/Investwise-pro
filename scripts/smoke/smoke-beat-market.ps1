@@ -303,7 +303,17 @@ if ($ApplyStrategy) {
     else { Ok "applied '$ApplyStrategy'" }
 }
 $plan = Api GET '/api/v1/plan'
-$active = $plan.strategy
+# Was $plan.strategy. Migration 0019 dropped that column: a book runs N sleeves
+# plus a core, and one column could name only one of them - on the live book it
+# named a 15% sleeve that actually ran at 38.4%. /plan/sleeves owns the question
+# now. Only a rule-based sleeve has a daily signal, so that is what this picks;
+# a static family falls through to the core, which is the branch below.
+$sl = Api GET '/api/v1/plan/sleeves'
+$ruleSleeves = @(@($sl.sleeves) | Where-Object { $_.strategy_id -like 'btm_*' })
+$active = if ($ruleSleeves.Count -gt 0) { "$($ruleSleeves[0].strategy_id)" } else { "$($sl.core.strategy_id)" }
+if ($ruleSleeves.Count -gt 1) {
+    Write-Host "        note: $($ruleSleeves.Count) rule-based sleeves run; exercising '$active'" -ForegroundColor DarkGray
+}
 if (-not $active) {
     Bad "no strategy applied - signals and discipline cannot be exercised"
     Write-Host "        -> re-run with:  -ApplyStrategy btm_trend_tqqq   (writes to your plan)" -ForegroundColor Yellow

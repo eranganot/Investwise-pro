@@ -126,16 +126,27 @@ if ($null -ne $rows[0].PSObject.Properties['created_at'] -or $rows.Count -eq 0) 
 }
 
 # =========================================================================== #
-Sec "C2.3  the legacy pointer names a sleeve that exists"
+Sec "C2.3  there is no legacy pointer left to disagree with"
 # =========================================================================== #
-$legacyId = "$($s.legacy.strategy)"
-if (-not $legacyId) {
-    if ($rows.Count -eq 0) { Ok "no strategy and no sleeves - consistent" }
-    else { Bad "$($rows.Count) sleeve(s) run but /plan names no strategy" }
-} elseif (@($rows | Where-Object { $_.strategy_id -eq $legacyId }).Count -eq 1) {
-    Ok "/plan names '$legacyId', which is one of the sleeves running"
+# This section used to check that the legacy pointer named a sleeve that really
+# existed. It could not check the SIZE, and the size is where it went wrong: on
+# the live book the column said 15.0% while plan_sleeves said 38.4%. Migration
+# 0019 dropped both columns, so what is checked here now is that the second
+# answer is actually gone from the live deploy - which is the only place a
+# dropped column can still be lying around.
+$legacyBlock = $s.PSObject.Properties.Name -contains 'legacy'
+if ($legacyBlock) {
+    Bad "/plan/sleeves still carries a 'legacy' block - 0019 did not reach this deploy"
 } else {
-    Bad "/plan names '$legacyId' but that is not a sleeve on this book"
+    Ok "/plan/sleeves has no legacy block"
+}
+$p = Api GET '/api/v1/plan'
+if ($null -eq $p) {
+    Skip "/api/v1/plan unreachable - cannot confirm the columns are gone"
+} else {
+    $stale = @($p.PSObject.Properties.Name | Where-Object { $_ -in @('strategy', 'strategy_sleeve_pct') })
+    if ($stale.Count -eq 0) { Ok "/plan reports no strategy pointer - one answer, in one place" }
+    else { Bad "/plan still returns: $($stale -join ', ')" }
 }
 
 # =========================================================================== #

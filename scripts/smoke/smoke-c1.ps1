@@ -123,55 +123,38 @@ if ($alloc -gt 100) {
 }
 
 # =========================================================================== #
-Sec "C1.3  THE ONE THING ONLY PRODUCTION CAN ANSWER: did the backfill run?"
+Sec "C1.3  THE ONE THING ONLY PRODUCTION CAN ANSWER: is the old copy gone?"
 # =========================================================================== #
-# The suite proves the backfill works against an empty SQLite file. Whether it
-# turned the strategy actually applied on this deploy into a row is a fact about
-# the live database, and there is no way to learn it from here except to look.
-$legacyId = "$($s.legacy.strategy)"
-$legacyPct = $s.legacy.strategy_sleeve_pct
+# This section used to ask "did the backfill run?". It cannot any more, and that
+# is the point: migration 0019 deleted both one-shot backfills along with the
+# columns they read. They had been spent on every live database for weeks - the
+# logs said "0 sleeve(s) created" on every boot.
+#
+# The question a live deploy alone can answer has changed shape, not gone away.
+# The DDL list in main.py is what actually runs against production (alembic does
+# not), so "the columns are dropped" is a claim about THIS database and nothing
+# in the test suite can prove it. Ask.
 $rows = @($s.sleeves)
-
-if (-not $legacyId) {
-    Skip "no strategy applied on this book, so there was nothing to backfill"
-    if ($rows.Count -eq 0) { Ok "and no sleeve rows were invented out of nothing" }
-    else { Bad "$($rows.Count) sleeve row(s) exist with no applied strategy behind them" }
-} elseif ($rows.Count -eq 0) {
-    # Not a failure by itself: the one-shot marker may have been spent on a boot
-    # that happened BEFORE this strategy was applied. That window is expected
-    # and closes in C2 - but it has to be recognised, not silently passed.
-    Skip "'$legacyId' is applied but has no sleeve row"
-    Write-Host "        Expected IF this strategy was applied after the C1 deploy booted:" -ForegroundColor DarkGray
-    Write-Host "        the backfill is a one-shot and was already spent. C2 closes this." -ForegroundColor DarkGray
-    Write-Host "        NOT expected if it was applied before - then the backfill did not run." -ForegroundColor DarkGray
-} elseif ($rows.Count -eq 1) {
-    $r = $rows[0]
-    if ("$($r.strategy_id)" -eq $legacyId) {
-        Ok "backfilled: '$legacyId' is a sleeve row, matching the legacy column"
-    } else {
-        Bad "the sleeve row is '$($r.strategy_id)' but the applied strategy is '$legacyId'"
-    }
-    if ($null -eq $legacyPct) {
-        Ok "no stored sleeve size (pre-0012 plan); backfilled at $($r.sleeve_pct)%"
-        if ([double]$r.sleeve_pct -ge 100) {
-            Bad "...at 100% - a whole book in one sleeve is the fallback this must never take"
-        }
-    } elseif ([Math]::Abs([double]$r.sleeve_pct - [double]$legacyPct) -lt 0.01) {
-        Ok "at $($r.sleeve_pct)%, the same size the old column holds"
-    } else {
-        Bad "sleeve row says $($r.sleeve_pct)% but plans.strategy_sleeve_pct says $legacyPct%"
-    }
+$legacyBlock = $s.PSObject.Properties.Name -contains 'legacy'
+if ($legacyBlock) {
+    Bad "/plan/sleeves still carries a 'legacy' block - this deploy predates 0019"
 } else {
-    Bad "$($rows.Count) sleeve rows exist - C1 can only ever create one"
+    Ok "no legacy block on /plan/sleeves"
 }
 
-foreach ($r in $rows) {
-    if ($r.is_core -eq $true) {
-        Bad "'$($r.strategy_id)' has is_core set - that column is reserved and must stay unwritten in C1"
-    }
+if ($rows.Count -eq 0) {
+    Skip "no sleeves on this book, so there is no size to cross-check"
+} else {
+    Ok "$($rows.Count) sleeve row(s): $((@($rows | ForEach-Object { "$($_.strategy_id) $($_.sleeve_pct)%" })) -join ', ')"
 }
-if ($rows.Count -gt 0 -and -not ($rows | Where-Object { $_.is_core -eq $true })) {
-    Ok "is_core is false on every row - still reserved, as designed"
+
+# is_core is no longer reserved - C6 writes it, and the core row is how a static
+# family manages the book. What must stay true is that there is AT MOST ONE.
+$cores = @($rows | Where-Object { $_.is_core -eq $true })
+if ($cores.Count -gt 1) {
+    Bad "$($cores.Count) rows have is_core set - get_core would answer oldest-first and ignore your newer choice"
+} else {
+    Ok "at most one core row, as the model requires"
 }
 
 # =========================================================================== #
@@ -190,25 +173,23 @@ if ($stable) { Ok "four reads, still $before row(s) - the endpoint is read-only 
 else { Bad "the row count moved across repeated GETs - something on the read path is writing" }
 
 # =========================================================================== #
-Sec "C1.5  INERT - the old path is exactly where it was"
+Sec "C1.5  ONE ANSWER - the old path is not there to disagree"
 # =========================================================================== #
-# This is the whole claim of the phase. If apply_strategy had started routing
-# through the new table, this is what would have quietly changed.
+# This section used to prove the OPPOSITE: that C1 was inert and the old columns
+# were still authoritative. That was correct for one release and wrong for the
+# next twelve days, during which plans.strategy said 'btm_swing_dip @ 15.0%' on
+# a book whose plan_sleeves rows said 38.4% + 25.6%. Three readers were still
+# consulting it as a fallback, each one added to keep the protection "never
+# weaker than C1"; by the end they made it weaker.
 $p = Api GET '/api/v1/plan'
 if ($null -eq $p) {
-    Bad "/api/v1/plan unreachable - cannot confirm the old path is untouched"
+    Bad "/api/v1/plan unreachable - cannot confirm the old path is gone"
 } else {
-    if ("$($p.strategy)" -eq $legacyId) {
-        Ok "/plan still reports strategy '$legacyId' - the old column is still authoritative"
+    $stale = @($p.PSObject.Properties.Name | Where-Object { $_ -in @('strategy', 'strategy_sleeve_pct') })
+    if ($stale.Count -eq 0) {
+        Ok "/plan reports no strategy pointer - /plan/sleeves is the only answer"
     } else {
-        Bad "/plan says '$($p.strategy)' but /plan/sleeves' legacy block says '$legacyId'"
-    }
-    if (($null -eq $p.strategy_sleeve_pct) -and ($null -eq $legacyPct)) {
-        Ok "no stored sleeve size, consistently, on both routes"
-    } elseif ([Math]::Abs([double]$p.strategy_sleeve_pct - [double]$legacyPct) -lt 0.01) {
-        Ok "/plan still reports $($p.strategy_sleeve_pct)% - unchanged by the deploy"
-    } else {
-        Bad "/plan says $($p.strategy_sleeve_pct)% but the legacy block says $legacyPct%"
+        Bad "/plan still returns: $($stale -join ', ') - 0019 did not reach this deploy"
     }
 }
 

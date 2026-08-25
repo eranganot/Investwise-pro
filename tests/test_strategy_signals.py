@@ -111,7 +111,7 @@ async def test_a_pending_flip_becomes_one_card_that_says_no_order_is_placed():
     from datetime import datetime, timezone
     from app.core.config import get_settings
     from app.models.base import Base
-    from app.models.tables import Plan, StrategySignalState, User
+    from app.models.tables import Plan, PlanSleeve, StrategySignalState, User
     import app.models  # noqa: F401
 
     eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
@@ -123,8 +123,12 @@ async def test_a_pending_flip_becomes_one_card_that_says_no_order_is_placed():
             user = User(email="a@b.c", name="A", role="SuperAdmin")
             session.add(user)
             await session.flush()
-            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
-                             strategy="btm_trend_tqqq"))
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High"))
+            # Was `Plan(strategy="btm_trend_tqqq")`. 0019 dropped that column;
+            # a rule-based strategy is a SLEEVE ROW and always was -- the
+            # column was the stale copy.
+            session.add(PlanSleeve(subject="a@b.c", strategy_id="btm_trend_tqqq",
+                                   sleeve_pct=15.0, is_core=False))
             session.add(StrategySignalState(
                 subject="a@b.c", strategy_id="btm_trend_tqqq",
                 target={"QQQ": 1.0}, previous_target={"TQQQ": 1.0},
@@ -154,7 +158,7 @@ async def test_no_card_when_the_applied_strategy_is_not_rule_based():
     from sqlalchemy.pool import NullPool
     from app.core.config import get_settings
     from app.models.base import Base
-    from app.models.tables import Plan, User
+    from app.models.tables import Plan, PlanSleeve, User
     import app.models  # noqa: F401
 
     eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
@@ -166,8 +170,11 @@ async def test_no_card_when_the_applied_strategy_is_not_rule_based():
             user = User(email="c@d.e", name="C", role="SuperAdmin")
             session.add(user)
             await session.flush()
-            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
-                             strategy="grow_quality"))     # a static basket
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High"))
+            # A static basket is a CORE, not a sleeve -- which is the whole
+            # reason this test expects no signal card.
+            session.add(PlanSleeve(subject="c@d.e", strategy_id="grow_quality",
+                                   sleeve_pct=0.0, is_core=True))
             await session.commit()
             assert await sig.active_strategy_id(session, user) is None
             assert await sig.pending_signal_recs(session, user) == []
@@ -186,7 +193,7 @@ async def test_the_signal_card_does_not_claim_the_app_will_act():
     from datetime import datetime, timezone
     from app.core.config import get_settings
     from app.models.base import Base
-    from app.models.tables import Plan, StrategySignalState, User
+    from app.models.tables import Plan, PlanSleeve, StrategySignalState, User
     import app.models  # noqa: F401
 
     eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
@@ -198,8 +205,9 @@ async def test_the_signal_card_does_not_claim_the_app_will_act():
             user = User(email="e@f.g", name="E", role="SuperAdmin")
             session.add(user)
             await session.flush()
-            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
-                             strategy="btm_swing_dip"))
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High"))
+            session.add(PlanSleeve(subject="e@f.g", strategy_id="btm_swing_dip",
+                                   sleeve_pct=15.0, is_core=False))
             session.add(StrategySignalState(
                 subject="e@f.g", strategy_id="btm_swing_dip",
                 target={"TQQQ": 1.0}, previous_target={"QQQ": 1.0},
@@ -267,7 +275,7 @@ async def test_the_discipline_card_is_actionable_and_never_arms_by_itself():
     from sqlalchemy.pool import NullPool
     from app.core.config import get_settings
     from app.models.base import Base
-    from app.models.tables import Account, Entity, Plan, Position, User
+    from app.models.tables import Account, Entity, Plan, PlanSleeve, Position, User
     from app.services import backtest_service as bsvc
     from decimal import Decimal
     import app.models  # noqa: F401
@@ -290,8 +298,12 @@ async def test_the_discipline_card_is_actionable_and_never_arms_by_itself():
             session.add(Position(account_id=acc.id, ticker="TQQQ", market="NASDAQ",
                                  quantity=Decimal("10"), cost_basis=Decimal("50"),
                                  current_price=Decimal("60")))
-            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High",
-                             strategy="btm_trend_tqqq"))
+            session.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High"))
+            # Was `Plan(strategy="btm_trend_tqqq")`. 0019 dropped that column;
+            # a rule-based strategy is a SLEEVE ROW and always was -- the
+            # column was the stale copy.
+            session.add(PlanSleeve(subject="g@h.i", strategy_id="btm_trend_tqqq",
+                                   sleeve_pct=15.0, is_core=False))
             await bsvc.store(session, "btm_trend_tqqq",
                              {"ok": True, "cagr_pct": 32.9, "volatility_pct": 48.9})
             await session.commit()
@@ -358,12 +370,21 @@ async def test_a_rule_triggered_with_no_card_is_healed_not_left_counting():
         await eng.dispose()
 
 
-def test_the_plan_endpoint_reports_which_strategy_is_applied():
-    """Applying a strategy looked like a no-op from everywhere except
-    /strategies/{id}/preview: the plans.strategy column has existed since
-    migration 0007 and apply_strategy writes it, but the /plan serializer never
-    returned it. A live smoke read `applied 'btm_trend_tqqq'` and then `no
-    strategy applied` one call later."""
+def test_applying_a_strategy_is_visible_from_the_endpoint_that_owns_it():
+    """Was `test_the_plan_endpoint_reports_which_strategy_is_applied`.
+
+    The original defect: applying looked like a no-op from everywhere except
+    /strategies/{id}/preview, because `plans.strategy` had existed since 0007
+    and `apply_strategy` wrote it, but the /plan serializer never returned it. A
+    live smoke read `applied 'btm_trend_tqqq'` and then `no strategy applied`
+    one call later.
+
+    The repair was to serialise the column. 0019 removed the column instead --
+    two stores answering "what is applied" is the same class of bug one layer
+    up, and on the live book the two answers were 23 points apart. So the
+    property survives and its address moves: /plan/sleeves owns the question,
+    and a sleeve and a core are told apart rather than flattened into one field.
+    """
     import os
     os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
     from fastapi.testclient import TestClient
@@ -374,12 +395,21 @@ def test_the_plan_endpoint_reports_which_strategy_is_applied():
             {"ticker": "V", "market": "NASDAQ", "asset_class": "Equities", "depth": 3,
              "spot_price": 365, "listing_price": 365, "quantity": 10, "cost_basis": 300,
              "expected_return_pct": 8, "volatility_pct": 20}]})
-        assert "strategy" in c.get("/api/v1/plan").json(), "the field must always be present"
+        # The fields must always be present, empty book or not.
+        body = c.get("/api/v1/plan/sleeves").json()
+        assert body["sleeves"] == [] and body["core"] is None
+        # And /plan must not answer this question at all any more.
+        assert "strategy" not in c.get("/api/v1/plan").json()
 
         r = c.post("/api/v1/strategies/btm_trend_tqqq/apply")
         assert r.status_code == 200 and r.json().get("ok") is not False
-        assert c.get("/api/v1/plan").json()["strategy"] == "btm_trend_tqqq"
+        body = c.get("/api/v1/plan/sleeves").json()
+        assert [s["strategy_id"] for s in body["sleeves"]] == ["btm_trend_tqqq"]
 
-        # A static basket resolves through the same path.
+        # A static basket resolves through the same path -- as a CORE, which one
+        # column could never say.
         c.post("/api/v1/strategies/grow_quality/apply")
-        assert c.get("/api/v1/plan").json()["strategy"] == "grow_quality"
+        body = c.get("/api/v1/plan/sleeves").json()
+        assert body["core"]["strategy_id"] == "grow_quality"
+        assert [s["strategy_id"] for s in body["sleeves"]] == ["btm_trend_tqqq"], (
+            "applying a core replaced the sleeve -- the single-column bug, back")

@@ -1,7 +1,166 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 4 cards, PR 5 history provider + gain headline)._
+_Last updated: 2026-08-25 by Claude (PR 8 — the legacy strategy columns are gone)._
 _Seeded from git history + prior transcripts._
+
+## Where the seven-day audit stands
+
+| PR | What | State |
+|---|---|---|
+| 1 | Stop the app inventing and destroying money | ✅ shipped |
+| 2 | Ledger, honest gain, dead snapshot job | ✅ shipped |
+| 3 | Reconcile the book | ✅ shipped |
+| 4 | Cards you can actually see | ✅ shipped |
+| 5 | History provider + lead with gain vs deposits | ✅ shipped |
+| 5b | Four delisted ETNs out of the buy catalogue | ✅ shipped |
+| 6 | Sleeves that mean 64% | ✅ shipped |
+| 6b | Fractional sells | ✅ shipped |
+| 7 | Surface the core choice (+ the DDL column that hid every backtest) | ✅ shipped |
+| 7b | The core picker says what each family is FOR | ✅ this entry |
+| 8 | Delete `plans.strategy` / `plans.strategy_sleeve_pct` | ✅ this entry |
+| 9 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+
+---
+
+## ✅ PR 8 — one sleeve was never enough, and the spare copy was lying
+
+**Shipped 2026-08-25.** Migration `0019_drop_plan_strategy_columns`.
+
+**WHAT WAS ACTUALLY WRONG.** `plans.strategy` + `plans.strategy_sleeve_pct` can
+express exactly ONE sleeve. `plan_sleeves` (migration 0014) replaced them with N
+rows and C1–C4 moved every reader across. What was left behind was not a spare
+copy but a **second answer**, and nothing kept the two in step.
+
+Measured on the live book the day this was written:
+
+```
+plans.strategy   = btm_swing_dip @ 15.0%     <- stale
+plan_sleeves     = btm_swing_dip @ 38.4%
+                   btm_trend_soxl @ 25.6%
+```
+
+**23 points out of date, and still consulted.** Three fallbacks read it: the tax
+harvester's sleeve-exclusion set, the strategy-signal service, and the
+sleeve-drift card. Every one of them existed to keep the protection *"never
+weaker than it was in C1"*. By the end they made it weaker, because they would
+have computed from 15% a book that actually ran 38.4% — leaving a third of the
+sleeve outside harvest protection, and measuring drift against a target nobody
+set.
+
+**WHAT WENT.** Readers in `recommendations.py` (×2), `strategy_signal_service`,
+`strategy_service.load_basket`; writes in the `plan_service` whitelist,
+`apply_strategy` and `retire_sleeve`; the `legacy` block and both fields on
+`/plan`; the `_appliedIds()` fallback in `index.html`; both one-shot backfills
+(`backfill_once`, `backfill_core_once`) and the startup call; the model columns;
+and the startup DDL now **DROPs** rather than ADDs.
+
+Both backfills had already been spent on every live database — production logged
+*"0 sleeve(s) created"* on every boot. Their KV keys are deliberately **kept**:
+they are the record that the migration happened, and the only thing that would
+stop a resurrected backfill re-running on a book that has since had sleeves
+removed by hand.
+
+**THE TEST THAT HAD TO CHANGE SHAPE.** `test_startup_ddl_covers_migrations.py`
+asserts every migration-added column is mirrored in `main.py`'s startup DDL —
+because alembic does not run against production and that list is the actual
+mechanism. It had no concept of a DROP, so it would have demanded these two
+columns forever. It now walks migrations in order, lets a later `drop_column`
+cancel an earlier `add_column`, ignores `downgrade()` bodies, and gained the
+mirror-image assertion: **a column a migration drops must be dropped by the
+startup DDL too.** Otherwise the DDL merely stops adding it and every existing
+database keeps it — which is exactly the stale-second-answer failure 0019 exists
+to end.
+
+**~26 assertions were re-premised, not deleted.** Each one that read
+`plans.strategy` was asserting something real through the wrong window; the
+property moved to `/plan/sleeves` and the assertions moved with it. The clearest
+example: `test_removing_the_named_sleeve_moves_the_legacy_pointer` guarded a
+*repair* — re-point the column at some arbitrary survivor. It is now
+`test_removing_a_sleeve_leaves_no_second_answer_anywhere`, which asserts the
+thing that repair was standing in for.
+
+Smoke scripts followed: `smoke-c1.ps1` C1.3/C1.5, `smoke-c2.ps1` C2.3,
+`smoke-p4.ps1` drift sizing, `smoke-beat-market.ps1` active-strategy pick. Each
+now asks the live deploy the one question only it can answer — *are the columns
+actually gone from THIS database* — since the DDL, not alembic, is what runs.
+
+---
+
+## ✅ PR 7b — the core picker says what each family is FOR
+
+**Shipped 2026-08-25**, on top of PR 7.
+
+Eran: *"I want indication on the core strategy about which strategy group is it
+(i.e. grow/balance/income/preserve) — it will help me decide."*
+
+Fourteen names arrived with no way to tell **Leveraged Momentum** from
+**Low-Volatility Defensive** except by squinting at the mix. The goal group was
+already on every family in `strategies.py` — the catalogue is literally keyed by
+it — and `/plan/core/options` had always returned it. The picker just never drew
+it. Now each row leads with the group, and the four words are defined once on the
+panel, because a chip whose word you have to guess is decoration.
+
+**And the picker became reachable a second time.** `Clear` was the only way out
+of a core you had already chosen, and between pressing Clear and pressing Use the
+book has **no core at all** — every rebalance card silently falls back to
+measuring drift against the objective. The first core is chosen before you have
+seen what it does, so changing it is the normal case, not the exception. It gets
+a `Change` button that does not pass through "unmanaged", and the family already
+in use shows as `In use` rather than being offered again.
+
+The panel also states the size the choice actually governs: the sleeves claim
+64% and this choice cannot touch them. Both halves matter — picking a Grow core
+does not make the book much more aggressive, and picking a Preserve one does not
+rescue it.
+
+**Still deliberately absent: the app does not recommend a core.** It cannot
+honestly, yet. Every "worst fall" on that panel is an `est.` from the catalogue
+profile, not a measurement, and a modelled number wearing the authority of a
+measured one is the failure this app keeps having. The measured figures only
+became readable again with PR 7's `benchmark_ticker` DDL fix; the ranked answer
+is **T6b** (*"the solver varies the core"*), which is where a recommendation gets
+a measurement behind it.
+
+---
+
+## 🔴 BACKLOG — `alembic upgrade head` cannot run from scratch
+
+**NOT STARTED.** Found 2026-08-25 while verifying PR 8's migration against a real
+Postgres 16, which is the first time the whole chain had been applied to an empty
+database in a long while.
+
+```
+$ alembic upgrade head
+sqlalchemy.exc.ProgrammingError: DuplicateColumnError:
+    column "subject" of relation "transactions" already exists
+[SQL: ALTER TABLE transactions ADD COLUMN subject VARCHAR(255)]
+```
+
+**WHY.** `0001_initial` runs `Base.metadata.create_all`, so on a fresh database
+every table is built from the **current** model — including columns that later
+migrations then try to add. `0018_transaction_ledger` adds seven of them to
+`transactions` unguarded, so it dies on the first. Migrations 0013, 0014, 0015
+and 0019 all guard against exactly this; 0018 does not.
+
+**WHY IT HAS NOT BITTEN.** This app does not run alembic against production —
+the `ALTER TABLE ... IF NOT EXISTS` list in `main.py` is the real mechanism, and
+`create_all` covers a fresh database. So the chain being unrunnable costs
+nothing today and costs everything the day someone needs to rebuild from it, or
+point a new environment at it.
+
+**THE FIX** is the `_present(bind, col)` guard 0019 uses, applied to 0018's seven
+`add_column` calls and two `create_index` calls. Deliberately **not** done inside
+PR 8: quietly editing a shipped migration in an unrelated commit is how a chain
+becomes untrustworthy. It wants its own change, and a CI job that runs `alembic
+upgrade head` against an empty Postgres so this cannot silently return.
+
+**Verified working meanwhile** (2026-08-25, Postgres 16, by hand): stamping at
+0018 and running 0019 drops both columns when present; `downgrade` recreates the
+shape and re-upgrading drops them again; and booting the app's own lifespan
+against a database holding both columns drops them — which is the path
+production actually takes.
+
+---
 
 ## 🔴 BACKLOG — a card may not name a ticker that is not trading
 

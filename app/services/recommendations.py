@@ -725,15 +725,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # just on whichever sleeve was not applied most recently.
         try:
             from app.services import sleeve_service as sv
+            # `plan_sleeves` is the only source. The fallback that used to sit
+            # here read `plans.strategy` + `plans.strategy_sleeve_pct`, which by
+            # 2026-08-25 said "btm_swing_dip at 15%" on a book whose sleeve row
+            # said 38.4% -- so the protection it was meant to preserve would
+            # have been computed from a number 23 points stale.
             _sleeve = await sv.sleeve_tickers(session, user)
-            if not _sleeve:
-                # No sleeve rows yet (a book that predates the backfill, or one
-                # running a static family). Fall back to the legacy column so
-                # this protection never gets weaker than it was in C1.
-                from app.services.strategy_service import sleeve_targets
-                _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
-                _sleeve = {t.upper() for t in sleeve_targets(
-                    _plan_sid, getattr(plan, "strategy_sleeve_pct", None))} if _plan_sid else set()
         except Exception:  # noqa: BLE001
             _sleeve = set()
         _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _sleeve})
@@ -1157,12 +1154,6 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         for _s in await _sv.list_sleeves(session, user):
             for _t in (sleeve_targets(_s.strategy_id, _s.sleeve_pct) or {}):
                 _wanted_by.setdefault(_t.upper(), []).append(_s.strategy_id)
-        if not _targets:
-            # A book that predates the C1 backfill still has only the columns.
-            _plan_sid = getattr(plan, "strategy", None) if plan is not None else None
-            _chosen = getattr(plan, "strategy_sleeve_pct", None) if plan is not None else None
-            _targets = sleeve_targets(_plan_sid, _chosen) if _plan_sid else {}
-            _wanted_by = {t.upper(): [_plan_sid] for t in _targets} if _plan_sid else {}
         if _targets and nav:
             _weights = snap.get("exposure_ticker") or {}
             for _tk, _w in sorted(_targets.items()):

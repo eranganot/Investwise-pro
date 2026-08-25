@@ -359,10 +359,15 @@ def test_funding_sizes_from_the_sleeve_row_not_the_legacy_column():
     with TestClient(m.app) as c:
         _seed(c, cash=100000)
         _apply(c, SOXL, 7)           # applied first
-        _apply(c, FACTOR, 12)        # ...so the legacy column now names FACTOR
+        _apply(c, FACTOR, 12)        # ...and this is the one the column named
 
-        plan = c.get("/api/v1/plan").json()
-        assert plan["strategy"] == FACTOR, "precondition: the pointer moved"
+        # Precondition. Was `plan["strategy"] == FACTOR` -- the pointer that
+        # moved and took the size with it. 0019 dropped it, so the precondition
+        # becomes the thing that column could never express: BOTH sleeves exist,
+        # each at its own size, and applying the second left the first alone.
+        rows = {s["strategy_id"]: s["sleeve_pct"]
+                for s in c.get("/api/v1/plan/sleeves").json()["sleeves"]}
+        assert rows == {SOXL: 7.0, FACTOR: 12.0}, rows
 
         r = c.post(f"/api/v1/strategies/{SOXL}/load-basket",
                    json={"mode": "fund", "dry_run": True}).json()

@@ -91,8 +91,14 @@ Sec "P4.3  drift, and the cold start it must refuse"
 if ($null -eq $recs -or $null -eq $pf -or $null -eq $plan) {
     Skip "cannot assess drift without recommendations + portfolio + plan"
 } else {
-    $chosen = $plan.strategy_sleeve_pct
-    $sid = $plan.strategy
+    # Was $plan.strategy / $plan.strategy_sleeve_pct. Migration 0019 dropped
+    # both: they held ONE sleeve, and this book runs two. The size in particular
+    # was 23 points stale on the live deploy, so a drift check built on it was
+    # measuring drift against the wrong target.
+    $sl = Api GET '/api/v1/plan/sleeves'
+    $ruleSleeves = @(@($sl.sleeves) | Where-Object { $_.strategy_id -like 'btm_*' })
+    $sid = if ($ruleSleeves.Count -gt 0) { "$($ruleSleeves[0].strategy_id)" } else { '' }
+    $chosen = if ($ruleSleeves.Count -gt 0) { $ruleSleeves[0].sleeve_pct } else { $null }
     if (-not $sid) { Skip "no rule-based strategy applied, so there is no sleeve to drift" }
     else {
         $cold = @($recs.recommendations | Where-Object { $_.title -like '*hold none of it*' })

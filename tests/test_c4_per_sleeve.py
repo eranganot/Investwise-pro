@@ -86,8 +86,18 @@ async def test_active_strategy_ids_returns_every_sleeve():
 
 
 @pytest.mark.asyncio
-async def test_a_book_with_no_sleeve_rows_falls_back_to_the_legacy_column():
-    """A book that predates the C1 backfill must keep working exactly as it did."""
+async def test_a_book_with_no_sleeve_rows_has_no_active_strategies():
+    """Was `test_a_book_with_no_sleeve_rows_falls_back_to_the_legacy_column`.
+
+    The fallback existed so a book predating the C1 backfill kept working. It
+    outlived that: by 0019 every live book had sleeve rows, and the fallback's
+    only remaining effect was to answer from a column that had drifted 23 points
+    out of date -- computing protection from 15% on a book that ran 38.4%.
+
+    So the assertion inverts. No rows means NO active strategies, said plainly,
+    rather than a stale guess dressed as an answer. An empty list is what every
+    caller here already handles: no signal cards, no per-sleeve exclusions.
+    """
     from sqlalchemy import delete
 
     from app.models.base import Base
@@ -99,10 +109,10 @@ async def test_a_book_with_no_sleeve_rows_falls_back_to_the_legacy_column():
             await conn.run_sync(Base.metadata.create_all)
         async with Session() as s:
             user = await _user(s)
-            s.add(Plan(user_id=user.id, strategy=SOXL, strategy_sleeve_pct=10.0))
+            s.add(Plan(user_id=user.id, objective="Grow", risk_tolerance="High"))
             await s.execute(delete(PlanSleeve))
             await s.commit()
-            assert await sigs.active_strategy_ids(s, user) == [SOXL]
+            assert await sigs.active_strategy_ids(s, user) == []
     finally:
         await eng.dispose()
 

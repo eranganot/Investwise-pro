@@ -249,10 +249,15 @@ async def test_resizing_a_sleeve_does_not_change_the_cores_target_mix():
 
         assert after == before, (
             f"the core's target mix moved to {after} because a SLEEVE was resized")
-        # And the legacy column really did move under it -- proving the test is
-        # exercising the thing it claims to, not passing because nothing changed.
-        from app.services.plan_service import get_plan
-        assert (await get_plan(s, user)).strategy == SOXL
+        # Proof the test is exercising the thing it claims to, rather than
+        # passing because nothing happened. This used to read `plans.strategy`,
+        # which was the column that moved under the core and the reason the
+        # defect existed; 0019 dropped it, so the evidence is now the two rows
+        # that ACTUALLY record the two decisions -- and the point is that
+        # resizing one of them cannot reach the other.
+        sizes = {r.strategy_id: r.sleeve_pct for r in await sv.list_sleeves(s, user)}
+        assert sizes.get(SOXL) == 15.0, "the resize did not land"
+        assert await sv.core_strategy_id(s, user) == CORE
     finally:
         await s.close()
         await eng.dispose()
@@ -289,60 +294,33 @@ def test_replace_book_still_works_on_a_book_with_no_sleeves():
 
 
 # --------------------------------------------------------------------------- #
-# Backfill
+# The core backfill is GONE (0019)
+#
+# Three tests lived here: the backfill adopts a static family, never adopts a
+# sleeve, and never resurrects a core you cleared. All three seeded
+# `Plan(strategy=...)`, the column 0019 dropped, and all three exercised
+# `backfill_core_once`, which was deleted with it. The backfill had already been
+# spent on every live database.
+#
+# What survives is the property the third one was really about -- clearing the
+# core is permanent -- asserted against a restart instead of against a KV key,
+# because that is the thing a user would notice.
 # --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_backfill_adopts_a_static_family_but_never_a_sleeve():
-    from app.models.tables import Plan
+def test_clearing_the_core_survives_a_restart():
+    with TestClient(m.app) as c:
+        _seed(c)
+        assert c.post("/api/v1/plan/core", json={"strategy_id": CORE}).json()["ok"] is True
+        assert c.get("/api/v1/plan/sleeves").json()["core"]["strategy_id"] == CORE
+        assert c.delete("/api/v1/plan/core").json()["ok"] is True
+        assert c.get("/api/v1/plan/sleeves").json()["core"] is None
 
-    eng, s, user = await _fresh()
-    try:
-        s.add(Plan(user_id=user.id, strategy=CORE))
-        await s.commit()
-        out = await sv.backfill_core_once(s)
-        assert out["ran"] and out["created"] == 1
-        assert await sv.core_strategy_id(s, user) == CORE
-        assert (await sv.backfill_core_once(s))["ran"] is False, "must be a one-shot"
-    finally:
-        await s.close()
-        await eng.dispose()
+    with TestClient(m.app) as c:                    # a whole new lifespan
+        assert c.get("/api/v1/plan/sleeves").json()["core"] is None, (
+            "something handed the cleared core back on boot")
 
 
-@pytest.mark.asyncio
-async def test_backfill_does_not_resurrect_a_core_you_cleared():
-    """The reason this is a one-shot with its own KV key rather than a
-    read-through fallback on ``plans.strategy``: the fallback version hands the
-    choice straight back on the next page load after you clear it."""
-    from app.models.tables import Plan
-
-    eng, s, user = await _fresh()
-    try:
-        s.add(Plan(user_id=user.id, strategy=CORE))
-        await s.commit()
-        await sv.backfill_core_once(s)
-        await sv.clear_core(s, user)
-        await s.commit()
-        await sv.backfill_core_once(s)          # a later boot
-        assert await sv.get_core(s, user) is None, "the backfill resurrected a cleared core"
-    finally:
-        await s.close()
-        await eng.dispose()
-
-
-@pytest.mark.asyncio
-async def test_backfill_skips_a_plan_whose_strategy_is_a_sleeve():
-    """A rule-based id in ``plans.strategy`` says the last thing applied was a
-    sleeve. It says nothing about the core, and guessing is the ambiguity C6
-    exists to remove."""
-    from app.models.tables import Plan
-
-    eng, s, user = await _fresh()
-    try:
-        s.add(Plan(user_id=user.id, strategy=FACTOR, strategy_sleeve_pct=8.0))
-        await s.commit()
-        out = await sv.backfill_core_once(s)
-        assert out["created"] == 0
-        assert await sv.get_core(s, user) is None
-    finally:
-        await s.close()
-        await eng.dispose()
+def test_the_core_backfill_is_not_reachable_from_anywhere():
+    assert not hasattr(sv, "backfill_core_once")
+    # The key stays: it is the record that the migration ran, and it is what
+    # would stop a resurrected backfill re-running on an already-migrated book.
+    assert sv.CORE_BACKFILL_KEY

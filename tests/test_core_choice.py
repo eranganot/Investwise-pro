@@ -174,7 +174,7 @@ def test_g_choosing_again_replaces_rather_than_adding():
 def test_h_the_page_shows_the_choice_only_while_it_is_unmade():
     """A banner that cannot be dismissed, because there is nothing to dismiss.
 
-    It disappears when a core exists -- the only thing that actually resolves
+    It closes itself when a core exists -- the only thing that actually resolves
     it. The old copy pointed at "the goal tabs below", which is where the
     decision was hiding in the first place.
     """
@@ -184,15 +184,71 @@ def test_h_the_page_shows_the_choice_only_while_it_is_unmade():
     assert "function corePicker()" in html
     assert "Nothing manages your core" in html
     assert "chooseCore(" in html
-    # Rendered only when there is no core.
-    assert "${c?\"\":corePicker()}" in html
+    # Drawn whenever there is no core. `COREPICK` is the ONLY thing that can
+    # also open it, and it is false until you press Change -- so an unset core
+    # still cannot be dismissed.
+    assert "${(c && !COREPICK)?\"\":corePicker()}" in html
+    assert "let COREPICK=false;" in html
     # And it must not send the reader back to the tabs that hid the choice.
     assert "Pick one from the goal tabs below" not in html
+
+
+def test_i2_a_core_you_already_chose_can_be_changed_without_clearing_it():
+    """`Clear` was the only way out, and clearing is not what you want.
+
+    Between pressing Clear and pressing Use, the book has no core at all: every
+    rebalance card falls back to measuring drift against the objective. The
+    first core is chosen before you have seen what it does, so changing it is
+    the normal case -- it gets a door that does not pass through "unmanaged".
+    """
+    from pathlib import Path
+
+    html = Path("app/static_app/index.html").read_text(encoding="utf-8")
+    assert "function toggleCorePicker()" in html
+    assert 'onclick="toggleCorePicker()"' in html
+    assert "Change what manages your core" in html
+    # Options are lazily fetched; the gate has to know about the second door or
+    # the panel opens onto "Loading the core options..." and stays there.
+    assert "if(MYSLEEVES && (!MYSLEEVES.core || COREPICK) && !COREOPTS){" in html
+    # And the family already in use is not offered again as a thing to pick.
+    assert "x.is_current" in html
+
+
+def test_j_every_row_names_the_goal_group_it_belongs_to():
+    """Fourteen names, no way to tell what any of them is FOR.
+
+    Each family is keyed by a goal group in `strategies.py` and the payload has
+    always carried it; the picker just never drew it. The group is the shortest
+    true description of what a family is for, so it is the first thing on the
+    row -- and the four words are defined once, on the panel, because a chip
+    whose word you have to guess is decoration.
+    """
+    from pathlib import Path
+
+    html = Path("app/static_app/index.html").read_text(encoding="utf-8")
+    assert "chip(x.goal)" in html, "the row does not render the goal group"
+    for g in ("Grow", "Balanced", "Income", "Preserve"):
+        assert f'chip("{g}")' in html or f"{g}:" in html, f"{g} is not in the legend"
+
+
+def test_k_the_goal_group_survives_the_round_trip():
+    """The chip is only as good as the field, so assert the field, not the CSS."""
+    try:
+        with _client() as c:
+            _seed(c)
+            o = c.get("/api/v1/plan/core/options").json()
+    finally:
+        logging.disable(logging.NOTSET)
+
+    groups = {x["goal"] for x in o["options"]}
+    assert groups == {"Grow", "Balanced", "Income", "Preserve"}, groups
+    for x in o["options"]:
+        assert x["goal"], f"{x['strategy_id']} belongs to no goal group"
 
 
 def test_i_the_options_are_fetched_only_when_there_is_a_choice_to_make():
     from pathlib import Path
 
     html = Path("app/static_app/index.html").read_text(encoding="utf-8")
-    assert "if(MYSLEEVES && !MYSLEEVES.core && !COREOPTS){" in html, (
+    assert "if(MYSLEEVES && (!MYSLEEVES.core || COREPICK) && !COREOPTS){" in html, (
         "the fourteen families should not be fetched to draw nothing")

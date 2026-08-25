@@ -124,8 +124,12 @@ def test_a_refusal_leaves_the_plan_and_its_caps_untouched():
         _apply(c, FACTOR, 40)
 
         plan_after = c.get("/api/v1/plan").json()
-        assert plan_after["strategy"] == plan_before["strategy"]
-        assert plan_after["strategy_sleeve_pct"] == plan_before["strategy_sleeve_pct"]
+        # Was two field comparisons, against `strategy` and
+        # `strategy_sleeve_pct`. Those columns are gone (0019), and comparing
+        # the WHOLE payload is the assertion those two were reaching for: a
+        # refusal writes nothing to the plan row, not merely nothing to the two
+        # fields I happened to name.
+        assert plan_after == plan_before
         assert _caps(c) == caps_before
 
 
@@ -260,19 +264,36 @@ def test_a_hand_set_cap_on_a_sleeve_ticker_is_adopted_and_says_so():
         assert d["retired_caps"] == ["SOXL"]
 
 
-def test_removing_the_named_sleeve_moves_the_legacy_pointer():
-    """/plan must not go on reporting a strategy the book no longer runs."""
+def test_removing_a_sleeve_leaves_no_second_answer_anywhere():
+    """Was `test_removing_the_named_sleeve_moves_the_legacy_pointer`.
+
+    That test guarded a repair: `plans.strategy` named ONE sleeve, so removing
+    it had to re-point the column at some survivor or /plan would go on
+    reporting a strategy the book no longer ran. The re-pointing was never
+    right -- it picked an arbitrary survivor and said nothing about the others,
+    and on the live book it drifted 23 points out of date anyway.
+
+    0019 removed the column. So the assertion becomes the stronger one the
+    repair was standing in for: after a removal there is exactly ONE place that
+    answers "which sleeves do I run", and /plan is not it.
+    """
     with TestClient(m.app) as c:
         _seed(c)
         _apply(c, SOXL, 10)
         _apply(c, FACTOR, 15)
-        assert c.get("/api/v1/plan").json()["strategy"] == FACTOR
+        assert {x["strategy_id"] for x in _sleeves(c)["sleeves"]} == {SOXL, FACTOR}
 
         c.delete(f"/api/v1/plan/sleeves/{FACTOR}")
-        assert c.get("/api/v1/plan").json()["strategy"] == SOXL
+        assert {x["strategy_id"] for x in _sleeves(c)["sleeves"]} == {SOXL}
 
         c.delete(f"/api/v1/plan/sleeves/{SOXL}")
-        assert c.get("/api/v1/plan").json()["strategy"] is None
+        assert _sleeves(c)["sleeves"] == []
+
+        # Not "null" -- absent. A null would still be a field a reader could
+        # consult and get a wrong answer from.
+        plan = c.get("/api/v1/plan").json()
+        assert "strategy" not in plan
+        assert "strategy_sleeve_pct" not in plan
 
 
 def test_removing_a_sleeve_you_do_not_run_is_refused_not_silently_fine():

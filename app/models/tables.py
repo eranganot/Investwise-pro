@@ -291,13 +291,15 @@ class Plan(Base, PKMixin, TimestampMixin):
     target_yield_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_yield_period: Mapped[str] = mapped_column(String(12), default="yearly")
     preferred_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    strategy: Mapped[str | None] = mapped_column(String(40), nullable=True)  # chosen strategy id
-    # How much of the book the applied strategy governs. A rule-based strategy
-    # is a SLEEVE, not the whole portfolio: applying "trend-filtered 3x Nasdaq"
-    # at 20% means a fifth of the book follows the rule and the rest stays in
-    # the core. Without this the only expressible choice was all-or-nothing,
-    # which is not how anyone sane runs a leveraged strategy.
-    strategy_sleeve_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
+    # one size can describe exactly one sleeve, so the moment a book could run
+    # several they became a pointer to the most recently applied -- and a
+    # pointer that nothing kept in step. On the live book the day they were
+    # removed they read "btm_swing_dip at 15%" while `plan_sleeves` held
+    # btm_swing_dip at 38.4% and btm_trend_soxl at 25.6%: two answers to one
+    # question, the older wrong by 23 points and still being read by the tax
+    # harvester, the signal service and the drift card as a fallback.
+    # `plan_sleeves` is the only source now. See migration 0019.
 
 
 # --- Brokerage / aggregation (Phase 3.1 scaffold) ---------------------------
