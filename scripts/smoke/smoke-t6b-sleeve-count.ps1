@@ -27,7 +27,13 @@ param(
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app",
     [string]$Sha = "",
     [switch]$Search,
-    [double]$MaxDrawdownPct = 13.3)
+    # NO DEFAULT. 13.3 used to be hardcoded here, and it was wrong: the ceiling
+    # is the user's own number, seeded once from their book and then frozen into
+    # the stored verdict. A smoke script that supplies its own would keep feeding
+    # a stale figure back into production - which is exactly how 13.3 survived on
+    # this book long after the measurement that produced it read 58.59%.
+    # 0 means "use whatever ceiling the stored verdict already carries".
+    [double]$MaxDrawdownPct = 0)
 
 $ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
@@ -50,6 +56,22 @@ Write-Host ""
 Write-Host "InvestWise Pro - how many sleeves earn their place" -ForegroundColor White
 Write-Host "$BaseUrl" -ForegroundColor DarkGray
 
+# The ceiling is the USER'S number, not this script's. When -MaxDrawdownPct is
+# not supplied it is read from the stored verdict, so a smoke run can never
+# quietly re-assert a figure the user has since changed.
+function Resolve-Ceiling($current) {
+    if ($current -gt 0) { return $current }
+    $wr = Api GET '/api/v1/war-room' 600
+    $c = $null
+    if ($null -ne $wr) { $c = $wr.solver_constraint }
+    if ($null -ne $c -and $c.known -and $c.ceiling_pct -gt 0) {
+        Write-Host "        using the stored ceiling: $($c.ceiling_pct)%" -ForegroundColor DarkGray
+        return [double]$c.ceiling_pct
+    }
+    return 0
+}
+
+
 Sec "0  the deploy landed"
 $health = Api GET '/health' 60
 if ($null -eq $health) { Bad "/health unreachable - nothing below can be trusted" }
@@ -64,6 +86,8 @@ Sec "1  the count is measured, and the search says how it ended"
 $res = $null
 if ($Search) {
     Write-Host "        searching against a $MaxDrawdownPct% ceiling" -ForegroundColor DarkGray
+    $MaxDrawdownPct = Resolve-Ceiling $MaxDrawdownPct
+    if ($MaxDrawdownPct -le 0) { Skip "no ceiling on record - pass -MaxDrawdownPct" }
     $res = Api GET "/api/v1/plan/target/sleeve-count?max_drawdown_pct=$MaxDrawdownPct" 900
 } else {
     Skip "-Search not set, so nothing was measured this run"

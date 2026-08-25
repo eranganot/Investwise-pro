@@ -85,6 +85,11 @@ async def record(session: AsyncSession, user: User, verdict: dict, *,
                 "excess_cagr_pct": (verdict.get("measured") or {}).get("excess_cagr_pct"),
                 "degraded": verdict.get("degraded"),
                 "reason": verdict.get("reason"),
+                # Stored so a CARD can say "this ceiling is below what your book
+                # already does" without paying for a solve. It is the field that
+                # explains a week of "no" on this book, and a reader who has to
+                # re-solve to see it will not see it.
+                "ceiling_check": verdict.get("ceiling_check"),
             },
         )
         session.add(row)
@@ -266,11 +271,33 @@ def as_constraint(row: SolverVerdict | None) -> dict:
         # nothing. This is not an agent re-deriving a conclusion -- it is the
         # conclusion's evidence, measured once and exposed once.
         "core_drawdown_pct": ((row.detail or {}).get("floor") or {}).get("max_drawdown_pct"),
+        # Whether the CEILING ITSELF is the thing that binds. Small on purpose,
+        # like everything else here: three facts and a sentence, not the block.
+        "ceiling_check": _ceiling_view((row.detail or {}).get("ceiling_check")),
         "floor_breaches_ceiling": bool(row.floor_breaches_ceiling),
         "binding_constraint": row.binding_constraint or None,
         "source": row.source,
         "solver_version": row.solver_version,
     }
+
+
+def _ceiling_view(cc: dict | None) -> dict:
+    """The three facts a card needs about the ceiling, and the sentence.
+
+    Absent on any verdict solved before PR 14, so `known` is False rather than
+    the fields being None -- "we did not check" and "checked, nothing wrong" are
+    different claims and a card must not render them the same way.
+    """
+    if not isinstance(cc, dict) or cc.get("book_measured_pct") is None:
+        return {"known": False, "book_already_breaches": False,
+                "ceiling_pct": None, "book_measured_pct": None,
+                "gap_pct": None, "note": None}
+    return {"known": True,
+            "book_already_breaches": bool(cc.get("book_already_breaches")),
+            "ceiling_pct": cc.get("ceiling_pct"),
+            "book_measured_pct": cc.get("book_measured_pct"),
+            "gap_pct": cc.get("gap_pct"),
+            "note": cc.get("note")}
 
 
 def _headline(row: SolverVerdict) -> str:

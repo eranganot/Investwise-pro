@@ -25,7 +25,13 @@ param(
     [string]$Sha = "",
     [switch]$Solve,
     [double]$ExcessPct = 2.0,
-    [double]$MaxDrawdownPct = 13.3)
+    # NO DEFAULT. 13.3 used to be hardcoded here, and it was wrong: the ceiling
+    # is the user's own number, seeded once from their book and then frozen into
+    # the stored verdict. A smoke script that supplies its own would keep feeding
+    # a stale figure back into production - which is exactly how 13.3 survived on
+    # this book long after the measurement that produced it read 58.59%.
+    # 0 means "use whatever ceiling the stored verdict already carries".
+    [double]$MaxDrawdownPct = 0)
 
 $ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
@@ -48,6 +54,22 @@ Write-Host ""
 Write-Host "InvestWise Pro - the war room reads the solver" -ForegroundColor White
 Write-Host "$BaseUrl" -ForegroundColor DarkGray
 
+# The ceiling is the USER'S number, not this script's. When -MaxDrawdownPct is
+# not supplied it is read from the stored verdict, so a smoke run can never
+# quietly re-assert a figure the user has since changed.
+function Resolve-Ceiling($current) {
+    if ($current -gt 0) { return $current }
+    $wr = Api GET '/api/v1/war-room' 600
+    $c = $null
+    if ($null -ne $wr) { $c = $wr.solver_constraint }
+    if ($null -ne $c -and $c.known -and $c.ceiling_pct -gt 0) {
+        Write-Host "        using the stored ceiling: $($c.ceiling_pct)%" -ForegroundColor DarkGray
+        return [double]$c.ceiling_pct
+    }
+    return 0
+}
+
+
 # =========================================================================== #
 Sec "0  the deploy landed"
 # =========================================================================== #
@@ -65,9 +87,15 @@ Sec "1  optionally re-solve, so there IS a verdict to read"
 # =========================================================================== #
 if ($Solve) {
     Write-Host "        solving (excess $ExcessPct%, ceiling $MaxDrawdownPct%) - this is slow" -ForegroundColor DarkGray
+    $MaxDrawdownPct = Resolve-Ceiling $MaxDrawdownPct
+    if ($MaxDrawdownPct -le 0) {
+        Skip "no ceiling supplied and none on record - pass -MaxDrawdownPct to solve"
+        $sv = $null
+    } else {
     $sv = Api GET "/api/v1/plan/target?excess_pct=$ExcessPct&max_drawdown_pct=$MaxDrawdownPct" 600
     if ($null -eq $sv) { Bad "the solve did not return" }
     else { Ok "solver answered: $($sv.outcome)" }
+    }
 } else {
     Skip "-Solve not set, so this reads whatever verdict is already stored"
 }

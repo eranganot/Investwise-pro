@@ -1984,6 +1984,30 @@ function _tgtBinding(res){
 
 function targetBody(){
   const seed=TGT.seedNote?`<div class="mk" style="margin-top:4px">${TGT.seedNote}</div>`:"";
+  // THE CEILING CAN GO STALE AND NOTHING USED TO NOTICE.
+  //
+  // It is seeded ONCE, above, and only when null. From then on it lives in the
+  // stored verdict and the nightly job re-runs "the LAST verdict's own
+  // parameters", so whatever was seeded propagates forever. On this book a
+  // 13.3% ceiling survived from an era when the history provider returned a
+  // short window, while the same measurement now reads 58.59% over 2,513
+  // sessions -- and every answer the solver gave for a week was "no" because of
+  // the number, not the portfolio.
+  //
+  // It is NOT re-seeded here. Silently moving a risk constraint the user owns
+  // is worse than leaving it wrong. The mismatch is shown; the number stays
+  // theirs to change, in the field two lines up.
+  const _cc=TGT.res&&TGT.res.ceiling_check;
+  const stale=(_cc&&_cc.book_already_breaches)
+    ? `<div class="bad" style="margin-top:8px">Your ceiling is <b>${_cc.ceiling_pct}%</b> and this book `
+      +`has already measured <b>${_cc.book_measured_pct}%</b> over the same window, unchanged `
+      +`&mdash; ${_cc.gap_pct} points over. Every answer below is bounded by a ceiling the book `
+      +`already breaches, so a "no" here is about this number before it is about any strategy. `
+      +`Change it above and press Solve.</div>`
+    : (_cc&&_cc.known!==false
+        ? `<div class="mk" style="margin-top:6px">Ceiling ${_cc.ceiling_pct}%; this book measures `
+          +`${_cc.book_measured_pct}% over the same window, so you are inside it.</div>`
+        : "");
   const form=`<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">
       <label style="flex:1;min-width:150px"><div class="mk">BEAT THE BENCHMARK BY</div>
         <input id="tgtExcess" type="number" step="0.5" value="${TGT.excess!=null?TGT.excess:""}"
@@ -1992,9 +2016,11 @@ function targetBody(){
         <input id="tgtCeiling" type="number" step="1" min="0.1" value="${TGT.ceiling!=null?TGT.ceiling:""}"
                placeholder="% drawdown" style="width:100%"></label>
       <button class="load" onclick="solveTarget()" ${TGT.busy?"disabled":""}>${TGT.busy?"Measuring…":"Solve"}</button>
-    </div>${seed}`;
+    </div>${seed}${stale}`;
 
   if(TGT.err) return form+`<div class="bad" style="margin-top:8px">${TGT.err}</div>`;
+  // `stale` rides with the FORM, not with the result block, so it is visible
+  // while the reader is looking at the field it tells them to change.
   if(TGT.busy) return form+`<div class="muted" style="margin-top:8px">Simulating the blend at each size over ten years of closes…</div>`;
   const res=TGT.res;
   if(!res) return form+`<div class="muted" style="margin-top:8px">Ask what a size would have to be. Every answer is measured, and "no" is one of them.</div>`;

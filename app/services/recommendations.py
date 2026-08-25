@@ -501,6 +501,50 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
     return [r for r in recs if r.get("id") not in drop]
 
 
+# The three causes this card can name, most-binding first. A book can be in more
+# than one of these states at once, and the order is not cosmetic: a ceiling
+# below what the book already does BOUNDS every finding underneath it, so
+# reporting the core or the sleeves first would be answering a question the
+# reader cannot act on yet.
+_CAUSE_CEILING = "ceiling"
+_CAUSE_SLEEVES = "sleeves"
+_CAUSE_CORE = "core"
+
+
+def _ceiling_cause(c: dict, found: dict) -> dict:
+    """Which of the three is actually binding, and what to say about it.
+
+    1. THE CEILING, when the book already breaches it unchanged. Measured by
+       `target_solver`, stored on the verdict. On this book a 13.3% ceiling
+       survived from an era when the history provider returned a short window,
+       while the same measurement now reads 58.59% over 2,513 sessions -- so
+       every "no" for a week was about the number, not the portfolio. Nothing
+       under this is worth reading until it is settled.
+    2. THE SLEEVES, when T6b measured every candidate core and none clears.
+    3. THE CORE, which is the only case where "change the core" is advice a
+       measurement supports.
+    """
+    cc = c.get("ceiling_check") or {}
+    if cc.get("known") and cc.get("book_already_breaches"):
+        gap = cc.get("gap_pct")
+        return {
+            "kind": _CAUSE_CEILING,
+            "action": (
+                "Check your drawdown ceiling before anything else. Your book has "
+                f"already measured {cc.get('book_measured_pct')}% over the same window "
+                f"against a {cc.get('ceiling_pct')}% ceiling"
+                + (f", {gap:.1f} points over" if isinstance(gap, (int, float)) else "")
+                + " - so every answer below is bounded by a number the book already "
+                  "breaches. The ceiling is on the Target card, next to 'WITHOUT "
+                  "EXCEEDING'."),
+        }
+    if found.get("none_admissible") and found.get("means"):
+        return {"kind": _CAUSE_SLEEVES, "action": found["means"]}
+    return {"kind": _CAUSE_CORE,
+            "action": ("Change the strategy managing your core, or raise the ceiling to a "
+                       "number you would actually sit through.")}
+
+
 def _core_when(found: dict) -> str:
     """How old the core search is, in the same words the constraint uses."""
     age = found.get("age_hours")
@@ -585,6 +629,12 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
                   f"{abs(core_dd):.1f}% against your {ceiling:.1f}% ceiling, "
                   f"{gap:.1f} points over." if gap is not None else "")
                + f" ({measured}.)",
+        # THE CAUSE, IN PRECEDENCE ORDER. This card's action has now been
+        # rewritten three times in one day -- PR 12 said "change the core",
+        # PR 13 measured that and said "the sleeves", PR 14 measured THAT and
+        # said "check your ceiling first" -- so it stops being a branch each
+        # time and becomes one ordering, stated once, in `_ceiling_cause`.
+        #
         # WHAT PR 12 SAID HERE WAS "change the core", AND T6B MEASURED IT.
         #
         # Every one of the fifteen candidate cores -- the fourteen catalog
@@ -597,16 +647,22 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
         #
         # When the search has NOT run, the original wording stands: it is the
         # honest thing to say when nothing has measured the alternatives.
-        "action": (found["means"] if found.get("none_admissible") and found.get("means")
-                   else "Change the strategy managing your core, or raise the ceiling to a "
-                        "number you would actually sit through."),
+        "action": _ceiling_cause(c, found)["action"],
         "impact": ((f"{found['headline']} Measured {_core_when(found)}."
                     if found.get("headline") else "")
                    if found.get("none_admissible") else
                    "Until one of those changes, every sleeve-sizing answer is bounded by a "
                    "constraint the core has already broken - including reducing your sleeves "
                    "to nothing."),
-        "how": (["Your sleeves are 64% of the book in TQQQ and SOXL - that is where "
+        "how": ([f"Open Plan, then the Target card: the ceiling is the "
+                 f"'WITHOUT EXCEEDING' field, showing {(c.get('ceiling_check') or {}).get('ceiling_pct')}%",
+                 f"Your book has already measured "
+                 f"{(c.get('ceiling_check') or {}).get('book_measured_pct')}% over the same "
+                 f"window without changing anything",
+                 "Set a number you would actually sit through, then press Solve",
+                 "Everything below re-measures against whatever you set"]
+                if _ceiling_cause(c, found)["kind"] == _CAUSE_CEILING else
+                ["Your sleeves are 64% of the book in TQQQ and SOXL - that is where "
                  "the drawdown comes from",
                  "Open Plan and resize the sleeves, or raise the ceiling to a number "
                  "you would actually sit through",
@@ -624,6 +680,8 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
         # Advisory, permanently. See the docstring.
         "apply": {"kind": "none"},
         "notes": ([f"Solver verdict {c.get('outcome')}, {measured}."]
+                  + ([(c.get("ceiling_check") or {}).get("note")]
+                     if (c.get("ceiling_check") or {}).get("known") else [])
                   + ([f"Core search: {found['kind']}, {_core_when(found)}. "
                       f"{len(found.get('top') or [])} of the candidates shown on the Plan tab."]
                      if found.get("known") else
@@ -632,6 +690,8 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
         "meta": {"source": "target_solver", "outcome": c.get("outcome"),
                  "age_hours": age, "stale": c.get("stale"),
                  "solver_version": c.get("solver_version"),
+                 "cause": _ceiling_cause(c, found)["kind"],
+                 "ceiling_check": c.get("ceiling_check"),
                  "core_search": {"known": found.get("known"), "kind": found.get("kind"),
                                  "age_hours": found.get("age_hours"),
                                  "none_admissible": found.get("none_admissible"),

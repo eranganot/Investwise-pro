@@ -29,7 +29,13 @@ param(
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app",
     [string]$Sha = "",
     [switch]$Search,
-    [double]$MaxDrawdownPct = 13.3)
+    # NO DEFAULT. 13.3 used to be hardcoded here, and it was wrong: the ceiling
+    # is the user's own number, seeded once from their book and then frozen into
+    # the stored verdict. A smoke script that supplies its own would keep feeding
+    # a stale figure back into production - which is exactly how 13.3 survived on
+    # this book long after the measurement that produced it read 58.59%.
+    # 0 means "use whatever ceiling the stored verdict already carries".
+    [double]$MaxDrawdownPct = 0)
 
 $ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
@@ -52,6 +58,22 @@ Write-Host ""
 Write-Host "InvestWise Pro - the solver varies the core" -ForegroundColor White
 Write-Host "$BaseUrl" -ForegroundColor DarkGray
 
+# The ceiling is the USER'S number, not this script's. When -MaxDrawdownPct is
+# not supplied it is read from the stored verdict, so a smoke run can never
+# quietly re-assert a figure the user has since changed.
+function Resolve-Ceiling($current) {
+    if ($current -gt 0) { return $current }
+    $wr = Api GET '/api/v1/war-room' 600
+    $c = $null
+    if ($null -ne $wr) { $c = $wr.solver_constraint }
+    if ($null -ne $c -and $c.known -and $c.ceiling_pct -gt 0) {
+        Write-Host "        using the stored ceiling: $($c.ceiling_pct)%" -ForegroundColor DarkGray
+        return [double]$c.ceiling_pct
+    }
+    return 0
+}
+
+
 # =========================================================================== #
 Sec "0  the deploy landed"
 # =========================================================================== #
@@ -70,6 +92,8 @@ Sec "1  the search runs, and every candidate carries BOTH windows"
 $res = $null
 if ($Search) {
     Write-Host "        searching against a $MaxDrawdownPct% ceiling - this takes about a minute" -ForegroundColor DarkGray
+    $MaxDrawdownPct = Resolve-Ceiling $MaxDrawdownPct
+    if ($MaxDrawdownPct -le 0) { Skip "no ceiling on record - pass -MaxDrawdownPct" }
     $res = Api GET "/api/v1/plan/target/cores?max_drawdown_pct=$MaxDrawdownPct&top_n=15" 900
     if ($null -eq $res) { Bad "the search did not return" }
     elseif (-not $res.ok) { Bad "search abstained: $($res.reason) $($res.detail)" }

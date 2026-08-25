@@ -188,12 +188,60 @@ def solve(series: dict, *, sleeves: list[dict], core: dict | None,
 
     admissible = lambda p: p["cap_ok"] and p["dd_ok"]              # noqa: E731
 
+    # IS THE CEILING ONE THE BOOK ALREADY BREACHES, UNCHANGED?
+    #
+    # `_floor_note` asks the same question at ZERO sleeves. This asks it at the
+    # share the book runs TODAY, and it is the one that explains a week of "no".
+    #
+    # The ceiling is not typed from scratch: `index.html` seeds it from
+    # `performance(range=MAX).max_drawdown_pct` -- the risk the book already
+    # carries -- and only when it is null. After that it is frozen into the
+    # stored verdict and the nightly job re-runs "the LAST verdict's own
+    # parameters", so a ceiling seeded once propagates forever. On this book a
+    # 13.3% ceiling survived from an era when the history provider returned a
+    # short window; the same endpoint now measures 58.59% over 2,513 sessions.
+    # Every answer the solver gave was "no", and the reason was the number, not
+    # the portfolio.
+    #
+    # It does NOT re-seed. Silently moving a risk constraint the user is
+    # supposed to own is worse than leaving it wrong -- the same rule PR 11
+    # states for the nightly job: "a constraint strong enough to disable a
+    # button has to come from a number the user actually set." So this measures
+    # the mismatch and says it, and the number stays the user's.
+    held_pct = min(sum(float(s.get("current_pct") or 0.0) for s in sleeves), max_total)
+    _now = at(held_pct)
+    ceiling_check = None
+    if _now and _now.get("ok"):
+        book_dd = abs(float(_now["max_drawdown_pct"]))
+        breached = book_dd > max_drawdown_pct + 1e-9
+        ceiling_check = {
+            "ceiling_pct": round(max_drawdown_pct, 2),
+            "book_measured_pct": round(book_dd, 2),
+            "at_sleeve_pct": round(held_pct, 2),
+            "book_already_breaches": breached,
+            "gap_pct": round(book_dd - max_drawdown_pct, 2),
+            "window_sessions": (_now.get("m") or {}).get("observations"),
+            "note": (
+                f"Your ceiling is {max_drawdown_pct:.1f}% and this book has measured "
+                f"{book_dd:.1f}% over the same window, unchanged. Every answer below is "
+                f"bounded by a ceiling the book already breaches, so 'no' here is about "
+                f"the ceiling before it is about any strategy."
+                if breached else
+                f"Your ceiling is {max_drawdown_pct:.1f}% and this book measures "
+                f"{book_dd:.1f}% over the same window, so the ceiling is one the book "
+                f"currently sits inside."),
+        }
+
+    def _out(v: dict) -> dict:
+        v["ceiling_check"] = ceiling_check
+        return v
+
     # 1. Reached, inside every constraint.
     win = smallest(lambda p: admissible(p) and hits(p))
     if win:
-        return _verdict(REACHED, win, sleeves, ratios, target_excess_pct,
-                        max_drawdown_pct, series, core, benchmark, cash_floor,
-                        evaluated)
+        return _out(_verdict(REACHED, win, sleeves, ratios, target_excess_pct,
+                             max_drawdown_pct, series, core, benchmark, cash_floor,
+                             evaluated))
 
     # 2. Reached, but only past the concentration cap.
     over_cap = smallest(lambda p: p["dd_ok"] and not p["cap_ok"] and hits(p))
@@ -207,7 +255,7 @@ def solve(series: dict, *, sleeves: list[dict], core: dict | None,
             "ticker": over_cap["peak_ticker"],
             "would_reach_pct": round(over_cap["peak_ticker_weight_pct"], 2),
         }
-        return v
+        return _out(v)
 
     # 3. Reached on return, but only by breaching the drawdown ceiling. The most
     #    informative outcome in the design: it separates "your strategies are too
@@ -229,7 +277,7 @@ def solve(series: dict, *, sleeves: list[dict], core: dict | None,
             "max_drawdown_pct": best_ok["max_drawdown_pct"],
         } if best_ok else None)
         v["floor"] = _floor_note(evaluated, max_drawdown_pct)
-        return v
+        return _out(v)
 
     # 4. Nothing admissible reaches it at any size.
     best_ok = _best(evaluated, admissible)
@@ -237,7 +285,7 @@ def solve(series: dict, *, sleeves: list[dict], core: dict | None,
                  max_drawdown_pct, series, core, benchmark, cash_floor, evaluated)
     v["binding_constraint"] = _weakest_component(v.get("measured") or {}, sleeves)
     v["floor"] = _floor_note(evaluated, max_drawdown_pct)
-    return v
+    return _out(v)
 
 
 def _floor_note(evaluated, max_drawdown_pct) -> dict | None:
