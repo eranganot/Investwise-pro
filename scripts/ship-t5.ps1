@@ -149,18 +149,47 @@ Step "T5.3  the card renders the instruction and the one-tap actions" {
     $global:LASTEXITCODE = 0
 }
 
-Step "T5.3  the one-tap stays read-only" {
-    # Phase T is read-only WITHOUT EXCEPTION. tgtApply may only touch this card's
-    # own two inputs. set_sleeves is the Phase A handoff and must remain inert:
-    # a button that looks like it resizes a sleeve while doing nothing is worse
-    # than no button at all.
+Step "T5.3  the one-tap's write surface is bounded" {
+    # SUPERSEDED, on purpose, and the history matters more than the check.
+    #
+    # This step used to assert `tgtApply` never mentions set_sleeves, because
+    # Phase T was read-only WITHOUT EXCEPTION. Phase A deliberately retired that
+    # invariant -- so the old assertion did not find a bug, it enforced a rule
+    # that had been consciously replaced.
+    #
+    # The trap was the check NEXT to it, which kept passing: "the one-tap writes
+    # nothing" stayed green only because the write moved one call down into
+    # tgtAccept. True of tgtApply, false of the button, and silent about the
+    # difference. A failing stale check is loud; a passing one that has quietly
+    # stopped measuring its subject is how a suite keeps its colour and loses
+    # its meaning.
+    #
+    # So this now follows the delegation and asserts what is true NOW: the two
+    # read-only taps stay read-only, and the one tap that writes may only reach
+    # the two plan endpoints, with confirm, saying what it does not do.
     $h = Get-Content app\static_app\index.html -Raw
+
     if ($h -notmatch '(?s)function tgtApply\(kind,value\)\{(.*?)\n\}') { throw "cannot find tgtApply" }
     $body = $Matches[1]
     foreach ($verb in @('method:"POST"', 'method:"PUT"', 'method:"DELETE"', 'method:"PATCH"')) {
-        if ($body -match [regex]::Escape($verb)) { throw "tgtApply issues a $verb - Phase T does not write" }
+        if ($body -match [regex]::Escape($verb)) { throw "tgtApply writes inline - the write must live in tgtAccept, where it is gated" }
     }
-    if ($body -match 'set_sleeves') { throw "tgtApply handles set_sleeves - that is Phase A, and it must not appear to act" }
+    if ($body -notmatch 'set_sleeves') { throw "tgtApply no longer routes set_sleeves - the Accept button is dead" }
+    if ($body -notmatch 'tgtAccept\(\)') { throw "set_sleeves does not delegate to tgtAccept" }
+
+    if ($h -notmatch '(?s)async function tgtAccept\(\)\{(.*?)\n\}') { throw "cannot find tgtAccept" }
+    $acc = $Matches[1]
+    # Every URL it can reach, enumerated. A write surface that is not enumerated
+    # is one that grows without anyone deciding to grow it.
+    $allowed = @('/api/v1/plan/target/apply?confirm=true')
+    foreach ($m in [regex]::Matches($acc, 'fetch\("([^"]+)"')) {
+        $u = $m.Groups[1].Value
+        if ($allowed -notcontains $u) { throw "tgtAccept reaches an unexpected endpoint: $u" }
+    }
+    if ($acc -notmatch 'confirm=true') { throw "tgtAccept does not pass confirm - the server would refuse, but it must not rely on that" }
+    if ($acc -notmatch [regex]::Escape('No brokerage order is placed')) {
+        throw "the confirm dialog does not state that no order is placed"
+    }
     $global:LASTEXITCODE = 0
 }
 

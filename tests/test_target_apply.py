@@ -175,6 +175,7 @@ def test_the_apply_module_cannot_reach_a_broker():
         ("app.services.funding_service", "cash_floor_pct"),
         ("sqlalchemy", "select"),
         ("app.models.tables", "PlanApplication"),
+        ("app.services.plan_service", "get_plan"),
     }
     src = open("app/services/target_apply.py", encoding="utf-8").read()
     found = set()
@@ -213,3 +214,46 @@ def test_the_planner_writes_nothing_by_itself():
         body = body[:m.start() + 1] if m else body
         assert "await " not in body, f"{name} awaits something"
         assert "session" not in body, f"{name} touches a session"
+
+
+def test_the_apply_module_calls_its_dependencies_with_the_right_signatures():
+    """The bug this exists for cost a 500 and a silently-zero cash floor.
+
+    `_book_for_solve` was re-written from memory while the working original sat
+    in the same file, and got three names wrong: `strategy_catalog.spec_for`
+    (does not exist), `is_cash_position` from the wrong module, and
+    `cash_floor_pct` called as async with the wrong arguments. Nothing caught it
+    because no test ever resolved those names.
+
+    This resolves them. It is deliberately about SIGNATURES, not behaviour --
+    behaviour was never the thing that broke.
+    """
+    import inspect
+
+    from app.services import strategy_catalog
+    from app.services.funding_service import cash_floor_pct
+    from app.services.intake_service import is_cash_position
+
+    assert hasattr(strategy_catalog, "get"), "the catalog lookup is .get()"
+    assert not hasattr(strategy_catalog, "spec_for"), \
+        "spec_for exists now -- update the callers that were corrected to .get()"
+
+    # NOT async, and takes (objective, plan).
+    assert not inspect.iscoroutinefunction(cash_floor_pct)
+    assert len(inspect.signature(cash_floor_pct).parameters) == 2
+
+    assert callable(is_cash_position)
+
+
+def test_a_missing_cash_floor_refuses_instead_of_assuming_zero():
+    """A cash floor that quietly becomes 0 is a constraint that stops existing,
+    and the apply would then permit sleeves up to 100% of the book."""
+    src = open("app/services/target_apply.py", encoding="utf-8").read()
+    body = src[src.index("async def apply_target("):]
+    # COMMENTS STRIPPED FIRST. Without this the check fires on the comment that
+    # DESCRIBES the bug ("a bare `except: floor = 0.0`") -- the third time this
+    # session a text-scan check has failed on its own safety note. A check that
+    # cannot tell code from the prose explaining the code is not checking code.
+    code = "\n".join(ln for ln in body.splitlines() if not ln.lstrip().startswith("#"))
+    assert "floor = 0.0" not in code, "a bare zero fallback for the cash floor is back"
+    assert "the cash floor could not be read" in code
