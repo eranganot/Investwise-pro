@@ -141,13 +141,24 @@ def test_e_the_front_page_leads_with_deposits_and_demotes_basis():
 
     assert "gain_vs_contributions_ils" in nav, "the card is not reading the new field"
     assert "you put in" in nav, "the headline should name what it is measured against"
-    assert "realised and reinvested" in nav, "the 350 has to be NAMED, not hidden"
     assert "has no recorded deposit behind it" not in nav, (
         "the amber unexplained-basis warning is still on the card")
     assert "Basis reconciled" not in nav, (
         "the basis baseline line is vestigial once the warning is gone")
-    # And the fallback is still wired for a book with no deposits.
+
+    # AND NO COST-BASIS BREAKDOWN UNDER THE HEADLINE. The first cut of this card
+    # carried "X unrealised on Y of cost basis - Z realised and reinvested".
+    # Correct in every figure, and it asked the reader to hold three numbers and
+    # an accounting concept in their head to re-derive a total the line above
+    # already gave them. Eran: "I don't understand this numbers here."
+    assert "realised and reinvested" not in nav, (
+        "the cost-basis breakdown is back on the front page")
+    assert "unrealised on" not in nav
+
+    # The fallback is still wired for a book with no deposits, where the
+    # headline IS measured against basis and has to say so.
     assert "gain_vs_basis_ils" in nav
+    assert "No deposits recorded" in nav
 
 
 def test_f_a_deposit_only_book_reports_zero_gain_not_a_gap():

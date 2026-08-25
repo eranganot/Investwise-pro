@@ -49,16 +49,48 @@ function New-Commit {
     if ($missing) { Write-Host "Missing files: $($missing -join ', ')" -ForegroundColor Red; exit 1 }
 
     git add -- $Files
-    $staged = git diff --cached --name-only
+
+    # PATH-LIMITED, ALL THE WAY THROUGH.
+    #
+    # This staged $Files and then ran a bare `git commit`, which commits
+    # everything in the INDEX -- not just what it was asked to. The two are the
+    # same thing only when the index starts clean, and it does not always: an
+    # aborted `git stash pop` leaves its files staged, and on 2026-08-25 that
+    # was six of Eran's in-progress T5 files sitting staged behind a conflict.
+    # Running any ship script at that moment would have committed and PUSHED
+    # unfinished work under a message describing something else.
+    #
+    # The repo's "never git add -A" rule exists to prevent exactly that, and the
+    # helper meant to enforce it had a hole underneath. Naming the paths on the
+    # commit closes it: whatever else is staged, only $Files is committed.
+    $staged = git diff --cached --name-only -- $Files
     if (-not $staged) { Write-Host "Nothing staged - already committed?" -ForegroundColor Yellow; return $false }
 
-    Write-Host "`nStaged:" -ForegroundColor Cyan
-    git diff --cached --stat
+    # Anything else sitting in the index is NOT going into this commit. Say so
+    # rather than leaving it to be discovered afterwards.
+    $all = @(git diff --cached --name-only)
+    $others = @($all | Where-Object { $Files -notcontains $_ })
+    if ($others.Count -gt 0) {
+        Write-Host "`nStaged but NOT part of this commit ($($others.Count)):" -ForegroundColor Yellow
+        foreach ($o in $others) { Write-Host "  $o" -ForegroundColor Yellow }
+        Write-Host "  (left staged and untouched - path-limited commit)" -ForegroundColor DarkGray
+    }
+
+    Write-Host "`nCommitting:" -ForegroundColor Cyan
+    git diff --cached --stat -- $Files
 
     # Commit message via file, never a here-string.
+    #
+    # WITHOUT A BOM. `Set-Content -Encoding utf8` writes one on Windows
+    # PowerShell 5.1, git copies the message through verbatim, and the subject
+    # line carries three invisible bytes: `git log --oneline` on 2026-08-25 read
+    # "b48b291 <feff>Stop recommending four ETNs...". Harmless until something
+    # greps a subject line, at which point it is baffling. UTF8Encoding($false)
+    # is the no-BOM constructor and works on both 5.1 and 7.
     $msgPath = Join-Path $RepoRoot "COMMIT_MSG.txt"
-    Set-Content -Path $msgPath -Value $Message -Encoding utf8
-    git commit -F $msgPath
+    [System.IO.File]::WriteAllLines(
+        $msgPath, [string[]]$Message, (New-Object System.Text.UTF8Encoding($false)))
+    git commit -F $msgPath -- $Files
     if ($LASTEXITCODE -ne 0) { Write-Host "Commit failed." -ForegroundColor Red; exit 1 }
     Remove-Item $msgPath -ErrorAction SilentlyContinue
     return $true

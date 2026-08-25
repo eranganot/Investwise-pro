@@ -178,10 +178,29 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
                 "objective": entry.get("objective"),
                 "risk_tolerance": entry.get("risk_tolerance"),
                 "target_allocation": entry.get("target_allocation")}
+    # TARGET AND ACTUAL, SIDE BY SIDE, because the card printed one and meant
+    # the other. `allocated_pct` is what the sleeves are SET to; occupancy is
+    # what they HOLD. On this book that is 64% against 15%, and nothing in this
+    # payload made the difference visible -- so the screen rendered a target in
+    # the present tense and called it the book.
+    occ = await sv.sleeve_occupancy(session, user)
+    _by_id = {o["strategy_id"]: o for o in occ["sleeves"]}
+    _sleeves = []
+    for d in sv.as_dicts(sleeves):
+        o = _by_id.get(d["strategy_id"]) or {}
+        _sleeves.append({**d, "held_pct": o.get("held_pct"),
+                         "held_ils": o.get("held_ils"),
+                         "gap_pct": o.get("gap_pct"),
+                         "tickers": o.get("tickers")})
     return {
-        "sleeves": sv.as_dicts(sleeves),
+        "sleeves": _sleeves,
         "allocated_pct": sv.total_pct(sleeves),
+        "allocated_held_pct": occ["allocated_held_pct"],
+        "allocated_held_ils": occ["allocated_held_ils"],
         "core_pct": sv.remainder_pct(sleeves),
+        # The core's ACTUAL share against its target. Same distinction.
+        "core_held_pct": occ["core_held_pct"],
+        "nav_ils": occ["nav_ils"],
         # C6. Which strategy manages the core, or None for "the objective does".
         # The core's SIZE is still `core_pct` above and still computed -- this
         # names the manager, it does not claim a share of the book.

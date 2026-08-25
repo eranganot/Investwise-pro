@@ -188,6 +188,71 @@ async def sleeve_tickers(session: AsyncSession, user: User) -> set[str]:
     return set(await all_sleeve_targets(session, user))
 
 
+async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
+    """What each sleeve TARGETS against what the book actually HOLDS.
+
+    No function returned this. `sleeve_pct` is a target and was rendered in the
+    present tense -- the Sleeves card read "Your sleeves - 64% of the book"
+    while the sleeves held 15% of it. Both numbers were correct answers to
+    different questions the screen never distinguished, and the one it printed
+    was wrong by 49 points.
+
+    Deliberately NOT built on `_legs_for`: that drops any ticker already at its
+    target, because it exists to compute what is left to BUY. Occupancy needs
+    the opposite -- a ticker that is "done" is precisely a held one -- so
+    reusing it would report a fully funded sleeve as holding nothing.
+
+    Cash is excluded by `_held_ils`, so `held_pct` answers "how much of my book
+    is this strategy running".
+
+    Per sleeve: target_pct, held_ils, held_pct, gap_pct (signed; positive means
+    under-filled). Plus book totals.
+    """
+    from app.services.intake_service import list_positions
+    from app.services.strategy_service import _held_ils, _snapshot, sleeve_targets
+
+    rows = await list_positions(session, user)
+    snap = _snapshot(rows)
+    nav = float(snap.get("nav") or 0.0)
+    held = _held_ils(rows, snap)
+
+    sleeves = await list_sleeves(session, user)
+    out = []
+    counted: set[str] = set()
+    for s in sleeves:
+        targets = sleeve_targets(s.strategy_id, s.sleeve_pct) or {}
+        held_ils = sum(held.get(tk.upper(), 0.0) for tk in targets)
+        counted |= {tk.upper() for tk in targets}
+        target_pct = round(float(s.sleeve_pct or 0.0), 4)
+        held_pct = round(held_ils / nav, 4) if nav else 0.0
+        out.append({
+            "strategy_id": s.strategy_id,
+            "target_pct": target_pct,
+            "held_ils": round(held_ils, 2),
+            "held_pct": held_pct,
+            "gap_pct": round(target_pct - held_pct, 4),
+            "tickers": sorted(tk.upper() for tk in targets),
+        })
+
+    # A ticker two sleeves both want belongs to both, so summing the per-sleeve
+    # figures would double-count it at book level. The total comes from the
+    # union instead -- the same reason `all_sleeve_targets` sums per ticker
+    # rather than per sleeve.
+    allocated_held_ils = sum(held.get(tk, 0.0) for tk in counted)
+    allocated_held_pct = round(allocated_held_ils / nav, 4) if nav else 0.0
+    return {
+        "nav_ils": round(nav, 2),
+        "sleeves": out,
+        "allocated_pct": total_pct(sleeves),
+        "allocated_held_pct": allocated_held_pct,
+        "allocated_held_ils": round(allocated_held_ils, 2),
+        # The core's ACTUAL share, which is not `remainder_pct` -- that is the
+        # core's TARGET. On this book the two differ by the same 49 points.
+        "core_held_pct": round(max(0.0, 1.0 - allocated_held_pct), 4) if nav else 0.0,
+        "core_pct": remainder_pct(sleeves),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Writing -- C2. Everything above this line existed in C1 and wrote nothing.
 # --------------------------------------------------------------------------- #

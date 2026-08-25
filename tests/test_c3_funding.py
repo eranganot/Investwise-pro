@@ -41,6 +41,30 @@ def _seed(c, cash=0.0):
         c.post("/api/v1/portfolio/cash", json={"amount_ils": cash})
 
 
+def _seed_mostly_bonds(c, cash=0.0):
+    """A book an EQUITY sleeve genuinely cannot be funded out of.
+
+    Since same-class swap funding landed, "this book cannot raise it" is no
+    longer true of an all-equity book: selling V and SCHD to buy MTUM leaves the
+    Equities weight untouched, so the class-overweight budget has nothing to
+    protect and the whole equity holding is eligible. That is the point of the
+    change, and it means the old scenario for these tests -- an all-equity book
+    and a 90% equity sleeve -- now funds, correctly.
+
+    The skip-whole invariant still matters, so it needs a book where the money
+    really is not reachable: mostly bonds, which are a DIFFERENT class and
+    already under their target, so selling them to buy equities is the
+    rebalance-in-reverse that funding has always refused.
+    """
+    c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+        {"ticker": "BND", "market": "NASDAQ", "asset_class": "Fixed Income", "depth": 1,
+         "spot_price": 100.0, "listing_price": 100.0, "quantity": 270.0,
+         "cost_basis": 99.0, "expected_return_pct": 3, "volatility_pct": 5},
+        _pos("V", qty=30.0)]})
+    if cash:
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": cash})
+
+
 def _apply(c, sid, pct):
     return c.post(f"/api/v1/strategies/{sid}/apply?sleeve_pct={pct}").json()
 
@@ -121,8 +145,8 @@ def test_a_sleeve_that_does_not_fit_is_skipped_whole_never_part_funded():
     """A partially funded sleeve is a position at a size nobody chose -- the
     thing the single-sleeve path already abstains over."""
     with TestClient(m.app) as c:
-        _seed(c, cash=0)
-        _apply(c, FACTOR, 90)        # far beyond what this book can raise
+        _seed_mostly_bonds(c, cash=0)
+        _apply(c, FACTOR, 90)        # beyond what this book can REACH
         res = _fund(c)
         row = _by_id(res)[FACTOR]
         assert row["status"] == "skipped"
@@ -135,7 +159,7 @@ def test_a_sleeve_that_does_not_fit_is_skipped_whole_never_part_funded():
 
 def test_a_skipped_sleeve_does_not_block_the_ones_that_fit():
     with TestClient(m.app) as c:
-        _seed(c, cash=4000)
+        _seed_mostly_bonds(c, cash=4000)
         _apply(c, FACTOR, 95)        # cannot fit
         _apply(c, SOXL, 5)           # comfortably can
         res = _fund(c)
@@ -160,7 +184,7 @@ def test_a_sleeve_already_at_its_target_is_nothing_to_do_not_a_purchase():
 # --------------------------------------------------------------------------- #
 def test_a_partial_fund_states_the_gap_between_intended_and_resulting():
     with TestClient(m.app) as c:
-        _seed(c, cash=4000)
+        _seed_mostly_bonds(c, cash=4000)
         _apply(c, FACTOR, 95)
         _apply(c, SOXL, 5)
         res = _fund(c)

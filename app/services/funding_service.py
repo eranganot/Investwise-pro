@@ -167,12 +167,41 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
 def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  amount_ils: float, *, cash_ils: float = 0.0,
                  exclude: set[str] | None = None,
-                 reserved: dict | None = None, cash_used: float = 0.0) -> dict:
+                 reserved: dict | None = None, cash_used: float = 0.0,
+                 buying_class: str | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
     how many shares, estimated tax, and any shortfall — so the card can state it
     outright instead of leaving the user to figure it out.
+
+    ``buying_class`` IS WHAT MAKES A 64% SLEEVE TARGET REACHABLE.
+
+    Every sale here is gated by a class-overweight budget: a class may give up
+    only what it holds above its target. That is exactly right when the proceeds
+    LEAVE the class -- selling equities to buy bonds is a rebalance, and the
+    budget IS the rebalance. It is the wrong constraint when the proceeds come
+    straight back: selling V and SCHD to buy TQQQ is Equities to Equities, and
+    **the class weight does not move at all**. There is nothing for a class
+    budget to protect.
+
+    That mistake was the whole of symptom #4. The sleeves target 64% and hold
+    15%; filling them needs about 13,968, and Equities sat 17.8 points over
+    target, so the budget authorised about 5,077. Both sleeves abstained, every
+    time, while the Sleeves card went on printing 64% as though it were a fact.
+    The instruction -- "if the sleeves are set to 64%, they should actually BE
+    64%" -- was being overruled by a guard aimed at a different trade.
+
+    So when a candidate's class equals ``buying_class``, the class budget stops
+    gating it and the position becomes eligible on its own merits. What still
+    binds: ``exclude`` (never fund one sleeve by selling another), ``reserved``
+    (never sell the same share twice), the amount actually asked for, and tax,
+    which is charged and reported as always.
+
+    ``None`` preserves the old behaviour exactly, so nothing that has not opted
+    in changes. Note that ``describe_funding`` has told the user for some time
+    that a same-class swap does not move their weights -- prose describing a
+    trade the funder would not authorise.
     """
     nav = snap.get("nav") or 0.0
     amount_ils = max(0.0, float(amount_ils or 0.0))
@@ -193,6 +222,10 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
 
     sells: list[dict] = []
     tax_total = 0.0
+    # How much of this plan is a same-class swap rather than a rebalance. Two
+    # different trades wearing the same "sell X to buy Y" sentence, and the card
+    # has to be able to tell the user which one it is proposing.
+    swap_ils = 0.0
     if remaining_net >= MIN_TRADE_ILS:
         from app.core.config import get_settings
         from app.services.fx import fx_rate, price_currency
@@ -226,6 +259,13 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             cls = cand.get("asset_class")
             name_allow = max(0.0, cand["weight"] - cap) * nav
             allow = max(name_allow, class_budget.get(cls, 0.0))
+            same_class = bool(buying_class) and cls == buying_class
+            if same_class:
+                # The proceeds buy this class back, so the class weight is
+                # unchanged and the overweight budget has nothing to protect.
+                # The position is eligible on its own terms; `remaining_net`
+                # still caps the total and `exclude` still protects sleeves.
+                allow = max(allow, cand["value_ils"])
             if allow >= MIN_TRADE_ILS:
                 # Bounded by whichever authorised the sale: this NAME being over
                 # its own cap is a per-position fact, so it does not consume the
@@ -282,7 +322,13 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                           "reason": cand["reason"], "gain_pct": cand["gain_pct"]})
             tax_total += tax
             remaining_net = round(remaining_net - (value - tax), 2)
-            if cls in class_budget:
+            if same_class:
+                swap_ils += value
+            elif cls in class_budget:
+                # A same-class sale must NOT draw down the class budget: it did
+                # not change the class weight, so there is nothing to spend. Two
+                # sleeve legs funded out of Equities would otherwise consume a
+                # rebalancing allowance neither of them used.
                 class_budget[cls] = max(0.0, class_budget[cls] - value)
 
     funded = round(from_cash + sum(s["value_ils"] for s in sells) - tax_total, 2)
@@ -295,6 +341,12 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         "shortfall_ils": round(max(0.0, amount_ils - max(0.0, funded)), 2),
         "cash_floor_ils": round(cash_floor_ils(nav, objective, plan), 2),
         "cash_floor_pct": cash_floor_pct(objective, plan),
+        # Named, so the card can say which trade this is and how much of the
+        # book it turns over. A 49-point repositioning is a legitimate thing to
+        # ask for and not a thing to do quietly.
+        "same_class_swap_ils": round(swap_ils, 2),
+        "swap_pct_of_nav": round(swap_ils / nav, 4) if nav else 0.0,
+        "buying_class": buying_class,
     }
 
 

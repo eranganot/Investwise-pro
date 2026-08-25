@@ -299,15 +299,41 @@ async def test_a_dry_run_names_the_legs_and_writes_nothing(monkeypatch):
 async def test_an_unfundable_sleeve_abstains_with_a_reason(monkeypatch):
     """Partially executing would leave a position nobody chose, at a size nobody chose.
 
-    Regression: the first cut gated on ``shortfall >= MIN_TRADE_ILS``. On this
-    exact book — ₪1,000 of MSFT, no cash, a 90% sleeve — the funding engine
-    raises ₪700 and stops (the ₪200 remainder is below the minimum worthwhile
-    trade). ₪200 slipped under that gate, so a 90% sleeve quietly installed
-    itself at 70%. Shekels were the wrong unit: the sleeve is chosen in points of
-    NAV, so the shortfall has to be judged in points of NAV.
+    Regression: the first cut gated on ``shortfall >= MIN_TRADE_ILS``. On a
+    ₪1,000 book with no cash and a 90% sleeve, the funding engine raised ₪700
+    and stopped (the ₪200 remainder being below the minimum worthwhile trade).
+    ₪200 slipped under that gate, so a 90% sleeve quietly installed itself at
+    70%. Shekels were the wrong unit: the sleeve is chosen in points of NAV, so
+    the shortfall has to be judged in points of NAV.
+
+    THE SHORTFALL IS NOW INJECTED RATHER THAN ARRANGED. That original book no
+    longer produces one: since same-class swap funding landed, selling MSFT to
+    buy TQQQ is Equities to Equities, the class weight does not move, and the
+    whole ₪1,000 is reachable -- which is the entire point of that change and
+    the reason a 64% sleeve target is now attainable.
+
+    Arranging a fresh unfundable book would tie this test to whatever the
+    funding POLICY happens to be, and that policy is exactly what keeps
+    changing. The invariant under test is narrower and does not depend on it:
+    given a funding plan that falls short, `load_basket` must abstain whole and
+    write nothing. So the shortfall is handed to it directly.
     """
     monkeypatch.setattr(ss, "guarded_quote",
                         lambda tk: NS(price=100.0, currency="ILS", market="TASE"))
+
+    _real = ss.plan_funding
+
+    def _short(*a, **kw):
+        fund = _real(*a, **kw)
+        # Raise less than asked, by more than the NAV-point tolerance, leaving
+        # the remainder below MIN_TRADE_ILS -- the exact shape that slipped
+        # through the original shekel-denominated gate.
+        amount = fund["amount_ils"]
+        return {**fund, "funded_ils": round(amount * 0.7, 2),
+                "shortfall_ils": round(amount * 0.3, 2),
+                "sells": [], "from_cash_ils": 0.0, "tax_ils": 0.0}
+
+    monkeypatch.setattr(ss, "plan_funding", _short)
     eng, Session = _session()
     try:
         async with Session() as s:

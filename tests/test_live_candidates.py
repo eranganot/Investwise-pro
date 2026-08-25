@@ -186,3 +186,28 @@ def test_i_the_survivors_are_the_ones_a_sleeve_would_actually_use(tk):
     from app.services.commodities import CATALOG
 
     assert tk in {c["ticker"] for c in CATALOG}
+
+
+def test_j_no_delisted_ticker_can_reach_any_recommendation_path():
+    """The guarantee that covers cards nobody has thought of yet.
+
+    COW reached the user twice by two different routes: the commodities-sleeve
+    card via `_commodity_recs`, and the redeploy-idle-cash card, which fills an
+    empty asset class from `_buy_ideas`. Fixing them one at a time would have
+    left whichever path gets written next.
+
+    Both -- and every future one -- draw their candidates from
+    `universe.commodity_candidates()`, which reads CATALOG. Asserting the
+    property HERE, at the single source, is what makes it true everywhere
+    downstream instead of true in the two places someone remembered.
+    """
+    from app.services import universe as uni
+    from app.services.commodities import DELISTED
+
+    tickers = {c["ticker"] for c in uni.commodity_candidates()}
+    assert not (tickers & set(DELISTED)), (
+        f"delisted tickers still reachable as buy candidates: {tickers & set(DELISTED)}")
+
+    full = {r["ticker"] for r in uni.full_universe()}
+    assert not (full & set(DELISTED)), (
+        f"delisted tickers still in the full universe: {full & set(DELISTED)}")

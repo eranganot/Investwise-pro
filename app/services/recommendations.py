@@ -1193,6 +1193,20 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                 "Review every funding leg and its tax, then confirm",
                                 "No brokerage order is placed either way"],
                         "est_amount": round(_amount, 2),
+                        # NEVER SUPPRESSED. This card carries no `apply` key by
+                        # design -- starting a position is a different decision
+                        # from correcting a drift, so it deliberately will not
+                        # act in one tap. But Accept still FILED it as completed,
+                        # which is how a SOXL sleeve chosen at 10% and holding
+                        # nothing disappeared from Today for the rest of the TTL
+                        # while the Plan tab went on showing 10%.
+                        #
+                        # "Done" cannot be true of a card that cannot do
+                        # anything. And the condition is self-clearing: this card
+                        # is only generated while `_cold` holds, i.e. while you
+                        # hold none of the sleeve. Hold some and it stops being
+                        # emitted. That is the only honest way for it to go away.
+                        "persistent": True,
                         "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                                  "actual_pct": round(_actual_pct, 1), "cold_start": True},
                     })
@@ -1393,12 +1407,16 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # structural fix for a mute landing on the wrong card is the
         # content-bearing id, which is elsewhere in this change; this is only
         # about a mute on the RIGHT card outliving the thing it muted.
+        # A card that declares itself persistent describes a standing condition
+        # it cannot itself resolve, so filing it as "done" states something
+        # untrue. It goes away when the condition does -- by not being generated.
+        _persistent = {r.get("id") for r in recs if r.get("persistent")}
         _high = {r.get("id") for r in recs if r.get("severity") == "HIGH"}
         _high_cut = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
         _stale_high = {rid for rid in (completed & _high)
                        if _parse_dt(str(_done_map.get(rid) or _now_iso())) < _high_cut}
-        dismissed = dismissed - _refired
-        completed = completed - _refired - _stale_high
+        dismissed = dismissed - _refired - _persistent
+        completed = completed - _refired - _stale_high - _persistent
 
         _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]

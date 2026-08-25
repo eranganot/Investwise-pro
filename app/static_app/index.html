@@ -1287,18 +1287,26 @@ function navSummary(p){
       ${up?'▲':'▼'} ${ils(Math.abs(g))} (${up?'+':'-'}${Math.abs(gp).toFixed(2)}%)</div>
       <div class="mk">${haveContrib?`on ${ils(contributed)} you put in`:`on ${ils(basis)} of cost basis`}</div>`;
 
-  // The second line, and the only place cost basis appears now.
-  let secondary;
-  if(haveContrib){
-    const realised=basis-contributed, unreal=nav-basis;
-    secondary=`<div class="mk" style="margin-top:6px">${ils(Math.abs(unreal))} unrealised on ${ils(basis)} of cost basis`
-      + ((Math.abs(realised)>1)
-         ? ` &middot; ${ils(Math.abs(realised))} ${realised>=0?"realised and reinvested":"drawn down"}`
-         : "")
-      + `</div>`;
-  } else {
-    secondary=`<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
-  }
+  // NO SECOND LINE WHEN THE HEADLINE IS ALREADY THE ANSWER.
+  //
+  // This briefly carried a breakdown splitting the gain into its unrealised
+  // part, the cost basis behind it, and the part already banked and put back to
+  // work. Every figure was correct and the split is real, but it asked the
+  // reader to hold three numbers and an accounting concept in their head to
+  // re-derive a total the line above already states. Eran, on seeing it: "I
+  // don't understand this numbers here... how does it came to 20524?" -- which
+  // is the whole verdict on it.
+  //
+  // "You put in X, it is worth Y, that is +Z%" is the question an owner asks.
+  // Cost basis answers a different one, and it is still in the payload
+  // (`cost_basis_ils`) for anything that needs it. It just does not belong on
+  // the front page uninvited.
+  //
+  // The no-deposits case still needs its line: there the headline is measured
+  // against basis, and saying so is the difference between a number and a
+  // number you can trust.
+  const secondary = haveContrib ? ""
+    : `<div class="mk" style="margin-top:6px">No deposits recorded &mdash; gain is measured against cost basis</div>`;
   const cashRow=`<div class="mk" style="margin-top:8px">💵 Liquid cash ${ils(cash)}${nav?` · ${(cash/nav*100).toFixed(1)}% of portfolio`:""}</div>`;
   return `<div class="card" style="text-align:center">
     <div class="mk">Total portfolio value (${p.base_currency||"₪"})</div>
@@ -1870,16 +1878,45 @@ function sleevePanel(){
       ${coreRow("100")}
     </div>`;
   }
-  const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>`
+  // TARGET AND HELD, ON EVERY ROW.
+  //
+  // This printed `sleeve_pct` alone under the heading "Your sleeves — 64% of
+  // the book". `sleeve_pct` is a TARGET. The sleeves held 15% of the book. So
+  // the card stated, in the present tense, a fact about the portfolio that was
+  // wrong by 49 points -- and there was no other screen where the difference
+  // could be seen, which is why it went unnoticed for months while funding
+  // silently abstained.
+  //
+  // A sleeve at 0% held is the interesting case, not an edge case: it means the
+  // strategy you chose is managing none of your money.
+  const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>{
+    const t=_pct(x.sleeve_pct);
+    const h=(x.held_pct!=null)?_pct(x.held_pct):null;
+    const empty=(h!=null&&+h<0.5);
+    const gapNote=(h==null)?"" :
+      `<span class="mk" style="min-width:96px;text-align:right;${empty?'color:var(--warn,#e5b857)':''}">
+         ${h}% held</span>`;
+    return `
     <div style="display:flex;align-items:center;gap:8px;padding:3px 0">
-      <span style="flex:1">${_stratName(x.strategy_id)}</span>
-      <b style="min-width:52px;text-align:right">${_pct(x.sleeve_pct)}%</b>
+      <span style="flex:1">${_stratName(x.strategy_id)}${empty?' <span class="mk">— holds nothing</span>':''}</span>
+      <b style="min-width:74px;text-align:right">${t}% target</b>
+      ${gapNote}
       <button onclick="removeSleeve('${x.strategy_id}','${_stratName(x.strategy_id).replace(/'/g,"")}')">Remove</button>
-    </div>`).join("");
+    </div>`;}).join("");
   const core=MYSLEEVES?_pct(MYSLEEVES.core_pct):null;
   const alloc=MYSLEEVES?_pct(MYSLEEVES.allocated_pct):null;
+  const allocHeld=(MYSLEEVES&&MYSLEEVES.allocated_held_pct!=null)?_pct(MYSLEEVES.allocated_held_pct):null;
+  const heading=(alloc==null)?"Your sleeves"
+    :(allocHeld==null)?`Your sleeves — ${alloc}% of the book`
+    :(Math.abs(+allocHeld-+alloc)<0.5)?`Your sleeves — ${alloc}% of the book`
+    :`Your sleeves — ${allocHeld}% held against a ${alloc}% target`;
+  const shortfall=(alloc!=null&&allocHeld!=null&&(+alloc-+allocHeld)>=0.5)
+    ? `<div class="mk" style="margin-top:4px;color:var(--warn,#e5b857)">
+         ${(+alloc-+allocHeld).toFixed(1)} points of your book are set to a strategy that is not holding it yet.
+       </div>` : "";
   return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
-      <div class="nm">Your sleeves — ${alloc!=null?alloc+"% of the book":""}</div>
+      <div class="nm">${heading}</div>
+      ${shortfall}
       <div style="margin:6px 0">${rows}</div>
       ${coreRow(core)}
       <div class="acts" style="margin-top:8px">

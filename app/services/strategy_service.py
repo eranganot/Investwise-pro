@@ -546,8 +546,17 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     # apply additive.)
     from app.services import sleeve_service as sv
     exclude = set(targets) | await sv.sleeve_tickers(session, user)
+    # THE SLEEVE'S OWN CLASS, so a same-class swap is allowed to fund it.
+    #
+    # Without this the class-overweight budget gates every sale, and on an
+    # equity sleeve funded out of equities that budget is the wrong constraint
+    # entirely: the proceeds come straight back, so the class weight does not
+    # move and there is nothing for the budget to protect. It is why a 64%
+    # target sat at 15% held while funding abstained -- see plan_funding.
+    buying_class = _buying_class([{"ticker": tk} for tk in targets])
     fund = plan_funding(rows, snap, plan, objective, cap, amount,
-                        cash_ils=cash_ils, exclude=exclude)
+                        cash_ils=cash_ils, exclude=exclude,
+                        buying_class=buying_class)
 
     # Abstain rather than half-execute: a partially funded sleeve is a position
     # nobody chose, at a size nobody chose. Judged in points of NAV, not shekels
@@ -637,9 +646,23 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
     # No sleeve is a funding source for any other, including itself.
     exclude = await sv.sleeve_tickers(session, user)
 
+    # Same reasoning as _fund_sleeve: when every sleeve leg lands in one class,
+    # selling that class to buy it back is a swap, not a rebalance, and the
+    # class-overweight budget must not gate it. Mixed-class sleeves get None and
+    # the original behaviour.
+    # NOT named `_buying_class`: that is already the module-level alias for
+    # `buying_class_of`, and shadowing it here made every later call in this
+    # function a "str object is not callable" -- 18 tests, one letter apart.
+    _all_targets: dict[str, float] = {}
+    for _s in sleeves:
+        for _tk, _w in (sleeve_targets(_s.strategy_id, _s.sleeve_pct) or {}).items():
+            _all_targets[_tk.upper()] = _all_targets.get(_tk.upper(), 0.0) + float(_w)
+    _sleeve_class = _buying_class([{"ticker": tk} for tk in _all_targets])
+
     def _fits(total_ils: float) -> dict:
         return plan_funding(rows, snap, plan, objective, cap, total_ils,
-                            cash_ils=cash_ils, exclude=exclude)
+                            cash_ils=cash_ils, exclude=exclude,
+                            buying_class=_sleeve_class)
 
     # Largest first. Ties broken by strategy id so the order is deterministic --
     # a funding plan that changes between two identical previews is untrustworthy
