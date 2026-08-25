@@ -111,11 +111,36 @@ def start_scheduler() -> None:
     # Reprice every holding so current_price never goes stale (drives the
     # price-based recommendations and the price-move notifications).
     try:
+        # THE PRIME USED TO BE A BARE CALL ON THIS THREAD AND IT COULD NEVER WORK.
+        #
+        # `start_scheduler()` runs from FastAPI's startup hook, so this thread
+        # already has a running event loop -- and `run_price_refresh_blocking`
+        # calls `asyncio.run()`, which refuses to nest. Every boot logged
+        # "scheduled price refresh failed ... asyncio.run() cannot be called from
+        # a running event loop", then RETURNED {"updated": 0, "failed": 0}, which
+        # is indistinguishable from a clean run that found nothing to do. Seen
+        # live in the 2026-08-25 16:07:27 Railway log.
+        #
+        # Two things were wrong and both are fixed:
+        #
+        #   It was UNGUARDED, so the failure never reached JOB_STATE and
+        #   `push_service.blockers` -- which PR 2 taught to read job state --
+        #   could not name it. A job that fails outside `_guarded` is a job that
+        #   fails invisibly.
+        #
+        #   It ran ON THE LOOP. `_guarded` already runs its target in a worker
+        #   thread, which is the context `asyncio.run()` needs, so the scheduled
+        #   30-minute runs were always fine; only the prime was broken.
+        #
+        # `next_run_time` primes it through the SAME guarded path instead of a
+        # separate call: one registration, one recorder, and no second code path
+        # that can rot. Calling `_guarded(...)()` here directly would have worked
+        # too and would have blocked startup for up to JOB_TIMEOUT_SEC.
         from app.services.pricing_service import run_price_refresh_blocking
-        run_price_refresh_blocking()  # prime at startup
         _scheduler.add_job(_guarded("price_refresh", run_price_refresh_blocking),
-                           "interval", minutes=30, id="price_refresh")
-        logger.info("Position price refresh scheduled (every 30 min).")
+                           "interval", minutes=30, id="price_refresh",
+                           next_run_time=datetime.now(timezone.utc))
+        logger.info("Position price refresh scheduled (every 30 min, priming now).")
     except Exception:  # noqa: BLE001
         logger.warning("Price refresh job not scheduled.", exc_info=False)
 

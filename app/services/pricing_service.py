@@ -246,14 +246,37 @@ async def _refresh_all() -> dict:
 
 
 def run_price_refresh_blocking() -> dict:
-    """Sync entrypoint for APScheduler (runs in its own thread)."""
+    """Sync entrypoint for APScheduler. MUST run on a thread with no event loop.
+
+    The old body swallowed every exception and returned ``{"updated": 0,
+    "failed": 0}``. That is not a failure value -- it is the exact shape of a
+    successful run that found nothing to reprice, so a crash and a quiet no-op
+    were the same two numbers to every reader downstream. Production logged the
+    crash on EVERY boot and the job state said nothing was wrong, which is the
+    ``nav_snapshot`` failure PR 2 removed one layer up: a job that reports
+    success while doing nothing is worse than one that fails, because nobody
+    goes looking.
+
+    Exceptions now PROPAGATE to ``scheduler._guarded``, which is the one place
+    that records an outcome. Two recorders is two versions of whether the job
+    ran.
+    """
+    # A named failure beats asyncio's "cannot be called from a running event
+    # loop", which reads like a library bug rather than what it is: a caller
+    # putting this on the wrong thread.
     try:
-        res = asyncio.run(_refresh_all())
-        logger.info("price refresh: %s", res)
-        return res
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled price refresh failed", exc_info=True)
-        return {"updated": 0, "failed": 0}
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass                       # no loop on this thread, which is required
+    else:
+        raise RuntimeError(
+            "run_price_refresh_blocking() was called on a thread that already "
+            "has a running event loop. It calls asyncio.run(), so it must run "
+            "in a worker thread -- schedule it through scheduler._guarded "
+            "rather than calling it from the FastAPI startup hook.")
+    res = asyncio.run(_refresh_all())
+    logger.info("price refresh: %s", res)
+    return res
 
 
 async def last_source(session) -> str | None:

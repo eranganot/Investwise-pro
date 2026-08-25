@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 11 / T5 — the war room reads the solver)._
+_Last updated: 2026-08-25 by Claude (PR 12 — the job that lied and the card that was missing)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -20,8 +20,94 @@ _Seeded from git history + prior transcripts._
 | 8 | Delete `plans.strategy` / `plans.strategy_sleeve_pct` | ✅ this entry |
 | 9 | One target, scoped cards, no self-contradiction | ✅ this entry |
 | 10 | The app could not buy a bond | ✅ this entry |
-| 11 | T5 — the war room reads the solver | ✅ this entry |
-| 12 | T6b → Phase W | 🔴 not started, each needs its own plan |
+| 11 | T5 — the war room reads the solver | ✅ shipped |
+| 12 | The job that lied, the card that was missing, the severity that never moved | ✅ this entry |
+| 13 | T6b — the solver varies the core | 🟡 in progress, plan agreed |
+| 14 | Phase W | 🔴 not started, needs its own plan |
+
+---
+
+## ✅ PR 12 — three things that reported success, or reported nothing, while wrong
+
+**Shipped 2026-08-25.** No migration.
+
+### 1. The price refresh crashed on every boot and reported success
+
+`scheduler.start_scheduler` primed the job with a bare
+`run_price_refresh_blocking()` on the FastAPI startup thread. That thread has a
+running event loop; the function calls `asyncio.run()`, which refuses to nest.
+Every boot logged it and then returned `{"updated": 0, "failed": 0}` — the same
+two numbers a clean run produces when nothing needs repricing, so a crash and a
+quiet no-op were indistinguishable downstream. Seen live in the 2026-08-25
+16:07:27 Railway log:
+
+```
+[WARN] scheduled price refresh failed
+  exc="RuntimeError: asyncio.run() cannot be called from a running event loop"
+pricing_service.py:256: RuntimeWarning: coroutine '_refresh_all' was never awaited
+  return {"updated": 0, "failed": 0}
+```
+
+The call was also outside `_guarded`, so `JOB_STATE` never heard about it and
+`push_service.blockers` — taught by PR 2 to read job state — could not name it.
+
+Exceptions now propagate to `_guarded`, the one place that records an outcome,
+and the prime goes through the **same** registration via `next_run_time` instead
+of a second call site. `_guarded` already runs its target in a worker thread,
+which is the context `asyncio.run()` needs, so the 30-minute runs were always
+fine — only the prime was broken.
+
+### 2. `floor_breaches_ceiling` had no card
+
+PR 11 stored the verdict and let the war room take a one-tap away with it. But
+the verdict's biggest statement is not about any single signal: the **core alone**
+breaches the ceiling, so no sleeve size repairs it, **including zero**. On this
+book that is 35.1% against a 13.3% ceiling, 21.8 points over, and Today showed
+five cards, none of which mentioned it.
+
+`_core_ceiling_recs` is deliberately **not** part of `_war_room_recs`: that
+function needs war-room signals to attach a constraint to, and this book had one
+displayed session which was a Rebalance. A 21-point breach would have gone
+unsaid for want of an unrelated BUY.
+
+`apply.kind` is `"none"` permanently — swapping a core is a whole-book change and
+`target_solver` is read-only without exception. The card carries the verdict's
+age, and a **stale verdict still speaks**: PR 11's rule is "stale stops blocking,
+it does not stop speaking", and this card blocks nothing. No verdict at all means
+no card; the smoke fails if a card appears with no verdict behind it.
+
+`as_constraint` gains `core_drawdown_pct`. `_headline` already stated it in
+prose; a card that has to pull the figure back out of a sentence is one rewording
+away from printing nothing.
+
+### 3. A 20-point drift rendered as "nice to have"
+
+`severity` was the literal string `"MEDIUM"`, so a book 3.1 points out of target
+and one 20.4 points out looked identical. Four other card types in the same file
+already scale by magnitude. `_drift_severity` scales on the **multiple** of
+`allocation_drift_threshold` rather than fresh absolute cut-offs — that setting
+already decides a drift is worth a card at all. At the default 3%: HIGH at 3×
+(9 points), CRITICAL at 6× (18). This book: Equities CRITICAL, Fixed Income HIGH,
+Commodities HIGH.
+
+And `_reconcile` now takes the **max** severity of the legs it merges. It rewrote
+the merged card's id, title, action, why and meta and never its severity, so it
+kept `rebal[0]`'s — whichever leg sorted first, which has nothing to do with which
+is worst. Latent only while every leg was hardcoded MEDIUM: fixing the scale
+without this would have introduced the bug the scale was meant to fix.
+
+### A process note worth keeping
+
+I told Eran PR 11's deploy had failed. It had not. I probed
+`/api/v1/war-room` once, seconds before the new container came up at 16:07:27,
+found no `solver_constraint`, and reported a build failure — sending him to `gh`
+and Railway logs for nothing. The deploy landed 21 seconds later. **The ship
+scripts poll `/health` for eight minutes for exactly this reason and I did not
+follow my own script's discipline.** A single probe at a deploy boundary is not
+evidence.
+
+**Verification:** 16 new tests. Suite green on SQLite (1141 passed, 4 skipped)
+and on Postgres 16 (1137 passed, 12 skipped), plus `ruff check app tests`.
 
 ---
 

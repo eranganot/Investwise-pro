@@ -124,6 +124,45 @@ def _rid(*parts) -> str:
     return "rec_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
 
 
+# Multiples of `allocation_drift_threshold` at which a rebalance stops being
+# routine. The threshold is the number that DECIDED this card should exist, so
+# it is also the honest unit for how far past it the book has gone.
+_DRIFT_HIGH_X = 3.0
+_DRIFT_CRITICAL_X = 6.0
+
+
+def _drift_severity(current: float, target: float) -> str:
+    """How far past its own trigger this drift is, in multiples of the trigger.
+
+    This card hardcoded "MEDIUM" -- so a book 3.1 points out of target and a
+    book 20.4 points out rendered identically, as "nice to have". Four other
+    card types in this file already scale by magnitude (behind-goal at
+    CRITICAL >= 40, benchmark lag at HIGH <= -10, tax harvest, holding verdict);
+    the one card that reports a measured gap did not.
+
+    The multiple, not a fresh set of absolute cut-offs: `allocation_drift_threshold`
+    is already the setting that decides a drift is worth a card at all, and a
+    second independent scale would be a second opinion about what "drifted"
+    means. At the default 3%, 3x is 9 points and 6x is 18.
+    """
+    from app.core.config import get_settings
+    thr = float(get_settings().allocation_drift_threshold or 0.03)
+    if thr <= 0:
+        return "MEDIUM"
+    drift = abs(float(current) - float(target))
+    ratio = drift / thr
+    # `0.59 - 0.50` is 0.08999999999999997, so an exactly-3x drift divides to
+    # 2.9999999999999996 and lands one tier low. The tolerance is about binary
+    # representation, not about judgement: a card whose severity depends on
+    # which two floats the caller happened to subtract is not reproducible.
+    eps = 1e-9
+    if ratio >= _DRIFT_CRITICAL_X - eps:
+        return "CRITICAL"
+    if ratio >= _DRIFT_HIGH_X - eps:
+        return "HIGH"
+    return "MEDIUM"
+
+
 async def _book_target(session, user, objective: str) -> dict:
     """THE target mix for the WHOLE book, sleeves included. One answer.
 
@@ -400,6 +439,19 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
                           + "; ".join(f"{t} (~{_ils(amt)})" for t, amt in legs) + ".")
         keep["why"] = ("Your mix has drifted from your plan's target across more than one asset "
                        "class. These move together, so they're one decision, not several.")
+        # THE MERGED CARD TAKES THE WORST LEG'S SEVERITY, not the first leg's.
+        #
+        # This block rewrote the merged card's id, title, action, why and meta
+        # and never touched its severity, so `keep` silently kept `rebal[0]`'s
+        # -- and `rebal[0]` is whichever leg sorted first, which has nothing to
+        # do with which leg is worst. It was latent only because every leg was
+        # hardcoded MEDIUM; the moment `_drift_severity` made them differ, a
+        # CRITICAL leg merged under a MEDIUM one would have been demoted by
+        # sort order. Fixing the severity scale without this would have
+        # introduced the bug it was meant to fix.
+        _rank = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0}
+        keep["severity"] = max((r.get("severity") or "MEDIUM" for r in rebal),
+                               key=lambda s: _rank.get(s, 1))
         keep["meta"] = {**(keep.get("meta") or {}), "merged_legs": [t for t, _ in legs]}
         for r in rebal[1:]:
             drop.add(r["id"])
@@ -448,6 +500,108 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
 
     return [r for r in recs if r.get("id") not in drop]
 
+
+async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
+    """The solver's most consequential finding, which nothing on Today said.
+
+    PR 11 stored the verdict and taught the war room to read it, and the war
+    room used it to take a one-tap away. But the verdict's BIGGEST statement is
+    not about any single signal: `floor_breaches_ceiling` means the core alone
+    breaches the drawdown ceiling, so no sleeve size repairs it -- INCLUDING
+    ZERO. On the live book that is 35.1% against a 13.3% ceiling, and Today
+    showed five cards, none of which mentioned it. It was reachable only by
+    opening the Target card, which is exactly the "nothing said it was missing"
+    failure PR 4 existed to end.
+
+    Three properties, each of which is the reason a line of this exists:
+
+      IT NEVER CLAIMS A CHANGE IT DOES NOT MAKE. `apply.kind` is "none".
+      Swapping a core is a whole-book change and `target_solver` is read-only
+      without exception -- a return target one tap from a book change is the C5
+      slider bug with higher stakes, in the solver's own words. So this card
+      states a measurement and points at the Plan screen.
+
+      IT CARRIES ITS AGE. Same rule as every other reader of a stored verdict:
+      a statement about one book at one moment has to say when that moment was.
+
+      A STALE VERDICT STILL SPEAKS. PR 11's rule is "stale stops blocking, it
+      does not stop speaking", and this card blocks nothing, so staleness
+      changes the wording and not whether it appears. Hiding a 21-point breach
+      because the measurement is 40 hours old would be the failure mode that
+      rule was written against, inverted.
+
+    No verdict at all means no card. A book with nothing measured gets silence,
+    not an asserted breach -- inventing a finding is worse than missing one.
+    """
+    out: list[dict] = []
+    try:
+        from app.services import solver_store
+        c = solver_store.as_constraint(await solver_store.latest(session, user))
+    except Exception:  # noqa: BLE001
+        logger.warning("core-ceiling card: could not read the solver verdict", exc_info=True)
+        return out
+
+    if not c.get("known") or not c.get("floor_breaches_ceiling"):
+        return out
+
+    ceiling = c.get("ceiling_pct")
+    core_dd = c.get("core_drawdown_pct")
+    age = c.get("age_hours")
+    gap = (abs(core_dd) - ceiling) if (core_dd is not None and ceiling is not None) else None
+
+    when = ("just now" if age is not None and age < 1
+            else f"{age:.0f}h ago" if age is not None else "at an unknown time")
+    measured = f"solved {when}" + (" and now too old to enforce" if c.get("stale") else "")
+
+    # The id tracks the SUBSTANCE, per PR 4: a constant id means one Accept ever
+    # hides the whole family for the TTL, and this finding changing from 35% to
+    # 20% is a different statement that deserves to reappear.
+    rid = _rid("core_breach", c.get("outcome"),
+               round(float(core_dd), 1) if core_dd is not None else "?",
+               round(float(ceiling), 1) if ceiling is not None else "?")
+
+    out.append({
+        "id": rid,
+        "dimension": "risk",
+        # The strongest finding the solver produces: not "you are off target"
+        # but "this target is unreachable from here by any sleeve size". Nothing
+        # else on Today can be acted on usefully while it holds.
+        "severity": "CRITICAL",
+        "title": "Your core alone breaches your drawdown ceiling",
+        "why": (c.get("headline") or "")
+               + (f" Your sleeves are not the cause: at zero sleeves the book still measures "
+                  f"{abs(core_dd):.1f}% against your {ceiling:.1f}% ceiling, "
+                  f"{gap:.1f} points over." if gap is not None else "")
+               + f" ({measured}.)",
+        "action": ("Change the strategy managing your core, or raise the ceiling to a number "
+                   "you would actually sit through."),
+        "impact": ("Until one of those changes, every sleeve-sizing answer is bounded by a "
+                   "constraint the core has already broken - including reducing your sleeves "
+                   "to nothing."),
+        "how": ["Open Plan and look at the strategy managing your core",
+                "Compare its measured drawdown against your ceiling, not its description",
+                f"Or raise the ceiling above {abs(core_dd):.1f}% if that is the honest number"
+                if core_dd is not None else "Or raise the ceiling to an honest number",
+                "Re-open the Target card afterwards so the verdict is re-solved"],
+        # Advisory, permanently. See the docstring.
+        "apply": {"kind": "none"},
+        "notes": [f"Solver verdict {c.get('outcome')}, {measured}."],
+        "meta": {"source": "target_solver", "outcome": c.get("outcome"),
+                 "age_hours": age, "stale": c.get("stale"),
+                 "solver_version": c.get("solver_version")},
+        "audit_trail": audit_for("risk", raw_data={
+            "core_max_drawdown_pct": core_dd,
+            "ceiling_pct": ceiling,
+            "points_over": round(gap, 2) if gap is not None else None,
+            "required_sleeve_pct": c.get("required_sleeve_pct"),
+            "binding_constraint": c.get("binding_constraint"),
+            "solved_at": c.get("solved_at"),
+            "verdict_source": c.get("source"),
+        }, formulas=[f("Points over the ceiling",
+                       "over = |core_max_drawdown| - ceiling",
+                       result=f"{gap:.1f} pts" if gap is not None else "not measured")]),
+    })
+    return out
 
 
 async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -> list[dict]:
@@ -834,7 +988,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # Plan tab in one glance.
         whence = bt_explain(btgt, a.asset_class)
         sleeve_share = btgt["sleeves"].get(a.asset_class, 0.0)
-        recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
+        recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation",
+                     "severity": _drift_severity(mix.get(a.asset_class, 0.0),
+                                                 target.get(a.asset_class, 0.0)),
                      "title": f"{a.action_type.title()} {a.asset_class}",
                      "why": f"Your {a.asset_class} weight ({mix.get(a.asset_class, 0):.0%}) has drifted from "
                             f"your book's target of {whence}.",
@@ -1150,6 +1306,19 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("stale-price recommendations failed", exc_info=True)
         degraded.append("stale_prices")
+
+    # The stored solver verdict's structural finding, if it has one. Separate
+    # from _war_room_recs on purpose: that function needs war-room SIGNALS to
+    # have something to attach a constraint to, and this finding is about the
+    # book itself. On the live book the war room had one displayed session and
+    # it was a Rebalance, so a 21-point ceiling breach would have gone unsaid
+    # for want of an unrelated BUY.
+    try:
+        async with _agent_tx(session):
+            recs += await _core_ceiling_recs(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("core-ceiling recommendation failed", exc_info=True)
+        degraded.append("solver_verdict")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:

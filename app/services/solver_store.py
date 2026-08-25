@@ -164,6 +164,12 @@ def as_constraint(row: SolverVerdict | None) -> dict:
         "headline": _headline(row),
         "required_sleeve_pct": row.solved_total_sleeve_pct,
         "ceiling_pct": row.max_drawdown_pct,
+        # The core's OWN measured drawdown, at zero sleeves. `_headline` already
+        # states it in prose; a card that has to pull it back out of a sentence
+        # to put it in an audit trail is one rewording away from printing
+        # nothing. This is not an agent re-deriving a conclusion -- it is the
+        # conclusion's evidence, measured once and exposed once.
+        "core_drawdown_pct": ((row.detail or {}).get("floor") or {}).get("max_drawdown_pct"),
         "floor_breaches_ceiling": bool(row.floor_breaches_ceiling),
         "binding_constraint": row.binding_constraint or None,
         "source": row.source,
