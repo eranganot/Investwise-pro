@@ -121,3 +121,61 @@ def ticker_asset_class(ticker: str, strategy: dict) -> str:
     # default to the strategy's dominant class
     alloc = strategy.get("target_allocation", {})
     return max(alloc, key=alloc.get) if alloc else "Equities"
+
+
+# --- T6b: these families as CANDIDATE CORES --------------------------------
+#
+# The solver needs `{ticker: fraction}`; the catalog stores `[[ticker, weight]]`
+# because that is the shape the Plan renderer wants. One conversion, here, next
+# to the data -- not inline in the solver.
+#
+# It deliberately does NOT normalise. `blend.core_spec` divides by the sum, and
+# a second normalisation upstream is how a 20% sleeve becomes a 4% one: the
+# scale would be carried in two places and applied twice. So this returns the
+# basket's own numbers and lets the one existing normaliser own the arithmetic.
+# `basket_sum` rides along so a caller can SEE what it was handed rather than
+# inferring it -- every basket in the catalog sums to 1.0 today, and a future
+# one that does not should be visible rather than silently rescaled.
+
+def core_weights(strategy_id: str) -> dict[str, float] | None:
+    """One static family's basket as a weights dict, or None if it has no basket."""
+    entry = _BY_ID.get(strategy_id)
+    if not entry:
+        return None
+    basket = entry.get("basket") or []
+    if not basket:
+        return None
+    out: dict[str, float] = {}
+    for ticker, weight in basket:
+        tk = str(ticker).upper()
+        w = float(weight)
+        if w <= 0:
+            continue
+        # Summed rather than assigned: a basket listing a ticker twice is a data
+        # error that must not silently drop one of the two entries.
+        out[tk] = out.get(tk, 0.0) + w
+    return out or None
+
+
+def core_candidates() -> list[dict]:
+    """Every static family that can stand as a core, in catalog order.
+
+    Rule-based sleeves are not here and must not be: `sleeve_service` already
+    refuses them as cores, because a core is held every day and a rule is not.
+    """
+    out: list[dict] = []
+    for entry in CATALOG:
+        weights = core_weights(entry["id"])
+        if not weights:
+            continue
+        out.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "goal": entry["goal"],
+            "risk_tolerance": entry.get("risk_tolerance"),
+            "target_allocation": dict(entry.get("target_allocation") or {}),
+            "weights": weights,
+            "basket_sum": round(sum(weights.values()), 6),
+            "source": "catalog",
+        })
+    return out

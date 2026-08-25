@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -36,6 +37,7 @@ from app.core.config import get_settings
 from app.engines import strategy_backtest as bt
 from app.models.tables import StrategyBacktest
 from app.providers.registry import guarded_history, market_provider
+from app.providers.resilience import CircuitOpenError, RateLimitedError
 from app.services import strategy_catalog
 
 logger = logging.getLogger(__name__)
@@ -69,20 +71,74 @@ _REGIME_KEYS = ("ok", "cagr_pct", "volatility_pct", "max_drawdown_pct",
                 "excess_cagr_pct", "trades_per_year", "observations")
 
 
-def _fetch(tickers: list[str]) -> tuple[dict, list[str]]:
-    """Price history per ticker; the second element is what could not be fetched."""
-    series, missing = {}, []
+# A rate limit is a statement about US, not about the ticker. Retried with a
+# widening pause before the symbol is written off; the sleep is a module-level
+# name so a test can replace it and not actually wait.
+FETCH_RETRIES = 3
+FETCH_BACKOFF_SEC = 1.5
+_sleep = time.sleep
+
+
+def _fetch(tickers: list[str],
+           classify: bool = False) -> tuple[dict, list[str]] | tuple[dict, list[str], list[str]]:
+    """Price history per ticker.
+
+    Returns `(series, no_data)` by default, and `(series, no_data, unavailable)`
+    when `classify` is set. THE THIRD LIST IS THE POINT, and the default shape
+    is kept only so the existing callers do not all have to change at once.
+
+    A rate-limited or circuit-open call returns nothing for a reason that has
+    NO BEARING ON THE TICKER, and this function used to record it identically to
+    "this symbol has no price history" -- then log "backtest: no history for
+    SPY", which is false about SPY and true about nothing. It is the same defect
+    PR 10 removed from the screener, and PR 5b's liveness fix introduced there:
+    dropping on any exception.
+
+    It stopped being a corner case when T6b started fetching 26 catalog tickers
+    in one pass. Measured on the first live run: 18 of 28 symbols came back
+    "no history" -- SPY, VTI, QQQ, MSFT among them -- purely from rate limiting,
+    and every one of the fourteen candidate cores was excluded as unmeasurable.
+    A search that reports "none of your options can be measured" because it
+    asked too quickly is worse than one that takes longer.
+    """
+    series: dict = {}
+    no_data: list[str] = []
+    unavailable: list[str] = []
     for tk in tickers:
-        try:
-            rows = guarded_history(tk, HISTORY_DAYS)
-        except Exception:  # noqa: BLE001
-            logger.warning("backtest: no history for %s", tk, exc_info=False)
-            rows = []
-        if len(rows) < 3:
-            missing.append(tk)
-        else:
+        rows: list = []
+        reason = None
+        for attempt in range(FETCH_RETRIES):
+            try:
+                rows = guarded_history(tk, HISTORY_DAYS)
+                reason = None
+                break
+            except (RateLimitedError, CircuitOpenError) as exc:
+                reason = exc
+                rows = []
+                # Only pause when there is another attempt coming; the last
+                # failure should not also cost the caller a sleep.
+                if attempt < FETCH_RETRIES - 1:
+                    _sleep(FETCH_BACKOFF_SEC * (attempt + 1))
+            except Exception:  # noqa: BLE001
+                reason = None          # a real answer of "nothing"
+                rows = []
+                break
+        if len(rows) >= 3:
             series[tk] = rows
-    return series, missing
+        elif reason is not None:
+            logger.warning("backtest: %s unavailable (%s) after %d attempts - "
+                           "this is not a statement about the ticker",
+                           tk, type(reason).__name__, FETCH_RETRIES)
+            unavailable.append(tk)
+        else:
+            logger.warning("backtest: no history for %s", tk, exc_info=False)
+            no_data.append(tk)
+    if classify:
+        return series, no_data, unavailable
+    # The legacy contract: callers that cannot yet tell the two apart still get
+    # both in one list, because treating an unavailable ticker as present would
+    # be worse than treating it as missing.
+    return series, sorted(no_data + unavailable)
 
 
 def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:

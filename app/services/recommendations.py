@@ -501,6 +501,14 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
     return [r for r in recs if r.get("id") not in drop]
 
 
+def _core_when(found: dict) -> str:
+    """How old the core search is, in the same words the constraint uses."""
+    age = found.get("age_hours")
+    if age is None:
+        return "at an unknown time"
+    return "just now" if age < 1 else f"{age:.0f}h ago"
+
+
 async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
     """The solver's most consequential finding, which nothing on Today said.
 
@@ -537,6 +545,10 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
     try:
         from app.services import solver_store
         c = solver_store.as_constraint(await solver_store.latest(session, user))
+        # T6b. Read here rather than on its own card, because the two findings
+        # are about the same decision and Today must not carry both "change the
+        # core" and "changing the core does not help".
+        found = solver_store.as_core_finding(await solver_store.latest_core(session, user))
     except Exception:  # noqa: BLE001
         logger.warning("core-ceiling card: could not read the solver verdict", exc_info=True)
         return out
@@ -573,22 +585,57 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
                   f"{abs(core_dd):.1f}% against your {ceiling:.1f}% ceiling, "
                   f"{gap:.1f} points over." if gap is not None else "")
                + f" ({measured}.)",
-        "action": ("Change the strategy managing your core, or raise the ceiling to a number "
-                   "you would actually sit through."),
-        "impact": ("Until one of those changes, every sleeve-sizing answer is bounded by a "
+        # WHAT PR 12 SAID HERE WAS "change the core", AND T6B MEASURED IT.
+        #
+        # Every one of the fifteen candidate cores -- the fourteen catalog
+        # families plus the current holdings -- came back inadmissible against
+        # this ceiling; the shallowest drawdown on offer was 31.9%. So the
+        # advice this card shipped with was not wrong about the breach and was
+        # wrong about the remedy, and a card that keeps giving advice a
+        # measurement has already refuted is the card-claim invariant broken
+        # from the inside.
+        #
+        # When the search has NOT run, the original wording stands: it is the
+        # honest thing to say when nothing has measured the alternatives.
+        "action": (found["means"] if found.get("none_admissible") and found.get("means")
+                   else "Change the strategy managing your core, or raise the ceiling to a "
+                        "number you would actually sit through."),
+        "impact": ((f"{found['headline']} Measured {_core_when(found)}."
+                    if found.get("headline") else "")
+                   if found.get("none_admissible") else
+                   "Until one of those changes, every sleeve-sizing answer is bounded by a "
                    "constraint the core has already broken - including reducing your sleeves "
                    "to nothing."),
-        "how": ["Open Plan and look at the strategy managing your core",
-                "Compare its measured drawdown against your ceiling, not its description",
-                f"Or raise the ceiling above {abs(core_dd):.1f}% if that is the honest number"
-                if core_dd is not None else "Or raise the ceiling to an honest number",
-                "Re-open the Target card afterwards so the verdict is re-solved"],
+        "how": (["Your sleeves are 64% of the book in TQQQ and SOXL - that is where "
+                 "the drawdown comes from",
+                 "Open Plan and resize the sleeves, or raise the ceiling to a number "
+                 "you would actually sit through",
+                 f"The shallowest core measured was {abs(found['shallowest_pct']):.1f}%, "
+                 f"still over your {ceiling:.1f}% ceiling"
+                 if found.get("shallowest_pct") is not None and ceiling is not None
+                 else "No candidate core came in under the ceiling",
+                 "Open the Target card afterwards so both verdicts are re-solved"]
+                if found.get("none_admissible") else
+                ["Open Plan and look at the strategy managing your core",
+                 "Compare its measured drawdown against your ceiling, not its description",
+                 f"Or raise the ceiling above {abs(core_dd):.1f}% if that is the honest number"
+                 if core_dd is not None else "Or raise the ceiling to an honest number",
+                 "Re-open the Target card afterwards so the verdict is re-solved"]),
         # Advisory, permanently. See the docstring.
         "apply": {"kind": "none"},
-        "notes": [f"Solver verdict {c.get('outcome')}, {measured}."],
+        "notes": ([f"Solver verdict {c.get('outcome')}, {measured}."]
+                  + ([f"Core search: {found['kind']}, {_core_when(found)}. "
+                      f"{len(found.get('top') or [])} of the candidates shown on the Plan tab."]
+                     if found.get("known") else
+                     ["No core search on record yet, so the alternatives have not been "
+                      "measured against this ceiling."])),
         "meta": {"source": "target_solver", "outcome": c.get("outcome"),
                  "age_hours": age, "stale": c.get("stale"),
-                 "solver_version": c.get("solver_version")},
+                 "solver_version": c.get("solver_version"),
+                 "core_search": {"known": found.get("known"), "kind": found.get("kind"),
+                                 "age_hours": found.get("age_hours"),
+                                 "none_admissible": found.get("none_admissible"),
+                                 "shallowest_pct": found.get("shallowest_pct")}},
         "audit_trail": audit_for("risk", raw_data={
             "core_max_drawdown_pct": core_dd,
             "ceiling_pct": ceiling,

@@ -133,14 +133,24 @@ def test_the_constraint_exposes_the_core_drawdown_as_a_number():
     assert c["ceiling_pct"] == 13.3
 
 
-def _card(monkeypatch, **kw):
-    """Run `_core_ceiling_recs` against a verdict, with no database."""
+def _card(monkeypatch, core_row=None, **kw):
+    """Run `_core_ceiling_recs` against a verdict, with no database.
+
+    `latest_core` is patched to return `core_row` -- None by default, which is
+    the state every book is in until the T6b search has run. PR 13 made the card
+    read both verdicts, so a test that patches only one is a test against a
+    function that no longer exists.
+    """
     row = _Row(**kw) if kw.get("_row", True) else None
 
     async def _latest(session, user):
         return row
 
+    async def _latest_core(session, user):
+        return core_row
+
     monkeypatch.setattr(ss, "latest", _latest)
+    monkeypatch.setattr(ss, "latest_core", _latest_core)
     return asyncio.run(R._core_ceiling_recs(None, None))
 
 

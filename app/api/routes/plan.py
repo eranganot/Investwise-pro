@@ -511,6 +511,45 @@ async def target_split(max_drawdown_pct: float,
         session, user, max_drawdown_pct=float(max_drawdown_pct))
 
 
+@router.get("/plan/target/cores")
+async def target_cores(max_drawdown_pct: float, top_n: int = 5,
+                       session: AsyncSession = Depends(get_session),
+                       user: User = Depends(acting_user)) -> dict:
+    """T6b -- measure every catalog family as your core, against your ceiling.
+
+    READ-ONLY, and there is NO apply path from here at all. `/plan/target` has
+    `/apply` and `/undo`; this deliberately has neither. Swapping a core is a
+    whole-book change, and investing-discipline SS5 is explicit that the app
+    never recommends products: a ranked list of the user's own catalog with
+    measured numbers beside it is a measurement, and one tap from that list to a
+    rebuilt book would turn it into advice with a button.
+
+    Not run on card load. One search is two simulations for each of fifteen
+    candidates -- measured at ~54s against live data -- so it is an explicit
+    button, and the nightly 04:10 job stores a result for the card to read.
+
+    Ranked on the recent window with the ten-year measured beside every row.
+    That is Eran's decision of 2026-08-25, taken with the drawdown figures for
+    both windows in front of him and against the spec's own recommendation.
+    Every row carries both, and any row whose two windows disagree is flagged,
+    because the short window understates the 2022 rate shock roughly six-fold
+    for the bond-heavy families a ceiling selects for.
+    """
+    from app.services import solver_store, target_solver
+    if max_drawdown_pct <= 0:
+        return {"ok": False, "reason": "NO_CEILING",
+                "detail": "a drawdown ceiling above 0% is required - without one every "
+                          "core is admissible and the ranking answers nothing"}
+    out = await target_solver.solve_core_for(
+        session, user, max_drawdown_pct=float(max_drawdown_pct),
+        top_n=max(1, min(int(top_n), 15)))
+    # Stored so the CARD can read a verdict it could never afford to compute.
+    # Same write/read split as PR 11, for the same reason.
+    if out.get("ok"):
+        await solver_store.record_core(session, user, out, source="on_demand")
+    return out
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)

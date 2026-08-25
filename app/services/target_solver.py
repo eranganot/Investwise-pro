@@ -1065,3 +1065,195 @@ def _split_blocking(tickers, bench_tk, sleeves, core, max_drawdown_pct, floor, c
     return solve_split(series, sleeves=sleeves, core=core, benchmark=bench,
                        max_drawdown_pct=max_drawdown_pct,
                        cash_floor=floor, concentration_cap=cap)
+
+
+# ---------------------------------------------------------------------------
+# T6b -- vary the core
+# ---------------------------------------------------------------------------
+#
+# `solve()` above holds the core FIXED and sweeps one axis. Here the core is the
+# variable and the sleeves stay at the share the book already runs, so the two
+# searches answer two different questions and neither pretends to answer both.
+#
+# investing-discipline SS5, the firewall this must not cross: the app is a
+# self-directed execution companion and never recommends products. Candidates
+# come from `strategies.CATALOG` and nowhere else, the payload is worded as a
+# measurement, and `execution_plan` is absent entirely -- there is no path from
+# this answer to a book change, by design.
+
+# The recent window, in trading sessions. Ranked on this against Eran's
+# explicit decision (2026-08-25) and against the spec's own recommendation. The
+# spec's table claims the short window has "no bear market"; measured on the day
+# of the decision that is false -- SOXL fell 69.42% and TQQQ 37.17% inside it,
+# against SPY's 9.13%. For a book whose sleeves ARE TQQQ and SOXL, the recent
+# window prices the binding risk.
+#
+# The reference window is measured for every candidate anyway, because the same
+# measurement showed BND at -4.02% over 250 sessions against -23.96% over ten:
+# the short window understates the 2022 rate shock roughly six-fold, and the
+# bond-heavy families are exactly the ones a drawdown ceiling selects for.
+# 260, not the 250 the decision was worded in, and the difference is not mine to
+# choose: `strategy_backtest._MIN_OBSERVATIONS` is 260 with the comment "~1
+# trading year; below this, CAGR is noise", and `measure_blend` abstains outright
+# under it. A 250-session request returned INSUFFICIENT_HISTORY for all fifteen
+# candidates on the first live run.
+#
+# Worth stating plainly rather than quietly rounding up: the ranking window is
+# the SHORTEST WINDOW THIS ENGINE WILL MEASURE AT ALL. The engine's own position
+# is that one session less would be noise. That is not an argument against the
+# window -- it clears the floor -- but a reader comparing it to the ten-year
+# column should know which end of the engine's range each one sits at.
+RANK_WINDOW_SESSIONS = 260
+
+
+def _tail(series: dict, sessions: int) -> dict:
+    """The same bars, restricted to the last N COMMON sessions.
+
+    Sliced rather than re-fetched, on purpose. A second `guarded_history` call
+    at a shorter span is a second provider round-trip that can disagree with the
+    first -- a different vendor on the fallback path, a bar revised between
+    calls, a rate limit truncating one ticker and not another. Slicing
+    guarantees the two windows differ in exactly one respect: their length.
+
+    The axis is intersected BEFORE truncating. Taking each ticker's own last 250
+    rows and intersecting afterwards silently yields fewer than 250 whenever the
+    tickers trade on different calendars, and the shortfall would not be
+    attributable to anything.
+    """
+    if not series:
+        return {}
+    common = None
+    for rows in series.values():
+        dates = {d for d, _ in rows}
+        common = dates if common is None else (common & dates)
+    if not common:
+        return {tk: [] for tk in series}
+    keep = set(sorted(common)[-int(sessions):])
+    return {tk: [(d, c) for d, c in rows if d in keep] for tk, rows in series.items()}
+
+
+def _core_blocking(bench_tk, sleeves, baseline_core, candidates,
+                   max_drawdown_pct, floor, cap, top_n):
+    """Fetch once, measure every candidate twice, rank. Blocking; offloaded."""
+    from app.services import core_search
+
+    # Every ticker any candidate could need, fetched in ONE pass.
+    wanted = {bench_tk}
+    for s_ in sleeves:
+        wanted |= set(bt.tickers_needed(s_["spec"]))
+    wanted |= set((baseline_core or {}).get("weights") or {})
+    for cand in candidates:
+        wanted |= {t.upper() for t in cand["weights"]}
+    series, no_data, unavailable = _fetch(sorted(wanted), classify=True)
+
+    # NOT an abort. `_split_blocking` returns MISSING_TICKER the moment any one
+    # ticker fails, which is right when every ticker is load-bearing for the one
+    # blend being measured. Here a single dead ticker in one basket would kill
+    # all fourteen candidates -- so a candidate is excluded when ITS OWN tickers
+    # are missing, by name, and the other thirteen are still measured. Silently
+    # dropping it instead is the COW failure with a leaderboard on top.
+    #
+    # And the two kinds of absence are kept apart all the way to the payload.
+    # "DBC has no price history" is a fact about DBC; "DBC was rate-limited" is
+    # a fact about this run, and a reader who cannot tell them apart will go
+    # and check whether DBC was delisted.
+    gone = set(no_data) | set(unavailable)
+    bench = series.get(bench_tk)
+
+    ratios = _split(sleeves)
+    max_total = max(0.0, 100.0 - floor * 100.0)
+    total_pct = min(sum(float(s.get("current_pct") or 0.0) for s in sleeves), max_total)
+    core_pct = max(0.0, max_total - total_pct)
+
+    sleeve_need = set()
+    for s_ in sleeves:
+        sleeve_need |= {t.upper() for t in bt.tickers_needed(s_["spec"])}
+
+    def _measure(cand, sessions=None):
+        """One candidate as the core, over one window.
+
+        THE FEED IS SCOPED TO THIS BLEND. Handing `measure_blend` the whole
+        fetch would be harmless for the targets -- `targets_for` only reads what
+        the specs reference -- but `align()` intersects the DATE AXIS across
+        everything in the feed. JEPI listed 2020-05, so one shared feed would
+        have silently truncated all fourteen candidates to `inc_high_yield`'s
+        six years and reported ten-year figures for none of them.
+
+        The same argument applies to the window, which is why the tail is taken
+        per blend rather than once up front: a global axis is an axis one short
+        ticker has already collapsed, and "the last 250 sessions" computed on it
+        would not be the last 250 sessions of anything.
+        """
+        need = {t.upper() for t in cand["weights"]}
+        short = sorted((need | sleeve_need) & gone)
+        if short:
+            return {"ok": False, "reason": "NO_OVERLAP",
+                    "detail": f"no usable price history for {', '.join(short)}"}
+        feed = {tk: series[tk] for tk in (need | sleeve_need) if tk in series}
+        if sessions:
+            feed = _tail(feed, sessions)
+        core = blend.core_spec(cand["weights"])
+        comps = _components(sleeves, ratios, core, total_pct, core_pct)
+        # The benchmark is passed whole; `align` intersects it against the feed,
+        # so a tailed feed yields a tailed comparison without a second slice
+        # that could disagree with the first.
+        return blend.measure_blend(feed, comps, benchmark=bench, detail=False)
+
+    out = core_search.search(
+        candidates,
+        lambda c: _measure(c, RANK_WINDOW_SESSIONS),
+        lambda c: _measure(c),
+        max_drawdown_pct=max_drawdown_pct,
+        concentration_cap=cap,
+        top_n=top_n,
+        baseline={"id": core_search.BASELINE_ID,
+                  "name": "Your current holdings",
+                  "goal": None,
+                  "weights": dict((baseline_core or {}).get("weights") or {})},
+    )
+    # investing-discipline SS3: the artifact carries the inputs that produced it.
+    out["benchmark"] = bench_tk
+    out["solver_version"] = SOLVER_VERSION
+    out["sleeves_held_pct"] = round(total_pct, 2)
+    out["core_pct_of_book"] = round(core_pct, 2)
+    if gone:
+        out["degraded"] = ["history"]
+        out["no_data_tickers"] = sorted(no_data)
+        out["unavailable_tickers"] = sorted(unavailable)
+        if unavailable:
+            # An incomplete search must say the search was incomplete, not just
+            # rank whatever survived. A leaderboard missing four candidates for
+            # a reason that has nothing to do with those candidates is a
+            # leaderboard that will be read as complete.
+            out["coverage"]["incomplete_reason"] = (
+                f"{len(unavailable)} ticker(s) were unavailable this run "
+                f"(rate limit or open circuit), not missing from the market: "
+                f"{', '.join(sorted(unavailable))}. Re-run to include them.")
+    # SS5. The wording is the boundary, so it ships with the payload rather than
+    # being left to a renderer that may not know the rule exists.
+    out["disclaimer"] = ("These are measurements of blends built from your own catalog, "
+                         "over the windows named. Not financial advice.")
+    return out
+
+
+async def solve_core_for(session: AsyncSession, user: User, *,
+                         max_drawdown_pct: float,
+                         top_n: int = 5) -> dict:
+    """T6b for the acting user's book. Read-only, and there is no apply path."""
+    from app.services import strategies
+
+    book, err = await _book_for_solve(session, user)
+    if err:
+        return {"ok": False, **err}
+    if not book["sleeves"]:
+        return {"ok": False, "reason": "NO_SLEEVES",
+                "detail": "this book runs no sleeves, so the core is the whole book "
+                          "and there is no remainder to vary"}
+
+    out = await offload(_core_blocking, book["bench_tk"], book["sleeves"],
+                        book["core"], strategies.core_candidates(),
+                        max_drawdown_pct, book["floor"], book["cap"], top_n)
+    if book["unpriced"]:
+        out["degraded"] = sorted(set((out.get("degraded") or []) + ["price"]))
+        out["unpriced_holdings"] = sorted(set(book["unpriced"]))
+    return out

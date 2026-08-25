@@ -99,13 +99,109 @@ async def record(session: AsyncSession, user: User, verdict: dict, *,
         return None
 
 
+# T6b writes into the SAME table -- one book, one place its measured verdicts
+# live -- so every reader has to say which kind it wants. Excluded by the CORE
+# version rather than selected by the target solver's own ("s1"), because
+# SOLVER_VERSION is meant to be bumped and an `== "s1"` filter would silently
+# stop finding rows the day it is.
+CORE_VERSION = "t6b"
+
+
 async def latest(session: AsyncSession, user: User) -> SolverVerdict | None:
+    """The newest TARGET-SOLVER verdict. Never a core-search row."""
     row = (await session.scalars(
         select(SolverVerdict)
         .where(SolverVerdict.subject == user.email)
+        .where(SolverVerdict.solver_version != CORE_VERSION)
         .order_by(desc(SolverVerdict.created_at))
         .limit(1))).first()
     return row
+
+
+async def latest_core(session: AsyncSession, user: User) -> SolverVerdict | None:
+    """The newest T6b core search."""
+    row = (await session.scalars(
+        select(SolverVerdict)
+        .where(SolverVerdict.subject == user.email)
+        .where(SolverVerdict.solver_version == CORE_VERSION)
+        .order_by(desc(SolverVerdict.created_at))
+        .limit(1))).first()
+    return row
+
+
+async def record_core(session: AsyncSession, user: User, result: dict, *,
+                      source: str = "on_demand") -> SolverVerdict | None:
+    """Persist one core search. Best-effort, exactly like `record`.
+
+    `detail` carries the verdict and the top rows and nothing else. The full
+    ranking is recomputed by the route anyway; copying fifteen rows of two
+    windows each would make this table a second answer to a question that
+    already has one -- the failure migration 0019 removed one layer down.
+    """
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    verdict = result.get("verdict") or {}
+    if not verdict.get("kind"):
+        return None
+    try:
+        row = SolverVerdict(
+            subject=user.email,
+            solver_version=CORE_VERSION,
+            outcome=str(verdict["kind"])[:32],
+            target_excess_pct=None,
+            max_drawdown_pct=_f(result.get("max_drawdown_pct")),
+            solved_total_sleeve_pct=_f(result.get("sleeves_held_pct")),
+            floor_breaches_ceiling=False,
+            binding_constraint="core_search",
+            source=source[:16],
+            detail={
+                "verdict": verdict,
+                "ranked_on": result.get("ranked_on"),
+                "coverage": result.get("coverage"),
+                "core_pct_of_book": result.get("core_pct_of_book"),
+                "top": [{"id": r.get("id"), "name": r.get("name"),
+                         "excess_pct": r.get("excess_pct"),
+                         "max_drawdown_pct": r.get("max_drawdown_pct"),
+                         "reference_max_drawdown_pct":
+                             (r.get("reference") or {}).get("max_drawdown_pct"),
+                         "admissible": r.get("admissible"),
+                         "flags": r.get("flags")}
+                        for r in (result.get("ranked") or [])[:5]],
+            },
+        )
+        session.add(row)
+        await session.commit()
+        return row
+    except Exception:  # noqa: BLE001 -- a search that answered must not fail on its receipt
+        logger.warning("could not record core search", exc_info=False)
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def as_core_finding(row: SolverVerdict | None) -> dict:
+    """The small shape a CARD consults. Same contract as `as_constraint`."""
+    if row is None:
+        return {"known": False, "kind": None, "age_hours": None,
+                "headline": None, "means": None, "shallowest_pct": None,
+                "ceiling_pct": None, "none_admissible": False}
+    age = _age_hours(row)
+    v = (row.detail or {}).get("verdict") or {}
+    return {
+        "known": True,
+        "kind": row.outcome,
+        "age_hours": round(age, 1) if age is not None else None,
+        "solved_at": row.created_at.isoformat() if getattr(row, "created_at", None) else None,
+        "headline": v.get("headline"),
+        "means": v.get("means"),
+        "shallowest_pct": v.get("shallowest_pct"),
+        "ceiling_pct": row.max_drawdown_pct,
+        "none_admissible": row.outcome == "NONE_ADMISSIBLE",
+        "top": (row.detail or {}).get("top") or [],
+        "source": row.source,
+    }
 
 
 def _f(v) -> float | None:
@@ -235,7 +331,7 @@ async def refresh_all(session: AsyncSession) -> dict:
     from app.services import target_solver
 
     subjects = list((await session.scalars(select(distinct(SolverVerdict.subject)))).all())
-    done, skipped, failed = 0, 0, 0
+    done, skipped, failed, cores = 0, 0, 0, 0
     for subject in subjects:
         user = (await session.scalars(select(User).where(User.email == subject))).first()
         if user is None:
@@ -262,7 +358,25 @@ async def refresh_all(session: AsyncSession) -> dict:
         except Exception:  # noqa: BLE001 -- one bad book must not stop the rest
             logger.warning("scheduled re-solve failed for a subject", exc_info=False)
             failed += 1
-    return {"solved": done, "skipped": skipped, "failed": failed}
+
+        # T6b, against the SAME ceiling the target solve just used, in the same
+        # pass. Two searches whose answers are read side by side on one card
+        # must not be able to be about two different ceilings -- and the card
+        # that says "no core repairs this" is only true of the ceiling it was
+        # measured against.
+        #
+        # Its own try. A core search that fails must not undo a target solve
+        # that succeeded: they answer different questions and the second is not
+        # a precondition of the first.
+        try:
+            found = await target_solver.solve_core_for(
+                session, user, max_drawdown_pct=float(prev.max_drawdown_pct))
+            if found.get("ok"):
+                await record_core(session, user, found, source="scheduled")
+                cores += 1
+        except Exception:  # noqa: BLE001
+            logger.warning("scheduled core search failed for a subject", exc_info=False)
+    return {"solved": done, "skipped": skipped, "failed": failed, "cores": cores}
 
 
 async def _refresh_job() -> dict:
@@ -290,10 +404,13 @@ def run_solver_refresh_blocking() -> dict:
     """Sync entrypoint for APScheduler (runs in its own thread)."""
     import asyncio
 
-    try:
-        res = asyncio.run(_refresh_job())
-        logger.info("solver refresh: %s", res)
-        return res
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled solver refresh failed", exc_info=True)
-        return {"solved": 0, "skipped": 0, "failed": 0}
+    # NO try/except HERE, and it is the same correction PR 12 made to
+    # pricing_service. Returning {"solved": 0, "skipped": 0, "failed": 0} from a
+    # crash is the exact shape of a run that found no book with a stored
+    # question -- the common, healthy case. So a broken nightly re-solve would
+    # have read as a quiet night, forever. `scheduler._guarded` is the one place
+    # that records an outcome; two recorders is two versions of whether the job
+    # ran. Written in PR 11 by me, with the older bug already in front of me.
+    res = asyncio.run(_refresh_job())
+    logger.info("solver refresh: %s", res)
+    return res

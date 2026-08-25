@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 12 — the job that lied and the card that was missing)._
+_Last updated: 2026-08-25 by Claude (PR 13 / T6b — the solver varies the core)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -22,8 +22,106 @@ _Seeded from git history + prior transcripts._
 | 10 | The app could not buy a bond | ✅ this entry |
 | 11 | T5 — the war room reads the solver | ✅ shipped |
 | 12 | The job that lied, the card that was missing, the severity that never moved | ✅ this entry |
-| 13 | T6b — the solver varies the core | 🟡 in progress, plan agreed |
+| 13 | T6b — the solver varies the core | ✅ this entry |
+| 13b | T6b — discover the sleeve count | 🔴 not started |
 | 14 | Phase W | 🔴 not started, needs its own plan |
+
+---
+
+## ✅ PR 13 / T6b — the solver varies the core, and the answer is "none of them"
+
+**Shipped 2026-08-25.** No migration — T6b rows go into the existing
+`solver_verdicts` table tagged `solver_version = "t6b"`.
+
+### The finding
+
+All fifteen candidates — the fourteen `strategies.CATALOG` families plus the
+current holdings as baseline — measured **inadmissible** against the 13.3%
+ceiling. Shallowest drawdown on offer: **31.92%**.
+
+```
+                              ex260   dd260  |  dd10y   sessions
+Aggressive AI & Semis         65.39   39.35  |  75.43   260/2513
+Leveraged Momentum            59.31   40.43  |  77.71   260/2513
+Diversified Global Growth     57.52   36.80  |  72.02   260/2513
+Dividend Growth               57.37   33.93  |  69.58   260/2513
+Your current holdings         54.43   31.92  |  69.46   260/2513
+...
+High-Yield Income             51.37   34.08  |  69.45   260/1573   <- JEPI, 6.2y
+Capital Preservation          47.40   34.46  |  66.87   260/2513
+```
+
+With 64% of the book in TQQQ and SOXL the sleeves dominate and no core repairs a
+ceiling they have already broken. **Cross-checked independently:** the core alone
+at 97% measures 35.12%, and the stored target-solver verdict says 35.1% — two
+code paths, one number.
+
+So the payload leads with a `verdict`, not a table. A ranked list of fifteen rows
+and no verdict reads as a menu whose top row is a fix.
+
+### It contradicts the card PR 12 shipped two hours earlier
+
+That card's action was *"Change the strategy managing your core."* The
+measurement refutes it — the breach is real, the remedy was wrong. The card now
+reads the stored core search and drops that advice once refuted, keeping the
+original wording when no search has run (the honest thing to say when nothing has
+measured the alternatives). A single card giving advice its own measurement
+refuted is the PR 9 defect from the inside.
+
+### The window
+
+Ranked on the recent window — Eran's decision of 2026-08-25, taken against the
+spec's recommendation with both sets of drawdown figures in front of him. The
+spec's table claims the short window has "no bear market"; measured that day it
+is false (SOXL −69.42%, TQQQ −37.17%, SPY −9.13% inside it). But BND measured
+−4.02% short against −23.96% long, so **both windows are measured for every
+candidate** and disagreement is flagged in the payload.
+
+**260 sessions, not 250** — `_MIN_OBSERVATIONS = 260 # ~1 trading year; below
+this, CAGR is noise`, and `measure_blend` abstains under it. A 250-session
+request returned INSUFFICIENT_HISTORY for all fifteen. The ranking window is the
+shortest window this engine will measure at all.
+
+### Two bugs found by running it
+
+**`_fetch` called a rate limit a delisting.** First live run: 18 of 28 tickers
+came back "no history" — SPY, VTI, QQQ, MSFT among them — purely from rate
+limiting, and every candidate was excluded as unmeasurable. Same defect PR 10
+removed from the screener. `_fetch` now retries with backoff and separates
+`unavailable` from `no_data`; the legacy two-tuple is unchanged.
+
+**My first concentration check compared basket-internal weights to the cap** and
+excluded 8 of 14 families, including Classic 60/40 (VTI is 60% *of the basket*)
+and Capital Preservation (BIL 60%). A core that is 36% of NAV holding VTI at 60%
+of itself puts 21.6% of the *book* in VTI. It now reads
+`peak_weight_pct_by_ticker` off the measurement. The baseline stays exempt.
+
+### Per-blend date axes
+
+JEPI listed 2020-05. One shared price feed would have silently truncated all
+fourteen candidates to `inc_high_yield`'s six years, because `align()` intersects
+across everything in the feed. Each blend gets its own axis — that's the
+`260/1573` row.
+
+### The firewall
+
+investing-discipline §5. Candidates come from `strategies.CATALOG` and nowhere
+else. `/plan/target` has `/apply` and `/undo`; `/plan/target/cores` deliberately
+has neither and returns no `execution_plan`. The disclaimer ships with the
+payload.
+
+### Also
+
+`latest()` now excludes `t6b` rows — it filtered on nothing before, so a core row
+would have been handed to the war room as a target-solver constraint, and
+NONE_ADMISSIBLE is not in `BLOCKING_OUTCOMES`, so the constraint would have
+quietly stopped blocking.
+
+`run_solver_refresh_blocking` loses its swallow, the same correction PR 12 made
+to `pricing_service`. I wrote that in PR 11 with the older bug in front of me.
+
+**Verification:** 51 new tests. SQLite 1176 passed / 4 skipped; Postgres 16 1172
+passed / 12 skipped; `ruff check app tests` clean.
 
 ---
 
