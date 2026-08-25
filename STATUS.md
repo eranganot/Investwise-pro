@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 14 — the ceiling is yours)._
+_Last updated: 2026-08-25 by Claude (PR 14b — two questions, one clipped winner)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -25,8 +25,65 @@ _Seeded from git history + prior transcripts._
 | 13 | T6b — the solver varies the core | ✅ this entry |
 | 13b | T6b — discover the sleeve count | ✅ this entry |
 | 14 | The ceiling went stale and nothing noticed | ✅ this entry |
-| 14b | Two Accept buttons, two answers; the split pinned at the cap | 🔴 not started |
+| 14b | Two Accept buttons, two answers; the split pinned at the cap | ✅ this entry |
 | 15 | Phase W | 🔴 not started, needs its own plan |
+
+---
+
+## ✅ PR 14b — two Accept buttons, two questions, and a winner that was clipped
+
+**Shipped 2026-08-25.** No migration.
+
+### They were never the same question
+
+The Target card offers *"Set your sleeves to 65%"* and directly below it *"Best
+split found: 40% / 40%"*. Two green Accept buttons, two numbers, both correct:
+
+| | asks | on this book |
+|---|---|---|
+| T2 `solve()` | the **smallest** sleeve share that **reaches** a target you typed | 65% |
+| T6a `solve_split()` | the **largest** excess your ceiling **allows**, no target | 80% |
+
+T2's card already said *"Anything larger buys return you did not ask for at risk
+you did not agree to."* T6a's docstring already said *"No `excess_pct`
+parameter, deliberately."* Neither said it where a reader sees both numbers at
+once — the card-claim invariant broken *across* two cards instead of inside one.
+Both payloads now carry a `question` block naming what they asked and pointing
+at the other, and **neither calls the other wrong**: they are different
+questions, not a right and a wrong answer.
+
+### The split winner was clipped, not chosen
+
+Every one of the top eight splits had **40 in the first column**. Each sleeve
+holds a single ticker and the concentration cap is 0.40, so a 40% sleeve *is*
+that ticker at exactly the cap. The search ran into a wall and stopped.
+`coverage.method` already said *"the best point REACHED, not a proven global
+optimum"* — true, and it still reads as "optimised".
+
+`split_solver` now probes the winner's own neighbourhood and reports whether the
+optimum sits on the edge of the admissible region — **generically**, because
+that module is handed a `measure` callable and knows nothing about caps. Naming
+*which* constraint binds is the caller's job, since only the caller knows what it
+enforced.
+
+Measured on the real book: winner `[40.0, 40.0]`, 4 of 6 neighbours
+inadmissible, binding constraint `concentration_cap` on **QQQ** — the dip-buy
+rule's *base* holding, not its leveraged leg. The cap is biting on what the rule
+sits in when it is **out**, which is not where anyone would have looked.
+
+The interior case is asserted too. A block that can only ever say one thing is
+not a measurement.
+
+### And one thing PR 14 got half-right in production
+
+The ceiling line read *"Your ceiling is 58.6%"* while the input box showed
+`43.1`. The input is uncontrolled, so a typed value does not reach `TGT.ceiling`
+until Solve reads it — the line was right about the solve it described. It now
+says **"Solved against a 58.6% ceiling"**, which removes the contradiction
+without pretending to know what is in the box.
+
+**Verification:** 11 new tests. SQLite 1227 / 4 skipped; Postgres 16 1223 / 12
+skipped; `ruff check app tests` clean.
 
 ---
 
