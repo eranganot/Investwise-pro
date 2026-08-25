@@ -200,10 +200,24 @@ async def apply_target(session, user, *, resizes: list[dict],
                            "Re-solve, then accept. Nothing was written."),
                 "stale": stale, "before": before}
 
+    # `cash_floor_pct(objective, plan)` -- NOT async, and NOT (session, user).
+    # The first version called it as `await cash_floor_pct(session, user)` inside
+    # a bare `except: floor = 0.0`. It therefore raised on EVERY call and
+    # silently fell back to a ZERO cash floor, so this endpoint would have
+    # permitted sleeves up to 100% of the book while the user's floor said
+    # otherwise -- with no error anywhere. The except swallowed the only
+    # evidence. That is why the fallback is now narrow and logged: a cash floor
+    # that quietly becomes zero is a constraint that stops existing.
+    from app.services.plan_service import get_plan
     try:
-        floor = float(await cash_floor_pct(session, user)) * 100.0
+        plan = await get_plan(session, user)
+        floor = float(cash_floor_pct(getattr(plan, "objective", None), plan)) * 100.0
     except Exception:  # noqa: BLE001
-        floor = 0.0
+        logger.warning("cash floor unavailable; refusing rather than assuming 0%%",
+                       exc_info=True)
+        return {"ok": False, "reason": "the cash floor could not be read",
+                "detail": ("applying without it would let the sleeves take the whole "
+                           "book. Nothing was written.")}
 
     plan = plan_apply(resizes, cash_floor_pct=floor)
     if not plan.get("ok"):

@@ -217,10 +217,33 @@ else {
     }
     if ($html -match '(?s)function tgtApply\(kind,value\)\{(.*?)\n\}') {
         $body = $Matches[1]
-        if ($body -match 'method:"(POST|PUT|DELETE|PATCH)"') { Bad "the served tgtApply issues a write - Phase T is read-only" }
-        else { Ok "the served one-tap writes nothing" }
-        if ($body -match 'set_sleeves') { Bad "the served tgtApply handles set_sleeves - that is Phase A" }
-        else { Ok "set_sleeves stays inert in the served shell" }
+        # SUPERSEDED by Phase A. The old pair asserted that tgtApply never
+        # mentions set_sleeves, because Phase T was read-only WITHOUT EXCEPTION.
+        # Phase A retired that on purpose -- so the FAIL was a stale rule, not a
+        # defect. The dangerous half was the line above it, which kept PASSING:
+        # "the one-tap writes nothing" stayed green only because the write moved
+        # one call down into tgtAccept. A failing stale check is loud; a passing
+        # one that has stopped measuring its subject is how a suite keeps its
+        # colour and loses its meaning.
+        if ($body -match 'method:"(POST|PUT|DELETE|PATCH)"') { Bad "the served tgtApply writes inline - the write belongs in tgtAccept, where it is gated" }
+        else { Ok "tgtApply itself still writes nothing; the write is delegated" }
+        if ($body -match 'tgtAccept\(\)') { Ok "set_sleeves delegates to tgtAccept" }
+        else { Bad "the served set_sleeves does not reach tgtAccept - the Accept button is dead" }
+
+        if ($html -match '(?s)async function tgtAccept\(\)\{(.*?)\n\}') {
+            $acc = $Matches[1]
+            $allowed = @('/api/v1/plan/target/apply?confirm=true')
+            $badUrl = $null
+            foreach ($m in [regex]::Matches($acc, 'fetch\("([^"]+)"')) {
+                if ($allowed -notcontains $m.Groups[1].Value) { $badUrl = $m.Groups[1].Value }
+            }
+            if ($badUrl) { Bad "the served tgtAccept reaches an unexpected endpoint: $badUrl" }
+            else { Ok "the served write surface is exactly the one plan endpoint" }
+            if ($acc -match 'confirm=true') { Ok "the served Accept passes confirm=true" }
+            else { Bad "the served Accept omits confirm - it must not rely on the server refusing" }
+            if ($acc -match [regex]::Escape('No brokerage order is placed')) { Ok "the served confirm dialog states no order is placed" }
+            else { Bad "the served confirm dialog does not say it places no order" }
+        } else { Bad "cannot find tgtAccept in the served shell" }
     } else { Bad "cannot find tgtApply in the served shell" }
 }
 

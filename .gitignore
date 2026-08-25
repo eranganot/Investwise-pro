@@ -20,3 +20,7 @@ _to_delete/
 # sat staged, which was very nearly reported as a clean tree. The `git add -A`
 # ban documented in .gitattributes was treating that symptom; this is the cause.
 node_modules/
+
+# Patches handed over for git am. Untracked, and git stash -u swept one
+# into the stash mid-handover -- ignored files are left alone.
+*.patch

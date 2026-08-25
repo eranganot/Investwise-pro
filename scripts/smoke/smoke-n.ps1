@@ -269,24 +269,38 @@ elseif ($sw -match "const VERSION = 'iw-v(\d+)'") {
 # =========================================================================== #
 Sec "N.8  the nightly job is alive"
 # =========================================================================== #
-# scheduler.job_state() returns {scheduler_running, jobs:[{id,next_run}], history}
-# and is served by the status endpoint. I do not have that route's path in front
-# of me, so this PROBES rather than asserts a path I did not verify -- a smoke
-# that fails because I guessed a URL teaches nothing. If none of these answer,
-# fill in the right path and this becomes a real check.
-$j = $null
-foreach ($p in @('/api/v1/ops/status', '/api/v1/status', '/api/v1/ops/jobs', '/api/v1/jobs')) {
-    $try = Api GET $p 45
-    if ($null -ne $try -and $try.PSObject.Properties.Name -contains 'jobs') { $j = $try; Write-Host "        found at $p" -ForegroundColor DarkGray; break }
-}
-if ($null -eq $j) {
-    Skip "no job-status endpoint found at the paths tried - confirm the 22:10 run in the Railway logs tomorrow, or point -BaseUrl's status route at scheduler.job_state()"
+# The endpoint is /api/v1/push/status -> .scheduler.jobs. Known, not guessed:
+# smoke-beat-market.ps1 has been reading the scheduler there since before this
+# phase, and it confirmed backtest_refresh and strategy_signals in the same run
+# that this check failed.
+#
+# WHY THE FIRST VERSION OF THIS CHECK WAS WRONG, kept here because the mistake
+# is more instructive than the fix: it PROBED four plausible paths and accepted
+# whichever one returned a field called `jobs`. /api/v1/jobs answered, so the
+# probe stopped there and reported nav_snapshot missing -- from an endpoint that
+# was never the scheduler. A check with no control cannot tell "the job is
+# absent" from "I am reading the wrong list", and those need opposite responses:
+# one is permanent daily data loss, the other is a typo in a smoke test.
+#
+# So this now asserts a CONTROL first. backtest_refresh is known-registered; if
+# it is not in the list, the list is not the scheduler and this SKIPS rather
+# than accusing.
+$ps = Api GET '/api/v1/push/status' 60
+if ($null -eq $ps -or $null -eq $ps.scheduler) {
+    Skip "push/status unreachable - confirm the 22:10 run in the Railway logs tomorrow"
+} elseif (-not $ps.scheduler.scheduler_running) {
+    Bad "the scheduler is not running at all - no nightly job fires, and a missed NAV day is permanent"
 } else {
-    $found = $null
-    foreach ($item in @($j.jobs)) { if ("$($item.id)" -eq 'nav_snapshot') { $found = $item } }
-    if ($found) { Ok "nav_snapshot is scheduled (next run: $($found.next_run))" }
-    else { Bad "nav_snapshot is not in the scheduler - every night it does not run is a day of history that cannot be recovered" }
-    if ($j.scheduler_running -eq $false) { Bad "the scheduler is not running at all" }
+    $jids = @($ps.scheduler.jobs | ForEach-Object { "$($_.id)" })
+    Write-Host "        registered: $($jids -join ', ')" -ForegroundColor DarkGray
+    if ($jids -notcontains 'backtest_refresh') {
+        Skip "the control job (backtest_refresh) is not in this list either - this is not the scheduler's job table, so it cannot answer the question"
+    } elseif ($jids -contains 'nav_snapshot') {
+        $j = @($ps.scheduler.jobs | Where-Object { "$($_.id)" -eq 'nav_snapshot' })[0]
+        Ok "nav_snapshot registered (next run: $($j.next_run))"
+    } else {
+        Bad "nav_snapshot is NOT registered while backtest_refresh IS - the try/except around it in scheduler.py swallowed something. Look for 'NAV snapshot job not scheduled' in the Railway log; every night it does not run is a day of history that cannot be recovered"
+    }
 }
 
 # =========================================================================== #
