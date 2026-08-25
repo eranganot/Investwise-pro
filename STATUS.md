@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 8 — the legacy strategy columns are gone)._
+_Last updated: 2026-08-25 by Claude (PR 9 — one target, scoped cards, no self-contradiction)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -18,7 +18,160 @@ _Seeded from git history + prior transcripts._
 | 7 | Surface the core choice (+ the DDL column that hid every backtest) | ✅ shipped |
 | 7b | The core picker says what each family is FOR | ✅ this entry |
 | 8 | Delete `plans.strategy` / `plans.strategy_sleeve_pct` | ✅ this entry |
-| 9 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+| 9 | One target, scoped cards, no self-contradiction | ✅ this entry |
+| 10 | T5 → T6b → Phase W | 🔴 not started, each needs its own plan |
+
+---
+
+## ✅ PR 9 — the app stopped arguing with itself
+
+**Shipped 2026-08-25.** Three things Eran asked to check before the next PR.
+All three were real, and all three turned out to be **one root cause with three
+faces**: nothing forced a card to say which part of the book it was talking
+about, so cards were computed at the wrong scope and nobody could see it.
+
+Everything below was measured on the live book, not reasoned about:
+
+```
+NAV        21,205        sleeves  btm_swing_dip  38.4% -> TQQQ  (held 38.6%)
+holdings   97.0% Eq               btm_trend_soxl 25.6% -> SOXL  (held 25.7%)
+            3.0% Cash    core     bal_all_weather, 36% of book, 35/40/25
+```
+
+### 1. "Max weight 15% · Triggered · now 69.01" — that 69.01 was the share price
+
+The API was right the whole time: `current: 38.6, unit: pct_of_portfolio,
+level: 15.0`. The rules screen has a unit-aware renderer built for exactly this
+bug — its own comment cites SOXL's $137.61 being compared to a 10% cap — and the
+**triggered** branch was never converted. So a weight cap read its own weight
+correctly right up until it fired, then started quoting dollars. The one branch
+that matters most was the one left behind. The target column had the same
+problem: `15.00`, indistinguishable from a price on a row sitting under a
+stop-loss reading `65.70`. Both now read in points of book.
+
+### 2. The rebalance card was out by exactly 2.78×
+
+```python
+mix,    _ = current_mix(rows)                    # the WHOLE book
+target    = await _core_target(session, user, objective)   # the CORE's mix
+report    = AllocationEngine().compute(target, mix, nav=nav)   # sized on FULL nav
+```
+
+The core governs **36%** of the book. Its target was measured against 100% of it
+and sized off full NAV, so every leg was overstated by `1/0.36`:
+
+| the card said | correct | |
+|---|---|---|
+| Sell Equities ₪12,139 | ₪4,324 | 2.8× |
+| Buy Fixed Income ₪8,469 | ₪3,054 | 2.8× |
+| Buy Commodities ₪5,293 | ₪1,908 | 2.8× |
+
+**And choosing a core made it worse**, which is the opposite of what choosing one
+should do. Before that, `_core_target` fell back to `OBJ_TARGET[objective]` —
+Grow, 80/10/10 — which at least reads as a whole-book target, so the error looked
+like ordinary drift. Choosing All-Weather (35/40/25) on 2026-08-25 turned a
+₪3,600 equity sale into a ₪12,139 one, on a book whose sleeves are 64% equity
+**by design** and cannot be sold without abandoning the strategies.
+
+`app/services/book_target.py` replaces it. The book's target is the two ADDED:
+the sleeves' per-ticker targets classified and summed (`{"Equities": 0.64}`),
+plus the core's mix scaled to the share the sleeves left
+(`0.36 × 35/40/25`) — giving `76.6 / 14.4 / 9.0`, which sums to 1.0 **by
+construction**, because the core's share is derived as the remainder rather than
+read from a second place that could disagree. `AllocationEngine.compute` assumes
+a target covering 100% of NAV and never checks; `_rebalance_to` renormalises
+downstream, which hid the problem at the point it would have been caught.
+
+`_rebalance_to` — the function **Accept** runs — reads the same helper. Fixing
+only the card would have been worse than fixing neither: the screen would say
+"sell ₪4,324" and the button would sell ₪12,139.
+
+### 3. Two targets for one asset class, in one payload
+
+`recommendations.py:2111` read the objective's commodity target while the
+rebalance card three cards above read the core's. Live: *"Buy Commodities
+~₪5,293"* (25%) beside *"Add a commodities sleeve — ₪2,120 of USO … against your
+10% target"*. Both cards internally consistent; the pair nonsense. Seven readers
+of `OBJ_TARGET` and one of `_core_target` were competing to define "your target
+mix"; the ones that answer *what should the book be* now all read `book_target`,
+and the ones that are genuinely per-class **budgets** keep `OBJ_TARGET` as a
+documented fallback.
+
+Also deleted: a private copy of `OBJ_TARGET` and a private `_classify` in
+`api/routes/plan.py`, both with zero readers and both already drifted — the local
+`_classify` had none of the commodity or bond ticker sets, so it called GLD, IAU
+and DBC Equities. A dead fork of a lookup table is the PR 8 failure one layer up.
+
+### 4. The 15% cap that fought a 38.4% sleeve
+
+The loudest card on Today, HIGH severity, was *"TQQQ is 39% of your portfolio —
+Trim 24.231 TQQQ"* against a sleeve **targeting 38.4% and sitting on it**.
+
+Traced to source: `cap = max(15, 5*ceil(weight/5))` appears in **two** places —
+`rules_service._suggestions_from` and `recommendations._momentum_recs` — and both
+derive the level from the position's *current* weight, knowing nothing about
+sleeves. The cap was suggested while TQQQ was small, armed by an *"uptrend,
+protect your gains"* card, and the sleeve grew to 38.4% afterwards. Note every
+rule on the live book carries `strategy_id: null`, so nothing could re-level it.
+
+The bug only exists in the gap between arming a cap and resizing a sleeve — run
+the same formula at today's 38.6% and it gives 40, which is why it was invisible.
+
+Fixed at both sources (a suggested cap is floored *above* the sleeve target — a
+cap exactly *at* the target fires the moment the sleeve is correctly funded,
+which is the same bug with a friendlier number), plus a HIGH card for the caps
+already armed. That card re-levels in one tap via `_arm_sleeve_caps`, which
+already did exactly the right thing and had simply never run against caps armed
+after the last apply. Behind a tap rather than on the read, because
+`/recommendations` is a GET and a GET that quietly writes makes "does this book
+have a stale cap?" depend on whether anyone opened the page.
+
+### 5. Every card now names the strategy it serves
+
+`app/services/card_scope.py`, three kinds: **sleeve** (the card is arguing with a
+strategy you chose, and had better have a reason), **core** (the part no sleeve
+claims), **book** (your goal, fees, cash floor — belongs to no strategy and says
+so rather than pretending to be scoped). Derived from what cards already carry —
+`apply.strategy_id`, `apply.ticker`, `apply.legs[].ticker`, `apply.rules[]`,
+`meta.ticker` — and stamped once after reconciliation, so a merged card is scoped
+from what it ended up containing.
+
+A card naming *some* sleeve tickers and some not is **book**, deliberately: a
+tax-harvest card listing four losers of which one is sleeved acts on the book,
+and calling it a sleeve card would license it to argue with that sleeve's target.
+
+### 6. Cards can no longer contradict each other silently
+
+`app/services/contradictions.py`. `_reconcile` already existed and is about cards
+saying the SAME thing twice; this is about cards saying OPPOSITE things once
+each — every card individually defensible, the set incoherent. Four rules:
+
+- **A card may not sell a holding at or below its sleeve target.** Suppressed,
+  and the stale rule behind it named, because the rule is what needs fixing. A
+  sleeve genuinely *over* target is still trimmed — the guard is scoped to the
+  hazard, not the feature.
+- **Buy and sell of one asset class** (live: *"Sell Equities ₪12,139"* beside
+  *"Buy ₪2,120 of VXUS"*). Flagged on both, suppressed on neither — which to drop
+  is the user's call.
+- **Two targets for one class.** Reported loudly, never suppressed: this is a bug
+  in a generator, not something to ask the user to arbitrate.
+- **Cards that together exceed the book** (live: ₪5,003 + ₪12,139 + ₪2,180 =
+  ₪19,322 of selling out of ₪20,567 held — each card funds itself and none knows
+  the others exist).
+
+Every suppression appends to `notes` on the surviving card and appears in
+`contradictions[]` on the payload. A card that vanishes silently is how eleven
+cards went missing in PR 4.
+
+**Verified end-to-end** on a book rebuilt to match his: `/mix` and Today now
+quote the same `76.6 / 14.4 / 9.0`, every card carries a scope chip, and arming a
+15% TQQQ cap raises the HIGH re-level card. Full suite green on both backends
+(1085 SQLite / Postgres 16 locally) plus ruff on `app` and `tests`.
+
+**NOT fixed here, deliberately** — rule notes freeze the price they were created
+at and present it as today's: *"Caps downside ~15% below today's 77.30"* when
+TQQQ is 69.01 and the stop is 4.8% away. Cosmetic next to the above, but it is
+the same class of staleness and it has its own backlog line below.
 
 ---
 
@@ -120,6 +273,29 @@ measured one is the failure this app keeps having. The measured figures only
 became readable again with PR 7's `benchmark_ticker` DDL fix; the ranked answer
 is **T6b** (*"the solver varies the core"*), which is where a recommendation gets
 a measurement behind it.
+
+---
+
+## 🔴 BACKLOG — a rule note freezes its creation-day price and calls it "today"
+
+**NOT STARTED.** Found 2026-08-25 in the same live pull as PR 9.
+
+```
+TQQQ stop_loss  "Caps downside ~15% below today's 77.30"   TQQQ is 69.01
+V    stop_loss  "Caps downside ~8% below today's 357.75"   V is 382.41
+SCHD take_profit "Takes some off the table if it climbs ~10% more"  0.6% away
+SCHD max_weight "It's 28% of your book"                    SCHD is 2.5%
+```
+
+Every one of those was true when written and none is true now. The *levels* are
+correct — the rules screen computes distance live and showed TQQQ's stop as
+"-5% to trigger", which is right. It is the frozen **prose** that lies, and it
+lies in the direction that matters: a stop described as 15% away is 4.8% away.
+
+The fix is not to rewrite notes on a schedule (that would make the audit trail
+unreadable). It is to store the note in two parts — the *reason*, which is
+durable, and the *reference price*, which is a datum — and render the distance
+live the way the progress bar already does.
 
 ---
 

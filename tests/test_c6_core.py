@@ -202,18 +202,33 @@ def test_applying_a_sleeve_does_not_touch_the_core():
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_the_core_target_is_the_familys_mix_and_falls_back_to_the_objective():
+    """Was asserted against `_core_target`, which PR 9 replaced with
+    `book_target` for the reason that function was wrong: it answered "what mix
+    does the CORE impose" and both callers used it as "what mix should the BOOK
+    be" -- on a book that was 64% sleeved, so every rebalance leg came out 2.78x
+    too big.
+
+    With no sleeves the two questions have the same answer, which is exactly the
+    case this test covers and exactly why the bug survived. The core's mix is now
+    read from the `core` sub-dict, where it is scaled to the core's share.
+    """
     from app.services.allocation_mix import OBJ_TARGET
-    from app.services.recommendations import _core_target
+    from app.services.book_target import book_target
 
     eng, s, user = await _fresh()
     try:
-        assert await _core_target(s, user, "Grow") == OBJ_TARGET["Grow"]
+        # No sleeves -> the core IS the whole book, so target == core == objective.
+        bt = await book_target(s, user, "Grow")
+        assert bt["target"] == OBJ_TARGET["Grow"] and bt["core_pct"] == 1.0
         await sv.set_core(s, user, CORE)
         await s.commit()
-        assert await _core_target(s, user, "Grow") == {"Equities": 0.6, "Fixed Income": 0.4}
+        bt = await book_target(s, user, "Grow")
+        assert bt["target"] == {"Equities": 0.6, "Fixed Income": 0.4}
+        assert bt["source"] == "core"
         await sv.clear_core(s, user)
         await s.commit()
-        assert await _core_target(s, user, "Grow") == OBJ_TARGET["Grow"]
+        bt = await book_target(s, user, "Grow")
+        assert bt["target"] == OBJ_TARGET["Grow"] and bt["source"] == "objective"
     finally:
         await s.close()
         await eng.dispose()
@@ -234,21 +249,28 @@ async def test_resizing_a_sleeve_does_not_change_the_cores_target_mix():
     Your book's target asset mix depended on which card you pressed last, and
     nothing on any screen said so.
     """
-    from app.services.recommendations import _core_target
+    from app.services.book_target import book_target
     from app.services.strategy_service import apply_strategy
 
     eng, s, user = await _fresh()
     try:
         await apply_strategy(s, user, CORE)
-        before = await _core_target(s, user, "Balanced")
+        before = (await book_target(s, user, "Balanced"))["target"]
         assert before == {"Equities": 0.6, "Fixed Income": 0.4}
 
         await apply_strategy(s, user, SOXL, sleeve_pct=10)
         await apply_strategy(s, user, SOXL, sleeve_pct=15)   # a resize, the common case
-        after = await _core_target(s, user, "Balanced")
+        bt = await book_target(s, user, "Balanced")
 
-        assert after == before, (
-            f"the core's target mix moved to {after} because a SLEEVE was resized")
+        # THE BOOK's target DOES move -- correctly, and that is PR 9's point. A
+        # 15% sleeve in SOXL is 15 points of Equities the book now targets on
+        # purpose, and a rebalance card that did not know it went on demanding
+        # those 15 points be sold. What must NOT move is the core's own mix.
+        assert bt["sleeves"] == {"Equities": 0.15}
+        assert bt["core_pct"] == 0.85
+        after_core_shape = {c: round(w / bt["core_pct"], 4) for c, w in bt["core"].items()}
+        assert after_core_shape == before, (
+            f"the core's target mix moved to {after_core_shape} because a SLEEVE was resized")
         # Proof the test is exercising the thing it claims to, rather than
         # passing because nothing happened. This used to read `plans.strategy`,
         # which was the column that moved under the core and the reason the

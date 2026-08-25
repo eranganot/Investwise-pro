@@ -16,21 +16,16 @@ from app.services.plan_service import effective_caps, get_plan, upsert_plan
 router = APIRouter(prefix="/api/v1", tags=["plan"])
 
 PERIOD_MULT = {"monthly": 12, "quarterly": 4, "yearly": 1}
-OBJ_TARGET = {
-    "Grow": {"Equities": 0.80, "Fixed Income": 0.10, "Commodities": 0.10},
-    "Balanced": {"Equities": 0.60, "Fixed Income": 0.30, "Commodities": 0.10},
-    "Preserve": {"Equities": 0.30, "Fixed Income": 0.60, "Cash": 0.10},
-    "Income": {"Equities": 0.40, "Fixed Income": 0.50, "Commodities": 0.10},
-}
 
-
-def _classify(ticker: str, market: str) -> str:
-    t = ticker.upper()
-    if any(k in t for k in ("BOND", "BND", "AGG", "GOV", "GILT")):
-        return "Fixed Income"
-    if market == "SPOT" or any(k in t for k in ("GOLD", "OIL", "SILVER")):
-        return "Commodities"
-    return "Equities"
+# A private copy of OBJ_TARGET and a private `_classify` used to live here. Both
+# had zero readers -- grep found none anywhere in the app -- and both were
+# already drifting from `allocation_mix`: the local `_classify` had none of the
+# COMMODITY_TICKERS or FIXED_INCOME_TICKERS sets, so it classified GLD, IAU and
+# DBC as Equities, which is the exact bug PR 4 fixed in the shared one.
+#
+# A dead fork of a lookup table is not harmless. It is the same failure PR 8
+# removed one layer down: a second answer that nothing keeps in step, waiting
+# for someone to import it because it is right there in the file.
 
 
 async def _orm(session, user):
@@ -550,12 +545,14 @@ async def mix_check(session: AsyncSession = Depends(get_session), user: User = D
     if not nav:
         return {"message": "Add holdings to check your mix."}
     plan = await get_plan(session, user)
-    # The core's mix if one is chosen, the objective's otherwise -- the same
-    # answer the rebalance cards use, from the same helper. Two places computing
-    # "what is my target mix" differently is how /mix and Today came to disagree.
-    from app.services.recommendations import _core_target
-    target = await _core_target(session, user, plan.objective if plan else "Balanced")
-    report = AllocationEngine().compute(target_allocation=target, current_allocation=current, nav=nav)
+    # The BOOK's target -- sleeves plus core -- from the one helper Today uses.
+    # Sharing a helper was already the rule here; what it shared was a target
+    # for 36% of the book, measured by both against all of it. Agreeing on a
+    # wrong number is not the property this comment was claiming.
+    from app.services.book_target import book_target
+    bt = await book_target(session, user, plan.objective if plan else "Balanced")
+    report = AllocationEngine().compute(target_allocation=bt["target"],
+                                        current_allocation=current, nav=nav)
     out = report.model_dump()
     # Always surface Cash, even at 0%: a missing slice read as "fully invested"
     # when the truth was "cash isn't being tracked".
@@ -563,4 +560,8 @@ async def mix_check(session: AsyncSession = Depends(get_session), user: User = D
         out["current_allocation"].setdefault("Cash", 0.0)
     return {"note": "Holdings are classified roughly by ticker/venue.",
             "objective": plan.objective if plan else "Balanced",
+            # The provenance, so a reader can see a 77% Equities target is 64
+            # points of sleeve chosen one at a time plus 13 of core.
+            "target_from_sleeves": bt["sleeves"], "target_from_core": bt["core"],
+            "core_pct_of_book": bt["core_pct"], "target_source": bt["source"],
             "cash_ils": round(current.get("Cash", 0.0) * nav, 2), **out}

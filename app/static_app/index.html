@@ -962,10 +962,36 @@ function recCard(o){
   const tag=o.actionable
     ? `<span class="mk" style="color:#34d399">⚡ The app can do this for you</span>`
     : `<span class="mk">💡 Guidance — you act on this yourself</span>`;
+  // WHICH STRATEGY THIS CARD SERVES.
+  //
+  // Eran: "I want to add indication to the cards on Today that marked to which
+  // strategy it is applied to." The label is the visible half; the reason it
+  // was worth building is that a card which cannot name its scope is usually a
+  // card computed at the wrong one -- the rebalance card measured a 36% core
+  // target against 100% of the book, and the top card wanted to trim a sleeve
+  // that was exactly on target. Both were unlabelled.
+  const sc=o.scope||{};
+  const _SCOPE_STYLE={
+    sleeve:"background:rgba(96,165,250,.14);color:#7fb0e5",
+    core:  "background:rgba(88,200,140,.14);color:#79c8a0",
+    book:  "background:rgba(190,190,190,.12);color:#b8b8b8"};
+  const scopeChip=sc.label
+    ? `<span style="${_SCOPE_STYLE[sc.kind]||_SCOPE_STYLE.book};font-size:10px;padding:1px 6px;
+         border-radius:9px;letter-spacing:.3px">${sc.kind==="sleeve"?"SLEEVE":sc.kind==="core"?"CORE":"BOOK"} · ${sc.label}</span>`
+    : "";
+  // Anything the contradiction pass had to say about this card, on the card.
+  // A suppressed sibling that vanishes silently is how eleven cards went
+  // missing in PR 4; a warning that only exists in the payload is the same
+  // failure with extra steps.
+  const notes=(o.notes||[]).length
+    ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid var(--warn,#e5b857);
+         background:rgba(229,184,87,.07);border-radius:4px">${(o.notes||[]).map(n=>`⚠ ${n}`).join("<br>")}</div>`
+    : "";
   return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
-    <div style="margin:2px 0 6px;font-size:12px">${tag}</div>
+    <div style="margin:2px 0 6px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${scopeChip}${tag}</div>
     ${why}
     <div class="act">${o.action}</div>
+    ${notes}
     ${impact}
     ${fund}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
@@ -1178,7 +1204,13 @@ function renderRules(){
       const m=RULE_META[x.rule_type]||{label:x.rule_type,cls:"blue",icon:"•"};
       const isPct=x.mode!=="price";
       const blabel=(x.rule_type==="trailing_stop"||x.rule_type==="max_weight")?`${m.label} ${x.level}%`:m.label;
-      const tgt=x.target!=null?Number(x.target).toFixed(2):(isPct?`${x.level}%`:Number(x.level).toFixed(2));
+      // A weight cap's target is 15 PERCENT OF THE BOOK, and `toFixed(2)` on it
+      // renders "15.00" -- indistinguishable from a price, on a row that sits
+      // directly under a stop-loss showing "65.70". Same units bug as the
+      // triggered branch below, one line earlier.
+      const tgt=(x.unit==="pct_of_portfolio")
+        ? `${Number(x.target!=null?x.target:x.level).toFixed(0)}% of book`
+        : (x.target!=null?Number(x.target).toFixed(2):(isPct?`${x.level}%`:Number(x.level).toFixed(2)));
       const badge=`<span class="rbadge rb-${m.cls}">${m.icon} ${blabel}</span>`;
       const lvl=`<span class="rlvl">→ ${tgt}</span>`;
       let mid;
@@ -1186,7 +1218,18 @@ function renderRules(){
         // `triggered` is a LATCH. Say so when the condition has since cleared,
         // instead of implying a live breach the numbers contradict.
         const stale = x.breached_now===false;
-        mid=`<span class="rtrigtxt">${stale?"🟠":"🔴"} ${stale?"Fired earlier — now back inside":"Triggered"}${now?` · now ${Number(now.current_price).toFixed(2)}`:""}</span>`;
+        // IN THE RULE'S OWN UNIT. This branch read `current_price` for every
+        // rule type, so a weight cap read its weight correctly right up until
+        // it FIRED and then started quoting dollars: "Max weight 15% ->
+        // Triggered - now 69.01", where 69.01 is the TQQQ share price and the
+        // actual weight was 38.6% of the book. The unit-aware renderer below
+        // (`_ruleDist`) was built for exactly this bug -- its own comment cites
+        // SOXL's $137.61 against a 10% cap -- and this branch was never
+        // converted. The one branch that matters most was the one left behind.
+        const nowTxt = (x.unit==="pct_of_portfolio" && x.current!=null)
+          ? `${Number(x.current).toFixed(1)}% of book vs a ${Number(x.level).toFixed(0)}% cap`
+          : (now ? `now ${Number(now.current_price).toFixed(2)}` : "");
+        mid=`<span class="rtrigtxt">${stale?"🟠":"🔴"} ${stale?"Fired earlier — now back inside":"Triggered"}${nowTxt?` · ${nowTxt}`:""}</span>`;
       }
       else if(x._dupe){ mid=`<span class="rdupe">⧉ duplicate of another rule — remove</span>`; }
       else if(!x.active){ mid=`<span class="rdist"><div class="dtxt">paused</div></span>`; }

@@ -787,6 +787,24 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
     have = {(r.ticker.upper(), r.rule_type) for r in existing}
+    # A CAP MAY NEVER BE SUGGESTED BELOW THE SLEEVE TARGET IT WOULD FIGHT.
+    #
+    # This is where the 15% TQQQ cap came from. `cap = max(15, 5*ceil(w/5))` is
+    # derived from the position's CURRENT weight and knows nothing about
+    # sleeves, so it was suggested while TQQQ was small, armed, and then the
+    # `btm_swing_dip` sleeve grew to 38.4% of the book. From that day the app
+    # told him every hour to trim a holding it was simultaneously targeting,
+    # and the loudest card on Today was "TQQQ is 39% of your portfolio - trim
+    # 24.231 shares" against a sleeve sitting exactly on target.
+    #
+    # Suggesting a cap under the target is not a judgement call the user should
+    # have to catch. It is the app disagreeing with itself.
+    try:
+        from app.services import sleeve_service as _sv
+        sleeve_floor = {tk.upper(): round(w * 100.0, 1)
+                        for tk, w in (await _sv.all_sleeve_targets(session, user)).items()}
+    except Exception:  # noqa: BLE001 -- a floor is never worth failing suggestions over
+        sleeve_floor = {}
     # Everything above is DB work; everything in _suggestions_from is 200 days
     # of history PER TICKER through synchronous urllib. Phase B offloaded the
     # agents that looked blocking at their call site and missed this one,
@@ -794,13 +812,15 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
     # and an await yields nothing when the coroutine blocks inside itself.
     # Measured cost of that miss: ~1s of held event loop, half the time.
     #
-    # `idx` and `have` are plain dicts/sets, not ORM rows, so the columns-yes-
-    # relationships-never rule in app/core/offload.py cannot be violated here.
-    return await offload(_suggestions_from, idx, have)
+    # `idx`, `have` and `sleeve_floor` are plain dicts/sets, not ORM rows, so the
+    # columns-yes-relationships-never rule in app/core/offload.py holds.
+    return await offload(_suggestions_from, idx, have, sleeve_floor)
 
 
-def _suggestions_from(idx: dict[str, dict], have: set) -> list[dict]:
+def _suggestions_from(idx: dict[str, dict], have: set,
+                      sleeve_floor: dict[str, float] | None = None) -> list[dict]:
     """The blocking half of suggest_rules_for_holdings. Pure: no session."""
+    sleeve_floor = sleeve_floor or {}
     from app.providers.registry import guarded_history
     from app.services.recommendations import stop_buffer_pct
 
@@ -832,9 +852,19 @@ def _suggestions_from(idx: dict[str, dict], have: set) -> list[dict]:
                          "why": f"Takes some off the table if it climbs ~{trail_buf:.0f}% more."})
         if weight >= 12:
             cap = float(max(15.0, 5 * math.ceil(weight / 5)))
+            floor = sleeve_floor.get(tk.upper())
+            if floor and floor > cap:
+                # A sleeve wants MORE of this than the weight-derived cap allows.
+                # The cap is not wrong about concentration; it is wrong about
+                # THIS book, where the concentration is the strategy. Lift it
+                # above the target and name the reason on the suggestion.
+                cap = float(5 * math.ceil(floor / 5))
+                why = (f"Your sleeve targets {floor:g}% of the book in {tk}, so this caps it at "
+                       f"{cap:.0f}% — above the target, firing only if it runs past it.")
+            else:
+                why = f"It's {weight:.0f}% of your book — trim back toward {cap:.0f}% if it grows."
             cand.append({"rule_type": "max_weight", "mode": "pct", "level": cap,
-                         "label": f"\u2696\ufe0f Max weight {cap:g}%",
-                         "why": f"It's {weight:.0f}% of your book — trim back toward {cap:.0f}% if it grows."})
+                         "label": f"\u2696\ufe0f Max weight {cap:g}%", "why": why})
 
         fresh = [c for c in cand if (tk, c["rule_type"]) not in have]
         for c in fresh:

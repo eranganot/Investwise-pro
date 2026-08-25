@@ -14,7 +14,7 @@ from app.core.offload import offload
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import KVSetting, User
 from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
-from app.services import strategies as _strat
+from app.services.book_target import explain as bt_explain
 from app.services.audit_trail import audit_for, f
 from app.services.audit_trail import f as _fml  # alias: 'f' is shadowed by Fundamentals locals below
 from app.agents.fee_agent import FeeAgent
@@ -44,7 +44,7 @@ SLEEVE_DRIFT_BAND_PCT = 5.0
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
-                     "fund_plan"}
+                     "fund_plan", "relevel_sleeve_caps"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -124,31 +124,34 @@ def _rid(*parts) -> str:
     return "rec_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
 
 
-async def _core_target(session, user, objective: str) -> dict:
-    """The asset mix the book is managed to: the chosen core's, else the objective's.
+async def _book_target(session, user, objective: str) -> dict:
+    """THE target mix for the WHOLE book, sleeves included. One answer.
 
-    Both callers used to read this out of ``plans.strategy``:
+    Was `_core_target`, and the rename is the fix. That function returned the
+    mix of the strategy managing the CORE -- 36% of this book -- and both
+    callers handed it to `AllocationEngine.compute` against the whole book's
+    current mix and the whole NAV. Every leg came out overstated by 1/0.36:
 
-        _s = _strat.get(getattr(plan, "strategy", None))
-        target = _s["target_allocation"] if _s else OBJ_TARGET[objective]
+        the card said            correct for a 36% core
+        Sell Equities  12,139    4,324
+        Buy Fixed Inc   8,469    3,054
+        Buy Commodities 5,293    1,908
 
-    That column holds the most recently applied strategy **of either kind**. So
-    on a book running sleeves it usually names a sleeve, ``_strat.get`` missed,
-    and the target quietly fell back to the objective -- then applying a static
-    family switched it, and resizing any sleeve switched it back. The book's
-    target asset mix depended on which card you pressed last, and nothing said
-    so. C2 had already called that column "a pointer, no longer the truth"; these
-    two readers were still treating it as the truth about the core.
+    And it got worse the day a core was chosen, which is the opposite of what
+    choosing one should do. Before that the fallback was `OBJ_TARGET[objective]`
+    -- Grow, 80/10/10 -- which at least reads as a whole-book target, so the
+    error looked like ordinary drift. Choosing All-Weather (35/40/25) turned a
+    3,600 equity sale into a 12,139 one, on a book whose sleeves are 64% equity
+    BY DESIGN and cannot be sold without abandoning the strategies.
 
-    The core row is an explicit choice, so there is nothing left to infer.
+    `book_target` adds the two: the sleeves' own per-ticker targets classified
+    and summed, plus the core's mix scaled to the share the sleeves left. It
+    carries its provenance, so a card can say 77% is 64 points of sleeve plus
+    13 of core rather than asserting 77% and hoping.
     """
-    from app.services import sleeve_service as sv
+    from app.services.book_target import book_target
 
-    sid = await sv.core_strategy_id(session, user)
-    entry = _strat.get(sid) if sid else None
-    if entry and entry.get("target_allocation"):
-        return entry["target_allocation"]
-    return OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+    return await book_target(session, user, objective)
 
 
 def _ils(x) -> str:
@@ -795,34 +798,52 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             formulas=[
                 f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"\u20aa{save:,.0f}")])
 
-    # 3) Rebalance toward the core's target mix
+    # 3) Rebalance toward the BOOK's target mix -- sleeves plus core, not the
+    #    core's mix measured against a book that is 64% something else.
     mix, _ = current_mix(rows)
-    target = await _core_target(session, user, objective)
+    btgt = await _book_target(session, user, objective)
+    target = btgt["target"]
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
     # Every action past the drift threshold, not the first two. The slice meant
     # `_rid("rebal","Fixed Income")` was never GENERATED on a book drifted in
     # three classes -- not suppressed, not filtered, simply never built. A card
     # that does not exist cannot be restored, and nothing said it was missing.
     for a in report.rebalance_actions:
+        # WHERE THE TARGET CAME FROM, on the card. "77%" was the number that was
+        # wrong for twelve days and nothing on the screen could have caught it.
+        # "77% (64% your sleeves + 13% your core)" can be checked against the
+        # Plan tab in one glance.
+        whence = bt_explain(btgt, a.asset_class)
+        sleeve_share = btgt["sleeves"].get(a.asset_class, 0.0)
         recs.append({"id": _rid("rebal", a.asset_class), "dimension": "allocation", "severity": "MEDIUM",
                      "title": f"{a.action_type.title()} {a.asset_class}",
-                     "why": f"Your {a.asset_class} weight ({mix.get(a.asset_class, 0):.0%}) has drifted from your "
-                            f"{objective} target of {target.get(a.asset_class, 0):.0%}.",
+                     "why": f"Your {a.asset_class} weight ({mix.get(a.asset_class, 0):.0%}) has drifted from "
+                            f"your book's target of {whence}.",
                      "action": f"{a.action_type.title()} about {_ils(a.estimated_trade_value_currency)} of "
-                               f"{a.asset_class} to move toward your {objective} target "
-                               f"({target.get(a.asset_class, 0):.0%}).",
+                               f"{a.asset_class} to move toward {whence}.",
                      "impact": f"Moves ~{_ils(a.net_trade_value_currency)} (net of tax & costs) to realign your "
-                               f"mix with your {objective} plan.",
+                               f"mix with your plan."
+                               + (f" Your sleeves hold {sleeve_share:.0%} of the book in {a.asset_class} and are "
+                                  f"not touched by this." if sleeve_share else ""),
                      "how": [f"{a.action_type.title()} {a.asset_class} by ~{_ils(a.estimated_trade_value_currency)}"
                              + (f" — e.g. {CLASS_ETF[a.asset_class]}" if a.asset_class in CLASS_ETF else ""),
                              f"After tax & costs that's about {_ils(a.net_trade_value_currency)} moved",
-                             "This nudges your mix back in line with your plan"],
+                             f"Target is {whence}"],
                      "est_amount": a.net_trade_value_currency,
-                     "apply": {"kind": "rebalance_to_objective"}})
+                     "apply": {"kind": "rebalance_to_objective", "asset_class": a.asset_class}})
         recs[-1]["audit_trail"] = audit_for("allocation",
             raw_data={"asset_class": a.asset_class, "current_weight": round(mix.get(a.asset_class, 0.0), 4),
-                      "target_weight": round(target.get(a.asset_class, 0.0), 4), "nav": round(nav, 2)},
+                      "target_weight": round(target.get(a.asset_class, 0.0), 4), "nav": round(nav, 2),
+                      # Both halves, so the audit trail can be checked without
+                      # re-deriving them. This is the arithmetic that was wrong.
+                      "target_from_sleeves": round(btgt["sleeves"].get(a.asset_class, 0.0), 4),
+                      "target_from_core": round(btgt["core"].get(a.asset_class, 0.0), 4),
+                      "core_pct_of_book": btgt["core_pct"], "target_source": btgt["source"]},
             formulas=[
+                f("Book target", "target = sleeves_share + core_mix x core_share",
+                  substituted=f"{btgt['sleeves'].get(a.asset_class,0.0):.4f} + "
+                              f"{btgt['core'].get(a.asset_class,0.0):.4f}",
+                  result=f"{target.get(a.asset_class,0.0):.1%}"),
                 f("Drift", "drift = current_weight - target_weight",
                   substituted=f"{mix.get(a.asset_class,0.0):.4f} - {target.get(a.asset_class,0.0):.4f}",
                   result=f"{mix.get(a.asset_class,0.0)-target.get(a.asset_class,0.0):+.1%}"),
@@ -944,7 +965,16 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("holding_verdicts")
     recs += await _offload(_hedge_recs, rows, snap)
     _tm.mark("hedge")
-    recs += await _offload(_momentum_recs, rows, snap)
+    # `_sleeve_floor` stops the uptrend card offering a cap BELOW the sleeve
+    # target for the same ticker -- the other half of where the live 15% TQQQ
+    # cap came from. Same formula as the suggestions list, same blind spot.
+    from app.services import sleeve_service as _sv_mom
+    try:
+        _sleeve_floor = {t.upper(): round(w * 100.0, 1)
+                         for t, w in (await _sv_mom.all_sleeve_targets(session, user)).items()}
+    except Exception:  # noqa: BLE001 -- a floor is never worth losing the card over
+        _sleeve_floor = {}
+    recs += await _offload(_momentum_recs, rows, snap, _sleeve_floor)
     _tm.mark("momentum")
 
     # AN OPEN CIRCUIT IS A DEGRADED AGENT, and has to say so here.
@@ -988,9 +1018,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # so _reconcile can drop the old advisory "Put idle cash to work" card when
     # this one fires -- two cards about the same shekels is what the reconcile
     # pass exists to prevent.
-    _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils)
+    # `btgt["target"]` is threaded in rather than re-derived. Both of these are
+    # sync and run in a worker thread, so they cannot await -- which is exactly
+    # how they ended up reading OBJ_TARGET directly and quoting a commodities
+    # target of 10% in the same payload where the rebalance card quoted 25%.
+    _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
+                               btgt["target"])
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
-                           _sleeve_names, _ledger)
+                           _sleeve_names, _ledger, btgt["target"])
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -1229,6 +1264,64 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
                 })
+
+        # ---- A CAP THAT FIGHTS THE SLEEVE IT SITS ON --------------------- #
+        #
+        # Found live on 2026-08-25: a 15% `max_weight` on TQQQ, on a book whose
+        # `btm_swing_dip` sleeve targets 38.4% and holds 38.59%. The rule was
+        # armed by the uptrend card back when TQQQ was small -- both that card
+        # and the suggestions list derive the level from the CURRENT weight and
+        # neither knew about sleeves -- and nothing re-levelled it when the
+        # sleeve grew. The result was permanent: the loudest card on Today told
+        # him to sell 61% of a sleeve that was exactly on target.
+        #
+        # Both sources are fixed above, so this cannot start again. This card is
+        # for the caps already armed, and it is deliberately HIGH: an unfixed one
+        # does not merely nag, it fires the trim card that `contradictions.py`
+        # then has to suppress, and a suppressed card is a card you cannot see.
+        try:
+            from sqlalchemy import select as _sel
+
+            from app.models.tables import TradingRule as _TRule
+            _caps = (await session.scalars(
+                _sel(_TRule).where(_TRule.subject == user.email,
+                                   _TRule.rule_type == "max_weight",
+                                   _TRule.active.is_(True)))).all()
+            _stale = []
+            for _c in _caps:
+                _want = (_targets or {}).get((_c.ticker or "").upper())
+                if _want is None:
+                    continue
+                _want_pct = _want * 100.0
+                if float(_c.level or 0) < _want_pct - 0.05:
+                    _stale.append({"ticker": (_c.ticker or "").upper(),
+                                   "level": round(float(_c.level or 0), 1),
+                                   "sleeve_target_pct": round(_want_pct, 1)})
+            if _stale:
+                _names = ", ".join(f"{x['ticker']} capped at {x['level']:g}% against a "
+                                   f"{x['sleeve_target_pct']:g}% sleeve" for x in _stale)
+                recs.append({
+                    "id": _rid("cap_below_sleeve", *sorted(x["ticker"] for x in _stale)),
+                    "dimension": "strategy", "severity": "HIGH",
+                    "title": (f"A cap on {_stale[0]['ticker']} is set below the sleeve it governs"
+                              if len(_stale) == 1 else
+                              f"{len(_stale)} caps are set below the sleeves they govern"),
+                    "why": (f"{_names}. The cap fires every time the sleeve is at the size you "
+                            f"chose, so the app ends up telling you to sell a position it is "
+                            f"also telling you to hold."),
+                    "action": ("Accept re-levels each cap to its sleeve target. Caps on tickers "
+                               "no sleeve wants are left exactly as you set them."),
+                    "impact": ("Stops the false trim alerts. Nothing is bought or sold -- a cap "
+                               "is an alert threshold, not an instruction."),
+                    "how": [f"Re-levels: {_names}",
+                            "Hand-set caps on non-sleeve tickers are never touched",
+                            "Change a sleeve size later and the cap follows it"],
+                    "apply": {"kind": "relevel_sleeve_caps"},
+                    "meta": {"stale_caps": _stale,
+                             "tickers": [x["ticker"] for x in _stale]},
+                })
+        except Exception:  # noqa: BLE001 -- never break Today over a cap audit
+            logger.warning("stale-cap audit failed", exc_info=False)
     except Exception:  # noqa: BLE001
         logger.warning("sleeve-drift recommendation failed", exc_info=True)
         degraded.append("sleeve_drift")
@@ -1474,8 +1567,62 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("backtest")
     _ideas = await _offload(_buy_ideas, snap)   # screener; timed separately, it hits providers
     _tm.mark("buy_ideas")
+
+    # ---- WHICH STRATEGY DOES EACH CARD SERVE, AND DO ANY OF THEM FIGHT? ----
+    #
+    # Both run AFTER reconciliation and sorting, on the cards that will actually
+    # be served. Scoping a merged card from whichever leg happened to be first
+    # would label it wrong, and checking contradictions before the merge would
+    # spend the work on duplicates `_reconcile` was about to remove anyway.
+    #
+    # Neither may break Today: a card with a missing label is worse than no
+    # labels, and a Today screen that 500s because a label failed is worse than
+    # both. So the fallback stamps every card `book` and carries on.
+    contradictions: list[dict] = []
+    try:
+        from app.services import sleeve_service as sv
+        from app.services.card_scope import annotate as _scope
+        from app.services.contradictions import check as _contra
+
+        recs = await _scope(session, user, recs)
+        _sleeve_tgts = await sv.all_sleeve_targets(session, user)
+        # FX-NORMALISED, from the ORM rows, exactly as `current_mix` does it.
+        # `pdicts` carries quantity x current_price in the PRICE's currency, and
+        # comparing a USD-denominated weight against an ILS NAV is the bug that
+        # minted shares in PR 1. A sleeve-target comparison built on it would
+        # under-report every USD holding's weight by the FX rate and suppress
+        # trims that were correct.
+        from app.services.fx import fx_rate as _fxr2, price_currency as _pcy2
+        _w = {}
+        if nav:
+            for _p in rows:
+                _meta = _p.meta if isinstance(_p.meta, dict) else {}
+                _v = (float(_p.quantity) * float(_p.current_price or 0)
+                      * _fxr2(_pcy2(_p.market, _meta)))
+                _tk = str(_p.ticker or "").upper()
+                _w[_tk] = _w.get(_tk, 0.0) + _v / nav
+        recs, contradictions = _contra(recs, sleeve_targets=_sleeve_tgts, nav=nav,
+                                       weights=_w, book_target=btgt["target"])
+        if contradictions:
+            logger.info("today: %d contradiction(s), %d card(s) suppressed",
+                        len(contradictions), sum(1 for c in contradictions if c.get("suppressed")))
+    except Exception:  # noqa: BLE001
+        logger.warning("card scope / contradiction pass failed", exc_info=False)
+        for _r in recs:
+            _r.setdefault("scope", {"kind": "book", "strategy_id": None,
+                                    "name": None, "label": "Whole book"})
+    _tm.mark("scope_and_contradictions")
+
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
             "market": market,
+            # What the book is managed to, and where each half came from. On the
+            # payload rather than only inside a card, so a smoke test can assert
+            # sleeves + core == target without parsing English.
+            "book_target": btgt,
+            # Cards that argued with a sleeve or with each other. Empty is the
+            # expected state; non-empty is either a real conflict for the user
+            # to arbitrate or a bug in a generator, and each entry says which.
+            "contradictions": contradictions,
             # Honesty signals for the Today empty state: "nothing to do",
             # "you ignored everything" and "an agent failed" are three different things.
             "dismissed_count": suppressed,
@@ -1679,7 +1826,12 @@ def _holding_verdict_recs(rows, snap, cap: float, trimmed: set) -> list[dict]:
         out.append({"id": _rid("verdict", tk), "dimension": "holding", "severity": sev,
                     "title": f"{verdict}: {tk}", "action": action, "how": how,
                     "est_amount": None, "apply": {"kind": "none"},
-                    "meta": {"verdict": verdict, "fundamental_score": score,
+                    # `ticker` on meta so the card can be SCOPED. Without it a
+                    # "Hold: TQQQ" verdict reads as whole-book advice about a
+                    # position that is in fact 38.4% of a sleeve you chose --
+                    # the one card where knowing whose position it is changes
+                    # how you read the verdict.
+                    "meta": {"ticker": tk, "verdict": verdict, "fundamental_score": score,
                              "metrics": (f.model_dump() if f else None)}})
         out[-1]["audit_trail"] = audit_for("holding",
             raw_data={"ticker": tk, "weight": round(w, 4), "fundamental_score": score},
@@ -1749,7 +1901,7 @@ def stop_buffer_pct(closes: list[float], *, horizon_days: int = 10, k: float = 1
     return float(min(hi, max(lo, round(raw))))
 
 
-def _momentum_recs(rows, snap) -> list[dict]:
+def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
     """Surface holdings in a strong down- or up-trend and turn each into a
     concrete, one-click discipline rule (stop-loss / trailing stop). Accept arms
     the rule — the app never trades; a hit raises an alert + a Today to-do."""
@@ -1801,9 +1953,23 @@ def _momentum_recs(rows, snap) -> list[dict]:
             cap_line = ""
             if weight_pct >= 12:
                 cap = float(max(15.0, 5 * math.ceil(weight_pct / 5)))
-                rules.append({"ticker": p.ticker, "rule_type": "max_weight", "mode": "pct", "level": cap,
-                              "note": f"Keep {p.ticker} under {cap:.0f}% of the book"})
-                cap_line = f" It's already {weight_pct:.0f}% of your book, so this also caps it at {cap:.0f}%."
+                # NEVER BELOW THE SLEEVE TARGET. This line, and its twin in
+                # rules_service, wrote the 15% TQQQ cap on a book whose sleeve
+                # targets 38.4% -- so accepting an "uptrend, protect your gains"
+                # card armed a rule that fought a strategy, permanently, and put
+                # "TQQQ is 39% of your portfolio - trim" at the top of Today.
+                _floor = (sleeve_floor or {}).get(p.ticker.upper())
+                if _floor and _floor > cap:
+                    cap = float(5 * math.ceil(_floor / 5))
+                    rules.append({"ticker": p.ticker, "rule_type": "max_weight", "mode": "pct",
+                                  "level": cap,
+                                  "note": f"Sleeve targets {_floor:g}%; caps {p.ticker} at {cap:.0f}%"})
+                    cap_line = (f" Your sleeve targets {_floor:g}% of the book in {p.ticker}, so the cap "
+                                f"goes at {cap:.0f}% — above the target, not against it.")
+                else:
+                    rules.append({"ticker": p.ticker, "rule_type": "max_weight", "mode": "pct", "level": cap,
+                                  "note": f"Keep {p.ticker} under {cap:.0f}% of the book"})
+                    cap_line = f" It's already {weight_pct:.0f}% of your book, so this also caps it at {cap:.0f}%."
             how = [f"Accept → arms a {buf:.0f}% trailing stop (protects gains, lets it run)"]
             if len(rules) > 1:
                 how.append(f"Also caps {p.ticker} at {rules[-1]['level']:.0f}% of your portfolio")
@@ -1829,7 +1995,8 @@ def _momentum_recs(rows, snap) -> list[dict]:
     return out[:3]
 
 
-def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict]:
+def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
+                        book_mix: dict | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     After a stop-loss fires and you accept it, the proceeds land in cash and the
@@ -1855,7 +2022,11 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils) -> list[dict
         return []
 
     mix, _ = current_mix(rows)
-    target = OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
+    # The BOOK's target when the caller has one. Reading OBJ_TARGET here meant a
+    # book with a chosen core redeployed its cash against the objective while
+    # the rebalance card in the same payload used the core -- two answers, one
+    # screen. OBJ_TARGET stays as the fallback for a book with neither.
+    target = book_mix or OBJ_TARGET.get(objective, OBJ_TARGET["Balanced"])
     # Weights are computed from the rows themselves rather than read out of
     # snap["exposure_ticker"]. That lookup silently returned 0 for every ticker,
     # so size_purchase saw "current weight 0" for a name at 29% and handed every
@@ -2100,7 +2271,7 @@ def _benchmark_recs(perf, objective) -> list[dict]:
 
 
 def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
-                    sleeve_names=None, ledger=None) -> list[dict]:
+                    sleeve_names=None, ledger=None, book_mix: dict | None = None) -> list[dict]:
     """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
     out: list[dict] = []
     sleeve_names = sleeve_names or set()
@@ -2108,7 +2279,12 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
         from app.services import funding_service as _fund
     except Exception:  # noqa: BLE001
         _fund = None
-    target = (OBJ_TARGET.get(objective or "Balanced", {}) or {}).get("Commodities", 0.0)
+    # THE 10%-VS-25% CONTRADICTION. This read the objective's commodity target
+    # while the rebalance card, three cards above it in the same response, read
+    # the core's. Live on 2026-08-25: "Buy Commodities ~5,293" (25%) sitting
+    # beside "Add a commodities sleeve - 2,120 of USO ... against your 10%
+    # target". Both cards were internally consistent and the pair was nonsense.
+    target = (book_mix or OBJ_TARGET.get(objective or "Balanced", {}) or {}).get("Commodities", 0.0)
     if target <= 0:
         return out
     mix, nav = current_mix(rows)
@@ -2202,7 +2378,14 @@ def _buy_ideas(snap) -> list[dict]:
 
 
 async def _rebalance_to(session, user, rows, objective: str) -> None:
-    """Scale holdings so each asset class hits the core's target weight (NAV held constant).
+    """Scale holdings so each asset class hits the BOOK's target weight (NAV held constant).
+
+    Reads the same `_book_target` the card does, and that is not a tidiness
+    point: this is the function Accept runs. When it read the CORE's mix while
+    the card quoted the core's mix too, both were wrong together and at least
+    agreed. Fixing only the card would have been worse than fixing neither --
+    the screen would have said "sell 4,324" and the button would have sold
+    12,139.
 
     **Every value here is ILS.** It used to sum ``quantity * current_price`` raw and
     call that NAV -- adding USD-priced holdings to an ILS cash row as if they were
@@ -2216,7 +2399,7 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
 
     from app.services.fx import fx_rate, price_currency
 
-    target = await _core_target(session, user, objective)
+    target = (await _book_target(session, user, objective))["target"]
 
     def _ils(p) -> float:
         meta = p.meta if isinstance(p.meta, dict) else {}
@@ -2362,6 +2545,19 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     elif kind == "set_plan":
         await upsert_plan(session, user, **spec.get("fields", {}))
         await session.commit()
+    elif kind == "relevel_sleeve_caps":
+        # RE-LEVEL, NEVER SILENTLY. `_arm_sleeve_caps` already does exactly the
+        # right thing -- one cap per ticker at the summed sleeve target, hand-set
+        # caps on sleeve tickers ADOPTED, caps on other tickers untouched. It had
+        # simply never run against caps armed AFTER the last apply, which is how
+        # a 15% TQQQ cap outlived a resize to 38.4%.
+        #
+        # Behind a tap rather than on the Today read, because /recommendations is
+        # a GET and a GET that quietly writes makes "does this book have a stale
+        # cap?" depend on whether anyone opened the page. The card names every
+        # correction before you take it.
+        from app.services.strategy_service import _arm_sleeve_caps
+        detail = {"caps": await _arm_sleeve_caps(session, user)}
     elif kind in ("create_rule", "create_rules"):
         specs = spec.get("rules") if kind == "create_rules" else [spec]
         created = []
