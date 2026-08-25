@@ -1388,7 +1388,7 @@ async function delHolding(ticker,market){
     loadHoldings();
   }catch(e){alert(e.message||e);}
 }
-let STRAT=null, STGOAL=null, MYPLAN=null, MYSLEEVES=null;
+let STRAT=null, STGOAL=null, MYPLAN=null, MYSLEEVES=null, COREOPTS=null;
 // WHICH STRATEGIES ARE APPLIED -- plural, since C2.
 //
 // This used to read plans.strategy: a single column, so the page could only ever
@@ -1416,6 +1416,19 @@ function _stratName(id){
   return id;
 }
 function _pct(n){ return (Math.round(Number(n)*10)/10).toString(); }
+// THE SAME NUMBER IN TWO UNITS, ONE HELPER AWAY FROM EACH OTHER.
+//
+// `sleeve_pct` is 0-100 (25.6 means 25.6%). `held_pct`, `allocated_held_pct`
+// and `core_held_pct` are FRACTIONS (0.2568 means 25.68%) because they are
+// computed as value/NAV. Passing a fraction through `_pct` renders 25.68% as
+// "0.3", which is precisely what shipped: the card read "0.6% held against a
+// 64% target" on a book whose sleeves were sitting at 64.27%, and the
+// screenshot of that was indistinguishable from the funding having failed.
+//
+// Two helpers with the unit in the NAME, rather than one that silently accepts
+// either. The API is not changing -- a share of NAV is a fraction everywhere
+// else in this app, and it is the renderer's job to know that.
+function _pctFrac(n){ return n==null ? null : (Math.round(Number(n)*1000)/10).toString(); }
 function _coreId(){ return (MYSLEEVES&&MYSLEEVES.core&&MYSLEEVES.core.strategy_id)||null; }
 
 // The one thing a core choice actually changes, shown on the card that makes it.
@@ -1495,11 +1508,80 @@ function coreRow(pct){
       ? `Your core is managed to that strategy's mix. The objective and risk tolerance above still
          set the concentration cap and the cash floor for the <b>whole</b> book, sleeves included.`
       : `No core strategy chosen — your core is managed to your objective alone
-         (${(MYPLAN&&MYPLAN.objective)||"—"}). Pick one from the goal tabs below to manage it to a
-         specific mix instead.`}
+         (${(MYPLAN&&MYPLAN.objective)||"—"}).`}
       The core is whatever the sleeves have not claimed, so it has no card size of its own. These
       percentages are <b>targets</b>; press Fund all sleeves to see what you actually hold against
-      them.</div>`;
+      them.</div>
+    ${c?"":corePicker()}`;
+}
+
+// THE CHOICE, PUT IN FRONT OF YOU.
+//
+// `core` has been null since C6 shipped on 2026-08-13 -- not refused, not
+// deferred, never ASKED. The only way to set one was to apply a static family
+// card on the Strategies tab, where it reads as "add this strategy" and its
+// real effect -- naming the target mix your whole book is measured against --
+// is invisible. This card said "Core - 36%" and one line of grey text pointing
+// at "the goal tabs below", which is a statement about SIZE and silent about
+// who manages it.
+//
+// So: a persistent banner while the core is unmanaged, listing every eligible
+// family with the mix it would impose and what that is expected to cost in
+// drawdown. It cannot be dismissed, because there is nothing to dismiss -- it
+// disappears when a core exists, which is the only thing that resolves it.
+function corePicker(){
+  const o = COREOPTS;
+  if(!o || !o.options || !o.options.length){
+    return `<div class="mk" style="margin-top:6px;opacity:.7">Loading the core options…</div>`;
+  }
+  const pct = v => (v==null ? "—" : `${Math.round(v)}%`);
+  // Sorted by what the choice is actually about: how deep a hole it can dig.
+  // Highest expected return is not the question when the solver has already
+  // said the core alone breaches your drawdown ceiling.
+  const rows = o.options.filter(x=>x.eligible)
+    .slice().sort((a,b)=>(a.est_max_drawdown_pct??999)-(b.est_max_drawdown_pct??999))
+    .map(x=>{
+      const mix = Object.keys(x.target_allocation||{})
+        .filter(k=>x.target_allocation[k]>0)
+        .map(k=>`${Math.round(x.target_allocation[k]*100)}% ${k}`).join(" · ");
+      // "Estimated" and "measured" are different kinds of claim and the card
+      // never blurs them -- a modelled drawdown wearing the authority of a
+      // measured one is the failure this whole app keeps having.
+      const ddv = (x.drawdown_source==="measured") ? x.measured_max_drawdown_pct : x.est_max_drawdown_pct;
+      const dd  = `${pct(ddv)} <span class="mk">${x.drawdown_source==="measured"?"measured":"est."}</span>`;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;border-top:1px solid rgba(255,255,255,.06)">
+          <span style="flex:1">${x.name}<div class="mk">${mix}</div></span>
+          <span style="min-width:72px;text-align:right">${pct(x.expected_return_pct)}<div class="mk">return</div></span>
+          <span style="min-width:88px;text-align:right">${dd}<div class="mk">worst fall</div></span>
+          <button onclick="chooseCore('${x.strategy_id}')">Use</button>
+        </div>`;}).join("");
+  const note = o.store_error
+    ? `<div class="mk" style="margin-top:4px;color:var(--warn,#e5b857)">
+         Falls below are <b>estimates</b> — the measured backtests could not be read
+         (${String(o.store_error).slice(0,90)}).</div>`
+    : "";
+  return `<div style="margin-top:8px;padding:8px;border-left:3px solid var(--warn,#e5b857);
+                       background:rgba(229,184,87,.06);border-radius:4px">
+      <div class="nm">Nothing manages your core</div>
+      <div class="mk" style="margin-top:2px">Your objective sets the mix by default. Choosing a
+        core names a specific target instead — the one every rebalance card measures drift against.
+        It buys and sells nothing.</div>
+      ${note}
+      <div style="margin-top:6px">${rows}</div>
+    </div>`;
+}
+
+async function chooseCore(sid){
+  const note=$("core_note"); if(note) note.textContent="Setting the core…";
+  try{
+    const r=await fetch("/api/v1/plan/core",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({strategy_id:sid})});
+    if(r.status===401){location.href="/login";return;}
+    const j=await r.json();
+    if(!j.ok){ if(note) note.innerHTML=`<span class="bad">${j.reason||j.error||"could not set the core"}</span>`; return; }
+    COREOPTS=null;
+    await loadStrategies();
+  }catch(e){ if(note) note.innerHTML=`<span class="bad">${e}</span>`; }
 }
 
 // ---- T4: the target card ------------------------------------------------
@@ -1890,8 +1972,8 @@ function sleevePanel(){
   // A sleeve at 0% held is the interesting case, not an edge case: it means the
   // strategy you chose is managing none of your money.
   const rows=(MYSLEEVES&&MYSLEEVES.sleeves||[]).map(x=>{
-    const t=_pct(x.sleeve_pct);
-    const h=(x.held_pct!=null)?_pct(x.held_pct):null;
+    const t=_pct(x.sleeve_pct);              // already 0-100
+    const h=_pctFrac(x.held_pct);            // a fraction of NAV
     const empty=(h!=null&&+h<0.5);
     const gapNote=(h==null)?"" :
       `<span class="mk" style="min-width:96px;text-align:right;${empty?'color:var(--warn,#e5b857)':''}">
@@ -1903,9 +1985,9 @@ function sleevePanel(){
       ${gapNote}
       <button onclick="removeSleeve('${x.strategy_id}','${_stratName(x.strategy_id).replace(/'/g,"")}')">Remove</button>
     </div>`;}).join("");
-  const core=MYSLEEVES?_pct(MYSLEEVES.core_pct):null;
-  const alloc=MYSLEEVES?_pct(MYSLEEVES.allocated_pct):null;
-  const allocHeld=(MYSLEEVES&&MYSLEEVES.allocated_held_pct!=null)?_pct(MYSLEEVES.allocated_held_pct):null;
+  const core=MYSLEEVES?_pct(MYSLEEVES.core_pct):null;          // 0-100
+  const alloc=MYSLEEVES?_pct(MYSLEEVES.allocated_pct):null;    // 0-100
+  const allocHeld=MYSLEEVES?_pctFrac(MYSLEEVES.allocated_held_pct):null;  // fraction
   const heading=(alloc==null)?"Your sleeves"
     :(allocHeld==null)?`Your sleeves — ${alloc}% of the book`
     :(Math.abs(+allocHeld-+alloc)<0.5)?`Your sleeves — ${alloc}% of the book`
@@ -1929,6 +2011,12 @@ async function loadStrategies(){
   if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
   try{ MYPLAN=await(await fetch("/api/v1/plan")).json(); }catch(e){ MYPLAN=null; }
   try{ MYSLEEVES=await(await fetch("/api/v1/plan/sleeves")).json(); }catch(e){ MYSLEEVES=null; }
+  // Only when there is a choice to put in front of you. Fetching the fourteen
+  // families on every render, to draw nothing, is a request that exists to be
+  // thrown away.
+  if(MYSLEEVES && !MYSLEEVES.core && !COREOPTS){
+    try{ COREOPTS=await(await fetch("/api/v1/plan/core/options")).json(); }catch(e){ COREOPTS=null; }
+  }
   // Seed each card's slider from the sleeve you actually run -- once. Re-seeding
   // on every render would throw away a size you had dragged to and not yet
   // applied, which is a whole goal-tab click away.

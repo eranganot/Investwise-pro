@@ -71,6 +71,31 @@ async def lifespan(app: FastAPI):
                     "last_error VARCHAR(255) DEFAULT ''",
                     "ALTER TABLE strategy_backtests ADD COLUMN IF NOT EXISTS "
                     "last_error_at TIMESTAMPTZ",
+                    # AND IT HAPPENED AGAIN, to the very next column this table
+                    # gained. Migration 0015 added benchmark_ticker on
+                    # 2026-08-15 and was never mirrored here, so production has
+                    # been raising
+                    #
+                    #   UndefinedColumnError: column
+                    #   strategy_backtests.benchmark_ticker does not exist
+                    #
+                    # on every read of this table since. `get_many` catches it
+                    # and returns {} by design -- a strategy LIST must not die
+                    # because a side table is behind -- and that is exactly why
+                    # nobody noticed: the app degraded silently to "no strategy
+                    # has ever been measured", and EVERY measured figure in it
+                    # has been missing for ten days. /strategies carried the
+                    # reason in `backtest_store_error` the whole time and no
+                    # screen rendered it.
+                    #
+                    # The note above already says running alembic by hand is the
+                    # documented answer and that it failed twice. This list IS
+                    # the mechanism that keeps production's schema current, so a
+                    # migration that adds a column and does not appear here has
+                    # not really shipped. Guarded now by
+                    # tests/test_startup_ddl_covers_migrations.py.
+                    "ALTER TABLE strategy_backtests ADD COLUMN IF NOT EXISTS "
+                    "benchmark_ticker VARCHAR(16) DEFAULT ''",
                     # P4: strategy_signal rules pin the strategy they follow.
                     "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
                     "strategy_id VARCHAR(40)",

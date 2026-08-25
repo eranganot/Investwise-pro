@@ -480,3 +480,49 @@ def test_s_the_real_book_reaches_its_64_percent_target():
     assert res["resulting_sleeve_pct"] == pytest.approx(64.0, abs=0.5), \
         f"intended 64%, would end at {res['resulting_sleeve_pct']}%"
     assert res["fully_funded"] is True
+
+
+# --------------------------------------------------------------------------- #
+# 6. the same number in two units
+# --------------------------------------------------------------------------- #
+def test_t_held_fractions_are_rendered_with_the_fraction_helper():
+    """A units bug that looked exactly like the feature failing.
+
+    `sleeve_pct` is 0-100; `held_pct`, `allocated_held_pct` and `core_held_pct`
+    are FRACTIONS, because they are value/NAV. Both went through `_pct`, which
+    only rounds -- so 0.2568 rendered as "0.3".
+
+    The card read "Your sleeves - 0.6% held against a 64% target" on a book
+    whose sleeves were sitting at 64.27%, correctly funded. That screenshot is
+    indistinguishable from the funding having failed, which is what it was
+    reported as. The API was right the whole time and the renderer was wrong.
+    """
+    from pathlib import Path
+
+    html = Path("app/static_app/index.html").read_text(encoding="utf-8")
+    assert "function _pctFrac(" in html, "no fraction-aware helper exists"
+
+    nav = html.split("function navSummary(p){", 1)[0]
+    for field in ("held_pct", "allocated_held_pct"):
+        # Every read of a fraction field must go through _pctFrac, never _pct.
+        assert f"_pct({field}" not in html and f"_pct(x.{field}" not in html, (
+            f"{field} is a fraction and is being rendered with the 0-100 helper")
+    assert "_pctFrac(x.held_pct)" in html
+    assert "_pctFrac(MYSLEEVES.allocated_held_pct)" in html
+    # And the 0-100 fields must NOT be multiplied.
+    assert "_pct(x.sleeve_pct)" in html
+    assert "_pctFrac(x.sleeve_pct)" not in html
+    assert nav is not None
+
+
+def test_u_the_two_helpers_disagree_by_exactly_a_hundred():
+    """Pinning the contract, so a future edit cannot quietly align them."""
+    import re
+    from pathlib import Path
+
+    html = Path("app/static_app/index.html").read_text(encoding="utf-8")
+    frac = re.search(r"function _pctFrac\(n\)\{([^}]*)\}", html).group(1)
+    assert "*1000" in frac.replace(" ", ""), (
+        "_pctFrac must scale a fraction to a percentage")
+    plain = re.search(r"function _pct\(n\)\{([^}]*)\}", html).group(1)
+    assert "*1000" not in plain.replace(" ", ""), "_pct must NOT scale"

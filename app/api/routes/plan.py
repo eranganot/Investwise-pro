@@ -257,6 +257,124 @@ async def remove_my_sleeve(strategy_id: str,
     return await retire_sleeve(session, user, strategy_id)
 
 
+@router.get("/plan/core/options")
+async def core_options(session: AsyncSession = Depends(get_session),
+                       user: User = Depends(acting_user)) -> dict:
+    """The strategies that may manage the core, and what choosing each would mean.
+
+    THE CHOICE WAS NEVER PUT IN FRONT OF ANYONE. `core` has been `null` since
+    C6 shipped on 2026-08-13 -- not refused, not deferred, simply never asked.
+    The only way to set one was to apply a static family card on the Strategies
+    tab, where it reads as "add this strategy" and its side effect of naming
+    your whole-book target mix is invisible. The Plan tab said "Core - 36%" and
+    one line of grey text, which is a statement about SIZE and silent about who
+    manages it.
+
+    So this endpoint exists to make the decision legible: every eligible family,
+    what mix it would manage the core to, and what that is expected to cost in
+    drawdown -- side by side, in one place, instead of fourteen cards.
+
+    ESTIMATED AND MEASURED ARE KEPT APART. `profile.est_max_drawdown_pct` is a
+    modelled figure that ships with the catalogue; `measured` comes from the
+    backtest store and is a real result over a real window. They are different
+    kinds of claim and the payload never merges them -- `drawdown_source` says
+    which one a reader is looking at, and `measured` is simply absent when the
+    store has nothing.
+
+    That distinction has teeth right now: production could not read the backtest
+    store AT ALL until the `benchmark_ticker` column was added to the startup
+    DDL, so every "measured" figure in the app was missing and the reason sat
+    unread in `backtest_store_error`. `store_error` is echoed here so a screen
+    can say "not measured yet" for the right reason.
+    """
+    from app.services import backtest_service as bt
+    from app.services import sleeve_service as sv
+    from app.services import strategies as static_cat
+    from app.services.strategy_profile import with_profiles
+
+    plan = await get_plan(session, user)
+    current = await sv.core_strategy_id(session, user)
+
+    ids = [c["id"] for c in static_cat.CATALOG]
+    measured = await bt.get_many(session, ids)
+
+    # `profile` is DERIVED, not stored on the catalogue -- the same helper the
+    # Strategies tab uses, so the two screens cannot quote different numbers for
+    # the same family.
+    out = []
+    for c in with_profiles(static_cat.CATALOG):
+        sid = c["id"]
+        why = sv.validate_core(sid)
+        prof = c.get("profile") or {}
+        m = (measured.get(sid) or {})
+        metrics = (m.get("metrics") or {}) if m.get("ok") else {}
+        est_dd = prof.get("est_max_drawdown_pct")
+        meas_dd = metrics.get("max_drawdown_pct")
+        out.append({
+            "strategy_id": sid,
+            "name": c.get("name"),
+            "goal": c.get("goal"),
+            "objective": c.get("objective"),
+            "risk_tolerance": c.get("risk_tolerance"),
+            "description": c.get("description"),
+            "target_allocation": c.get("target_allocation") or {},
+            "holdings_count": prof.get("holdings_count"),
+            "expected_return_pct": prof.get("expected_return_pct"),
+            "volatility_pct": prof.get("volatility_pct"),
+            # The two kinds of drawdown claim, never merged.
+            "est_max_drawdown_pct": est_dd,
+            "measured_max_drawdown_pct": meas_dd,
+            "drawdown_source": "measured" if meas_dd is not None else (
+                "estimate" if est_dd is not None else None),
+            "measured_period": (m.get("period") if meas_dd is not None else None),
+            "is_current": sid == current,
+            # Every family here is eligible; the field exists so a rule-based
+            # strategy arriving in this list later cannot be offered silently.
+            "eligible": why is None,
+            "ineligible_reason": why,
+            "matches_your_objective": c.get("objective") == getattr(plan, "objective", None),
+            "matches_your_risk": c.get("risk_tolerance") == getattr(plan, "risk_tolerance", None),
+        })
+
+    return {
+        "current": current,
+        "options": out,
+        "objective": getattr(plan, "objective", None),
+        "risk_tolerance": getattr(plan, "risk_tolerance", None),
+        # None means "the objective manages the core", which is a real answer
+        # and not an error state -- but it should be a CHOSEN one.
+        "core_is_unset": current is None,
+        "store_error": bt.store_unavailable,
+    }
+
+
+class CoreIn(BaseModel):
+    strategy_id: str
+
+
+@router.post("/plan/core", dependencies=[Depends(require_role(Role.ANALYST))])
+async def set_my_core(body: CoreIn,
+                      session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
+    """Name the strategy that manages the core, directly.
+
+    `set_core` has existed since C6 and had no route: the only caller was
+    `apply_strategy`, so choosing a core meant applying a whole strategy and
+    accepting its other effects. A decision the app asks you to make needs a
+    door of its own.
+
+    Buys nothing and sells nothing, exactly like DELETE below. It sets the
+    target mix the rest of the book is measured against; the rebalance cards
+    recompute on the next load and you decide whether to act on them.
+    """
+    from app.services import sleeve_service as sv
+
+    out = await sv.set_core(session, user, body.strategy_id)
+    if out.get("ok"):
+        await session.commit()
+    return out
+
+
 @router.delete("/plan/core", dependencies=[Depends(require_role(Role.ANALYST))])
 async def clear_my_core(session: AsyncSession = Depends(get_session),
                         user: User = Depends(acting_user)) -> dict:
