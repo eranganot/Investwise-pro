@@ -10,6 +10,7 @@ Each entry: ticker, name, market, asset_class, kind (stock | etf | commodity).
 from __future__ import annotations
 
 from app.services import commodities as _commodities
+from app.services import fixed_income as _fixed_income
 
 # ---- US large-cap stocks (sector-diversified, not just mega-cap tech) ----
 US_STOCKS: list[dict] = [
@@ -83,7 +84,8 @@ TASE_STOCKS: list[dict] = [
 
 
 def _asset_class(kind: str) -> str:
-    return {"stock": "Equities", "etf": "Equities", "commodity": "Commodities"}[kind]
+    return {"stock": "Equities", "etf": "Equities", "commodity": "Commodities",
+            "bond": "Fixed Income"}[kind]
 
 
 def commodity_candidates() -> list[dict]:
@@ -96,7 +98,27 @@ def commodity_candidates() -> list[dict]:
     return out
 
 
-def full_universe(include_commodities: bool = True) -> list[dict]:
+def bond_candidates() -> list[dict]:
+    """The Fixed Income half of the universe, which did not exist until PR 10.
+
+    `full_universe()` returned 64 Equities, 19 Commodities and ZERO bonds, on an
+    app whose objective presets have wanted 10-60% Fixed Income since the
+    beginning. Every book therefore carried a bond target it could not place:
+    `_redeploy_cash_recs` looked for a Fixed Income candidate, found none, and
+    recorded the money as `unplaced` on every single scan.
+    """
+    out = []
+    for c in _fixed_income.CATALOG:
+        out.append({"ticker": c["ticker"], "name": c["name"], "market": "NASDAQ",
+                    "kind": "bond", "asset_class": "Fixed Income",
+                    "expense_ratio_pct": c.get("expense_ratio_pct"),
+                    "duration_yrs": c.get("duration_yrs"),
+                    "credit": c.get("credit"), "caveat": c.get("caveat"),
+                    "category": c.get("category")})
+    return out
+
+
+def full_universe(include_commodities: bool = True, include_bonds: bool = True) -> list[dict]:
     """The complete candidate list with asset_class filled in (deduped by ticker)."""
     rows: list[dict] = []
     for grp in (US_STOCKS, ETFS, TASE_STOCKS):
@@ -104,6 +126,8 @@ def full_universe(include_commodities: bool = True) -> list[dict]:
             rows.append({**r, "asset_class": _asset_class(r["kind"])})
     if include_commodities:
         rows += commodity_candidates()
+    if include_bonds:
+        rows += bond_candidates()
     seen, deduped = set(), []
     for r in rows:
         if r["ticker"] in seen:
@@ -114,4 +138,4 @@ def full_universe(include_commodities: bool = True) -> list[dict]:
 
 
 def equity_universe() -> list[dict]:
-    return [r for r in full_universe(include_commodities=False)]
+    return [r for r in full_universe(include_commodities=False, include_bonds=False)]

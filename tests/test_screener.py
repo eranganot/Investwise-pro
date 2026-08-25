@@ -75,8 +75,16 @@ def test_universe_is_deduped_and_typed():
     u = uni.full_universe()
     tickers = [r["ticker"] for r in u]
     assert len(tickers) == len(set(tickers))                  # no dupes
-    assert all(r["kind"] in {"stock", "etf", "commodity"} for r in u)
+    # "bond" joined the kinds in PR 10. The universe had 64 Equities, 19
+    # Commodities and ZERO Fixed Income while every objective preset wanted
+    # 10-60% bonds, so the redeploy card recorded that leg as unplaceable on
+    # every scan of every book.
+    assert all(r["kind"] in {"stock", "etf", "commodity", "bond"} for r in u)
     assert any(r["kind"] == "commodity" for r in u)
+    assert any(r["kind"] == "bond" for r in u)
+    # And the kind must map to the class the allocation engine measures against,
+    # or the leg looks filled while the gap stays open.
+    assert all(r["asset_class"] == "Fixed Income" for r in u if r["kind"] == "bond")
 
 
 def test_recommendations_include_holding_verdicts_and_buy_ideas():

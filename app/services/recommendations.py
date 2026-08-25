@@ -1565,7 +1565,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     _tm.mark("backtest")
-    _ideas = await _offload(_buy_ideas, snap)   # screener; timed separately, it hits providers
+    _ideas = await _offload(_buy_ideas, snap,   # screener; timed separately, it hits providers
+                            (getattr(plan, "currency", None) or "ILS"))
     _tm.mark("buy_ideas")
 
     # ---- WHICH STRATEGY DOES EACH CARD SERVE, AND DO ANY OF THEM FIGHT? ----
@@ -2017,6 +2018,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     nav = snap.get("nav") or 0.0
     if not nav or cash_ils <= 0:
         return []
+    # The book's currency decides whether US municipal bonds are a real option.
+    _ccy = (getattr(plan, "currency", None) or "ILS")
     spendable = _fund.spendable_cash(cash_ils, nav, objective, plan)
     if spendable < _fund.MIN_TRADE_ILS:
         return []
@@ -2091,7 +2094,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         else:
             # The plan wants this class and you hold none of it -- a real gap, so
             # a new name is warranted rather than concentrating further.
-            pick = next((b for b in _buy_ideas(snap)
+            pick = next((b for b in _buy_ideas(snap, _ccy)
                          if classify(b.get("ticker"), None) == cls), None)
             amt = round(min(budget, remaining), 2)
             if pick and amt >= _fund.MIN_TRADE_ILS:
@@ -2357,7 +2360,7 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
     return out
 
 
-def _buy_ideas(snap) -> list[dict]:
+def _buy_ideas(snap, currency: str = "USD") -> list[dict]:
     """Top fundamentals-ranked equity buy ideas plus screener-ranked commodity
     picks from the Opportunity Agent (informational)."""
     try:
@@ -2370,6 +2373,19 @@ def _buy_ideas(snap) -> list[dict]:
             out += [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
                      "sector": "Commodities", "reasons": p.reasons, "flags": p.flags,
                      "metrics": p.metrics} for p in ag.screen_commodities(top_n=3)]
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # WITHOUT THIS LINE THE FIXED INCOME LEG CANNOT BE PLACED. This
+            # function is what `_redeploy_cash_recs` searches for a candidate in
+            # a class the book holds none of; it returned equities and
+            # commodities only, so `classify(...) == "Fixed Income"` never
+            # matched and the money went to `unplaced` with the note "you hold
+            # no Fixed Income and no candidate was available" -- on every scan,
+            # for every book, since the app was written.
+            out += [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
+                     "sector": "Fixed Income", "reasons": p.reasons, "flags": p.flags,
+                     "metrics": p.metrics} for p in ag.screen_bonds(top_n=3, currency=currency)]
         except Exception:  # noqa: BLE001
             pass
         return out

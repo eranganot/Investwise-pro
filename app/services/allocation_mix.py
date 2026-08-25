@@ -23,8 +23,22 @@ COMMODITY_TICKERS = frozenset({
     "PDBC", "COMT", "GSG", "FTGC", "BCI",                  # broad commodity funds
 })
 
+# THE SAME BUG THE COMMODITY SET ABOVE WAS ADDED TO FIX, one asset class over.
+# `classify` falls through to "Equities" for anything it does not recognise, so
+# a bond ETF missing from this set is bought, held, and counted against the
+# EQUITY target -- the redeploy leg looks filled while the Fixed Income gap it
+# was meant to close is untouched. Eleven of the funds in `fixed_income.CATALOG`
+# were missing here (VGSH, VGIT, VGLT, USFR, SCHP, VTIP, VCSH, VCIT, USHY, EMB,
+# VTEB): every Vanguard and Schwab ticker, i.e. all the cheap ones.
 FIXED_INCOME_TICKERS = frozenset({
     "BND", "AGG", "TIP", "SHY", "IEF", "TLT", "LQD", "HYG", "BIL", "SHV", "MUB",
+    "BNDW", "BNDX", "SCHZ", "SPAB", "FBND",                       # aggregate
+    "GOVT", "VGSH", "VGIT", "VGLT", "SCHR", "SCHO", "TLH",        # government
+    "SGOV", "USFR", "TFLO",                                       # cash-like
+    "SCHP", "VTIP", "STIP",                                       # inflation-linked
+    "VCSH", "VCIT", "IGSB", "SPSB", "BSV", "BIV", "BLV",          # corporate
+    "USHY", "JNK", "SHYG",                                        # high yield
+    "EMB", "VWOB", "PCY", "VTEB",                                 # EM / municipal
 })
 
 
