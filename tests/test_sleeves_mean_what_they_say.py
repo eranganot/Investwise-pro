@@ -347,3 +347,136 @@ def test_n_no_ship_script_stages_everything():
             if call.match(stripped):
                 offenders.append(f"{ps1}:{n}: {stripped}")
     assert not offenders, "ship scripts staging the whole tree:\n" + "\n".join(offenders)
+
+
+# --------------------------------------------------------------------------- #
+# 5. the third blocker: whole-lot sizing on a fractional book
+# --------------------------------------------------------------------------- #
+class _Frac:
+    """His actual holdings, to four decimal places."""
+
+    def __init__(self, tk, mk, q, px, cb):
+        self.ticker, self.market, self.quantity = tk, mk, q
+        self.current_price, self.cost_basis = px, cb
+        self.meta = {"asset_class": "Equities"}
+
+
+def _real_book():
+    from app.services.fx import fx_rate, price_currency
+
+    rows = [_Frac("TQQQ", "NASDAQ", 14.72, 69.01, 72.12),
+            _Frac("V", "NASDAQ", 5.607, 382.41, 340.51),
+            _Frac("MSFT", "NASDAQ", 2.9358, 487.31, 462.40),
+            _Frac("SCHD", "NYSE", 42.4748, 35.21, 33.36)]
+    rate = fx_rate(price_currency("NASDAQ", {}))
+    nav = sum(p.quantity * p.current_price * rate for p in rows) + 3088.0
+    return rows, {"nav": nav, "exposure_ticker": {}}
+
+
+def test_o_a_position_is_not_skipped_for_being_bigger_than_the_remainder():
+    """THE THIRD BLOCKER, and it cost a whole sleeve in production.
+
+    `shares = int(take / price_ils)` followed by `if shares <= 0: continue`.
+    Funding needed 1,394.90 more; V costs 1,418.74 a share. `int()` returned 0
+    and the guard skipped the position ENTIRELY -- passing over 7,954 of
+    sellable V because one share was 24 shekels too big. The "take one more
+    share when it closes the gap" rule sat directly underneath and was never
+    reached, because the guard above it had already `continue`d.
+
+    Live consequence: `btm_trend_soxl` reported "needs 6,571 and the book is
+    1,357 short" while V sat untouched in the book.
+    """
+    from app.services.funding_service import plan_funding
+
+    rows, snap = _real_book()
+    f = plan_funding(rows, snap, None, "Grow", 0.40, 12658.63, cash_ils=3088.0,
+                     exclude={"SOXL", "TQQQ"}, buying_class="Equities")
+    assert f["shortfall_ils"] < 1.0, (
+        f"still {f['shortfall_ils']:,.2f} short of a raise the book can clearly cover")
+    assert f["funded_ils"] > 12000
+
+
+def test_p_a_sub_one_share_position_is_still_sellable():
+    """MSFT held 0.9358 shares -- worth 1,692 and 100% unsellable.
+
+    `int(anything / price)` on a position holding less than one whole share is
+    always zero, so it could never contribute a shekel however much was needed.
+    A book that stores fractional quantities cannot size its sales in whole
+    lots.
+    """
+    from app.services.funding_service import plan_funding
+
+    rows = [_Frac("MSFT", "NASDAQ", 0.9358, 487.31, 462.40),
+            _Frac("V", "NASDAQ", 5.607, 382.41, 340.51)]
+    from app.services.fx import fx_rate, price_currency
+    rate = fx_rate(price_currency("NASDAQ", {}))
+    nav = sum(p.quantity * p.current_price * rate for p in rows)
+    snap = {"nav": nav, "exposure_ticker": {}}
+
+    f = plan_funding(rows, snap, None, "Grow", 0.40, 1200.0,
+                     cash_ils=0.0, exclude={"V"}, buying_class="Equities")
+    assert f["sells"], "a 1,692 position could not raise 1,200 because it holds <1 share"
+    assert f["sells"][0]["ticker"] == "MSFT"
+    assert 0 < f["sells"][0]["shares"] <= 0.9358
+
+
+def test_q_a_sale_never_exceeds_the_position():
+    """Fractional sizing must not round its way past what is actually held."""
+    from app.services.funding_service import plan_funding
+
+    rows, snap = _real_book()
+    held = {p.ticker: p.quantity for p in rows}
+    f = plan_funding(rows, snap, None, "Grow", 0.40, 999999.0, cash_ils=0.0,
+                     exclude=set(), buying_class="Equities")
+    for s in f["sells"]:
+        assert s["shares"] <= held[s["ticker"]] + 1e-9, (
+            f"asked to sell {s['shares']} {s['ticker']} out of {held[s['ticker']]}")
+
+
+def test_r_tiny_trades_are_still_refused():
+    """MIN_TRADE_ILS is the friction floor and fractional sizing must not slip under it.
+
+    Without a whole-share step, nothing else stops a 4-shekel sale.
+    """
+    from app.services.funding_service import MIN_TRADE_ILS, plan_funding
+
+    rows, snap = _real_book()
+    f = plan_funding(rows, snap, None, "Grow", 0.40, 12658.63, cash_ils=3088.0,
+                     exclude={"SOXL", "TQQQ"}, buying_class="Equities")
+    for s in f["sells"]:
+        assert s["value_ils"] >= MIN_TRADE_ILS, f"{s['ticker']} sale below the minimum"
+
+
+def test_s_the_real_book_reaches_its_64_percent_target():
+    """End to end, on the book and sleeve sizes he actually runs.
+
+    Three separate defects had to be fixed before this could pass: the card
+    printing a target as a fact, the class-overweight budget blocking a
+    same-class swap, and whole-lot sizing on a fractional book.
+    """
+    with TestClient(m.app) as c:
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "TQQQ", "market": "NASDAQ", "asset_class": "Equities", "depth": 3,
+             "spot_price": 69.01, "listing_price": 69.01, "quantity": 14.72,
+             "cost_basis": 72.12, "expected_return_pct": 10, "volatility_pct": 45},
+            {"ticker": "V", "market": "NASDAQ", "asset_class": "Equities", "depth": 3,
+             "spot_price": 382.41, "listing_price": 382.41, "quantity": 5.607,
+             "cost_basis": 340.51, "expected_return_pct": 7, "volatility_pct": 20},
+            {"ticker": "MSFT", "market": "NASDAQ", "asset_class": "Equities", "depth": 3,
+             "spot_price": 487.31, "listing_price": 487.31, "quantity": 2.9358,
+             "cost_basis": 462.40, "expected_return_pct": 8, "volatility_pct": 22},
+            {"ticker": "SCHD", "market": "NYSE", "asset_class": "Equities", "depth": 1,
+             "spot_price": 35.21, "listing_price": 35.21, "quantity": 42.4748,
+             "cost_basis": 33.36, "expected_return_pct": 5, "volatility_pct": 12}]})
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": 3088.0})
+        c.put("/api/v1/plan", json={"objective": "Grow", "risk_tolerance": "High"})
+        c.post(f"/api/v1/strategies/{'btm_swing_dip'}/apply?sleeve_pct=38.4")
+        c.post(f"/api/v1/strategies/{SOXL}/apply?sleeve_pct=25.6")
+        res = c.post("/api/v1/plan/sleeves/fund?dry_run=true").json()
+
+    rows = {x["strategy_id"]: x for x in res["sleeves"]}
+    assert all(r["status"] == "funded" for r in rows.values()), \
+        {k: (v["status"], v.get("reason")) for k, v in rows.items()}
+    assert res["resulting_sleeve_pct"] == pytest.approx(64.0, abs=0.5), \
+        f"intended 64%, would end at {res['resulting_sleeve_pct']}%"
+    assert res["fully_funded"] is True

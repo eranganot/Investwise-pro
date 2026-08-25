@@ -19,6 +19,7 @@ keeps more dry powder than a Grow book.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 from app.services.allocation_mix import OBJ_TARGET, classify
@@ -301,18 +302,40 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             take = min(want_gross, allow, sellable_value)
             if take < MIN_TRADE_ILS:
                 continue
-            shares = int(take / price_ils)
-            if shares <= 0:
-                continue
-            # Whole lots floor the raise, so the last share is often the only
-            # thing standing between "funded" and a shortfall smaller than one
-            # share. Take it when the position can spare it -- never beyond the
-            # position itself.
-            net_per_share = price_ils * (1.0 - tax_frac)
-            if (shares * net_per_share < remaining_net
-                    and (shares + 1) * price_ils <= sellable_value):
-                shares += 1
+
+            # SELL FRACTIONS, BECAUSE THE BOOK HOLDS FRACTIONS.
+            #
+            # This was `shares = int(take / price_ils)` followed by
+            # `if shares <= 0: continue`, and the combination cost a whole sleeve
+            # on 2026-08-25. Two failures, one line apart:
+            #
+            #  * THE ZERO GUARD FIRED BEFORE THE ROUNDING CORRECTION UNDER IT.
+            #    Funding needed 1,394.90 more and V costs 1,418.74 a share, so
+            #    `int()` gave 0 and the position was skipped ENTIRELY -- 7,954 of
+            #    sellable V passed over because one share was 24 shekels too big.
+            #    The "take one more share" rule immediately below existed for
+            #    exactly this and never got reached. The SOXL sleeve was reported
+            #    1,357 short with V untouched in the book.
+            #
+            #  * WHOLE LOTS STRAND EVERY FRACTION. This book is entirely
+            #    fractional -- V 5.607, MSFT 2.9358, SCHD 42.4748 -- so `int()`
+            #    quietly wrote off 861 of V, 62 of SCHD, and ALL 1,692 of MSFT,
+            #    which at 0.9358 shares could never sell a single share however
+            #    much was needed.
+            #
+            # Whole lots were never a real constraint here. InvestWise places no
+            # brokerage order (`BROKER_NOTE`), positions are stored as fractional
+            # Decimals, and a book holding 5.607 V was bought fractionally in the
+            # first place. Sizing the sale in shekels and converting once removes
+            # both failures: no overshoot to correct, and nothing stranded.
+            #
+            # Floored to 4dp -- the stored precision -- so rounding can never ask
+            # for more shares than the position holds.
+            shares = math.floor((take / price_ils) * 10000.0) / 10000.0
+            shares = min(shares, avail_shares)
             value = shares * price_ils
+            if value < MIN_TRADE_ILS:
+                continue
             tax = gain_per_share * shares * rate * cgt
             sells.append({"ticker": cand["ticker"], "market": cand["market"], "shares": shares,
                           "value_ils": round(value, 2), "tax_ils": round(tax, 2),
