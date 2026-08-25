@@ -1257,3 +1257,98 @@ async def solve_core_for(session: AsyncSession, user: User, *,
         out["degraded"] = sorted(set((out.get("degraded") or []) + ["price"]))
         out["unpriced_holdings"] = sorted(set(book["unpriced"]))
     return out
+
+
+# ---------------------------------------------------------------------------
+# T6b, second half -- discover the sleeve COUNT
+# ---------------------------------------------------------------------------
+
+def _count_blocking(bench_tk, held_sleeves, core, candidate_specs,
+                    max_drawdown_pct, floor, cap, max_measures):
+    """Greedy forward selection over the backtestable sleeves. Blocking."""
+    from app.services import sleeve_count
+
+    by_id = {s["id"]: s for s in candidate_specs}
+    wanted = {bench_tk} | set((core or {}).get("weights") or {})
+    for spec in candidate_specs:
+        wanted |= set(bt.tickers_needed(spec))
+    series, no_data, unavailable = _fetch(sorted(wanted), classify=True)
+    gone = set(no_data) | set(unavailable)
+    bench = series.get(bench_tk)
+
+    max_total = max(0.0, 100.0 - floor * 100.0)
+    # The share the book already gives its sleeves, held constant across every
+    # set. THE COUNT AND THE SIZE ARE SEPARATE QUESTIONS and mixing them makes
+    # neither answerable: a three-sleeve set that wins because the search also
+    # gave it more of the book has not shown that three is better than two.
+    # T6a sizes; this counts, at an EQUAL split of a fixed total.
+    total_pct = min(sum(float(s.get("current_pct") or 0.0) for s in held_sleeves),
+                    max_total) if held_sleeves else min(60.0, max_total)
+
+    def _measure(ids: tuple[str, ...]) -> dict:
+        specs = [by_id[i] for i in ids if i in by_id]
+        need = set()
+        for sp in specs:
+            need |= {t.upper() for t in bt.tickers_needed(sp)}
+        need |= {t.upper() for t in (core or {}).get("weights") or {}}
+        short = sorted(need & gone)
+        if short:
+            return {"ok": False, "reason": "NO_OVERLAP",
+                    "detail": f"no usable price history for {', '.join(short)}"}
+        feed = {tk: series[tk] for tk in need if tk in series}
+        if not feed:
+            return {"ok": False, "reason": "NO_OVERLAP", "detail": "nothing to measure"}
+        share = (total_pct / len(specs) / 100.0) if specs else 0.0
+        comps = [{"id": sp["id"], "spec": sp, "weight": share} for sp in specs]
+        core_pct = max(0.0, max_total - (total_pct if specs else 0.0))
+        if core and core.get("weights"):
+            comps.append({"id": "__core__", "spec": core, "weight": core_pct / 100.0})
+        if not comps:
+            return {"ok": False, "reason": "NO_COMPONENTS", "detail": "nothing to measure"}
+        return blend.measure_blend(feed, comps, benchmark=bench, detail=False)
+
+    out = sleeve_count.discover(
+        [{"id": s["id"], "name": s["id"]} for s in candidate_specs],
+        _measure,
+        max_drawdown_pct=max_drawdown_pct,
+        start=[s["id"] for s in held_sleeves],
+        max_measures=max_measures)
+
+    # investing-discipline SS3: the artifact carries the inputs that produced it.
+    out["benchmark"] = bench_tk
+    out["solver_version"] = SOLVER_VERSION
+    out["total_sleeve_pct"] = round(total_pct, 2)
+    out["split"] = "equal"
+    out["split_note"] = ("every set is measured at an EQUAL split of the same total "
+                         "sleeve share, so the count is not confounded with the size. "
+                         "Sizing is the T6a search.")
+    if gone:
+        out["degraded"] = ["history"]
+        out["no_data_tickers"] = sorted(no_data)
+        out["unavailable_tickers"] = sorted(unavailable)
+        if unavailable:
+            out.setdefault("coverage", {})["incomplete_reason"] = (
+                f"{len(unavailable)} ticker(s) were unavailable this run (rate limit "
+                f"or open circuit), not missing from the market: "
+                f"{', '.join(sorted(unavailable))}. Re-run to include them.")
+    out["disclaimer"] = ("A measured count of your own configured strategies over the "
+                         "window named. Not financial advice.")
+    return out
+
+
+async def solve_sleeve_count_for(session: AsyncSession, user: User, *,
+                                 max_drawdown_pct: float,
+                                 max_measures: int = 60) -> dict:
+    """How many sleeves earn their place? Read-only, no apply path."""
+    from app.services import strategy_catalog
+
+    book, err = await _book_for_solve(session, user)
+    if err:
+        return {"ok": False, **err}
+    specs = strategy_catalog.backtestable()
+    if not specs:
+        return {"ok": False, "reason": "NO_CANDIDATES",
+                "detail": "no backtestable strategies in the catalog"}
+    return await offload(_count_blocking, book["bench_tk"], book["sleeves"],
+                         book["core"], specs, max_drawdown_pct,
+                         book["floor"], book["cap"], max_measures)

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 13 / T6b — the solver varies the core)._
+_Last updated: 2026-08-25 by Claude (PR 13b / T6b — discover the sleeve count)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -23,8 +23,71 @@ _Seeded from git history + prior transcripts._
 | 11 | T5 — the war room reads the solver | ✅ shipped |
 | 12 | The job that lied, the card that was missing, the severity that never moved | ✅ this entry |
 | 13 | T6b — the solver varies the core | ✅ this entry |
-| 13b | T6b — discover the sleeve count | 🔴 not started |
+| 13b | T6b — discover the sleeve count | ✅ this entry |
 | 14 | Phase W | 🔴 not started, needs its own plan |
+
+---
+
+## ✅ PR 13b / T6b — discover the sleeve count, and say how the search ended
+
+**Shipped 2026-08-25.** No migration, no stored verdict.
+
+T2 resizes a fixed set; T6a sizes each member of that fixed set. Neither can
+answer *"should there be a third one at all"* — and this book runs two sleeves
+for no measured reason.
+
+### The honesty is in the report, not the algorithm
+
+Greedy forward selection is four lines. What makes it usable is that *"it stopped
+at two"* can be **checked**: every round records the candidates it tried and what
+each would have added, and the stopping round records the addition it rejected
+and by how much it missed.
+
+The stop reason is a first-class field, because these mean different things and a
+bare count renders them identically:
+
+| | means |
+|---|---|
+| `BELOW_NOISE_FLOOR` | converged — the finding |
+| `NO_ADMISSIBLE_ADDITION` | the held set is fine, nothing improves it |
+| `BASELINE_BREACHES_CEILING` | the held set already breaches |
+| `MAX_SLEEVES` | the pool ran out, not the improvement |
+| `RUNTIME_BACKSTOP` | a budget stopped it; the count is a **floor** |
+
+`converged` and `count_is_a_floor` are separate booleans for that reason.
+
+### `BASELINE_BREACHES_CEILING` was found by running it
+
+Every candidate third sleeve breached, so the search returned
+`NO_ADMISSIBLE_ADDITION` with `count=2` — technically true and badly misleading,
+because a reader sees 2 and concludes two is right. The measured truth is that
+the two already held measure **44.6% against a 13.3% ceiling**. It's now its own
+outcome, checked *before* the first round, and its verdict says in words that the
+count is not a recommendation.
+
+### Measured on the live book
+
+```
+ceiling 13.3, from the two held  -> BASELINE_BREACHES_CEILING, 1 measure
+   "The 2 sleeve(s) you already run measure 44.6% against your 13.3% ceiling"
+ceiling 45.0, from zero          -> BELOW_NOISE_FLOOR, count 3
+   +1.80 btm_swing_breakout, +4.30 btm_trend_tqqq, +5.14 btm_trend_soxl
+   4th rejected at -0.82
+```
+
+### Two things it refuses to conflate
+
+**The count is not the size.** Every set is measured at an *equal* split of the
+same total sleeve share. A three-sleeve set that wins because the search also
+handed it more of the book has not shown that three beats two.
+
+**Greedy is not exhaustive.** The best pair is not necessarily the best single
+plus one, so a set this search rejects may beat the set it keeps.
+`method.caveat` says so on the payload rather than letting "discovered" imply
+otherwise.
+
+**Verification:** 24 new tests. Suite green on SQLite and Postgres 16, plus
+`ruff check app tests`.
 
 ---
 

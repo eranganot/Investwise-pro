@@ -550,6 +550,33 @@ async def target_cores(max_drawdown_pct: float, top_n: int = 5,
     return out
 
 
+@router.get("/plan/target/sleeve-count")
+async def target_sleeve_count(max_drawdown_pct: float, max_measures: int = 60,
+                              session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """T6b, second half -- how many sleeves earn their place?
+
+    T2 resizes a fixed set and T6a sizes each member of that fixed set. Neither
+    can answer "should there be a third one at all", because both take the
+    membership as given -- and this book runs two for no measured reason.
+
+    Every set is measured at an EQUAL split of the same total sleeve share. The
+    count and the size are separate questions, and mixing them makes neither
+    answerable: a three-sleeve set that wins because the search also handed it
+    more of the book has not shown that three beats two.
+
+    READ-ONLY, no apply path, same as /plan/target/cores.
+    """
+    from app.services import target_solver
+    if max_drawdown_pct <= 0:
+        return {"ok": False, "reason": "NO_CEILING",
+                "detail": "a drawdown ceiling above 0% is required - without one every "
+                          "addition is admissible and the count only ever grows"}
+    return await target_solver.solve_sleeve_count_for(
+        session, user, max_drawdown_pct=float(max_drawdown_pct),
+        max_measures=max(1, min(int(max_measures), 200)))
+
+
 @router.get("/plan/projection")
 async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     rows = await _orm(session, user)
