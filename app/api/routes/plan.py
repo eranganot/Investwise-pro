@@ -11,6 +11,7 @@ from app.engines.simulation_engine import SimulationEngine
 from app.models.tables import User
 from app.services.allocation_mix import current_mix
 from app.services.intake_service import list_positions
+from app.services import strategy_catalog
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 
 router = APIRouter(prefix="/api/v1", tags=["plan"])
@@ -575,6 +576,37 @@ async def target_sleeve_count(max_drawdown_pct: float, max_measures: int = 60,
     return await target_solver.solve_sleeve_count_for(
         session, user, max_drawdown_pct=float(max_drawdown_pct),
         max_measures=max(1, min(int(max_measures), 200)))
+
+
+@router.get("/plan/walk-forward")
+async def walk_forward_sweep(strategy_id: str,
+                             session: AsyncSession = Depends(get_session),
+                             user: User = Depends(acting_user)) -> dict:
+    """W1 -- does fitting this strategy's parameter beat not fitting it?
+
+    NOT "which value wins". That question always has an answer, the answer is
+    always the in-sample winner, and reporting it is how a sweep manufactures an
+    edge. Every fold measures the value FITTED on the data available at the time
+    against the value ALREADY IN THE CATALOG -- the counterfactual that actually
+    existed had nobody swept.
+
+    READ-ONLY and there is no apply path. Nothing here writes a fitted parameter
+    back into any spec: `backtest_service` already sets the rule that a
+    measured-better variant ships OFF until a human has compared the numbers,
+    and a route that tuned a live strategy from one history would be exactly the
+    overfitting this module exists to detect.
+
+    An explicit button. Six folds x five values x two phases per strategy, each a
+    simulation over its window.
+    """
+    from app.core.offload import offload
+    from app.services import backtest_service as bs
+
+    spec = next((s for s in strategy_catalog.backtestable() if s["id"] == strategy_id), None)
+    if spec is None:
+        return {"ok": False, "reason": "UNKNOWN_STRATEGY",
+                "detail": f"{strategy_id!r} is not a backtestable strategy"}
+    return await offload(bs.walk_forward_blocking, spec)
 
 
 @router.get("/plan/projection")

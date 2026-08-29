@@ -388,3 +388,120 @@ def run_backtest_refresh_blocking() -> dict:
     except Exception:  # noqa: BLE001
         logger.warning("scheduled backtest refresh failed", exc_info=True)
         return {"computed": 0, "abstained": 0}
+
+
+# ---------------------------------------------------------------------------
+# W1 -- walk-forward parameter sweeps
+# ---------------------------------------------------------------------------
+#
+# `measure()` above already runs `bt.sweep()` nightly for every overlay that
+# declares one, and stores the result in `StrategyBacktest.robustness`. Nothing
+# reads it: grepping every renderer, route and script, `robustness.sweep` has
+# zero consumers. That sweep is also FULL-SAMPLE and selects nothing -- it
+# reports the spread of CAGRs as a fragility flag and stops there.
+#
+# This is the other thing. It splits, it selects, and it checks the selection
+# against the value already in the catalog.
+
+def _window(series: dict, lo: int, hi: int) -> dict:
+    """Restrict every ticker to the common sessions [lo, hi).
+
+    Sliced on the COMMON axis, computed once, because slicing each ticker's own
+    rows and intersecting afterwards yields fewer sessions than asked whenever
+    two tickers trade on different calendars -- and the shortfall would not be
+    attributable to anything. Same argument as `target_solver._tail`.
+    """
+    common = None
+    for rows in series.values():
+        dates = {d for d, _ in rows}
+        common = dates if common is None else (common & dates)
+    if not common:
+        return {tk: [] for tk in series}
+    axis = sorted(common)
+    keep = set(axis[lo:hi])
+    return {tk: [(d, c) for d, c in rows if d in keep] for tk, rows in series.items()}
+
+
+def walk_forward_blocking(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
+    """One strategy, swept walk-forward. Blocking; offload it."""
+    from app.services import walk_forward as wf
+
+    overlay = spec.get("overlay") or {}
+    param = overlay.get("sweep_param")
+    values = list(overlay.get("sweep_values") or [])
+    if not param or not values:
+        # NAMED, not omitted. `btm_factor_stack` is buy_hold and correctly has no
+        # parameter; a strategy that silently vanished from a report would read
+        # as one that was measured and found wanting.
+        return {"ok": False, "reason": "NO_SWEEP",
+                "detail": f"{spec.get('id')} declares no sweep_param; "
+                          f"there is no parameter to walk forward"}
+
+    default_value = overlay.get(param)
+    if default_value is None:
+        return {"ok": False, "reason": "NO_DEFAULT",
+                "detail": f"{spec.get('id')} sweeps {param} but does not set it, so "
+                          f"there is no 'what you already run' to compare against"}
+
+    bench_tk = benchmark_ticker or get_settings().benchmark_ticker
+    needed = sorted(set(bt.tickers_needed(spec)) | {bench_tk})
+    series, no_data, unavailable = _fetch(needed, classify=True)
+    gone = set(no_data) | set(unavailable)
+    if gone:
+        return {"ok": False, "reason": bt.MISSING_TICKER,
+                "detail": f"no usable price history for {', '.join(sorted(gone))}",
+                "no_data_tickers": sorted(no_data),
+                "unavailable_tickers": sorted(unavailable)}
+
+    bench_rows = series.get(bench_tk)
+    feed = {tk: rows for tk, rows in series.items() if tk != bench_tk} or series
+
+    common = None
+    for rows in feed.values():
+        dates = {d for d, _ in rows}
+        common = dates if common is None else (common & dates)
+    n_sessions = len(common or ())
+    fold_list = wf.folds(n_sessions)
+    if not fold_list:
+        return {"ok": False, "reason": bt.INSUFFICIENT_HISTORY,
+                "detail": (f"{n_sessions} common sessions; one fold needs "
+                           f"{wf.FIT_SESSIONS + wf.TEST_SESSIONS}")}
+
+    # RANK KEY DECIDED ONCE, per split_solver's invariant: ranking some folds on
+    # excess and others on raw CAGR would compare two questions.
+    rank_key = "excess_cagr_pct" if bench_rows else "cagr_pct"
+
+    def measure(value, fold, phase):
+        lo, hi = ((fold["fit_from"], fold["fit_to"]) if phase == "fit"
+                  else (fold["test_from"], fold["test_to"]))
+        trial = {**spec, "overlay": {**overlay, param: value}}
+        sub = _window(feed, lo, hi)
+        b = None
+        if bench_rows:
+            dates = {d for d, _ in next(iter(sub.values()), [])}
+            b = [(d, c) for d, c in bench_rows if d in dates]
+        m = bt.run(sub, trial, benchmark=b)
+        if not m.get("ok"):
+            return None
+        return m.get(rank_key)
+
+    out = wf.walk_forward(values, default_value, fold_list, measure)
+    out["strategy_id"] = spec.get("id")
+    out["param"] = param
+    out["benchmark"] = bench_tk if bench_rows else None
+    out["ranked_on"] = rank_key
+    out["sessions_available"] = n_sessions
+    untested = n_sessions - out["coverage"]["tested_through"]
+    out["coverage"]["sessions_available"] = n_sessions
+    out["coverage"]["sessions_untested_at_end"] = untested
+    out["coverage"]["untested_note"] = (
+        f"{untested} sessions at the RECENT end are in no test window. "
+        f"{n_sessions} does not divide into whole folds, and extending the last "
+        f"one would make it shorter than the rest -- which breaks the comparability "
+        f"the fixed fit length exists for. Left out and named rather than absorbed."
+        if untested > 0 else "every session after the first fit window was tested")
+    # investing-discipline SS5.
+    out["disclaimer"] = ("A measurement of your own configured strategy over the "
+                         "windows named. Nothing here changes any parameter. "
+                         "Not financial advice.")
+    return out
