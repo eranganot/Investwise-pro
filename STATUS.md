@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 14b — two questions, one clipped winner)._
+_Last updated: 2026-08-25 by Claude (PR 15 / W1 — walk-forward sweeps)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -26,7 +26,83 @@ _Seeded from git history + prior transcripts._
 | 13b | T6b — discover the sleeve count | ✅ this entry |
 | 14 | The ceiling went stale and nothing noticed | ✅ this entry |
 | 14b | Two Accept buttons, two answers; the split pinned at the cap | ✅ this entry |
-| 15 | Phase W | 🔴 not started, needs its own plan |
+| 15 | W1 — walk-forward parameter sweeps | ✅ this entry |
+| 15b | W2 — the `vol_target` regime-gate re-decision | 🔴 not started |
+| 15c | W3 — contribution modelling | 🔴 not started |
+
+---
+
+## ✅ PR 15 / W1 — walk-forward parameter sweeps, and not one strategy earns a win
+
+**Shipped 2026-08-25.** No migration. Plan: `PHASE_W_PLAN.md`.
+
+The spec calls these *"the only untested source of additional measured edge in
+the family, and a bigger lever on excess than any sleeve size"*
+(`BEAT_MARKET_TARGET_SOLVER_PLAN.md:936`). Measured across all six sweepable
+strategies:
+
+```
+btm_trend_tqqq       INCONCLUSIVE           3/6  mean  +8.49   chose 150 in 4/6
+btm_trend_soxl       FITTING_DOES_NOT_HELP  1/6  mean -21.58   chose 250 in 4/6
+btm_vol_target_tqqq  INCONCLUSIVE           4/6  mean  +3.23   chose  45 in 3/6
+btm_swing_dip        FITTING_DOES_NOT_HELP  3/6  mean  -0.11   chose   5 in 3/6
+btm_swing_breakout   FITTING_DOES_NOT_HELP  3/6  mean  -6.62   chose  30 in 3/6
+btm_factor_stack     NO_SWEEP                              buy_hold, no parameter
+btm_dual_momentum    INCONCLUSIVE           4/6  mean  +5.35   chose 315 in 4/6
+```
+
+**Not one reaches `FITTING_HELPS`.** And nothing is stable: the modal value is
+chosen in 3 or 4 folds out of 6 everywhere.
+
+### Three of those would have been wins on the mean alone
+
+`btm_trend_tqqq` averages **+8.49** while winning **three folds of six** — one or
+two folds carrying the whole figure. That is why the bar has two halves
+(`MIN_WIN_FRACTION` **and** `NOISE_FLOOR_PCT`) and why both are module constants
+set *before* any number was measured. With six folds it is trivial to decide
+afterwards what counts as a win, and that is how a sweep manufactures an edge.
+
+### The question
+
+Not *"which value wins"* — that always has an answer, the answer is always the
+in-sample winner. It is **does fitting beat not fitting**, so every fold tests
+the fitted value against the value **already in the catalog**: the counterfactual
+that existed had nobody swept. The baseline is the default, not the grid's
+median, because the median is a value nobody was running.
+
+### Two corrections to the spec
+
+Sweeps exist on **6 of 7** entries, not "every overlay" — `btm_factor_stack` is
+`buy_hold` and abstains `NO_SWEEP` **by name**, because a strategy that silently
+vanished would read as one measured and found wanting.
+
+And they **are** run — nightly, full-sample, stored in
+`StrategyBacktest.robustness`, and **read by nothing**. `robustness.sweep` has
+zero consumers anywhere. The compute was already paid and discarded; what was
+missing is the split and the selection.
+
+### Geometry in sessions, not years
+
+Second time this floor has decided a design. `_MIN_OBSERVATIONS = 260`
+(*"below this, CAGR is noise"*) and a calendar year is ~252 — the 3y/1y geometry
+recommended before the floor was found would have abstained on **every fold**.
+Rolling, 756-session fit / 260 test / 260 step: **six folds**.
+
+The fit window is fixed length on purpose — it makes the folds comparable, so
+"the parameter is stable" is a claim the data can support. It costs the last
+**197 sessions**, at the *recent* end, which are in no test window and are named
+rather than absorbed.
+
+### Nothing is written back
+
+`backtest_service` already sets the rule that a measured-better variant ships
+**off** until a human compares the numbers. A route that tuned a live strategy
+from one history would be exactly the overfitting this module detects. The trial
+spec is built per measurement and thrown away; a test asserts nothing assigns
+into the caller's overlay.
+
+**Verification:** 26 new tests. SQLite 1253 / 4 skipped; Postgres 16 1249 / 12
+skipped; `ruff check app tests` clean.
 
 ---
 
