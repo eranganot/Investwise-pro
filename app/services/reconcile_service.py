@@ -287,14 +287,14 @@ async def apply(session, user, *, scale: float, note: str = "",
         if is_cash_position(p.ticker, meta):
             continue
         before = float(p.quantity)
-        after = round(before / float(scale), 6)
+        after = round(before / float(scale), 4)
         if after <= 0:
             return {"ok": False,
                     "error": f"scale {scale} would zero {p.ticker} -- refusing"}
         rate = fx_rate(price_currency(p.market, meta))
         removed_ils = (before - after) * float(p.current_price or 0) * rate
-        from decimal import Decimal
-        p.quantity = Decimal(str(after))
+        from app.models.tables import money
+        p.quantity = money(after)
         changed.append({"ticker": p.ticker, "market": p.market,
                         "before": before, "after": after,
                         "removed_ils": round(removed_ils, 2)})

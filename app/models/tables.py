@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 from sqlalchemy import (
     JSON,
@@ -28,6 +28,32 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, PKMixin, TimestampMixin
 
 MONEY = Numeric(18, 4)
+# The scale the database actually keeps, read off the column rather than
+# repeated as a literal, so a change to MONEY cannot leave writers behind.
+_MONEY_QUANT = Decimal(1).scaleb(-(MONEY.scale or 4))
+
+
+def money(value) -> Decimal:
+    """Quantise a value to the precision the MONEY column will actually keep.
+
+    `Decimal(str(x))` preserves every digit it is handed; `Numeric(18, 4)` does
+    not. Postgres rounds on write, so the row that comes back is not the row
+    that went in -- while the identity-mapped ORM object keeps the
+    full-precision value until it is expired. An invariant that reads the ORM
+    object therefore measures a number the database will never return, which is
+    how a conservation check can pass over a book that did move.
+
+    Measured on Postgres: writing 4.712276 shares reads back 4.7123, and
+    `_rebalance_to` writes six decimal places on every leg -- ~0.12 ILS of
+    unattributed NAV per accept on a 35k book, scaling with share price and
+    position count. SQLite keeps all six digits and shows nothing, which is why
+    only `test-postgres` could ever have seen it.
+
+    Every writer of a MONEY column goes through here, so what is computed is
+    what is stored, on both databases. ROUND_HALF_EVEN is what Postgres does,
+    so the two agree exactly rather than approximately.
+    """
+    return Decimal(str(value)).quantize(_MONEY_QUANT, rounding=ROUND_HALF_EVEN)
 # Postgres uses native JSONB; SQLite (local dev) falls back to generic JSON.
 JSONB_OR_JSON = JSONB().with_variant(JSON(), "sqlite")
 

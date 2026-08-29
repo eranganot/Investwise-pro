@@ -13,7 +13,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.tables import Account, Contribution, Entity, Position, User
+from app.models.tables import Account, Contribution, Entity, Position, User, money
 from app.schemas.intake import IntakePosition
 from app.schemas.lag import LagObservation
 
@@ -82,15 +82,15 @@ async def upsert_positions(
         if row is None:
             session.add(Position(
                 account_id=account.id, ticker=ip.ticker, market=ip.market.value,
-                quantity=Decimal(str(ip.quantity)), cost_basis=Decimal(str(ip.cost_basis)),
-                current_price=Decimal(str(ip.listing_price)), lifecycle_stage="DETECTED",
+                quantity=money(ip.quantity), cost_basis=money(ip.cost_basis),
+                current_price=money(ip.listing_price), lifecycle_stage="DETECTED",
                 meta=meta,
             ))
         else:
             row.market = ip.market.value
-            row.quantity = Decimal(str(ip.quantity))
-            row.cost_basis = Decimal(str(ip.cost_basis))
-            row.current_price = Decimal(str(ip.listing_price))
+            row.quantity = money(ip.quantity)
+            row.cost_basis = money(ip.cost_basis)
+            row.current_price = money(ip.listing_price)
             row.meta = meta
     await session.flush()
     return len(positions)
@@ -126,11 +126,11 @@ async def buy_into_book(
         # Blend the basis so gain/loss stays honest after topping up.
         old_qty, old_basis = float(existing.quantity), float(existing.cost_basis or 0)
         new_qty = old_qty + shares
-        existing.quantity = Decimal(str(round(new_qty, 6)))
+        existing.quantity = money(new_qty)
         if new_qty > 0:
-            existing.cost_basis = Decimal(str(round(
-                (old_qty * old_basis + shares * price) / new_qty, 6)))
-        existing.current_price = Decimal(str(price))
+            existing.cost_basis = money(
+                (old_qty * old_basis + shares * price) / new_qty)
+        existing.current_price = money(price)
         await session.flush()
         return False
 
@@ -207,11 +207,11 @@ async def update_position(
     if market:
         row.market = market
     if quantity is not None:
-        row.quantity = Decimal(str(quantity))
+        row.quantity = money(quantity)
     if cost_basis is not None:
-        row.cost_basis = Decimal(str(cost_basis))
+        row.cost_basis = money(cost_basis)
     if current_price is not None:
-        row.current_price = Decimal(str(current_price))
+        row.current_price = money(current_price)
     if asset_class is not None:
         meta = dict(row.meta or {})
         meta["asset_class"] = asset_class

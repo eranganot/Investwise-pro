@@ -17,12 +17,11 @@ say so.
 """
 from __future__ import annotations
 
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.engines.allocation_engine import AllocationEngine
-from app.models.tables import User
+from app.models.tables import User, money
 from app.providers.registry import guarded_quote
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import Market
@@ -829,7 +828,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
         if remaining <= 0:
             await delete_position(session, user, p.ticker, p.market)
         else:
-            p.quantity = Decimal(str(round(remaining, 6)))
+            p.quantity = money(remaining)
         raised += max(0.0, gross - tax)
         tax_total += tax
         sold.append({"ticker": p.ticker, "shares": round(shares, 6),

@@ -11,13 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.models.tables import KVSetting, Position
+from app.models.tables import KVSetting, Position, money
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
 from app.services.intake_service import is_cash_position, repair_cash_row
@@ -198,7 +197,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
             continue
         meta.pop("price_stale", None)
         meta.pop("price_stale_days", None)
-        p.current_price = Decimal(str(q.price))
+        p.current_price = money(q.price)
         p.meta = meta
         by_source[used] = by_source.get(used, 0) + 1
         updated += 1

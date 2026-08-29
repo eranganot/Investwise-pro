@@ -2708,20 +2708,41 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
     """
     from collections import defaultdict
 
-    from app.services.fx import fx_rate, price_currency
+    from app.services.fx import book_nav_ils, fx_rate, position_value_ils, price_currency
+    from app.services.intake_service import is_cash_position
 
     target = (await _book_target(session, user, objective))["target"]
+    _ils = position_value_ils
 
-    def _ils(p) -> float:
-        meta = p.meta if isinstance(p.meta, dict) else {}
-        return (float(p.quantity) * float(p.current_price or 0)
-                * fx_rate(price_currency(p.market, meta)))
-
-    nav = sum(_ils(p) for p in rows)
+    # CASH IS NOT A CLASS THIS FUNCTION MAY REBALANCE.
+    #
+    # `_book_target` returns investable weights only -- Grow is
+    # {Equities .80, Fixed Income .10, Commodities .10} and there is no `Cash`
+    # key on any objective. The cash row classifies as "Cash", so
+    # `target.get("Cash", 0.0)` was 0.0, `desired` was 0.0, and accepting the
+    # card set the balance to zero and spread it across the equity legs.
+    #
+    # Measured on the seeded USD book: 621.79 ILS of cash -> 0.00, silently.
+    # NAV was conserved, so the guard below passed and so did every test. What
+    # it actually did was BUY 621.79 ILS of equities -- with no trade legs, no
+    # ledger entry, no tax, and a card that says only "Sell about X of Equities
+    # to move toward 80%" and never mentions cash. That is the card-claim
+    # invariant: a card may not produce a change it does not claim. It also
+    # drove the balance straight through the app's own cash floor
+    # (`funding_service.cash_floor_ils` -> 419.69 ILS on that book), a policy
+    # this function never consulted.
+    #
+    # A rebalance is a reshuffle of INVESTED value between investable classes.
+    # Turning cash into securities is a purchase and belongs to the funded-buy
+    # path, which writes legs and says what it bought. So cash is excluded from
+    # both the classes being scaled and the NAV they are scaled against.
+    investable = [p for p in rows
+                  if not is_cash_position(p.ticker, p.meta if isinstance(p.meta, dict) else None)]
+    nav = book_nav_ils(investable)
     if not nav:
         return
     byc = defaultdict(list)
-    for p in rows:
+    for p in investable:
         byc[classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))].append(p)
     present_weight = sum(w for c, w in target.items() if c in byc) or 1.0
     for c, rowsc in byc.items():
@@ -2735,14 +2756,29 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
             rate = fx_rate(price_currency(p.market, p.meta if isinstance(p.meta, dict) else {}))
             share = (_ils(p) / cur) if cur > 0 else 1.0 / len(rowsc)
             # desired * share is ILS; convert back to shares through the same rate.
+            # NOT rounded here: `update_position` quantises to the MONEY column's
+            # own scale. Rounding to six places first was worse than useless --
+            # the column keeps four, so the extra two digits lived in the
+            # identity-mapped object, where the check below could see them, and
+            # nowhere else. The check measured a book the database never had.
             await update_position(session, user, str(p.id),
-                                  quantity=round(desired * share / (price * rate), 6))
+                                  quantity=desired * share / (price * rate))
 
-    # A reshuffle is not a source of money. Rounding each leg to 6dp is the only
-    # licensed drift; anything larger means the arithmetic moved value and the
-    # book must not be left holding it.
+    # A reshuffle is not a source of money. Quantising each leg to the stored
+    # scale is the only licensed drift; anything larger means the arithmetic
+    # moved value and the book must not be left holding it.
+    #
+    # This is an assertion rather than a restatement only because every writer
+    # of a MONEY column now quantises to the column's own scale before the
+    # assignment (`app.models.tables.money`). The identity-mapped object and the
+    # stored row therefore hold the same number, so re-reading through the
+    # session measures the book the database has -- which, before that change,
+    # it did not: the extra two decimal places lived only in memory.
     await session.flush()
-    after = sum(_ils(p) for p in await list_positions(session, user))
+    fresh = await list_positions(session, user)
+    after = book_nav_ils([p for p in fresh
+                          if not is_cash_position(p.ticker,
+                                                  p.meta if isinstance(p.meta, dict) else None)])
     if abs(after - nav) > max(1.0, nav * 1e-6):
         raise ValueError(
             f"rebalance would have moved NAV by {after - nav:+.2f} ILS with no trade "
@@ -2764,6 +2800,73 @@ def _sale_value_ils(qty: float, price: float, basis: float, market, meta) -> tup
     return gross, tax
 
 
+# One shekel. The same figure `test_accept_conserves_nav` asserts with, stated
+# once here so the app and the test cannot drift apart on what "conserved" means.
+_NAV_TOLERANCE_ILS = 1.0
+
+
+def _book_snapshot(rows) -> dict:
+    """ticker -> (shares, price, value_ils). Enough to diff two books by eye."""
+    from app.services.fx import position_value_ils
+    return {p.ticker: (float(p.quantity), float(p.current_price or 0.0),
+                       round(position_value_ils(p), 2)) for p in rows}
+
+
+async def _conservation_report(session, user, kind: str, rec_id: str,
+                               nav_before: float, book_before: dict,
+                               detail: dict) -> dict:
+    """Measure what the accept actually did to NAV, and say so on every accept.
+
+    The invariant, from `test_accept_conserves_nav`: after an accept, NAV equals
+    NAV before minus the tax the card itself reported. Everything else is a swap.
+
+    It was enforced inside exactly ONE of the twelve actionable handlers
+    (`_rebalance_to`). The other eleven commit money changes with nothing
+    checking them, so the only thing standing behind the invariant in production
+    was a test sweeping whatever cards the engine happened to emit that run --
+    and which cards it emits varies with process-global provider state. A card
+    shape that never appears in a test run is a handler nothing has ever checked.
+
+    This does not yet REFUSE a breach, and the reason is worth stating rather
+    than leaving to be discovered: several handlers commit part-way through
+    (`update_position` commits; the funding paths commit), so by the time the
+    drift is measurable there is nothing left to roll back. Making the accept
+    atomic is a change to the commit boundaries and is deliberately not smuggled
+    in here. What this does do is make a breach ATTRIBUTABLE at the moment it
+    happens -- kind, card, drift, and the positions that moved -- instead of
+    surfacing days later as an unexplained NAV step, which is exactly how the
+    +739.21 ILS sighting arrived with nothing to diagnose it from.
+    """
+    from app.services.fx import book_nav_ils
+    try:
+        await session.flush()
+        # Trustworthy only because every MONEY writer quantises to the column's
+        # scale first (`app.models.tables.money`); otherwise this would re-read
+        # the handler's own arithmetic out of the identity map rather than the
+        # row the database will actually return on the next request.
+        rows_after = await list_positions(session, user)
+        nav_after = book_nav_ils(rows_after)
+    except Exception as exc:  # noqa: BLE001 -- measurement must never cost a trade
+        logger.warning("conservation: could not measure %s (%s): %s", kind, rec_id, exc)
+        return {}
+
+    tax = float(detail.get("tax_ils") or 0.0)
+    drift = nav_after - nav_before + tax
+    if abs(drift) > max(_NAV_TOLERANCE_ILS, abs(nav_before) * 1e-6):
+        book_after = _book_snapshot(rows_after)
+        moved = {t: (book_before.get(t), book_after.get(t))
+                 for t in sorted(set(book_before) | set(book_after))
+                 if book_before.get(t) != book_after.get(t)}
+        logger.error(
+            "NAV CONSERVATION BREACH: %s card %s moved NAV by %+.2f ILS "
+            "(%.2f -> %.2f, card reported tax %.2f). Positions that changed "
+            "(ticker: before -> after, as shares/price/value_ils): %s",
+            kind, rec_id, drift, nav_before, nav_after, tax, moved)
+    return {"nav_before_ils": round(nav_before, 2),
+            "nav_after_ils": round(nav_after, 2),
+            "nav_drift_ils": round(drift, 2)}
+
+
 async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -> dict | None:
     """Accept = apply the recommendation to holdings/plan immediately.
 
@@ -2780,6 +2883,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     rows = await list_positions(session, user)
     by_ticker = {p.ticker: p for p in rows}
     detail: dict = {}
+    # The book as it stands the instant before the handler touches it, plus a
+    # per-position snapshot so a breach can name WHICH holding moved rather than
+    # only by how much. Both are cheap; the alternative is a bare number in a
+    # test failure and a session spent guessing, which is what happened.
+    from app.services.fx import book_nav_ils
+    nav_before = book_nav_ils(rows)
+    book_before = _book_snapshot(rows)
 
     if kind == "trim":
         p = by_ticker.get(spec["ticker"])
@@ -2901,7 +3011,9 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
     # that a new handler silently opts out of. Anything that reaches this line
     # changed the book, so anything that reaches this line is recorded.
     await _record_apply(session, user, kind, rec_id, detail)
-    return {"applied": kind, "title": rec["title"], **detail}
+    conservation = await _conservation_report(
+        session, user, kind, rec_id, nav_before, book_before, detail)
+    return {"applied": kind, "title": rec["title"], **detail, **conservation}
 
 
 async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> None:

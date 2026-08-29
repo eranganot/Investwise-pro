@@ -43,3 +43,21 @@ def to_base(amount, ccy: str, base: str | None = None):
     if amount is None:
         return amount
     return amount * fx_rate(ccy, base)
+
+
+# --- one definition of what a holding is worth -------------------------------
+# Five call sites computed `quantity * current_price * fx_rate(...)` inline. The
+# formula is not the hard part; agreeing on it is. A money invariant that
+# measures the book with a different expression from the one the user is shown
+# is not an invariant, so the check and the screen read the same function.
+
+
+def position_value_ils(p, base: str | None = None) -> float:
+    """ORM Position -> value in the base currency."""
+    meta = p.meta if isinstance(p.meta, dict) else None
+    return (float(p.quantity) * float(p.current_price or 0.0)
+            * fx_rate(price_currency(p.market, meta), base))
+
+
+def book_nav_ils(rows, base: str | None = None) -> float:
+    return sum(position_value_ils(p, base) for p in rows)

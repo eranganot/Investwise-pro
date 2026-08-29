@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 15b / W2 — the gate threshold is yours)._
+_Last updated: 2026-08-29 by Claude (PR 17 — a rebalance stops spending your cash)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,99 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 17 — accepting a rebalance spent the whole cash balance
+
+Found while instrumenting the intermittent NAV leak (STATUS-V2 §1), not by
+reading the code. A different defect, deterministic, and live in production.
+
+**Root cause.** `_book_target` returns **investable** weights only — Grow is
+`{Equities .80, Fixed Income .10, Commodities .10}` and **no objective has a
+`Cash` key at all**. The CASH row classifies as the asset class `"Cash"`, so
+`_rebalance_to` looked up `target.get("Cash", 0.0)`, got `0.0`, computed a
+desired value of zero, and set the balance to zero — spreading the money across
+the equity legs.
+
+Measured on the seeded USD book: **₪621.79 of cash → ₪0.00, in one accept.** It
+also drove the balance straight through the app's own cash floor for that book
+(`funding_service.cash_floor_ils` → ₪419.69), a policy this path never consulted.
+
+**Why nothing caught it.** NAV is conserved by the move, so `_rebalance_to`'s own
+guard passed and so did every test. What it actually did was **buy ₪621.79 of
+equities** — no trade legs, no ledger entry, no tax — under a card whose text
+says only *"Sell about ₪X of Equities to move toward 80%"* and never mentions
+cash. That is the card-claim invariant on the accept path: a card may not
+produce a change it does not claim.
+
+**Fix.** A rebalance is a reshuffle of *invested* value between investable
+classes. Turning cash into securities is a purchase and belongs to the
+funded-buy path, which writes legs and says what it bought. Cash is now excluded
+from both the classes being scaled and the NAV they are scaled against. The
+proposed legs are consequently **smaller** than before, because the target
+weights now apply to invested value rather than invested value plus cash.
+
+### Two things that made it undiagnosable, fixed in the same pass
+
+**1. Six decimal places written into a four-decimal column.** Every MONEY column
+is `Numeric(18, 4)`; the writers handed it 6dp. Postgres rounds on write, the
+identity-mapped ORM object keeps all six, so a conservation check reading the
+ORM object measured a book the database never had. SQLite keeps whatever it is
+given and shows nothing — which is why only `test-postgres` could ever have seen
+it. Measured: writing `4.712276` shares reads back `4.7123`.
+
+`app.models.tables.money()` now quantises to the column's own scale — read off
+`MONEY.scale`, not repeated as a literal — and every writer goes through it:
+`upsert_positions`, `buy_into_book`, `update_position`, `pricing_service`,
+`reconcile_service`, `strategy_service`. Patch the boundary, not the call sites.
+
+**2. The conservation invariant was enforced in one handler out of twelve.**
+`_rebalance_to` checked itself; the other eleven actionable kinds changed money
+with nothing checking them. The only thing standing behind them in production
+was a test sweeping whatever cards the engine happened to emit that run — and
+which cards it emits varies with process-global provider state, so a card shape
+that never appears in a run is a handler nothing has ever checked.
+
+Every accept now returns `nav_before_ils`, `nav_after_ils`, `nav_drift_ils`, and
+logs a `NAV CONSERVATION BREACH` line at ERROR — kind, card, drift, and every
+position that moved — when the drift exceeds the tax the card reported.
+
+It **reports** rather than **refuses**, deliberately: several handlers commit
+part-way through (`update_position` commits; the funding paths commit), so by
+the time the drift is measurable there is nothing left to roll back. Making an
+accept atomic is a change to the commit boundaries and was not smuggled in here.
+**That is the follow-up**, and it is the only thing that would turn this from an
+alarm into a gate.
+
+### The +739.21 leak is NOT fixed and is not claimed to be
+
+It did not reproduce. The full Postgres suite ran green as a control before any
+change (1322 passed, 7m13s) and again after. Ruled out **by observation**, so
+nobody repeats them:
+
+- **Not `_rebalance_to`'s position writes.** Its guard compares total NAV before
+  and after across *all* positions to a 1.0 ILS tolerance, using the same
+  formula `/api/v1/portfolio` uses. A 739 ILS move cannot pass it.
+- **Not `build_recommendations` mutating the book inside the accept bracket**
+  (it is called at the top of `apply_recommendation`, before `rows` is loaded,
+  so anything it changed would be attributed to the card). Six consecutive
+  `GET /recommendations` moved NAV by exactly 0.0000.
+- **Not card order.** The sweep was re-run in emitted, reversed and
+  rebalance-last order. Worst drift 0.12 ILS — and that 0.12 *was* this cash
+  bug, now zero.
+
+The reporting above is what turns the next occurrence into evidence instead of a
+bare number. **Confidence on the remaining leak: INFERRED, nothing.** The
+observation that would settle it is a `BREACH` line from a live accept.
+
+**Gate:** SQLite 1330 passed / 4 skipped; Postgres 1326 passed / 12 skipped;
+`ruff check app tests` clean. The four new tests in
+`tests/test_rebalance_leaves_cash_alone.py` all fail on the old code.
+
+**Ship:** `scripts/deploy/ship-pr17-rebalance-leaves-cash-alone.ps1`
+**Smoke:** `scripts/smoke/smoke-rebalance-cash.ps1` (read-only; `-AllowExecute`
+accepts one rebalance card on the live book and checks the balance survives it).
+
+Not financial advice.
 
 ## ✅ PR 15b / W2 — the gate's threshold was never a measurement, so it is yours
 
