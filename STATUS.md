@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-25 by Claude (PR 15 / W1 — walk-forward sweeps)._
+_Last updated: 2026-08-25 by Claude (PR 15b / W2 — the gate threshold is yours)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -27,8 +27,65 @@ _Seeded from git history + prior transcripts._
 | 14 | The ceiling went stale and nothing noticed | ✅ this entry |
 | 14b | Two Accept buttons, two answers; the split pinned at the cap | ✅ this entry |
 | 15 | W1 — walk-forward parameter sweeps | ✅ this entry |
-| 15b | W2 — the `vol_target` regime-gate re-decision | 🔴 not started |
+| 15b | W2 — the `vol_target` regime-gate re-decision | ✅ this entry |
 | 15c | W3 — contribution modelling | 🔴 not started |
+
+---
+
+## ✅ PR 15b / W2 — the gate's threshold was never a measurement, so it is yours
+
+**Shipped 2026-08-25.** No migration, but **`ENGINE_VERSION` a4 → a5**.
+
+`MAX_CAGR_GIVEUP_PCT = 1.0` has always carried the comment that it is *"decided,
+not discovered"*. On this catalog it is also decisive —
+`btm_vol_target_tqqq`, reproduced live and matching `STATUS.md:2911`:
+
+```
+ungated   29.80%/yr at -63.51%
+gated     28.09%/yr at -55.19%
+deltas    -1.71%/yr for -8.32 points of drawdown
+```
+
+It fails **only** because 1.71 > 1.0. `STATUS.md:2931` already put the question:
+*"on a 3x leveraged sleeve, 8 points of drawdown for under 2%/yr is arguably a
+trade worth taking… whether vol_target should be switched on is Eran's call."*
+
+### Three changes, none of them a new measurement
+
+**The limit is a setting.** `gate_verdict` takes `max_giveup_pct` and reports
+which limit produced the verdict *and whether it is still the shipped one* —
+`measure()` always passes the setting, so an `is None` check would have read
+False even when nobody had changed anything.
+
+**A gate that lost on cost alone reports where it passes.**
+`would_improve_at_limit_pct` is **1.71** for `vol_target`, with a note naming
+what that limit buys. Offered **only** when the gate reduced drawdown and lost
+on cost — a gate that failed on *drawdown* cannot be rescued by any limit, and
+offering one would invite raising the limit until something passes.
+
+**The opt-in is per strategy and still off by default.** The rule is unchanged:
+the gate ships off until a human has compared the numbers. What changed is that
+saying so is no longer a code edit.
+
+### Why the engine version moved
+
+An opted-in strategy's **headline** numbers are the gated run. A gated CAGR in
+the same field as an ungated one, with nothing to tell them apart, is worse than
+not having the gate — so every row records `regime_gate_applied` and the bump
+forces a recompute rather than a silent mix. An opted-in strategy whose gated run
+*abstains* keeps its ungated numbers and says so loudly in
+`opt_in_not_honoured`.
+
+### And the comparison is finally visible
+
+`backtest_service` has run every strategy gated and ungated on each nightly
+refresh since the gate was written, and stored both. Before this change the only
+reader of `robustness` in `index.html` was `out_of_sample` — **the regime block
+was computed nightly and rendered nowhere.** A measurement nobody can see cannot
+be the human comparison the ship-off rule is waiting for.
+
+**Verification:** 17 new tests. SQLite 1270 / 4 skipped; Postgres 16 1266 / 12
+skipped; `ruff check app tests` clean.
 
 ---
 
