@@ -394,6 +394,97 @@ async def total_contributed(session: AsyncSession, user: User) -> float | None:
     return None if not count else round(float(total or 0.0), 2)
 
 
+# W3. A rate is total money over elapsed time, and both halves can be absent or
+# useless. These are the reasons a rate CANNOT be measured, each one a different
+# fact about the ledger, none of them collapsed into "0".
+RATE_NO_LEDGER = "NO_LEDGER"          # total_contributed() is None: never logged one
+RATE_SINGLE_ENTRY = "SINGLE_ENTRY"    # one row is an opening balance, not a rate
+RATE_TOO_SHORT = "TOO_SHORT"          # a span this short annualises to nonsense
+RATE_NOT_POSITIVE = "NOT_POSITIVE"    # net <= 0; withdrawals, not contributions
+
+# Below this the annualisation is arithmetic, not measurement: three weeks of
+# ledger turns a 20,000 deposit into 350,000/yr. Half a year, stated here rather
+# than buried in a conditional, because it is a judgement and not a fact.
+MIN_SPAN_DAYS = 180
+
+
+async def contribution_rate(session: AsyncSession, user: User, *, now=None) -> dict:
+    """Deposits per year MEASURED from the ledger, or a reason there is none.
+
+    Never invents a rate. The projection that consumes this shows a
+    with-contributions future only when this returns `ok`, and names the reason
+    when it does not -- an assumed savings rate on someone else's card is a
+    forecast dressed as a measurement.
+
+    **`None` is not zero, and that survives here.** A user who has never logged a
+    deposit gets `NO_LEDGER`; a user whose deposits and withdrawals cancel to
+    exactly 0 gets `NOT_POSITIVE` with `total_ils = 0.0`. Those are different
+    facts and `total_contributed()` already refuses to conflate them.
+
+    The span runs from the FIRST entry to NOW, not to the last entry: "you have
+    averaged X/yr since you started" degrades sensibly when you stop depositing,
+    whereas first-to-last would report a stale rate forever and would be
+    undefined on a single row.
+
+    TWO RATES ARE RETURNED AND ONLY ONE IS THE DEFAULT. `per_year` divides the
+    whole ledger by the span, which is what the plan specified; but the first row
+    is almost always opening capital rather than a contribution, so
+    `per_year_excluding_first` is usually the honest forward-looking figure and
+    is always the smaller one. Picking between them is the user's call and the
+    payload says so rather than choosing silently.
+    """
+    from datetime import datetime, timezone
+
+    total = await total_contributed(session, user)
+    res = await session.execute(
+        select(Contribution.amount_ils, Contribution.occurred_at)
+        .where(Contribution.subject == user.email)
+        .order_by(Contribution.occurred_at.asc()))
+    rows = res.all()
+
+    out: dict = {"ok": False, "total_ils": total, "rows": len(rows),
+                 "per_year": None, "per_year_excluding_first": None,
+                 "first_at": None, "last_at": None, "elapsed_years": None}
+    if total is None or not rows:
+        return {**out, "reason": RATE_NO_LEDGER,
+                "detail": "no deposits have ever been logged, so there is no rate to "
+                          "measure. That is not the same as a rate of zero."}
+    first_at, last_at = rows[0][1], rows[-1][1]
+    out["first_at"] = first_at.isoformat() if first_at else None
+    out["last_at"] = last_at.isoformat() if last_at else None
+    if len(rows) < 2:
+        return {**out, "reason": RATE_SINGLE_ENTRY,
+                "detail": "one entry is an opening balance. Annualising it would "
+                          "report your starting capital as a recurring deposit."}
+    if total <= 0:
+        return {**out, "reason": RATE_NOT_POSITIVE,
+                "detail": f"the ledger nets to {total:,.2f}, so there is no positive "
+                          f"contribution rate to project. Pass one explicitly if you "
+                          f"want to see a future with deposits in it."}
+    if first_at is None:
+        return {**out, "reason": RATE_TOO_SHORT,
+                "detail": "the first entry has no date, so no span can be measured."}
+    ref = now or datetime.now(timezone.utc)
+    if first_at.tzinfo is None:
+        first_at = first_at.replace(tzinfo=timezone.utc)
+    days = (ref - first_at).total_seconds() / 86400.0
+    out["elapsed_years"] = round(days / 365.25, 3)
+    if days < MIN_SPAN_DAYS:
+        return {**out, "reason": RATE_TOO_SHORT,
+                "detail": f"the ledger spans {days:.0f} days. Under {MIN_SPAN_DAYS} the "
+                          f"annualised figure is arithmetic rather than measurement."}
+    years = days / 365.25
+    first_amt = float(rows[0][0] or 0.0)
+    ex_first = max(0.0, total - first_amt) / years
+    return {**out, "ok": True, "reason": None,
+            "per_year": round(total / years, 2),
+            "per_year_excluding_first": round(ex_first, 2),
+            "detail": (f"{total:,.0f} over {years:.1f} years since your first entry. "
+                       f"Excluding that first entry ({first_amt:,.0f}), which is usually "
+                       f"opening capital rather than a contribution, the rate is "
+                       f"{ex_first:,.0f}/yr.")}
+
+
 async def list_contributions(session: AsyncSession, user: User) -> list[dict]:
     res = await session.execute(
         select(Contribution).where(Contribution.subject == user.email)

@@ -862,13 +862,22 @@ async function loadToday(){
       const lossP=Math.round((r.probability_of_loss_real||0)*100);
       const goalRow=(r.target_amount&&r.probability_meets_target!=null)
         ?`<div class="oc"><span class="k">Chance of hitting your goal</span><span class="v ${r.probability_meets_target>=.6?'ok':r.probability_meets_target>=.4?'warn':'bad'}">${Math.round(r.probability_meets_target*100)}%</span></div>`:"";
+      // W3. Every figure above assumes you never add another shekel. That was
+      // always true and the card never said it; the caveat is not optional text.
+      const wc=r.with_contributions||{};
+      const contribRow=wc.available
+        ?`<div class="oc"><span class="k">Same, if you keep adding ${ils(wc.per_year)}/yr</span><span class="v ok">${ils(wc.projected_median)}</span></div>`:"";
+      const caveat=wc.available
+        ?"The figures above assume you stop depositing today; the last row is the same book with your measured deposits kept up."
+        :"Every figure above assumes you never add another shekel — no deposits are modelled.";
       o.innerHTML=`<b>Where this could end up</b> <span class="mk">· in ${r.years} years, ${(r.runs||10000).toLocaleString()} simulations</span>
         <div class="oc"><span class="k">Expected (most likely)</span><span class="v">${ils(r.projected_median)}</span></div>
         <div class="oc"><span class="k">Worst case (5%)</span><span class="v bad">${ils(r.projected_low)}</span></div>
         <div class="oc"><span class="k">Best case (95%)</span><span class="v ok">${ils(r.projected_high)}</span></div>
         <div class="oc"><span class="k">Chance of losing money (after inflation)</span><span class="v ${lossP<=20?'ok':lossP<=40?'warn':'bad'}">${lossP}%</span></div>
-        ${goalRow}
-        <div class="mk" style="margin-top:8px">See the full picture in <span class="link" onclick="show('explore')">Explore →</span></div>`;
+        ${goalRow}${contribRow}
+        <div class="mk" style="margin-top:8px">${caveat}</div>
+        <div class="mk" style="margin-top:4px">See the full picture in <span class="link" onclick="show('explore')">Explore →</span></div>`;
       o.classList.remove("hide");
     }else o.classList.add("hide");
   }catch(e){$("outcomes").classList.add("hide");}
@@ -2791,7 +2800,20 @@ function drawProjection(r){
     cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}.`;}
   else if(r.target_amount){cap=`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`;}
   else{cap=`Likely between ${ils(p5)} and ${ils(p95)} in ${yrs} years. Set a goal in Plan to see your odds.`;}
-  $("proj_cap").innerHTML=cap+` <span class="mk">· ${(r.runs||10000).toLocaleString()} Monte Carlo runs</span>`;
+  // W3. The chart above is the NO-DEPOSIT future. Saying so is the point: this
+  // card used to drop the engine's own "no cash flows" assumption and show that
+  // line as if it were the only one available.
+  const wc=r.with_contributions||{}, xc=r.excess_comparison||{};
+  let contribLine;
+  if(wc.available){
+    contribLine=`<div style="margin-top:6px">Adding <b>${ils(wc.per_year)}/yr</b> (${wc.source==="measured"?"measured from your ledger":"as you asked"}) takes the middle line to <b class="ok">${ils(wc.projected_median)}</b> — <b>${ils(wc.uplift_median)}</b> more.</div>
+      <div class="mk">${wc.note||""}</div>`;
+    if(xc.moves_more)contribLine+=`<div class="mk" style="margin-top:4px">${xc.moves_more==="contributions"?"💰":"📈"} ${xc.note||""}</div>`;
+  }else{
+    contribLine=`<div class="mk" style="margin-top:6px">No deposits are modelled here${wc.note?` — ${wc.note}`:""} Log them in Plan to see the other line.</div>`;
+  }
+  const asm=(r.assumptions||[]).length?`<div class="mk" style="margin-top:4px">Assumes ${(r.assumptions||[]).join("; ")}.</div>`:"";
+  $("proj_cap").innerHTML=cap+` <span class="mk">· ${(r.runs||10000).toLocaleString()} Monte Carlo runs</span>`+contribLine+asm;
 }
 function drawChart(id,type,data,extra){
   if(charts[id])charts[id].destroy();

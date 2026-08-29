@@ -609,8 +609,42 @@ async def walk_forward_sweep(strategy_id: str,
     return await offload(bs.walk_forward_blocking, spec)
 
 
+# W3. The excess this compares the deposit against. One percentage point a year
+# is deliberately GENEROUS as an "admissible" improvement: PR 13's core search
+# and T6a's sleeve sizing both spend their whole budget arguing over less than
+# this. Stated here so the comparison cannot be tuned after the numbers are seen
+# -- the same rule W1's bar follows.
+EXCESS_PP = 1.0
+
+
 @router.get("/plan/projection")
-async def goal_projection(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
+async def goal_projection(contribution_per_year: float | None = None,
+                          session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """Where the book could end up -- and, since W3, what your deposits do to it.
+
+    Three simulations, because the claim Phase W actually makes is comparative:
+
+      1. **base** -- no deposits. Byte for byte the projection this endpoint has
+         always returned. Every pre-W3 key still describes THIS run.
+      2. **with_contributions** -- the same book plus a deposit rate that was
+         MEASURED from your ledger, or one you passed explicitly. Absent, with a
+         named reason, when neither exists. Never an assumed savings rate.
+      3. **excess_comparison** -- the base run again at +1pp of annual return.
+
+    (3) is not decoration. The spec's claim is that *"at the book's current NAV
+    the contribution rate moves terminal value more than any admissible excess
+    does"*, and a claim like that is either on screen next to its rival or it is
+    just a sentence. `moves_more` names the winner and can say "excess" -- if
+    deposits stop mattering at some NAV, this is what shows it.
+
+    The card also stops dropping the engine's own caveat. Until W3 `assumptions`
+    was rebuilt here from scratch and silently omitted *"no rebalancing or cash
+    flows during the horizon"*, so the card showed a no-contribution projection
+    without ever saying it was one.
+    """
+    from app.services.intake_service import contribution_rate
+
     rows = await _orm(session, user)
     stats = _portfolio_stats(rows)
     plan = await get_plan(session, user)
@@ -618,9 +652,83 @@ async def goal_projection(session: AsyncSession = Depends(get_session), user: Us
         return {"message": "Add holdings to project your goal."}
     years = max(1, plan.horizon_years if plan else 10)
     target = _auto_target(stats["nav"], plan)
-    sim = SimulationEngine(seed=7).run(
-        initial_value=stats["nav"], expected_return_pct=stats["expected_roi"] or 6.0,
-        volatility_pct=stats["volatility"] or 12.0, horizon_years=years, target_value=target)
+    roi = stats["expected_roi"] or 6.0
+    vol = stats["volatility"] or 12.0
+
+    def _run(**kw):
+        # Same seed on every run, so the three are compared on the same draws and
+        # a difference between them is the lever, not the sampler.
+        args = {"initial_value": stats["nav"], "expected_return_pct": roi,
+                "volatility_pct": vol, "horizon_years": years, "target_value": target}
+        args.update(kw)
+        return SimulationEngine(seed=7).run(**args)
+
+    sim = _run()
+
+    # THE RATE. Measured, or explicitly given, or absent with a reason.
+    measured = await contribution_rate(session, user)
+    rate, source = None, None
+    if contribution_per_year is not None:
+        rate, source = float(contribution_per_year), "override"
+    elif measured.get("ok"):
+        rate, source = measured["per_year"], "measured"
+
+    contrib_block: dict = {"available": False, "source": None,
+                           "measured": measured,
+                           "note": measured.get("detail")}
+    if rate is not None and rate > 0:
+        c = _run(contribution_per_year=rate)
+        contrib_block = {
+            "available": True, "source": source, "per_year": round(rate, 2),
+            "total_added": c.contribution_total,
+            "money_in": c.money_in, "steps": c.steps,
+            "timing": c.contribution_timing,
+            "projected_median": round(c.nominal.p50, 2),
+            "projected_low": round(c.nominal.p5, 2),
+            "projected_high": round(c.nominal.p95, 2),
+            "uplift_median": round(c.nominal.p50 - sim.nominal.p50, 2),
+            "on_track": (c.nominal.p50 >= target) if target else None,
+            "probability_meets_target": (round(c.probability_meets_target, 3)
+                                         if c.probability_meets_target is not None else None),
+            # The one that still means "did I lose money" once deposits exist.
+            "probability_of_loss_vs_money_in": (
+                round(c.probability_of_loss_vs_money_in, 3)
+                if c.probability_of_loss_vs_money_in is not None else None),
+            "measured": measured,
+            "note": (f"deposits of {rate:,.0f}/yr, {'measured from your ledger' if source == 'measured' else 'as you asked'}, "
+                     f"paid at the end of each month. Your ledger also supports "
+                     f"{measured.get('per_year_excluding_first')}/yr if the first entry was "
+                     f"opening capital rather than a contribution."
+                     if source == "measured" else
+                     f"deposits of {rate:,.0f}/yr, as you asked, paid at the end of each month."),
+        }
+    elif rate is not None:
+        contrib_block["note"] = (f"a contribution rate of {rate:,.0f}/yr is not a "
+                                 f"deposit, so the projection is unchanged.")
+
+    # THE RIVAL LEVER, so the spec's claim is checkable rather than asserted.
+    ex = _run(expected_return_pct=roi + EXCESS_PP)
+    excess_uplift = round(ex.nominal.p50 - sim.nominal.p50, 2)
+    excess_block = {
+        "extra_return_pp": EXCESS_PP,
+        "projected_median": round(ex.nominal.p50, 2),
+        "uplift_median": excess_uplift,
+        "moves_more": None,
+        "note": (f"an extra {EXCESS_PP:.1f}pp a year of return is worth "
+                 f"{excess_uplift:,.0f} at the median over {years} years."),
+    }
+    if contrib_block.get("available"):
+        cu = contrib_block["uplift_median"]
+        excess_block["moves_more"] = "contributions" if cu > excess_uplift else "excess"
+        excess_block["note"] += (
+            f" Your deposits are worth {cu:,.0f}. "
+            + ("The deposits move terminal value more, which is the whole of Phase W's "
+               "claim about a book this size."
+               if cu > excess_uplift else
+               "The extra return moves terminal value more -- at this NAV and this "
+               "deposit rate the spec's claim does not hold, and chasing the excess "
+               "is the better-paid lever."))
+
     return {
         "years": years, "starting_value": round(stats["nav"], 2),
         "projected_median": round(sim.nominal.p50, 2),
@@ -632,7 +740,13 @@ async def goal_projection(session: AsyncSession = Depends(get_session), user: Us
         "probability_of_loss_real": round(sim.probability_of_loss_real, 3),
         "probability_of_gain_real": round(sim.probability_of_gain_real, 3),
         "runs": sim.runs,
-        "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, {stats['volatility'] or 12}% volatility, over {years} years"],
+        "with_contributions": contrib_block,
+        "excess_comparison": excess_block,
+        # The engine's OWN assumptions, appended rather than replaced. The
+        # cash-flows line is the one this card used to drop.
+        "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, "
+                        f"{stats['volatility'] or 12}% volatility, over {years} years",
+                        *sim.assumptions],
     }
 
 
