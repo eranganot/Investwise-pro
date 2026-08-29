@@ -59,7 +59,13 @@ logger = logging.getLogger(__name__)
 #             excess_over_base_cagr_pct -- the strategy measured against the
 #             thing it levers, alongside the existing book benchmark. Also
 #             benchmark_ticker, now recorded on the row (T0.1 / T0.4).
-ENGINE_VERSION = "a4"
+#   a4 -> a5: W2. `regime_gate_applied` on every row, and the headline numbers
+#             for an opted-in strategy are now the GATED run. This changes what
+#             a stored row MEANS, which is exactly what the version is for -- a
+#             gated CAGR sitting in the same field as an ungated one, with
+#             nothing to tell them apart, is worse than not having the gate.
+#             The bump invalidates every row; the nightly job recomputes them.
+ENGINE_VERSION = "a5"
 
 HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularity
 STALE_AFTER_DAYS = 7
@@ -183,20 +189,50 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     # switched on: the gate ships off everywhere until a human has compared the
     # two numbers. Auto-enabling whatever measured better would be selecting on
     # one sample of history, which is what the overfitting flag exists to catch.
+    cfg = get_settings()
+    opted_in = {s.strip() for s in (cfg.regime_gate_enabled_for or "").split(",") if s.strip()}
+    enabled = spec.get("id") in opted_in
     try:
         gated = bt.run(series, spec, benchmark=bench, regime_gate=True)
         robustness["regime"] = {
-            "verdict": bt.gate_verdict(result, gated),
+            # The LIMIT is the user's now. `gate_verdict` reports which one it
+            # used and whether that was the default, so a verdict can never be
+            # read without knowing the threshold that produced it.
+            "verdict": bt.gate_verdict(result, gated,
+                                       max_giveup_pct=cfg.regime_gate_max_cagr_giveup_pct),
             "gated": ({k: v for k, v in gated.items() if k in _REGIME_KEYS}
                       if gated.get("ok") else
                       {"ok": False, "reason": gated.get("reason"),
                        "detail": gated.get("detail")}),
-            "enabled": False,
+            # STILL FALSE BY DEFAULT. The rule above is unchanged: the gate ships
+            # off until a human has compared the two numbers. What changed is
+            # that there is now a way for a human to say they have, and it is a
+            # per-strategy setting rather than a code edit.
+            "enabled": enabled,
+            "ungated": {k: v for k, v in result.items() if k in _REGIME_KEYS},
         }
+        # THE HEADLINE SWAPS ONLY FOR AN OPTED-IN STRATEGY, and only when the
+        # gated run actually measured. Falling back to the ungated numbers
+        # silently would put an ungated CAGR under a row that claims to be
+        # gated, which is the confusion `regime_gate_applied` exists to prevent.
+        if enabled and gated.get("ok"):
+            gated["robustness"] = robustness
+            gated["regime_gate_applied"] = True
+            robustness["regime"]["headline_is_gated"] = True
+            return gated
+        if enabled:
+            robustness["regime"]["headline_is_gated"] = False
+            robustness["regime"]["opt_in_not_honoured"] = (
+                f"this strategy is opted in, but the gated run abstained "
+                f"({gated.get('reason')}), so the numbers below are UNGATED")
+            logger.warning("backtest: %s is opted into the regime gate but the "
+                           "gated run abstained (%s); serving ungated numbers",
+                           spec.get("id"), gated.get("reason"))
     except Exception:  # noqa: BLE001
         logger.warning("backtest: regime comparison failed for %s", spec.get("id"),
                        exc_info=False)
 
+    result["regime_gate_applied"] = False
     result["robustness"] = robustness
     return result
 

@@ -2369,6 +2369,14 @@ function measuredProfile(s){
   const vtone=m.volatility_pct>=40?'bad':m.volatility_pct>=22?'warn':'';
   const ex=m.excess_cagr_pct, extone=ex>0?'':'warn';
   const oos=(bt.robustness||{}).out_of_sample||{};
+  // THE REGIME COMPARISON HAS BEEN COMPUTED NIGHTLY AND RENDERED NOWHERE.
+  // `backtest_service` runs the strategy gated and ungated on every refresh and
+  // stores both; grepping this file before W2, the only reader of `robustness`
+  // was `out_of_sample` two lines up. A measurement nobody can see cannot be
+  // the human comparison the "ships off until a human compares the numbers"
+  // rule is waiting for.
+  const rg=(bt.robustness||{}).regime||{};
+  const rv=rg.verdict||{};
   const p=bt.period||{};
   return `<div class="stprof">
     ${chip("Backtested","~"+m.cagr_pct+"%/yr")}
@@ -2382,6 +2390,10 @@ function measuredProfile(s){
     ${s.uses_leverage?`<span class="stchip bad">⚠ Uses leverage</span>`:""}
     ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split">⚠ Likely overfitted</span>`:""}
     ${oos.verdict==='holds up'?`<span class="stchip">Held up out of sample</span>`:""}
+    ${rg.headline_is_gated?`<span class="stchip" title="These numbers ARE the gated run. The ungated pair is ${rg.ungated?rg.ungated.cagr_pct+"%/yr at -"+rg.ungated.max_drawdown_pct+"%":"not recorded"}.">Regime gate ON</span>`:""}
+    ${(rv.comparable&&rv.improves&&!rg.enabled)?`<span class="stchip warn" title="${rv.why}. Not switched on: the gate ships off until you turn it on.">Gate would improve this</span>`:""}
+    ${rv.would_improve_at_limit_pct!=null?`<span class="stchip warn" title="${rv.flip_note}">Gate: ${Math.abs(rv.max_drawdown_delta_pct)} pts shallower for ${Math.abs(rv.cagr_delta_pct)}%/yr &mdash; passes at a ${rv.would_improve_at_limit_pct}%/yr limit</span>`:""}
+    ${rg.opt_in_not_honoured?`<span class="stchip bad" title="${rg.opt_in_not_honoured}">Gate opted in but NOT applied</span>`:""}
   </div>
   <div class="ds" style="font-size:11px;opacity:.7">Measured on real prices ${p.start||""}→${p.end||""} (${p.observations||0} sessions), net of 25% CGT and dealing costs. A backtest is one path through one sample of history, not a forecast.${bt.stale?" ⚠ These numbers are stale.":""}${(!bt.ok||bt.refresh_failing)?` ⚠ Refresh has been failing since ${(bt.last_error_at||"").slice(0,10)||"recently"} (${bt.reason||bt.last_error||"unknown"}) — the figures above are the last good measurement${bt.computed_at?`, from ${bt.computed_at.slice(0,10)}`:""}.`:""}</div>`;
 }

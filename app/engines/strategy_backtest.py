@@ -622,26 +622,47 @@ def _apply_regime_gate(targets: list[dict], allow, spec: dict) -> list[dict]:
     return [dict(t) if bool(a) else dict(off) for t, a in zip(targets, allow)]
 
 
-def gate_verdict(ungated: dict, gated: dict) -> dict:
+def gate_verdict(ungated: dict, gated: dict, *,
+                 max_giveup_pct: float | None = None) -> dict:
     """Did the regime gate earn its place on this strategy?
 
     Criterion (decided, not discovered): a shallower max drawdown at no worse
-    than ``MAX_CAGR_GIVEUP_PCT`` of annual return. A regime filter almost always
+    than ``max_giveup_pct`` of annual return. A regime filter almost always
     trades a little CAGR for a lot less drawdown -- that trade IS the product, so
     judging on CAGR alone would reject a gate doing its job. Judging on drawdown
     alone would bless one that simply refuses to invest.
 
+    **THE LIMIT IS NOW AN ARGUMENT, because it was never a measurement.** The
+    module comment has always said so -- "a filter that costs more than a point
+    a year is buying that shelter too dearly" is a preference about money, and
+    1.0 is where somebody put it. On this catalog it is also decisive:
+    `vol_target` buys 8.32 points of drawdown for 1.71%/yr and fails ONLY
+    because 1.71 > 1.0. STATUS.md:2931 already records that "on a 3x leveraged
+    sleeve, 8 points of drawdown for under 2%/yr is arguably a trade worth
+    taking... whether vol_target should be switched on is Eran's call."
+
+    A number that decides a verdict and belongs to the user has to be settable
+    by the user. `None` keeps the historical default, so no existing caller
+    changes behaviour.
+
     Returns the verdict AND both deltas, so the card can show the trade rather
-    than only the conclusion.
+    than only the conclusion -- plus, when the gate failed on cost alone, the
+    limit at which it would pass. "It failed" and "it would pass at 1.8" are the
+    same measurement, and only the second is a decision the reader can make.
     """
+    limit = MAX_CAGR_GIVEUP_PCT if max_giveup_pct is None else float(max_giveup_pct)
     if not (ungated.get("ok") and gated.get("ok")):
         return {"comparable": False,
                 "reason": "one of the two runs abstained, so they cannot be compared"}
     d_cagr = round(gated["cagr_pct"] - ungated["cagr_pct"], 2)
     d_dd = round(gated["max_drawdown_pct"] - ungated["max_drawdown_pct"], 2)
     shallower = d_dd < 0
-    affordable = d_cagr >= -MAX_CAGR_GIVEUP_PCT
+    affordable = d_cagr >= -limit
     improves = bool(shallower and affordable)
+    # Only meaningful when the gate DID reduce drawdown and lost on cost. A gate
+    # that failed on drawdown cannot be rescued by any limit, and offering one
+    # would invite raising the limit until something passes.
+    flips_at = (round(abs(d_cagr), 2) if (shallower and not affordable) else None)
     if improves:
         why = (f"drawdown {abs(d_dd):.1f} points shallower for "
                f"{('+' if d_cagr >= 0 else '')}{d_cagr:.1f}%/yr")
@@ -649,10 +670,22 @@ def gate_verdict(ungated: dict, gated: dict) -> dict:
         why = f"drawdown was not reduced ({d_dd:+.1f} points)"
     else:
         why = (f"drawdown {abs(d_dd):.1f} points shallower, but it cost "
-               f"{abs(d_cagr):.1f}%/yr -- more than the {MAX_CAGR_GIVEUP_PCT:.0f}%/yr limit")
+               f"{abs(d_cagr):.1f}%/yr -- more than the {limit:g}%/yr limit")
     return {"comparable": True, "improves": improves, "why": why,
             "cagr_delta_pct": d_cagr, "max_drawdown_delta_pct": d_dd,
-            "cagr_giveup_limit_pct": MAX_CAGR_GIVEUP_PCT,
+            "cagr_giveup_limit_pct": limit,
+            # Whether the number is still the one this module shipped with, NOT
+            # whether the caller happened to pass it. `measure()` always passes
+            # the setting, so `is None` would have read False even when nobody
+            # had changed anything -- and "the user chose this limit" is exactly
+            # the claim a reader needs to be able to check.
+            "limit_is_default": abs(limit - MAX_CAGR_GIVEUP_PCT) < 1e-9,
+            "would_improve_at_limit_pct": flips_at,
+            "flip_note": (
+                f"it would pass at a limit of {flips_at:g}%/yr or higher. That is "
+                f"a decision about what you are willing to pay for "
+                f"{abs(d_dd):.1f} points of drawdown, not a further measurement."
+                if flips_at is not None else None),
             "observations_match": ungated.get("observations") == gated.get("observations")}
 
 

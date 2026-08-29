@@ -45,6 +45,25 @@ class Settings(BaseSettings):
 
     # Risk engine (Section 4.4)
     max_drawdown_cap: float = 0.20
+
+    # W2 -- the regime gate's two user-owned numbers.
+    #
+    # `strategy_backtest.MAX_CAGR_GIVEUP_PCT` has always carried the comment
+    # that it is "decided, not discovered", and on this catalog it is decisive:
+    # vol_target buys 8.32 points of drawdown for 1.71%/yr and fails ONLY
+    # because 1.71 > 1.0. A number that settles a verdict and expresses a
+    # preference about money belongs to the user, not to a module.
+    regime_gate_max_cagr_giveup_pct: float = 1.0
+
+    # Comma-separated strategy ids whose HEADLINE numbers are measured with the
+    # gate ON. Empty by default, and that default is the rule
+    # `backtest_service` already states: "the gate ships off everywhere until a
+    # human has compared the two numbers." This is how a human says they have.
+    #
+    # It changes what the stored row MEANS, so `ENGINE_VERSION` moved with it
+    # and every row records `regime_gate_applied` -- a gated number that cannot
+    # be told from an ungated one is worse than no gate at all.
+    regime_gate_enabled_for: str = ""
     volatility_cap: float = 0.15
     monte_carlo_runs: int = 10_000
     risk_horizon_years: float = 1.0
