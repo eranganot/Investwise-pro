@@ -84,9 +84,48 @@ def test_single_currency_book_returns_are_unchanged_by_conversion(priced):
 
 
 def test_a_missing_rate_is_reported_not_assumed(priced, monkeypatch):
-    """fx_rate fails safe to 1.0. On a foreign currency that is a missing rate,
-    not a parity -- it must surface rather than value a dollar as a shekel."""
+    """A rate that was never obtainable must surface, not pass as a parity.
+
+    `fx_rate` returns 1.0 as its last resort. On a FOREIGN currency that means
+    "no idea", not a peg -- valuing a dollar as a shekel is exactly the invented
+    number investing-discipline forbids.
+
+    The cache is cleared deliberately: this is the branch where nothing was ever
+    known about USD/ILS. The branch where a real rate is known but no longer
+    current is a different answer, and is the test below.
+    """
     import app.providers.registry as registry
+
+    from app.services import fx as fxmod
+
+    def _down(ccy, base):
+        raise RuntimeError("fx provider unavailable")
+
+    fxmod._LAST_GOOD_RATE.clear()
+    monkeypatch.setattr(registry, "guarded_fx", _down, raising=False)
+    out = ps._performance_from([("MSFT", 10.0, "NASDAQ", {})], 252)
+
+    assert out["degraded"] == ["fx"]
+    assert out["unconverted_holdings"] == [{"ticker": "MSFT", "currency": "USD"}]
+
+
+def test_an_outage_after_a_good_rate_converts_and_says_it_is_not_current(priced, monkeypatch):
+    """Stale is not the same failure as missing, and must not be reported as one.
+
+    Falling back to 1.0 on a pair the app has already priced does not fail safe:
+    USD/ILS is ~3.70, so it would value the whole USD book at 27% of its worth
+    and call that a measurement. The last rate that actually resolved is a far
+    better answer -- but the reading is no longer current, and the payload has to
+    say so, or a caveat quietly becomes a lie.
+    """
+    import app.providers.registry as registry
+
+    from app.services import fx as fxmod
+
+    fxmod._LAST_GOOD_RATE.clear()
+    # One good read first, so a last-known rate for the pair exists.
+    good = ps._performance_from([("MSFT", 10.0, "NASDAQ", {})], 252)
+    assert not good.get("degraded"), "the control read should be clean"
 
     def _down(ccy, base):
         raise RuntimeError("fx provider unavailable")
@@ -94,8 +133,13 @@ def test_a_missing_rate_is_reported_not_assumed(priced, monkeypatch):
     monkeypatch.setattr(registry, "guarded_fx", _down, raising=False)
     out = ps._performance_from([("MSFT", 10.0, "NASDAQ", {})], 252)
 
-    assert out["degraded"] == ["fx"]
-    assert out["unconverted_holdings"] == [{"ticker": "MSFT", "currency": "USD"}]
+    assert out["degraded"] == ["fx"], "an outage must still be reported"
+    assert out["stale_fx_holdings"] == [{"ticker": "MSFT", "currency": "USD"}]
+    assert out["unconverted_holdings"] == [], (
+        "the holding WAS converted, at a real rate -- reporting it as "
+        "unconverted would be as wrong as saying nothing")
+    # And the point of the whole change: the book did not collapse to par.
+    assert out["start_value"] == pytest.approx(good["start_value"])
 
 
 def test_excess_is_available_on_both_bases(priced):

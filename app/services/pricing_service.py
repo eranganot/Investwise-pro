@@ -19,6 +19,7 @@ from app.core.config import get_settings
 from app.models.tables import KVSetting, Position, money
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
+from app.services.fx import major_unit, to_major_units
 from app.services.intake_service import is_cash_position, repair_cash_row
 
 logger = logging.getLogger("investwise.pricing")
@@ -117,6 +118,8 @@ async def refresh_all_positions(session, positions=None) -> dict:
     by_source: dict[str, int] = {}
     updated = failed = skipped = repaired = stale = 0
     unknown_from_primary = 0
+    minor_units = 0          # quotes that arrived in agorot / pence
+    repaired_minor = 0       # rows a previous refresh stored in agorot / pence
     stale_tickers: list[dict] = []
     prices: list[dict] = []
     errors: list[dict] = []
@@ -135,6 +138,29 @@ async def refresh_all_positions(session, positions=None) -> dict:
             if repair_cash_row(p):
                 repaired += 1
             continue
+
+        # Heal a row a PREVIOUS refresh stamped in agorot or pence, before doing
+        # anything else with it. Deliberately not left to the fresh quote below:
+        # a ticker whose quote fails, or whose quote is stale, keeps the price it
+        # already has -- so on exactly the runs where the row is least likely to
+        # be rewritten, the 100x value would survive another cycle. Same shape as
+        # `repair_cash_row`, and the same reason: the corrupted rows are already
+        # written and nothing else goes back for them.
+        _pm = p.meta if isinstance(p.meta, dict) else {}
+        _stamped = str(_pm.get("price_currency") or "")
+        if _stamped:
+            _major, _per = major_unit(_stamped)
+            if _per != 1.0:
+                _before = float(p.current_price or 0)
+                p.current_price = money(_before / _per)
+                p.meta = {**_pm, "price_currency": _major,
+                          "price_currency_quoted": _stamped,
+                          "price_currency_repaired": True}
+                repaired_minor += 1
+                logger.warning("repriced %s from %s %.4f to %s %.4f - it was "
+                               "stored in a minor unit and valued at %gx",
+                               tk, _stamped, _before, _major, _before / _per, _per)
+
         if tk not in quote_cache:
             q, used = None, None
             try:
@@ -177,7 +203,28 @@ async def refresh_all_positions(session, positions=None) -> dict:
             if yq is not None:
                 state, as_of, aged = quote_freshness(yq, now)
 
-        meta = {**(p.meta or {}), "price_source": used, "price_currency": q.currency}
+        # THE BOUNDARY. Everything downstream reads `current_price` alongside
+        # `price_currency` and trusts the pair. Tel Aviv quotes AGOROT and calls
+        # them "ILA"; London quotes PENCE and calls them "GBp". Verified live on
+        # 2026-08-29: TEVA.TA came back ILA 11030.0, which is 110.30 ILS.
+        #
+        # Stamping the quote verbatim put a 100x price and a currency code no FX
+        # provider knows into the row. The rate lookup then resolved to 1.0 --
+        # once silently (the builtin provider has no ILA pair and returns 1.0
+        # without erroring) and once through the fail-safe (the live provider
+        # raises). Either way the holding was valued at a hundred times its
+        # worth, in NAV and in everything sized against NAV.
+        #
+        # Normalised here, once, so that no consumer has to know which exchanges
+        # do this. `to_major_units` is the only place the list lives.
+        q_price, q_ccy = to_major_units(q.price, q.currency)
+        quoted_ccy = (q.currency or "").strip()
+        meta = {**(p.meta or {}), "price_source": used, "price_currency": q_ccy}
+        if q_ccy != quoted_ccy:
+            # Keep what the provider actually said. A normalisation that erases
+            # its own input cannot be audited afterwards.
+            meta["price_currency_quoted"] = quoted_ccy
+            minor_units += 1
         meta["price_as_of"] = as_of or q.as_of
         # Say which of the three states we are in rather than leaving the reader
         # to infer it from an absent key.
@@ -192,16 +239,16 @@ async def refresh_all_positions(session, positions=None) -> dict:
             stale += 1
             stale_tickers.append({"ticker": tk, "as_of": as_of, "trading_days": aged})
             prices.append({"ticker": tk, "price": float(p.current_price or 0),
-                           "currency": q.currency, "as_of": as_of, "source": used,
+                           "currency": q_ccy, "as_of": as_of, "source": used,
                            "stale": True, "not_written": True})
             continue
         meta.pop("price_stale", None)
         meta.pop("price_stale_days", None)
-        p.current_price = money(q.price)
+        p.current_price = money(q_price)
         p.meta = meta
         by_source[used] = by_source.get(used, 0) + 1
         updated += 1
-        prices.append({"ticker": tk, "price": q.price, "currency": q.currency,
+        prices.append({"ticker": tk, "price": q_price, "currency": q_ccy,
                        "as_of": meta["price_as_of"], "source": used,
                        "stale": False, "freshness": state})
 
@@ -220,9 +267,19 @@ async def refresh_all_positions(session, positions=None) -> dict:
             "%s supplied no venue timestamp for %d quote(s); freshness fell back to "
             "the Yahoo cross-check. If this is every ticker, the primary cannot "
             "support a staleness check on its own.", primary.name, unknown_from_primary)
+    if repaired_minor:
+        logger.warning("price refresh: repaired %d position(s) that were stored "
+                       "in a minor unit and therefore valued 100x too high",
+                       repaired_minor)
+    if minor_units:
+        logger.info("price refresh: %d quote(s) arrived in a minor unit "
+                    "(agorot / pence) and were normalised to the major unit",
+                    minor_units)
     return {"updated": updated, "failed": failed, "skipped_cash": skipped,
             "unknown_from_primary": unknown_from_primary,
             "repaired_cash": repaired, "stale": stale,
+            "minor_unit_quotes": minor_units,
+            "repaired_minor_unit_rows": repaired_minor,
             "stale_tickers": stale_tickers, "by_source": by_source,
             "prices": prices, "errors": errors}
 

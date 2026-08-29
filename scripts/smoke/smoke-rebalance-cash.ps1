@@ -25,15 +25,12 @@ param(
 
 # No key baked in. Every other script in this folder carries the live
 # AGENT_API_KEY as a literal - 34 files of it, and rotating that key is an open
-# backlog item. This one does not add a 35th.
-if (-not $env:IW_AGENT_KEY) {
-    Write-Host ""
-    Write-Host "  IW_AGENT_KEY is not set. Set it for this session:" -ForegroundColor Yellow
-    Write-Host '    $env:IW_AGENT_KEY = "<your agent key>"' -ForegroundColor White
-    Write-Host ""
-    exit 1
-}
-$ApiHeaders = @{ 'x-agent-key' = $env:IW_AGENT_KEY }
+# backlog item. This one does not add a 35th; it asks the one helper that knows
+# where the key lives, so rotating it later is a one-line change.
+. "$PSScriptRoot\..\agent-key.ps1"
+$AgentKey = Get-AgentKey
+if (-not $AgentKey) { exit 1 }
+$ApiHeaders = @{ 'x-agent-key' = $AgentKey }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
 
 function Sec($m) { Write-Host ""; Write-Host "-- $m" -ForegroundColor Cyan }

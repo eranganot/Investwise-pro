@@ -141,6 +141,14 @@ async def get_portfolio(entity: str | None = None,
             "price_stale": bool((p.meta or {}).get("price_stale")),
             "price_freshness": (p.meta or {}).get("price_freshness"),
             "price_stale_days": (p.meta or {}).get("price_stale_days"),
+            # What the provider actually said, when it is not what we stored.
+            # Tel Aviv quotes agorot and calls them "ILA"; London quotes pence
+            # and calls them "GBp". Both are normalised to the major unit on the
+            # way in, and this is how a reader outside the process can tell that
+            # it happened. The whole failure was that it did not happen and
+            # nothing said so either way.
+            "price_currency_quoted": (p.meta or {}).get("price_currency_quoted"),
+            "price_currency_repaired": bool((p.meta or {}).get("price_currency_repaired")),
         })
     # "What you put in" is external money, not the book's current cost basis.
     # The basis sum drifts for three reasons that are not deposits: it is

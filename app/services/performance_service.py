@@ -68,13 +68,14 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
                       history_days: int) -> dict:
     """The blocking half of performance(): one history fetch per holding plus
     the benchmark, all synchronous urllib. Pure -- no session, no ORM."""
-    from app.services.fx import fx_rate, price_currency
+    from app.services.fx import fx_rate_with_status, price_currency
 
     cfg = get_settings()
     base = (getattr(cfg, "base_currency", None) or "ILS").upper()
 
     qty, maps, rate = {}, {}, {}
     unconverted: list[dict] = []
+    stale_fx: list[dict] = []
     for ticker, quantity, market, meta in holdings:
         try:
             series = guarded_history(ticker, history_days)  # [(date, close)]
@@ -83,14 +84,26 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
         if len(series) < 3:
             continue
         ccy = price_currency(market, meta)
-        r = fx_rate(ccy, base)
-        # fx_rate fails SAFE to 1.0 so valuation never crashes. On a FOREIGN
-        # currency a 1.0 is a missing rate, not a parity -- valuing a shekel
-        # holding as though it were a dollar is exactly the invented number
-        # investing-discipline forbids. Record it and report it degraded;
-        # never let it pass as a measurement.
-        if ccy != base and r == 1.0:
-            unconverted.append({"ticker": ticker, "currency": ccy})
+        r, fx_status = fx_rate_with_status(ccy, base)
+        # THE STATUS, NOT THE VALUE. This used to read `ccy != base and r == 1.0`
+        # -- inferring "the rate is missing" from the sentinel `fx_rate` returned
+        # on failure. That was the only signal available, and it cannot tell a
+        # genuine parity from a failure, nor either of those from a real rate
+        # that is simply not current. `fx_rate_with_status` says which of the
+        # three happened, so the report describes what occurred instead of
+        # guessing from a number.
+        if ccy != base:
+            if fx_status == "unresolved":
+                # No rate, ever, for this pair. The 1.0 means "no idea", and
+                # valuing a dollar as a shekel is exactly the invented number
+                # investing-discipline forbids. Never let it pass as a
+                # measurement.
+                unconverted.append({"ticker": ticker, "currency": ccy})
+            elif fx_status == "stale":
+                # Converted at a REAL rate, just not today's. The values are
+                # roughly right and the reading is not current; saying so is the
+                # difference between a caveat and a lie.
+                stale_fx.append({"ticker": ticker, "currency": ccy})
         qty[ticker] = quantity
         maps[ticker] = {d: c for d, c in series}
         rate[ticker] = r
@@ -146,7 +159,9 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
         "dates": ds_dates, "portfolio_index": pidx,
         "benchmark_index": bidx if bench_map else None,
     }
-    if unconverted:
+    if unconverted or stale_fx:
         out["degraded"] = ["fx"]
         out["unconverted_holdings"] = unconverted
+        if stale_fx:
+            out["stale_fx_holdings"] = stale_fx
     return out

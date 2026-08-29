@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-29 by Claude (PR 17 — a rebalance stops spending your cash)._
+_Last updated: 2026-08-29 by Claude (PR 18 — agorot and pence stop being shekels and pounds)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,113 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 18 — agorot and pence were valued as shekels and pounds
+
+Found while asking why no card ever names a Tel Aviv listing. It is a separate
+defect from that one, it is a **money** defect, and it needs no TASE feature work
+to reach a real book: the holdings form already offers Tel Aviv and London
+(`index.html:267`).
+
+**Root cause.** Several exchanges quote in a **minor unit** and say so in the
+*currency code* rather than in the price. Verified live against the same Yahoo
+endpoint `YahooMarketDataProvider` calls, 2026-08-29:
+
+| symbol | quoted currency | quoted price | actually |
+|---|---|---|---|
+| `TEVA.TA` | `ILA` | 11030.0 | ₪110.30 |
+| `POLI.TA` | `ILA` | 7761.0 | ₪77.61 |
+| `ESLT.TA` | `ILA` | 211190.0 | ₪2,111.90 |
+| `VOD.L` | `GBp` | 118.45 | £1.1845 |
+| `AAPL` | `USD` | 319.70 | $319.70 — no trap |
+
+`pricing_service` stamped `price_currency` straight from the quote, so the
+position carried `"ILA"` and a price a hundred times too big. Nothing downstream
+knew that code, and **both FX providers answered anyway**:
+
+- the **builtin** provider has no `ILA` pair, so `get_rate` falls through to
+  `rate = 1.0` and returns it **without erroring** — indistinguishable from a
+  legitimate peg;
+- the **live** provider raises, and `fx.fx_rate` caught everything and returned
+  1.0, which its own docstring called *"failing safe"*.
+
+Either way agorot were valued as shekels. Measured in the new test: a book of 100
+Teva shares worth **₪11,030 reads as ₪1,103,000**. NAV, gain %, the allocation
+mix, the concentration caps and every card sized against NAV inherit it — with no
+exception and no log line.
+
+**Fixed at the boundary, not at the thirteen call sites.** `fx.to_major_units`
+converts a quoted price into its major unit and `pricing_service` calls it once,
+before stamping. A normalisation each consumer has to remember is one a new
+consumer silently opts out of — the same lesson as the funding path.
+
+**The trap inside the trap: `"GBp".upper() == "GBP"`.** Pence upper-case to the
+major currency they are one hundredth of, so uppercasing before the lookup turns
+the detection into a no-op for exactly the currency that most needs it. The raw
+code is matched first and `GBP` is excluded from the case-insensitive pass. There
+is a test for this alone.
+
+### The 1.0 fallback was not safe, and is no longer a default
+
+It was reached in two very different situations and only one is survivable:
+
+- **the provider wobbled on a currency it knows.** Falling back to 1.0 values a
+  USD book at **27%** of its worth, because USD/ILS is ~3.71. The last rate that
+  actually resolved is remembered per pair and served with a warning.
+- **the code is one the provider has never heard of** — how `ILA` got valued at
+  par. That is a wrong input, not a wobble, and it now says so at ERROR.
+
+It still **returns** rather than raises: thirteen call sites do arithmetic on the
+result. What it no longer does is fail *silently*.
+
+**And the status had to become a separate thing from the value.**
+`performance_service` decided a rate was missing by testing `r == 1.0` — the only
+signal there was. That cannot tell a genuine parity from a failure, nor either
+from a real rate that simply is not current. `fx_rate_with_status` returns
+`live | stale | unresolved`; `unresolved` still reports
+`unconverted_holdings`, `stale` reports the new `stale_fx_holdings`, and both
+mark the payload `degraded`. `fx_rate` keeps its old signature for callers that
+only want the number.
+
+*The existing `test_a_missing_rate_is_reported_not_assumed` went red on this and
+was **not** weakened to suit the change — it now clears the cache to pin the
+never-known branch, and a second test covers the stale branch.*
+
+### Repair for rows already written
+
+A position stamped in a minor unit is renormalised at the **top** of the refresh
+loop, before the quote. Deliberately: a ticker whose quote fails or is stale
+keeps the price it already has, so on exactly the runs where the row is least
+likely to be rewritten, the 100× value would survive another cycle. Same shape
+and same reason as `repair_cash_row`.
+
+The refresh reports `minor_unit_quotes` and `repaired_minor_unit_rows`, and the
+position payload carries `price_currency_quoted` — so the normalisation is
+auditable from outside the process rather than inferred. The whole failure was
+that it did not happen and nothing said so either way.
+
+**This is the prerequisite for PR 24** (real Tel-Aviv candidates). Adding `.TA`
+names on top of the un-normalised path would have multiplied the exposure.
+
+### Also in here: `scripts/agent-key.ps1`
+
+The smoke script needed a key and there is no create-a-key endpoint —
+`config.py:140` reads one `AGENT_API_KEY` and `auth.py:115` compares the header
+to it. A new key means changing the Railway variable, which instantly breaks the
+**34 committed scripts** that bake the old one in. This helper is what makes
+rotating it a one-line change instead of a 34-file change: `$env:IW_AGENT_KEY`,
+then a git-ignored `scripts/.agent-key`, then the literal already committed —
+saying out loud when it falls that far. **It does not rotate the key.**
+
+**Gate:** SQLite 1342 passed / 4 skipped; Postgres 1338 passed / 12 skipped; `ruff check app tests`
+clean. All eleven tests in `tests/test_minor_unit_currencies.py` fail on the old
+code.
+
+**Ship:** `scripts/deploy/ship-pr18-minor-unit-currencies.ps1`
+**Smoke:** `scripts/smoke/smoke-minor-units.ps1` (read-only; `-AllowRefresh`
+triggers the reprice that repairs a row already stored in agorot).
+
+Not financial advice.
 
 ## ✅ PR 17 — accepting a rebalance spent the whole cash balance
 
