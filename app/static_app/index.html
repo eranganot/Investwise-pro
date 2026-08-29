@@ -837,6 +837,12 @@ async function loadToday(){
     $("score").textContent=s;$("barfill").style.width=s+"%";$("barfill").style.background=rCol(s);
     $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
       .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
+    // PR 16. Risk is the chip that decides this score (weight 0.30), and it is
+    // driven entirely by the book's assumed volatility. Say which volatility.
+    const vb=h.volatility_basis||"static", vs=h.avg_volatility_pct_static;
+    $("dims").innerHTML+=vb==="measured"
+      ? `<div class="mk" style="margin-top:6px">Risk is scored on <b>${h.avg_volatility_pct}%</b> volatility measured from your own strategies (${h.measured_pct_of_book}% of the book) against your <b>${h.volatility_cap_pct}%</b> cap${vs!=null&&vs!==h.avg_volatility_pct?` — the instrument table would have said ${vs}%`:""}.</div>`
+      : `<div class="mk" style="margin-top:6px">⚠️ Risk is scored on <b>${h.avg_volatility_pct}%</b> assumed volatility against your <b>${h.volatility_cap_pct}%</b> cap. That figure is the instrument table, not a measurement of the rules you run.</div>`;
   }catch(e){}
   try{const r=await(await fetch("/api/v1/recommendations")).json();
     // Which triggered rules actually produced a card. Re-render the banner now
@@ -2638,7 +2644,14 @@ function renderPlanNote(p){const cap=p.caps?p.caps.concentration_cap:0.25;
   $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance the agents allow up to <b>${pct(cap)}</b> in any single holding before flagging it — and they veto trades that breach your limits. Change anything here and your health, recommendations and the agents all adjust.`;}
 function renderRoi(p){const e=$("roi_note");
   if(p.portfolio_expected_roi_pct!=null&&p.roi_annual_target_pct){e.style.display="block";
-    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`;}
+    // PR 16. The basis, always. This banner used to state a forward return with
+    // no hint that it came from a table pricing TQQQ as buy-and-hold.
+    const meas=p.assumption_basis&&p.assumption_basis!=="static";
+    const wasStatic=p.portfolio_expected_roi_pct_static;
+    const basisLine=meas
+      ?`<div class="mk" style="margin-top:3px">Measured from your own strategies (${p.measured_pct_of_book}% of the book)${wasStatic!=null&&wasStatic!==p.portfolio_expected_roi_pct?` — the instrument table would have said ~${wasStatic}%/yr`:""}. Measured is what happened, not a forecast.</div>`
+      :`<div class="mk" style="margin-top:3px">⚠️ Not measured — this is the instrument table, which prices a leveraged fund as if you held it buy-and-hold. Your sleeves are rules that sit out of it some of the time.</div>`;
+    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`+basisLine;}
   else e.style.display="none";}
 async function savePlan(){
   const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,

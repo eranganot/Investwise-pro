@@ -24,7 +24,20 @@ def _opp_id(*parts) -> str:
     return "opp_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
 
 
-def compute_snapshot(positions: list[dict]) -> dict:
+def compute_snapshot(positions: list[dict], volatility_override_pct: float | None = None) -> dict:
+    """Book totals, exposures, and the weighted volatility the Risk score reads.
+
+    PR 16 -- `volatility_override_pct` is the book volatility measured from the
+    strategies actually being run (`measured_assumptions.book_assumptions`).
+    Without it the per-ticker table is used, which prices a 3x leveraged fund at
+    55% BUY-AND-HOLD volatility and so scored a trend-filtered sleeve as though
+    the trend filter did not exist.
+
+    OMITTED, THIS IS EXACTLY WHAT IT WAS. Eight call sites read this function
+    and most are sync paths with no session to load a measurement from; they
+    keep today's numbers. `avg_volatility_pct_static` is always reported, so
+    wherever an override IS passed the two remain comparable.
+    """
     from app.services.fx import price_currency, fx_rate
     rows = []
     for p in positions:
@@ -69,7 +82,11 @@ def compute_snapshot(positions: list[dict]) -> dict:
         "nav": nav, "n_positions": len(rows), "rows": rows,
         "exposure_geo": exposure_geo, "exposure_cur": exposure_cur, "exposure_ticker": exposure_ticker,
         "max_weight": max(exposure_ticker.values(), default=0.0),
-        "avg_volatility_pct": vol_weighted,
+        "avg_volatility_pct": (float(volatility_override_pct)
+                               if volatility_override_pct is not None else vol_weighted),
+        # Always both, so a reader can see what the Risk score would have been.
+        "avg_volatility_pct_static": vol_weighted,
+        "volatility_basis": ("measured" if volatility_override_pct is not None else "static"),
         "liquidity_avg": liq_weighted if nav else 70.0,
         "unrealized_gains": sum(r["unrealized"] for r in rows if r["unrealized"] > 0),
         "unrealized_losses": sum(-r["unrealized"] for r in rows if r["unrealized"] < 0),

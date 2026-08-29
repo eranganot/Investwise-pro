@@ -1,4 +1,6 @@
 """Planning / goals + goal projector + mix check."""
+import logging
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +16,7 @@ from app.services.intake_service import list_positions
 from app.services import strategy_catalog
 from app.services.plan_service import effective_caps, get_plan, upsert_plan
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["plan"])
 
 PERIOD_MULT = {"monthly": 12, "quarterly": 4, "yearly": 1}
@@ -33,7 +36,38 @@ async def _orm(session, user):
     return await list_positions(session, user)
 
 
-def _portfolio_stats(rows) -> dict:
+async def _measured(session, user) -> dict | None:
+    """The book's measured forward assumptions, or None if they cannot be built.
+
+    Wrapped because a plan card that cannot render is worse than one rendering
+    on the instrument table and saying so. A failure here degrades to exactly
+    the pre-PR-16 behaviour, and `assumption_basis` on the payload still reads
+    'static', so the screen never claims a measurement it did not get.
+    """
+    from app.services.measured_assumptions import book_assumptions
+    try:
+        return await book_assumptions(session, user)
+    except Exception:  # noqa: BLE001 -- see the docstring
+        logger.warning("measured assumptions unavailable; using the instrument table",
+                       exc_info=False)
+        return None
+
+
+def _portfolio_stats(rows, measured: dict | None = None) -> dict:
+    """NAV plus the book's forward return and volatility.
+
+    PR 16 -- `measured` is the payload from
+    `measured_assumptions.book_assumptions()`. Passed, its figures REPLACE the
+    per-ticker table for return and volatility, because that table prices TQQQ
+    and SOXL as buy-and-hold instruments and this book holds them inside rules
+    whose purpose is to be out of them some of the time.
+
+    OMITTED, THIS FUNCTION IS EXACTLY WHAT IT WAS. Eight screens read it and a
+    silent change to any of them would be the defect, not the fix -- the same
+    discipline W3's engine branch used. NAV is never taken from `measured`: it
+    is FX-normalised here and must stay the one number every card sizes against
+    (investing-discipline S2).
+    """
     from app.services.fx import price_currency, fx_rate
     from app.services.strategy_profile import assumptions_for
     nav = ret = vol = 0.0
@@ -52,7 +86,26 @@ def _portfolio_stats(rows) -> dict:
         vol += val * (m.get("volatility_pct") if m.get("volatility_pct") is not None else _vol)
     if not nav:
         return {"nav": 0.0, "expected_roi": None, "volatility": None}
-    return {"nav": nav, "expected_roi": round(ret / nav, 2), "volatility": round(vol / nav, 2)}
+    out = {"nav": nav, "expected_roi": round(ret / nav, 2), "volatility": round(vol / nav, 2),
+           "assumption_basis": "static"}
+    if measured:
+        # Each side is replaced only if the measurement actually produced one.
+        # A half-measured blend keeps the table's answer for the other half and
+        # the payload says which -- never a number whose halves came from
+        # different places without a label.
+        if measured.get("expected_return_pct") is not None:
+            out["expected_roi"] = round(float(measured["expected_return_pct"]), 2)
+        if measured.get("volatility_pct") is not None:
+            out["volatility"] = round(float(measured["volatility_pct"]), 2)
+        out["assumption_basis"] = measured.get("basis", "static")
+        out["measured_pct_of_book"] = measured.get("measured_pct_of_book")
+        out["assumptions"] = measured
+        # What the screen used to say, kept beside what it says now. A number
+        # that moved without the old one visible is a number the reader cannot
+        # check.
+        out["static_expected_roi"] = round(ret / nav, 2)
+        out["static_volatility"] = round(vol / nav, 2)
+    return out
 
 
 _TARGET_PERIODS = {"monthly": 12, "quarterly": 4, "yearly": 1}
@@ -105,6 +158,15 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]
+    # PR 16 -- where that figure came from. The banner reading "~10.87%/yr vs
+    # your 30%/yr target" never said it was an instrument-table guess about
+    # buy-and-hold TQQQ; a forward number with no stated basis is not checkable.
+    base["assumption_basis"] = stats.get("assumption_basis", "static")
+    base["measured_pct_of_book"] = stats.get("measured_pct_of_book")
+    base["portfolio_expected_roi_pct_static"] = stats.get("static_expected_roi")
+    base["portfolio_volatility_pct"] = stats.get("volatility")
+    base["portfolio_volatility_pct_static"] = stats.get("static_volatility")
+    base["assumptions"] = stats.get("assumptions")
     roi = base.get("target_roi_pct")
     if roi and stats["expected_roi"] is not None:
         annual_target = roi * PERIOD_MULT.get(base.get("target_roi_period", "yearly"), 1)
@@ -116,7 +178,8 @@ def _plan_dict(plan, stats: dict) -> dict:
 @router.get("/plan")
 async def get_my_plan(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     plan = await get_plan(session, user)
-    return _plan_dict(plan, _portfolio_stats(await _orm(session, user)))
+    return _plan_dict(plan, _portfolio_stats(await _orm(session, user),
+                                             await _measured(session, user)))
 
 
 @router.put("/plan", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -124,7 +187,8 @@ async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_sess
                       user: User = Depends(acting_user)) -> dict:
     plan = await upsert_plan(session, user, **req.model_dump())
     await session.commit()
-    return _plan_dict(plan, _portfolio_stats(await _orm(session, user)))
+    return _plan_dict(plan, _portfolio_stats(await _orm(session, user),
+                                             await _measured(session, user)))
 
 
 @router.get("/plan/sleeves")
@@ -646,7 +710,7 @@ async def goal_projection(contribution_per_year: float | None = None,
     from app.services.intake_service import contribution_rate
 
     rows = await _orm(session, user)
-    stats = _portfolio_stats(rows)
+    stats = _portfolio_stats(rows, await _measured(session, user))
     plan = await get_plan(session, user)
     if not stats["nav"]:
         return {"message": "Add holdings to project your goal."}
@@ -744,8 +808,19 @@ async def goal_projection(contribution_per_year: float | None = None,
         "excess_comparison": excess_block,
         # The engine's OWN assumptions, appended rather than replaced. The
         # cash-flows line is the one this card used to drop.
+        # PR 16 -- the basis, on the card. At 45.6% assumed volatility the drag
+        # term eats a 10.87% expected return whole, so "which volatility" is not
+        # a footnote: it decides whether the median line rises at all.
+        "assumption_basis": stats.get("assumption_basis", "static"),
+        "measured_pct_of_book": stats.get("measured_pct_of_book"),
+        "expected_return_pct_static": stats.get("static_expected_roi"),
+        "volatility_pct_static": stats.get("static_volatility"),
         "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, "
-                        f"{stats['volatility'] or 12}% volatility, over {years} years",
+                        f"{stats['volatility'] or 12}% volatility, over {years} years"
+                        + (f" ({stats['assumption_basis']}; "
+                           f"{stats.get('measured_pct_of_book')}% of the book measured)"
+                           if stats.get("assumption_basis") not in (None, "static") else
+                           " (instrument table, not measured)"),
                         *sim.assumptions],
     }
 

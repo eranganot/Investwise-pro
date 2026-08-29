@@ -55,6 +55,21 @@ class Settings(BaseSettings):
     # preference about money belongs to the user, not to a module.
     regime_gate_max_cagr_giveup_pct: float = 1.0
 
+    # PR 16. Which measured return prices the book's forward numbers:
+    # "measured_oos" (default), "measured_full", or "static".
+    #
+    # The default is the OUT-OF-SAMPLE figure, not the full window, and that is
+    # a considered choice rather than caution. W1 walked every overlay forward
+    # on 2026-08-27 and NOT ONE reached FITTING_HELPS, so a full-sample CAGR for
+    # a 3x leveraged trend strategy measured over 2015-2025 is a bull-market
+    # extrapolation. `split_solver` already decides its rank key once per run
+    # for the same reason: ranking some candidates out-of-sample and others on
+    # the full sample compares two different questions.
+    #
+    # VOLATILITY HAS NO SETTING. There is no reading under which a static guess
+    # about an instrument beats a measurement of the rule actually being run.
+    assumption_return_basis: str = "measured_oos"
+
     # Comma-separated strategy ids whose HEADLINE numbers are measured with the
     # gate ON. Empty by default, and that default is the rule
     # `backtest_service` already states: "the gate ships off everywhere until a

@@ -1,5 +1,6 @@
 """Section X - the five core user workflows."""
 import hashlib
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ from app.services.portfolio_analytics import (
     risk_alerts, tax_opportunities,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 
 CATEGORY = {"Buy": "BUY", "Sell": "SELL", "Rebalance": "REBALANCE",
@@ -33,7 +35,20 @@ FEED_CATEGORIES = ["BUY", "SELL", "REBALANCE", "TAX_OPTIMIZATION", "RISK_REDUCTI
 async def portfolio_health_check(entity: str | None = None,
                                  session: AsyncSession = Depends(get_session),
                                  user: User = Depends(acting_user)) -> dict:
-    snap = compute_snapshot(await load_positions(session, user, entity))
+    # PR 16. Risk is scored on the book's MEASURED volatility wherever its
+    # sleeves have been backtested, not on the per-ticker table -- which priced
+    # this book's trend-filtered sleeves as buy-and-hold leveraged funds and so
+    # produced a Risk of 15 against a 25% cap. With nothing measured this is
+    # None and the snapshot is byte-for-byte what it was.
+    from app.services.measured_assumptions import book_assumptions
+    try:
+        _asm = await book_assumptions(session, user)
+    except Exception:  # noqa: BLE001 -- the health card must still render
+        logger.warning("measured assumptions unavailable; scoring on the table",
+                       exc_info=False)
+        _asm = None
+    snap = compute_snapshot(await load_positions(session, user, entity),
+                            (_asm or {}).get("volatility_pct"))
     if not snap["nav"]:
         return {"wealth_health_score": None,
                 "message": "No portfolio value. POST /api/v1/intake/portfolio first."}
@@ -54,6 +69,13 @@ async def portfolio_health_check(entity: str | None = None,
         "max_achievable": sc["max_achievable"],
         "volatility_cap_pct": round((sc["_vol_cap"] or 0) * 100, 1),
         "avg_volatility_pct": round(snap["avg_volatility_pct"], 1),
+        # PR 16 -- where the volatility that produced the Risk score came from,
+        # and what the score would have read on the old basis. A number that
+        # moved with the old one nowhere on screen is one nobody can check.
+        "volatility_basis": snap.get("volatility_basis", "static"),
+        "avg_volatility_pct_static": round(snap.get("avg_volatility_pct_static", 0.0), 1),
+        "measured_pct_of_book": (_asm or {}).get("measured_pct_of_book"),
+        "assumptions": _asm,
         "top_improvement_opportunities": health_opportunities(snap, sc),  # capped at 5
     }
 
