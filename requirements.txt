@@ -21,5 +21,21 @@ pywebpush==2.3.0
 # bound in a file where everything else is ==. Two machines resolved two
 # different libraries, and the older one calls
 # ec.generate_private_key(ec.SECP256R1) with the CLASS -- which cryptography
-# says will become an exception, taking web push with it.
-py-vapid==1.9.4
+# says will become an exception.
+#
+# 1.9.2, NOT 1.9.4, and that difference IS the PR 22 build failure.
+# MEASURED from the published wheel metadata:
+#     py-vapid 1.9.2   Requires-Dist: cryptography >=2.5
+#     py-vapid 1.9.4   Requires-Dist: cryptography >=46
+# Line 15 of this file pins cryptography==44.0.0, so 1.9.4 is UNSATISFIABLE:
+# pip fails before a single test runs. That is what took down all three CI
+# jobs in run #182 and the Railway build for c52cb17d.
+#
+# 1.9.2 is safe for a reason rather than by luck. Its one deprecated
+# curve-as-class call is py_vapid/__init__.py:200, inside `generate_keys()` --
+# the single function push_service._generate_vapid stopped calling. The path we
+# DO still use, `Vapid01.from_raw`, already passes `ec.SECP256R1()` instantiated
+# (lines 67 and 74 in 1.9.2). So the warning cannot reach us, and
+# tests/test_vapid_keys_are_generated_cleanly.py proves it against this exact
+# pin set rather than against whatever the developer's machine happens to hold.
+py-vapid==1.9.2

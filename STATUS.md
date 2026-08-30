@@ -1,7 +1,67 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 22 — a holding you entered is not a month you had)._
+_Last updated: 2026-08-30 by Claude (HOTFIX — a pin that could never resolve)._
 _Seeded from git history + prior transcripts._
+
+## 🔴 PR 22 shipped a pin that could not resolve, and main stopped building
+
+CI run **#182** failed **all three jobs** and the Railway build for `c52cb17d`
+failed with them, both at `pip install`, before a single line of app code ran:
+
+```
+ERROR: Cannot install -r requirements.txt (line 19), -r requirements.txt
+(line 25) and cryptography==44.0.0 because these package versions have
+conflicting dependencies.
+    pywebpush 2.3.0 depends on cryptography>=2.6.1
+    py-vapid 1.9.4 depends on cryptography>=46
+```
+
+Measured from the published wheel metadata, after the fact:
+
+| package | `Requires-Dist: cryptography` |
+|---|---|
+| py-vapid **1.9.2** | `>=2.5` |
+| py-vapid **1.9.4** | `>=46` |
+
+`requirements.txt:15` pins `cryptography==44.0.0`. **The pin was unsatisfiable
+the moment it was written.** Production is still serving the pre-PR-22 image.
+
+**Fixed** by dropping to `py-vapid==1.9.2`, which is safe for a reason rather
+than by luck: its one deprecated curve-as-class call is at
+`py_vapid/__init__.py:200`, inside `generate_keys()` — the single function
+`push_service._generate_vapid` stopped calling in PR 22. The path still in use,
+`Vapid01.from_raw`, already passes `ec.SECP256R1()` instantiated.
+
+### Why it was not caught, which is the part that needed fixing
+
+The pin was chosen by reading the version installed in the **development
+sandbox**, which had **cryptography 50.0.1** — not the 44.0.0 this repo pins.
+`pip install py-vapid==1.9.4` succeeded there and proved nothing about the
+project. The 1382-test green run proved nothing either: a dependency-resolution
+failure happens *before* pytest is reachable, so no test inside the suite can
+ever observe it.
+
+Same shape as the FX 3.71 incident — a value read out of the local environment
+and written down as if it were the project's.
+
+So the suite cannot check resolution, and the hotfix does not pretend to. It
+checks the assumption underneath the mistake:
+`tests/test_the_pins_are_installable_and_installed.py` fails the moment the
+running interpreter holds a version `requirements.txt` does not ask for, naming
+the package and both numbers. **Run in the sandbox that chose 1.9.4, it fails on
+cryptography: pinned 44.0.0, installed 50.0.1** — the fact that was missing.
+
+### How to tell whether PR 22 actually reached production
+
+A failed deploy is invisible from outside. The app answers, the pages render,
+nothing looks wrong — it is simply old. So
+`scripts/smoke/smoke-pr22-is-actually-live.ps1` does not ask whether the app is
+up. It asks whether `/api/v1/portfolio/nav-history` returns
+**`unexplained_flows`**, the key PR 22 added at `nav_history.py:362`. Present
+means the new code is running; absent means it is not, whatever the sha and the
+deploy dashboard say.
+
+---
 
 ## Where the seven-day audit stands
 
