@@ -135,3 +135,58 @@ def own_session():
             await eng.dispose()
 
     return _factory
+
+
+# --------------------------------------------------------------------------- #
+# A SKIP IS NEVER A PASS -- enforced, not written down
+# --------------------------------------------------------------------------- #
+# The smoke scripts have said this for months and the suite did not. On
+# 2026-08-30 the SQLite run reported "4 skipped" and the Postgres run "12", and
+# nobody had read either number in a long time. What they were:
+#
+#   * 8 (Postgres only) -- test_backtest_store_unavailable.py reached for
+#     `sqlite3.connect()` and skipped on anything else, so four tests protecting
+#     a real PRODUCTION incident (migration 0011 shipping behind its deploy and
+#     taking out /strategies) never ran on the backend production uses.
+#   * 4 (both) -- a sleeve test parametrised over five books, four of which have
+#     no sleeves. Correct behaviour, reported as four skips every run.
+#
+# Neither was a decision anyone made; both were invisible because "N skipped"
+# scrolls past. A count that is allowed to drift is not a signal, so this makes
+# it fail instead: any skip with a reason not registered below fails the run.
+#
+# TO ADD ONE: put a distinctive fragment of the reason in `_ALLOWED_SKIPS` with
+# a comment saying why the test cannot run and what would let it. An entry here
+# is a decision, which is the whole difference from the number nobody read.
+_ALLOWED_SKIPS: tuple[str, ...] = ()
+
+_OBSERVED_SKIPS: list[tuple[str, str]] = []
+
+
+def pytest_runtest_logreport(report):
+    if not report.skipped:
+        return
+    reason = ""
+    longrepr = getattr(report, "longrepr", None)
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        reason = str(longrepr[2])
+    elif longrepr is not None:
+        reason = str(longrepr)
+    _OBSERVED_SKIPS.append((report.nodeid, reason))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    unexpected = [(nodeid, reason) for nodeid, reason in _OBSERVED_SKIPS
+                  if not any(allowed and allowed in reason for allowed in _ALLOWED_SKIPS)]
+    if not unexpected:
+        return
+    print("\n" + "=" * 70)
+    print(f"UNREGISTERED SKIP{'S' if len(unexpected) > 1 else ''}: "
+          f"{len(unexpected)} test(s) did not run, and nothing decided that.")
+    for nodeid, reason in unexpected:
+        print(f"  {nodeid}\n      {reason}")
+    print("")
+    print("  A skip is never a pass. Either make the test run, or register the")
+    print("  reason in tests/conftest.py::_ALLOWED_SKIPS with why it cannot.")
+    print("=" * 70)
+    session.exitstatus = 1

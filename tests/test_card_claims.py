@@ -169,6 +169,23 @@ def book_cards(request):
         yield name, BOOKS[name], c, _cards(c)
 
 
+# Only some of these books run sleeves, and a test about sleeves has nothing to
+# say about the others. Parametrising it over all five and skipping four was
+# four SKIP lines on every single run -- which is how "4 skipped" became
+# scenery, and scenery is where a REAL skip hides. Eran asked what they were;
+# they were this.
+SLEEVE_BOOKS = sorted(n for n, b in BOOKS.items() if b.get("sleeves"))
+
+
+@pytest.fixture(params=SLEEVE_BOOKS)
+def sleeve_book_cards(request):
+    """(book name, book, client, cards) for the books that actually run sleeves."""
+    name = request.param
+    with TestClient(app) as c:
+        _seed(c, BOOKS[name])
+        yield name, BOOKS[name], c, _cards(c)
+
+
 # --------------------------------------------------------------------------- #
 # 1. The invariant
 # --------------------------------------------------------------------------- #
@@ -216,16 +233,26 @@ def test_a_within_class_purchase_says_so(book_cards):
             f"not say so.\n  action: {card.get('action')}\n  impact: {card.get('impact')}")
 
 
-def test_no_card_funds_itself_by_selling_a_sleeve(book_cards):
+def test_no_card_funds_itself_by_selling_a_sleeve(sleeve_book_cards):
     """D5. The plan holds sleeve tickers on purpose; one sleeve is not a piggy
-    bank for another, and a Today card is not exempt from the rule C3 set."""
-    name, book, _client, cards = book_cards
+    bank for another, and a Today card is not exempt from the rule C3 set.
+
+    Parametrised over `SLEEVE_BOOKS`, not every book: this used to take the full
+    set and skip the four with no sleeves, reporting four SKIPs per run for a
+    test that was doing exactly the right thing on the one book that matters.
+    """
+    name, book, _client, cards = sleeve_book_cards
     from app.services.strategy_service import sleeve_targets
     names = set()
     for sid, _pct in book.get("sleeves", []):
         names |= {str(t).upper() for t in sleeve_targets(sid).keys()}
-    if not names:
-        pytest.skip("no sleeves on this book")
+    # A FAILURE, not a skip. The book declares its sleeves, so an empty set means
+    # `sleeve_targets` stopped resolving them -- and this test would then pass
+    # vacuously forever, checking nothing, which is the shape it was already in.
+    assert names, (
+        f"[{name}] declares sleeves {book.get('sleeves')} but sleeve_targets "
+        "resolved no tickers, so there is nothing to protect and this test "
+        "would pass without checking anything")
     for card in cards:
         for s in (card.get("apply") or {}).get("sells", []):
             assert str(s.get("ticker") or "").upper() not in names, (

@@ -50,6 +50,7 @@ def pinned_prices(monkeypatch):
     from types import SimpleNamespace as NS
 
     from app.providers import registry
+    from app.services import pricing_service, strategy_service
 
     def _quote(tk):
         tk = (tk or "").upper()
@@ -58,7 +59,21 @@ def pinned_prices(monkeypatch):
         return NS(ticker=tk, price=PRICES[tk], currency="USD",
                   market="NYSE" if tk == "SCHD" else "NASDAQ")
 
-    monkeypatch.setattr(registry, "guarded_quote", _quote)
+    # PATCHED IN EVERY MODULE THAT HOLDS ITS OWN REFERENCE, not just the
+    # registry. `pricing_service` and `strategy_service` both do
+    # `from app.providers.registry import guarded_quote` at import time, so they
+    # bind the function object once and a patch on `registry` never reaches
+    # them. Measured: with only the registry patched,
+    # `pricing_service.guarded_quote is _quote` is **False**.
+    #
+    # That matters because both of those modules WRITE prices --
+    # `refresh_all_positions` and `buy_into_book` -- so a fixture that believes
+    # it pinned the book was leaving two writers quoting the real synthetic
+    # provider. A test that thinks it controls its inputs and does not is the
+    # same failure as a test that skips: it reports a pass for something it
+    # never held still.
+    for mod in (registry, pricing_service, strategy_service):
+        monkeypatch.setattr(mod, "guarded_quote", _quote, raising=False)
     return PRICES
 
 
@@ -90,6 +105,13 @@ def _seed_usd(c):
 
 def _nav(c):
     return c.get("/api/v1/portfolio").json()["nav_ils"]
+
+
+def _book(c):
+    """ticker -> (qty, price, currency, value_ils). Enough to diff two books."""
+    return {p["ticker"]: (p.get("quantity"), p.get("current_price"),
+                          p.get("currency"), p.get("value_ils"))
+            for p in c.get("/api/v1/portfolio").json()["positions"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -206,24 +228,50 @@ async def test_every_actionable_card_on_a_live_book_conserves_nav(pinned_prices)
     tests the handler, this tests the handler *on the card the app really
     generated*, which is where the mismatch between the two lived.
     """
-    logging.disable(logging.CRITICAL)
+    # ERROR IS LEFT ON, DELIBERATELY. This used to be
+    # `logging.disable(logging.CRITICAL)`, which silences everything -- including
+    # the `NAV CONSERVATION BREACH` line that PR 17 added for exactly this
+    # failure, naming every position that moved. The one place the diagnostic
+    # was needed was the one place it was switched off, and two CI sightings of
+    # this assertion were diagnosed from a bare number as a result.
+    logging.disable(logging.WARNING)
     try:
         with TestClient(m.app) as c:
             _seed_usd(c)
             recs = c.get("/api/v1/recommendations").json()["recommendations"]
+            emitted = [f"{(x.get('apply') or {}).get('kind')}:{x['title']!r}" for x in recs]
             checked = 0
             for r in recs:
                 if not r.get("actionable"):
                     continue
-                before = _nav(c)
+                before, book_before = _nav(c), _book(c)
                 res = c.post(f"/api/v1/recommendations/{r['id']}/accept")
                 if res.status_code != 200:
                     continue
                 body = res.json()
                 leak = _nav(c) - before + float(body.get("tax_ils") or 0.0)
-                assert abs(leak) < TOLERANCE_ILS, (
-                    f"{(r.get('apply') or {}).get('kind')} card {r['title']!r} "
-                    f"leaked {leak:+.2f} ILS")
+                if abs(leak) >= TOLERANCE_ILS:
+                    # EVERYTHING THE NEXT READER NEEDS, IN THE FAILURE ITSELF.
+                    # This is intermittent and depends on which cards the engine
+                    # emitted, so a rerun does not reproduce it and the report is
+                    # the only evidence that will ever exist for that run.
+                    book_after = _book(c)
+                    moved = {t: (book_before.get(t), book_after.get(t))
+                             for t in sorted(set(book_before) | set(book_after))
+                             if book_before.get(t) != book_after.get(t)}
+                    raise AssertionError(
+                        f"{(r.get('apply') or {}).get('kind')} card {r['title']!r} "
+                        f"leaked {leak:+.2f} ILS\n"
+                        f"  API NAV      : {before:.2f} -> {_nav(c):.2f} "
+                        f"(tax reported {float(body.get('tax_ils') or 0.0):.2f})\n"
+                        f"  in-session   : {body.get('nav_before_ils')} -> "
+                        f"{body.get('nav_after_ils')} drift {body.get('nav_drift_ils')}\n"
+                        f"     ^ if the in-session drift is ~0 while the API moved, the\n"
+                        f"       change did not come from the handler at all.\n"
+                        f"  apply spec   : {r.get('apply')}\n"
+                        f"  positions that changed (qty, price, ccy, value_ils):\n"
+                        + "".join(f"    {t}: {a} -> {b}\n" for t, (a, b) in moved.items())
+                        + f"  cards emitted this run: {emitted}")
                 checked += 1
             assert checked, "no actionable card was produced -- this test proved nothing"
     finally:

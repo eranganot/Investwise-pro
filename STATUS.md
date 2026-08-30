@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 20 — a price refresh redenominated your Tel Aviv holdings)._
+_Last updated: 2026-08-30 by Claude (PR 21 — the suite stops reporting things it never checked)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,118 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 21 — "N skipped" was scenery, and one of the numbers was a real hole
+
+Eran, reading a green gate: *"why do we have those skipped tests on the flow? if
+they can be skipped → remove them, if they can't be skipped → why they are not
+running as expected?"*
+
+The suite reported **4 skipped on SQLite and 12 on Postgres**, and nobody had
+read either number in a long time. Both were run down to their causes. There
+were exactly two, and they are not the same kind of thing.
+
+### 1. Eight Postgres skips were a real coverage hole — in the direction that matters
+
+`test_backtest_store_unavailable.py` sabotages the `strategy_backtests` table to
+prove that an **optional side table cannot take down the app**. That is a
+reproduction of a real production incident: migration 0011 added
+`last_error` / `last_error_at`, the deploy landed before `alembic upgrade head`
+ran, every SELECT hit an undefined column, and `/strategies`,
+`/strategies/backtests` and the recommendations pipeline all went with it.
+
+It did the sabotage with `sqlite3.connect()`, and skipped on anything else. So
+those four tests **never ran on Postgres — which is what production is.**
+Verifying a production incident only on the backend production does not use is
+close to not verifying it, and it was reported as eight skips nobody read.
+
+Nothing about the sabotage needed SQLite; only the *connection* did. `_PRE_0011`
+is valid DDL on both backends. It now runs through a throwaway `NullPool` async
+engine in its own loop — the reason `conftest.own_session` exists — and passes
+**4/4 on Postgres and 4/4 on SQLite**.
+
+### 2. Four skips on both were noise, and noise is where a real skip hides
+
+`test_no_card_funds_itself_by_selling_a_sleeve` was parametrised over all five
+adversarial books and skipped the four that have no sleeves. **It was doing the
+right thing** — it ran, and passed, on `equities_overweight`, the one book built
+for it. But a test announcing four times per run that it does not apply is how
+"4 skipped" became scenery.
+
+*(I told Eran this test "has never run, on any book, ever" before I had run it.
+That was wrong — `1 passed, 4 skipped` — and it is the same error he had just
+caught me in one message earlier: a claim ahead of the observation.)*
+
+It is now parametrised over `SLEEVE_BOOKS`, and an empty sleeve set is a
+**failure** rather than a skip: the book declares its sleeves, so if
+`sleeve_targets` stops resolving them the test would otherwise pass vacuously
+forever.
+
+### 3. The check that stops the next one — a skip is never a pass, enforced
+
+The smoke scripts have said this for months; the suite did not. `conftest.py`
+now fails the run on **any skip whose reason is not registered** in
+`_ALLOWED_SKIPS`, printing the node id and the reason. The list is currently
+**empty**: after the two fixes above, both backends run with **zero skips**.
+
+Registering one is a decision someone makes and writes a reason for, which is
+the whole difference from a count that drifts. Verified: a deliberately
+unregistered skip exits **1**.
+
+### 4. A fixture that believed it pinned prices, and did not
+
+`test_accept_conserves_nav.py::pinned_prices` patched `registry.guarded_quote`
+and nothing else. But `pricing_service` and `strategy_service` each do
+`from app.providers.registry import guarded_quote` at import time, so they bind
+the function once and a patch on the registry never reaches them. **Measured:
+`pricing_service.guarded_quote is _quote` → `False`.**
+
+Both of those modules *write prices* (`refresh_all_positions`, `buy_into_book`),
+so the fixture left two writers quoting the real synthetic provider on a book it
+was holding still. A test that thinks it controls its inputs and does not is the
+same failure as one that skips: it reports a pass for something it never held.
+
+### 5. The one place the diagnostic was needed was the one place it was off
+
+`test_accept_conserves_nav.py` called `logging.disable(logging.CRITICAL)` —
+which silences the `NAV CONSERVATION BREACH` line **PR 17 added for exactly this
+failure**, naming every position that moved. Two CI sightings were diagnosed
+from a bare number as a result. It now disables only `WARNING` and below, and
+the assertion carries the API NAV, PR 17's in-session drift, the apply spec,
+every position that changed and the full emitted card list.
+
+### The +739.2 ILS leak is NOT fixed by this, and PR 20 did not fix it either
+
+CI #180 failed on the **SQLite** job with `+739.22 ILS` on the same card, with
+PR 20 applied. Evidence block as it stands:
+
+```
+RULED OUT   _rebalance_to's own writes - its guard compares total NAV over all
+              positions to 1.0 ILS with the formula /portfolio uses.
+            build_recommendations mutating inside the accept bracket - six
+              consecutive GET /recommendations moved NAV by exactly 0.0000.
+            Card ORDER - emitted, reversed and rebalance-last; worst 0.12 ILS.
+            PR 20's currency flip - NEWLY RULED OUT: PR 20 is applied in #180
+              and the leak still fired. That candidate was named "leading" and
+              deliberately not claimed as proven. It was wrong.
+ROOT CAUSE  UNKNOWN.
+CONFIDENCE  Nothing - several unfalsified candidates, no observation separating
+            them.
+```
+
+This PR ships the instrumentation that makes the next occurrence self-explaining
+and **no speculative fix**. If the in-session drift is ~0 while the API NAV
+moved, the change did not come from the handler at all, and that single line
+halves the remaining candidates.
+
+**Gate:** SQLite 1355 passed / 0 skipped; Postgres 1355 passed / 0 skipped; `ruff check app tests`
+clean. **Zero skips on both backends**, for the first time.
+
+**Ship:** `scripts/deploy/ship-pr21-a-skip-is-never-a-pass.ps1`
+**Smoke:** none — this PR changes tests and fixtures only; no app behaviour
+changes, so there is nothing on the deployed app to check. The gate is the proof.
+
+Not financial advice.
 
 ## ✅ PR 20 — a price refresh redenominated a holding, and that was the CI leak
 

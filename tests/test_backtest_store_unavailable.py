@@ -10,13 +10,16 @@ fatal.
 The four original families need no backtest at all, and a measured strategy can
 say "not measured yet" perfectly well. Neither should 500.
 """
+import asyncio
 import os
-import sqlite3
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/iw_test_app.db")
 
-import pytest
+import pytest  # noqa: F401 -- kept: the module is collected by pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 import app.main as m
 from app.core.config import get_settings
@@ -29,11 +32,36 @@ _PRE_0011 = """CREATE TABLE strategy_backtests (
     computed_at TIMESTAMP, created_at TIMESTAMP, updated_at TIMESTAMP)"""
 
 
-def _sqlite_path() -> str:
-    url = get_settings().database_url
-    if not url.startswith("sqlite"):
-        pytest.skip("this reproduces a schema drift that only matters on a file DB")
-    return os.path.join(os.sep, url.split("://", 1)[-1].lstrip("/"))
+def _ddl(*statements: str) -> None:
+    """Run DDL against whichever database the suite is pointed at.
+
+    THIS USED TO REACH FOR `sqlite3.connect()` AND SKIP ON ANYTHING ELSE, which
+    meant the four tests below never ran on Postgres -- and Postgres is what
+    production runs. The invariant they protect is a PRODUCTION incident:
+    migration 0011 added last_error / last_error_at, the deploy landed before
+    `alembic upgrade head` did, and an OPTIONAL side table took out
+    /strategies, /strategies/backtests and degraded recommendations. Verifying
+    that only on the backend production does not use is close to not verifying
+    it, and `pytest -q -rs` reported it as 8 skips nobody read.
+
+    `_PRE_0011` is valid DDL on both backends, so nothing about the sabotage
+    needed to be SQLite-specific; only the connection did.
+
+    A throwaway NullPool engine in its own loop, for the reason
+    `conftest.own_session` exists: the TestClient has already driven the app's
+    shared pooled engine in its own loop, and asyncpg rejects a connection
+    borrowed across loops. A pool with nothing in it cannot lend one.
+    """
+    async def _run() -> None:
+        engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                for statement in statements:
+                    await conn.execute(text(statement))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
 
 
 def _break_the_store() -> None:
@@ -42,11 +70,7 @@ def _break_the_store() -> None:
     Called from the test body, not a fixture: the autouse _isolate_db fixture
     runs create_all first, which would helpfully undo the sabotage.
     """
-    conn = sqlite3.connect(_sqlite_path())
-    conn.execute("DROP TABLE IF EXISTS strategy_backtests")
-    conn.execute(_PRE_0011)
-    conn.commit()
-    conn.close()
+    _ddl("DROP TABLE IF EXISTS strategy_backtests", _PRE_0011)
 
 
 @pytest.fixture(autouse=True)
@@ -61,13 +85,7 @@ def _restore_the_store():
     yield
     from app.services import backtest_service as svc
     svc.store_unavailable = None
-    try:
-        conn = sqlite3.connect(_sqlite_path())
-        conn.execute("DROP TABLE IF EXISTS strategy_backtests")
-        conn.commit()
-        conn.close()
-    except Exception:  # noqa: BLE001 -- a skipped Postgres run has no file to clean
-        pass
+    _ddl("DROP TABLE IF EXISTS strategy_backtests")
 
 
 def _seed(c):
