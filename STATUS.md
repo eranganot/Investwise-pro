@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 24 — the wiring, without the tilt)._
+_Last updated: 2026-08-30 by Claude (PR 25 — the screener can see stocks again)._
 _Seeded from git history + prior transcripts._
 
 ## 🔴 PR 22 shipped a pin that could not resolve, and main stopped building
@@ -145,7 +145,7 @@ four numbers away whenever one exists.
 
 ---
 
-## 🔴 The equity screener ranks a third of the universe, by transport luck
+## ✅ RESOLVED — the token bucket is a sandbox artifact, not a production bug
 
 Found while building PR 24 — the first cut of its tests passed alone and failed
 intermittently in the suite. The cause was not the test. `_fundamentals_for`
@@ -170,11 +170,15 @@ and `screen_bonds` both act on the unreachable/no-data distinction and log it.
 `screen_equities` never got it. **It has it now**, and `coverage` rides in the
 recommendations payload.
 
-**Deliberately not fixed yet.** Production runs Yahoo, where per-call latency
-lets the bucket refill, so it may drop nothing. That is a *guess*, and the reason
-it could not be checked is exactly the silence PR 24 removes. Smoke section 3
-reads the real number off production; **PR 25 fixes the limiter only if that
-number says it needs fixing**, and adds real Tel Aviv listings either way.
+**ANSWERED, 2026-08-30, and the answer was no.** Production logs show **zero**
+`UNREACHABLE` lines — every one of the 58 was filed under *no fundamentals*.
+Provider health confirms it: fundamentals tier CLOSED, 0 failures, 61 succeeding
+keys. Per-call latency on Yahoo lets the bucket refill exactly as hoped, so
+**the token-bucket problem is a sandbox artifact of the builtin provider being
+instant. No limiter fix is needed.**
+
+The counter did its job anyway — it pointed at the real cause, which was worse:
+Yahoo had gated the fundamentals endpoint entirely. See PR 25.
 
 ---
 
@@ -205,6 +209,86 @@ plugin — so a deterministic fault would have repeated.
 **ROOT CAUSE: UNKNOWN. CONFIDENCE: nothing.** Same family as the +739.2 ILS
 leak. No speculative fix shipped. **CI can go red on it** — if it does, send the
 block.
+
+---
+
+## ✅ PR 25 — the equity screener had been returning nothing, for months
+
+Found by the counter PR 24 added, on the **first production scan after it
+deployed**:
+
+```
+equity candidates the provider says have no fundamentals: AAPL, ABBV, ADBE,
+AMD, AMZN, AVGO, BA, BAC, BRK-B, CAT, CHKP, COST, CRM, CVX, DIS, ESLT, GE,
+GLOB, GOOGL, HD, HON, JNJ, JPM, KO, LLY, MA, MCD, META, MNDY, MRK, MSFT, NEE,
+NICE, NKE, NVDA, ORCL, PEP, PFE, PG, QQQ, SCHD, SMH, T, TEVA, UNH, V, VNQ,
+VOO, VTI, VXUS, VYM, VZ, WIX, WMT, XLE, XLF, XLV, XOM
+```
+
+All 58, every scan. The buy ideas were three commodities and three bonds. **Not
+one stock.**
+
+### Root cause, proven
+
+```
+GET /v10/finance/quoteSummary/AAPL -> 401 {"code":"Unauthorized",
+                                           "description":"Invalid Crumb"}
+GET /v8/finance/chart/AAPL         -> 200
+```
+
+Yahoo gated `quoteSummary` behind a session cookie plus a matching crumb.
+**Prices come from `chart`, which is not gated** — which is exactly why NAV, the
+refresh job and every price on screen looked perfectly healthy while the
+screener produced nothing.
+
+**Ruled out by observation:** the rate limiter (a bucket rejection logs as
+`UNREACHABLE`; there were zero such lines), the circuit breaker (CLOSED, 0
+failures, 61 succeeding keys), anything ticker-specific (AAPL, MSFT, NVDA fail
+identically).
+
+### Why it survived, which is the half worth reading
+
+`get_fundamentals` returned `None` for a gated endpoint, a network error **and**
+a symbol Yahoo genuinely has nothing for. Its own docstring said so: *"Returns
+None (rather than raising) ... so the screener can simply skip the name."*
+`_fundamentals_for` dropped the candidate either way, with no counter and no
+log, until PR 24. **The app was designed to fail quietly here, and it did.**
+
+It also had **no test**. Added 2026-06-22; every fixture in
+`test_market_data_live.py` is a `chart` payload, and `test_screener.py`
+exercises the builtin provider whose fundamentals are a sha1 of the ticker. This
+PR is the first test that code path has ever had.
+
+### Two fixes, and the second matters more
+
+1. The cookie + crumb handshake — fetched once, reused across a scan, re-fetched
+   only on a 401.
+2. **A transport failure and an empty symbol stop being the same answer.** Auth
+   and transport failures now **raise** (counted as `unreachable`, whole set
+   logged); `None` means only "Yahoo answered, nothing here". Without this, (1)
+   works until Yahoo changes the handshake and then fails as silently as before.
+
+Verified live through the real provider code: `AAPL pe=36.62`, `TEVA pe=60.73`,
+`CHKP pe=13.65`, `NICE pe=15.29`, `QQQ pe=30.63`, `TEVA.TA pe=60.60`.
+
+### FMP was evaluated and rejected on evidence
+
+Eran supplied a key and asked for a registry split. FMP's free tier answers
+*"Special Endpoint : This value set for 'symbol' is not available under your
+current subscription"* for TEVA, CHKP and QQQ, and covers 13 of 15 US mega-caps
+(AVGO and PG blocked). **It cannot see one Israeli name, one ETF, or one Tel
+Aviv listing.** Yahoo covers all three. The key is not committed anywhere and
+belongs in Railway env only.
+
+### Measured while testing — handle before adding `.TA` listings
+
+| | P/E | P/B |
+|---|---|---|
+| TEVA | 60.73 | 5.48 |
+| TEVA.TA | 60.60 | **1657.9** |
+
+P/E survives the minor unit because it is a same-currency ratio. **P/B does
+not** — it is off by FX × 100 (≈303×). Item 3's remaining half must handle this.
 
 ---
 

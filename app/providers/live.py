@@ -21,14 +21,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _http_text(url: str, timeout: float = 10.0) -> str:
-    """Blocking GET in a worker thread (keeps the event loop free)."""
+def _http_text(url: str, timeout: float = 10.0, *, opener=None,
+               user_agent: str = "InvestWise/1.0") -> str:
+    """Blocking GET in a worker thread (keeps the event loop free).
+
+    ``opener`` lets a caller supply a urllib opener carrying a cookie jar, which
+    Yahoo's quoteSummary requires; a cookieless request is answered 401.
+    """
     def _call() -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": "InvestWise/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+        _open = opener.open if opener is not None else urllib.request.urlopen
+        with _open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         return ex.submit(_call).result(timeout=timeout + 5)
+
+
+# Yahoo checks the User-Agent as well as the cookie. Kept as a constant so the
+# tests can assert it is actually sent rather than trusting one call site.
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 
 class YahooMarketDataProvider(MarketDataProvider):
@@ -90,23 +102,93 @@ class YahooMarketDataProvider(MarketDataProvider):
             raise ValueError(f"insufficient history for '{ticker}'")
         return out[-days:]
 
-    def get_fundamentals(self, ticker: str):
-        """Valuation/growth/quality/income via Yahoo quoteSummary (no key).
+    # --- quoteSummary is gated: cookie + crumb, cached across calls ---------
+    #
+    # MEASURED 2026-08-30, against production and directly:
+    #
+    #     GET /v10/finance/quoteSummary/AAPL   -> 401 {"code":"Unauthorized",
+    #                                                  "description":"Invalid Crumb"}
+    #     GET /v8/finance/chart/AAPL           -> 200
+    #
+    # Yahoo now requires a session cookie plus a matching crumb on quoteSummary.
+    # Prices come from `chart`, which is NOT gated -- which is exactly why the
+    # app looked healthy while the equity screener returned nothing at all. The
+    # production log showed all 58 candidates in "no fundamentals", every scan.
+    #
+    # The crumb is fetched once and reused; it is only re-fetched when a call
+    # comes back 401, so a rotated crumb costs one retry rather than a scan.
+    _crumb: str | None = None
+    _opener = None
 
-        Returns None (rather than raising) when the data is unavailable or the
-        endpoint is gated, so the screener can simply skip the name.
+    @classmethod
+    def _reset_session(cls) -> None:
+        cls._crumb = None
+        cls._opener = None
+
+    @classmethod
+    def _session(cls) -> tuple[str, object]:
+        """(crumb, opener). Fetched once, reused, refreshed only on a 401."""
+        if cls._crumb and cls._opener is not None:
+            return cls._crumb, cls._opener
+        import http.cookiejar
+        jar = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        # Any Yahoo origin will set the consent cookies the crumb is bound to.
+        try:
+            _http_text("https://fc.yahoo.com/", timeout=8.0,
+                       opener=opener, user_agent=_BROWSER_UA)
+        except Exception:  # noqa: BLE001 -- fc.yahoo.com answers 404 but still sets cookies
+            pass
+        crumb = _http_text("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                           timeout=8.0, opener=opener, user_agent=_BROWSER_UA).strip()
+        if not crumb or len(crumb) > 64 or "<" in crumb:
+            raise ValueError(f"Yahoo returned no usable crumb (got {crumb[:40]!r})")
+        cls._crumb, cls._opener = crumb, opener
+        return crumb, opener
+
+    def get_fundamentals(self, ticker: str):
+        """Valuation/growth/quality/income via Yahoo quoteSummary (cookie+crumb).
+
+        THE TWO FAILURE MODES ARE NO LONGER THE SAME ANSWER, and that is the
+        point of this change as much as the crumb is.
+
+        This returned ``None`` for everything -- a gated endpoint, a network
+        error, and a symbol Yahoo genuinely has no fundamentals for. The
+        screener's `_fundamentals_for` then dropped the candidate either way, so
+        "we could not reach the provider" and "this ticker has nothing" were
+        indistinguishable. That is how a 401 on every one of 58 candidates went
+        unnoticed: the app was designed to skip quietly.
+
+        Now a transport or auth failure RAISES (the screener records it as
+        `unreachable` and logs the whole set), and ``None`` means only what it
+        should: Yahoo answered, and there is nothing there.
         """
         from app.schemas.screener import Fundamentals
         sym = self.to_symbol(ticker)
-        url = (f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
-               "?modules=summaryDetail,defaultKeyStatistics,financialData,summaryProfile")
+
+        def _fetch(crumb: str, opener) -> str:
+            url = (f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
+                   "?modules=summaryDetail,defaultKeyStatistics,financialData,summaryProfile"
+                   f"&crumb={urllib.parse.quote(crumb)}")
+            return _http_text(url, opener=opener, user_agent=_BROWSER_UA)
+
+        crumb, opener = self._session()
         try:
-            data = json.loads(_http_text(url))
-        except Exception:
-            return None
+            body = _fetch(crumb, opener)
+        except Exception:  # noqa: BLE001 -- most likely an expired crumb
+            self._reset_session()
+            crumb, opener = self._session()
+            # A second failure is real: let it propagate so the caller counts it
+            # as unreachable instead of silently ranking a smaller universe.
+            body = _fetch(crumb, opener)
+
+        data = json.loads(body)
+        err = ((data.get("quoteSummary") or {}).get("error") or None)
+        if err:
+            raise ValueError(f"Yahoo quoteSummary error for '{ticker}': {err}")
         result = ((data.get("quoteSummary") or {}).get("result") or [])
         if not result:
-            return None
+            return None      # Yahoo ANSWERED: nothing for this symbol.
         node = result[0]
         sd = node.get("summaryDetail") or {}
         ks = node.get("defaultKeyStatistics") or {}
