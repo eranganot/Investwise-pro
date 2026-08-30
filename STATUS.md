@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 21 — the suite stops reporting things it never checked)._
+_Last updated: 2026-08-30 by Claude (PR 22 — a holding you entered is not a month you had)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,89 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 22 — the history chart called an intake +35%, and the caption vouched for it
+
+Reported live 2026-08-22, open since: the account-history chart showed **+35%**
+on the day a holding was added through the Holdings screen, under a caption
+reading *"No deposits or withdrawals in this window, so this is simply what your
+money did."*
+
+Both halves false. **The second is the worse one** — a caption that vouches for a
+number tells the reader the checking has already been done.
+
+**Root cause.** `time_weighted` takes its flows from the **contributions
+ledger**. Adding a holding on the Holdings screen writes no ledger row, so
+`net_flow_between` returned `0.00` and the entire jump in NAV compounded as
+return.
+
+**The signal was already on the row and nothing read it.**
+`NavSnapshot.positions` is stored on every snapshot, and its own class docstring
+says why: *"a NAV that jumped because money arrived is not a return, and without
+the deposit total on the same row a later reader cannot tell the two apart."*
+`series_for` did not even pass it to `time_weighted`.
+
+**Measured on the shape of the incident** — a flat book at ₪10,000, a fourth
+holding entered at ₪13,500, flat after:
+
+| | total_pct | flagged |
+|---|---|---|
+| before | **+35.0%** | — |
+| after | **0.0%** | the 2026-08-22 step, +₪3,500, 3 → 4 holdings |
+
+**The fix, and the judgement inside it.** When the position count changes and the
+ledger says nothing, the unexplained delta is treated as an external flow — the
+same thing the app already does for a deposit. That *is* an attribution: the
+snapshot records a count and a total, never which holding arrived or what it was
+worth. So it is reported in `unexplained_flows` rather than folded in silently,
+and the caption names the date, the direction and the amount, and says what to
+do about it. **Guessing quietly is how the +35% happened; guessing quietly in the
+other direction is not the fix.**
+
+The ledger stays authoritative where it has something to say, so a deposit made
+on the same day a holding was entered is not counted twice.
+
+### Also in here: web push was one dependency bump from breaking
+
+Eran's gate showed `1371 passed, **2 warnings**` — both
+`CryptographyDeprecationWarning: Curve argument must be an instance of an
+EllipticCurve class ... This will be an exception in a future version`, from
+`py_vapid`'s `generate_keys()`.
+
+Not cosmetic, and further along than the message says. **Measured on
+`cryptography 50.0.1`, that exact call already raises**:
+
+```
+TypeError: curve must be an EllipticCurve instance
+```
+
+The repo pins `cryptography==44.0.0`, where it still only warns. So the fuse has
+already burned down in the current release and the pin is the only insulation.
+On the bump, VAPID key generation raises and **web push stops**, for a reason
+nobody would connect to notifications.
+
+**And it did not reproduce here, which is the second half of the defect.**
+Whether it fires depends on *which* `py_vapid` is installed — 1.9.4 passes an
+instance, older releases pass the class — and `pywebpush==2.3.0` requires only
+`py-vapid>=1.7.0`: an open lower bound in a file where every other line is `==`.
+Two machines legitimately resolved two different libraries.
+
+Both halves fixed. `requirements.txt` pins `py-vapid==1.9.4`, and
+`_generate_vapid` builds the keypair with `cryptography` directly — which the two
+lines after it were already doing. A VAPID key is an ordinary EC P-256 keypair;
+py_vapid was being asked for one call it does not need to own. Four tests,
+including the round trip proving py_vapid still derives the same public key from
+our private one — a mismatch there is the silent 403 that kills every existing
+subscription.
+
+**Gate:** SQLite 1365 passed / 0 skipped / 0 warnings; Postgres 1365 passed / 0 skipped / 0 warnings; `ruff check app tests`
+clean, **zero skips, zero warnings**. All ten new tests fail on the old code.
+
+**Ship:** `scripts/deploy/ship-pr22-an-intake-is-not-performance.ps1`
+**Smoke:** `scripts/smoke/smoke-history.ps1` (existing) — plus the eyes check in
+the ship script, which is the only thing that can see the caption.
+
+Not financial advice.
 
 ## ✅ PR 21 — "N skipped" was scenery, and one of the numbers was a real hole
 

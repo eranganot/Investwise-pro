@@ -17,3 +17,9 @@ bcrypt==4.2.1
 prometheus-client==0.21.1
 google-genai==2.8.0
 pywebpush==2.3.0
+# Pinned explicitly: pywebpush asks only for py-vapid>=1.7.0, an open lower
+# bound in a file where everything else is ==. Two machines resolved two
+# different libraries, and the older one calls
+# ec.generate_private_key(ec.SECP256R1) with the CLASS -- which cryptography
+# says will become an exception, taking web push with it.
+py-vapid==1.9.4

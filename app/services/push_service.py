@@ -62,14 +62,34 @@ def _b64url(b: bytes) -> str:
 
 
 def _generate_vapid() -> tuple[str, str]:
-    """Return (public_b64url_raw, private_b64url_raw)."""
-    from cryptography.hazmat.primitives import serialization
-    from py_vapid import Vapid01
+    """Return (public_b64url_raw, private_b64url_raw).
 
-    v = Vapid01()
-    v.generate_keys()
-    priv_raw = v.private_key.private_numbers().private_value.to_bytes(32, "big")
-    pub_raw = v.public_key.public_bytes(
+    THE KEYPAIR IS MADE HERE, not by ``Vapid01.generate_keys()``.
+
+    A VAPID key is an ordinary EC P-256 keypair, and the two lines below already
+    reached into `cryptography` objects to serialise it -- py_vapid was being
+    used for one call that `cryptography` makes directly.
+
+    That one call was the only place in py_vapid that does
+    ``ec.generate_private_key(ec.SECP256R1)`` -- passing the CLASS where an
+    INSTANCE is wanted. `cryptography` warns on it today and says plainly that
+    it "will be an exception in a future version", which would take out VAPID
+    key generation, and with it web push, on a dependency upgrade nobody
+    connected to notifications.
+
+    It also could not be fixed by reading our own code, because the warning
+    depends on which py_vapid happens to be installed: 1.9.4 has it fixed and
+    older ones do not, and `pywebpush==2.3.0` requires only ``py-vapid>=1.7.0``
+    -- an open lower bound in a repo that pins everything else with ``==``. Two
+    machines legitimately resolved two different libraries. `requirements.txt`
+    now pins it, and this function no longer depends on which one arrives.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    priv_raw = private_key.private_numbers().private_value.to_bytes(32, "big")
+    pub_raw = private_key.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
     )
     return _b64url(pub_raw), _b64url(priv_raw)

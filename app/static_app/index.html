@@ -810,6 +810,13 @@ function drawTodayReal(h){
   // Both numbers, always. The gap between them IS the deposits, and showing
   // only the simple one is how a bank transfer reads as a good month.
   const simple=h.simple_change_pct, flow=h.flow_total_ils||0;
+  // "No deposits or withdrawals in this window" was printed on a window in which
+  // a holding HAD been entered -- the ledger knew nothing about it, so the chart
+  // booked the whole jump as +35% performance and the caption vouched for it. A
+  // caption that certifies a number is worse than a wrong number, because it
+  // tells the reader the checking has already been done. It may only make that
+  // claim when the app has actually accounted for everything it can see.
+  const unexplained=h.unexplained_flows||[];
   cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${h.dates.length} recorded days `+
     `(${h.window.start} to ${h.window.end})`+
     (Math.abs(flow)>0.5
@@ -819,6 +826,14 @@ function drawTodayReal(h){
          taken out.</div>`
       : `<div style="margin-top:2px">No deposits or withdrawals in this window, so this is
          simply what your money did.</div>`)+
+    (unexplained.length
+      ? `<div class="warn" style="margin-top:2px">Your holdings changed on
+         ${unexplained.map(u=>`<b>${u.as_of}</b> (${u.positions_after>u.positions_before?"a holding was added":"a holding was removed"},
+         ${u.amount_ils>=0?"+":""}${Math.round(u.amount_ils).toLocaleString()} ILS)`).join(", ")}
+         with no deposit or withdrawal recorded. That step is treated as money moving in or out,
+         <b>not</b> as performance. If it really was a deposit, record it under Contributions and
+         this line will go away.</div>`
+      : "")+
     `<div class="mk" style="margin-top:2px">Recorded daily since ${h.recorded_since}. This is your
      actual account, not a reconstruction.</div>`+
     ((h.gaps&&h.gaps.length)

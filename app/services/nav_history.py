@@ -80,10 +80,35 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
 
     Returns the cumulative percentage series aligned to `points`, so index 0 is
     always 0.0 -- the first snapshot is the baseline, not a return.
+
+    A HOLDING ADDED THROUGH INTAKE IS A FLOW, AND `flows` DOES NOT CONTAIN IT.
+
+    `flows` is the contributions ledger. Adding a holding on the Holdings screen
+    writes no ledger row, so `net_flow_between` returned 0.00 and the whole jump
+    in NAV compounded as performance. Reported live on 2026-08-22: the chart
+    showed **+35%** on the day a holding was entered, under a caption reading
+    "No deposits or withdrawals in this window, so this is simply what your
+    money did." Both halves false, and the second one is worse than the first --
+    it tells the reader the number has already been checked.
+
+    The signal was already on the row and nothing read it. `NavSnapshot.positions`
+    is stored on every snapshot, and its own class docstring says why: *"a NAV
+    that jumped because money arrived is not a return"*. When the position COUNT
+    changes and the ledger says nothing, the app cannot call that step
+    performance.
+
+    What it does instead is what it already does for a deposit: treat the
+    unexplained delta as an external flow, so the sub-period return is measured
+    net of it. That is an attribution -- the snapshot records a count and a
+    total, never which holding arrived or what it was worth -- so it is reported
+    in `unexplained_flows` rather than folded in silently, and the screen names
+    the date. Guessing quietly is how the +35% happened; the fix is not to guess
+    quietly in the other direction.
     """
     flows = flows or []
     out = {"dates": [], "pct": [], "nav_ils": [], "flows_ils": [],
-           "total_pct": 0.0, "flow_total_ils": 0.0, "points": len(points or [])}
+           "total_pct": 0.0, "flow_total_ils": 0.0, "points": len(points or []),
+           "unexplained_flows": []}
     if not points:
         return out
 
@@ -100,9 +125,24 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
             out["pct"].append(0.0)
             out["nav_ils"].append(round(nav, 2))
             out["flows_ils"].append(0.0)
-            prev = (d, nav)
+            prev = (d, nav, int(p.get("positions") or 0))
             continue
         f = net_flow_between(flows, prev[0], d)
+        # The ledger is authoritative when it has something to say. It is when
+        # it says NOTHING, while the book demonstrably changed shape, that a
+        # step must not be booked as return.
+        n_now = int(p.get("positions") or 0)
+        dn = n_now - prev[2]
+        if dn != 0 and abs(f) < 0.005:
+            unexplained = round(nav - prev[1], 2)
+            if abs(unexplained) >= 0.5:
+                f = unexplained
+                out["unexplained_flows"].append({
+                    "as_of": d, "amount_ils": unexplained,
+                    "positions_before": prev[2], "positions_after": n_now,
+                    "reason": ("a holding was added" if dn > 0 else "a holding was removed")
+                              + " and no contribution was recorded, so this step is"
+                                " not counted as performance"})
         # A zero or negative starting value cannot produce a return; carry the
         # level rather than inventing one or dividing by zero.
         r = ((nav - f) / prev[1] - 1.0) if prev[1] > 0 else 0.0
@@ -112,7 +152,7 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
         out["nav_ils"].append(round(nav, 2))
         out["flows_ils"].append(f)
         out["flow_total_ils"] = round(out["flow_total_ils"] + f, 2)
-        prev = (d, nav)
+        prev = (d, nav, n_now)
 
     out["total_pct"] = out["pct"][-1] if out["pct"] else 0.0
     return out
@@ -282,8 +322,12 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
     rows = (await session.execute(
         select(NavSnapshot).where(NavSnapshot.subject == user.email)
         .order_by(NavSnapshot.as_of))).scalars().all()
+    # `positions` comes along because `time_weighted` needs it: the ledger does
+    # not know about a holding added through intake, and the position COUNT is
+    # the only thing on the row that does.
     points = [{"as_of": r.as_of, "nav_ils": float(r.nav_ils or 0.0),
-               "invested_ils": float(r.invested_ils or 0.0)} for r in rows]
+               "invested_ils": float(r.invested_ils or 0.0),
+               "positions": int(r.positions or 0)} for r in rows]
     recorded_since = points[0]["as_of"] if points else None
 
     if days < 36500 and points:
@@ -312,6 +356,10 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
         # showing only one invites the reader to mistake a transfer for a gain.
         "simple_change_pct": simple_change_pct(points),
         "flow_total_ils": twr["flow_total_ils"],
+        # Named, never folded in silently. The caption used to say "no deposits
+        # or withdrawals in this window" while a holding had just been entered,
+        # and a caption that vouches for a number is worse than a wrong number.
+        "unexplained_flows": twr["unexplained_flows"],
         "gaps": gaps(points),
         "engine_version": SNAPSHOT_VERSION,
         "window": {"start": twr["dates"][0], "end": twr["dates"][-1],
