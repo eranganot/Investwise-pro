@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-29 by Claude (PR 19 — the contradiction check stops reading card titles)._
+_Last updated: 2026-08-30 by Claude (PR 20 — a price refresh redenominated your Tel Aviv holdings)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,128 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 20 — a price refresh redenominated a holding, and that was the CI leak
+
+**CI run #178 red on `main` at `9e2dd08`, `test-postgres` only. It is CI run
+#169's failure, with the identical assertion — `192360.0 <= 41000.0 + 1.0`.**
+Two sightings, months apart, never reproduced from the number alone. The row
+dump a previous session added to that assertion is what located it:
+
+```
+BBB qty=10.0   basis=100.0 invested=3710.0
+AAA qty=107.0  basis=100.0 invested=39697.0
+CASH qty=148953.0 basis=1.0 invested=148953.0
+```
+
+Both holdings are seeded on **TASE at 100 ILS**, so BBB's invested should read
+1,000. It reads 3,710 — exactly 1,000 × **3.71**, which is
+`BuiltinFXProvider._BASE[("USD","ILS")]`, the hardcoded rate the test
+providers use. (The real market rate is ~2.98; 3.71 is a fixture constant, and
+the multiplier in production would be ~2.97. The defect is the same size
+either way — roughly triple.)
+
+**Root cause.** The provider decides the market from the **ticker**, not from the
+holding. `BuiltinMarketDataProvider.get_quote` is literally
+
+```python
+market = "TASE" if ticker.upper().startswith("TA") else "NYSE"
+```
+
+(`builtin.py:37`) and returns that market's currency. `pricing_service` stamped
+`price_currency` straight from the quote, so **the provider's guess overruled the
+market the user declared in the holdings form.**
+
+**Measured on that exact book, one refresh:** NAV 41,000 → 235,687 and invested
+41,000 → 152,110, both exactly ×3.71. And the CI dump's cash figure reconstructs
+to the shekel — 293 shares at the builtin's synthetic 149.37, times 3.71, less
+25% CGT on the gain = **148,953.0**, which is what CI printed.
+
+**Why it was intermittent.** It needs a refresh to land *inside* the test. The
+scheduler primes one on startup and Postgres runs are slow enough for the timing
+to differ. The arithmetic was always deterministic — only the timing was not,
+which is why "reproduce it, don't reason about it" kept failing on the number
+alone and succeeded the moment the rows were printed.
+
+**Why it was silent.** No exception, and NAV and invested move *together*, so
+gain% stays plausible. A book that has quietly quadrupled looks like a book that
+has done well.
+
+**This is live in production**, not a test artefact. Any Tel Aviv or London
+holding entered under a ticker the provider reads as American is multiplied by
+the FX rate on the next refresh. Same family as PR 18's agorot bug: a provider's
+opinion about currency overriding the book's own.
+
+### The fix
+
+A quote whose currency contradicts the declared market **is not a quote about
+that holding**. So the refresh refuses it — and refuses the **price** too, not
+just the currency stamp. There is no arithmetic that recovers the right number
+from a quote about a different instrument, which is the same rule already applied
+to a stale quote, for the same reason.
+
+- the position's `market` is the user's **declaration**; `fx.MARKET_CCY` gives
+  the currency it implies. A disagreement is reported, never applied.
+- a market not in `MARKET_CCY` (`OTHER`) has no declaration to contradict, so the
+  quote is trusted — better than nothing.
+- **rows already redenominated are repaired**: the declared currency is restored
+  (removing the ×3.71) and the row is flagged `price_unverified`, because its
+  price was written by a provider answering about something else. The app says
+  which part of the total it does not stand behind rather than picking a number.
+- `/api/v1/portfolio` carries `price_currency_conflict` and `price_unverified`;
+  the refresh reports `currency_conflicts` and `repaired_currency_rows`.
+
+**This is almost certainly the +₪739.21 `rebalance_to_objective` leak as well** —
+a card built while the rows read ILS and accepted after a refresh flipped them to
+USD moves NAV between the two reads, with `_rebalance_to`'s own guard passing
+because it measures a single consistent snapshot. Not asserted as proven: that
+sighting was never reproduced and no BREACH line (PR 17) has been captured yet.
+It is the leading candidate, and PR 17's reporting is what would confirm it.
+
+### And a second finding, from Eran: the FX default is a frozen table
+
+He noticed the 3.71 immediately — *"the USD/ILS rate is not 3.7 but 2.98"* — and
+he is right. 3.71 is `BuiltinFXProvider._BASE[("USD","ILS")]`, a constant written
+once and never revisited; the market was **2.98** on 2026-08-28.
+
+That is correct for a test fixture and would be a **~24% valuation error** on a
+real book. And `config.py:105` **defaults `fx_provider` to `"builtin"`**, so a
+deployment that does not set `FX_PROVIDER` converts every foreign holding at that
+table with nothing on screen to say so.
+
+**Production is fine** — checked directly against the live app on 2026-08-30,
+which reports an implied USD/ILS of **2.9728** across all three USD holdings, so
+`FX_PROVIDER` is set there. But a fresh environment, or a lost variable, would
+silently inherit the frozen table. `registry.fx_provider()` now logs a warning,
+once per process, naming the hardcoded rate and how to fix it. The constant is
+left alone deliberately: changing it to 2.98 only moves the day it goes stale,
+and tests must not depend on a live rate.
+
+*The wording is corrected throughout this file and in the new tests: 3.71 is the
+multiplier the defect applied under the test providers, never a market rate. In
+production the multiplier would be ~2.97 — roughly triple, either way.*
+
+### Two test fixtures were incoherent, and are fixed rather than the check relaxed
+
+`test_p0_safety.py` built holdings on **TASE** (`_pos(..., market=Market.TASE)`)
+and quoted them in **USD** (`_q(..., market="US", currency="USD")`) — incoherent
+from the start, and harmless only while nothing compared the two. Those tests are
+about *freshness*, so the quote fixture is made coherent rather than the currency
+check weakened; the currency behaviour is pinned by its own file.
+`test_cash_pricing_guard.py`'s `_Row` stub had no `market` at all, modelling a row
+that cannot exist (`market` is NOT NULL on `Position`). The refresh also reads
+the field defensively now — a reprice must not 500 the app because one row is
+odd, and no market means no declaration to contradict.
+
+**Gate:** SQLite 1355 passed / 4 skipped; Postgres 1351 passed / 12 skipped; `ruff check app tests`
+clean. All four tests in
+`tests/test_price_refresh_keeps_the_declared_currency.py` fail on the old code.
+
+**Ship:** `scripts/deploy/ship-pr20-declared-currency-wins.ps1`
+**Smoke:** `scripts/smoke/smoke-minor-units.ps1` (extended — it already reads the
+per-position currency and now checks the conflict flags too).
+
+Not financial advice.
 
 ## ✅ PR 19 — two cards contradicted each other and rule 2 could not see either leg
 
@@ -175,7 +297,7 @@ is a test for this alone.
 It was reached in two very different situations and only one is survivable:
 
 - **the provider wobbled on a currency it knows.** Falling back to 1.0 values a
-  USD book at **27%** of its worth, because USD/ILS is ~3.71. The last rate that
+  USD book at **~34%** of its worth at today's ~2.98 USD/ILS. The last rate that
   actually resolved is remembered per pair and served with a warning.
 - **the code is one the provider has never heard of** — how `ILA` got valued at
   par. That is a wrong input, not a wobble, and it now says so at ERROR.

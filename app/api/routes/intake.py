@@ -149,6 +149,12 @@ async def get_portfolio(entity: str | None = None,
             # nothing said so either way.
             "price_currency_quoted": (p.meta or {}).get("price_currency_quoted"),
             "price_currency_repaired": bool((p.meta or {}).get("price_currency_repaired")),
+            # The provider answered about a different venue than this holding is
+            # declared on, so its quote was refused. The row keeps the price it
+            # had, and says the price is not one the app stands behind rather
+            # than presenting it as current.
+            "price_currency_conflict": (p.meta or {}).get("price_currency_conflict"),
+            "price_unverified": bool((p.meta or {}).get("price_unverified")),
         })
     # "What you put in" is external money, not the book's current cost basis.
     # The basis sum drifts for three reasons that are not deposits: it is

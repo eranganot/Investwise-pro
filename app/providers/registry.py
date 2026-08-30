@@ -3,6 +3,7 @@ call in a per-provider resilience tier (cache -> rate limit -> breaker -> retry)
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 from app.core.config import get_settings
@@ -39,7 +40,23 @@ def market_provider() -> MarketDataProvider:
 
 @lru_cache
 def fx_provider() -> FXProvider:
-    return _FX.get(get_settings().fx_provider, BuiltinFXProvider)()
+    """The configured FX provider, saying so when the rates are synthetic.
+
+    `fx_provider` defaults to "builtin", whose rates are a frozen table --
+    3.71 USD/ILS against a market that was ~2.98 on 2026-08-28. A deployment
+    that does not set FX_PROVIDER therefore values every foreign holding about
+    24% high, in NAV and in everything sized against NAV, with nothing on screen
+    to say so. Once per process, out loud.
+    """
+    chosen = get_settings().fx_provider
+    impl = _FX.get(chosen, BuiltinFXProvider)
+    if impl is BuiltinFXProvider:
+        logging.getLogger("investwise.providers").warning(
+            "FX provider is %r -> BuiltinFXProvider, whose rates are a FROZEN "
+            "TABLE, not market data (USD/ILS hardcoded at 3.71). Every non-ILS "
+            "holding is being converted at that number. Set FX_PROVIDER="
+            "frankfurter for real rates.", chosen)
+    return impl()
 
 
 @lru_cache

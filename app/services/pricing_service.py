@@ -19,7 +19,7 @@ from app.core.config import get_settings
 from app.models.tables import KVSetting, Position, money
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
-from app.services.fx import major_unit, to_major_units
+from app.services.fx import MARKET_CCY, major_unit, to_major_units
 from app.services.intake_service import is_cash_position, repair_cash_row
 
 logger = logging.getLogger("investwise.pricing")
@@ -120,6 +120,8 @@ async def refresh_all_positions(session, positions=None) -> dict:
     unknown_from_primary = 0
     minor_units = 0          # quotes that arrived in agorot / pence
     repaired_minor = 0       # rows a previous refresh stored in agorot / pence
+    conflicts = 0            # quotes whose currency contradicts the declared market
+    repaired_conflict = 0    # rows an earlier refresh already redenominated
     stale_tickers: list[dict] = []
     prices: list[dict] = []
     errors: list[dict] = []
@@ -160,6 +162,40 @@ async def refresh_all_positions(session, positions=None) -> dict:
                 logger.warning("repriced %s from %s %.4f to %s %.4f - it was "
                                "stored in a minor unit and valued at %gx",
                                tk, _stamped, _before, _major, _before / _per, _per)
+
+        # And heal a row an EARLIER refresh redenominated. Refusing the quote
+        # below stops new damage; it does nothing for the rows already carrying
+        # a currency that contradicts their market, and nothing else goes back
+        # for those. A TASE holding stamped USD is being multiplied by the FX
+        # rate on every read.
+        #
+        # The currency is restored to the one the market implies. The PRICE is
+        # not, and cannot be: it was written by a provider answering about a
+        # different instrument, so there is no arithmetic that recovers the
+        # right number from it. The row is flagged `price_unverified` instead of
+        # being quietly trusted -- the app must say which part of the total it
+        # does not stand behind rather than pick a number.
+        _pm2 = p.meta if isinstance(p.meta, dict) else {}
+        # getattr, not p.market: `market` is NOT NULL on Position, so every real
+        # row has one -- but a refresh must not 500 the app because one row came
+        # from somewhere odd. No market means no declaration to contradict, and
+        # the quote is trusted, which is the same rule as an unknown market.
+        _declared_now = MARKET_CCY.get(str(getattr(p, "market", "") or "").upper())
+        _stamped_ccy = str(_pm2.get("price_currency") or "")
+        if _declared_now and _stamped_ccy and _stamped_ccy != _declared_now:
+            p.meta = {**_pm2, "price_currency": _declared_now,
+                      "price_unverified": True,
+                      "price_currency_conflict": {"declared": _declared_now,
+                                                  "quoted": _stamped_ccy,
+                                                  "market": getattr(p, "market", None),
+                                                  "source": "repair"}}
+            repaired_conflict += 1
+            logger.warning(
+                "%s is held on %s (%s) but was stored as %s - restoring %s. Its "
+                "price was written by a provider answering about something else "
+                "and is now flagged unverified.",
+                tk, getattr(p, "market", "?"), _declared_now, _stamped_ccy,
+                _declared_now)
 
         if tk not in quote_cache:
             q, used = None, None
@@ -219,6 +255,54 @@ async def refresh_all_positions(session, positions=None) -> dict:
         # do this. `to_major_units` is the only place the list lives.
         q_price, q_ccy = to_major_units(q.price, q.currency)
         quoted_ccy = (q.currency or "").strip()
+
+        # A QUOTE IN THE WRONG CURRENCY IS NOT A QUOTE ABOUT THIS HOLDING.
+        #
+        # The market on the position is the user's DECLARATION -- he chose
+        # "Tel Aviv (TASE)" in the holdings form. The provider has its own
+        # opinion, derived from the ticker: the builtin one is literally
+        # `"TASE" if ticker.upper().startswith("TA") else "NYSE"`
+        # (`builtin.py:37`), and the live ones answer for whatever venue they
+        # think the symbol belongs to. Stamping the quote's currency let that
+        # opinion OVERRULE the declaration.
+        #
+        # Measured, on the exact book in `test_cash.py`: two TASE holdings at
+        # 100 ILS, one refresh, and the rows come back stamped USD --
+        # NAV 41,000 -> 235,687 and invested 41,000 -> 152,110, both exactly
+        # x3.71. That is CI run #169's `192360.0 <= 41000.0 + 1.0` and run
+        # #178's identical failure: the cash figure of 148,953 reconstructs to
+        # the shekel from 293 shares at the builtin's synthetic 149.37, times
+        # 3.71, less 25% CGT on the gain.
+        #
+        # It was intermittent only because it needs a refresh to land inside
+        # the test -- the scheduler primes one on startup. The arithmetic is
+        # deterministic, and it is reachable in production by anyone holding a
+        # Tel Aviv or London name under a ticker the provider reads as US.
+        #
+        # So: a disagreement means the provider is answering about something
+        # else. Do not restamp the currency AND do not write the price -- the
+        # same rule already applied to a stale quote, for the same reason.
+        declared_ccy = MARKET_CCY.get(str(getattr(p, "market", "") or "").upper())
+        if declared_ccy and q_ccy and q_ccy != declared_ccy:
+            meta = {**(p.meta or {}),
+                    "price_currency_conflict": {"declared": declared_ccy,
+                                                "quoted": quoted_ccy or q_ccy,
+                                                "market": getattr(p, "market", None),
+                                                "source": used}}
+            p.meta = meta
+            conflicts += 1
+            logger.warning(
+                "%s is held on %s (%s) but %s quoted it in %s - refusing the "
+                "quote rather than redenominating the holding. Price left at %s.",
+                tk, getattr(p, "market", "?"), declared_ccy, used, quoted_ccy or q_ccy,
+                p.current_price)
+            prices.append({"ticker": tk, "price": float(p.current_price or 0),
+                           "currency": declared_ccy, "as_of": (p.meta or {}).get("price_as_of"),
+                           "source": used, "stale": False, "not_written": True,
+                           "currency_conflict": {"declared": declared_ccy,
+                                                 "quoted": quoted_ccy or q_ccy}})
+            continue
+
         meta = {**(p.meta or {}), "price_source": used, "price_currency": q_ccy}
         if q_ccy != quoted_ccy:
             # Keep what the provider actually said. A normalisation that erases
@@ -267,6 +351,17 @@ async def refresh_all_positions(session, positions=None) -> dict:
             "%s supplied no venue timestamp for %d quote(s); freshness fell back to "
             "the Yahoo cross-check. If this is every ticker, the primary cannot "
             "support a staleness check on its own.", primary.name, unknown_from_primary)
+    if repaired_conflict:
+        logger.error("price refresh: restored the declared currency on %d "
+                     "position(s) an earlier refresh had redenominated. Those "
+                     "rows were being multiplied by the FX rate on every read.",
+                     repaired_conflict)
+    if conflicts:
+        logger.error("price refresh: %d quote(s) REFUSED because the provider's "
+                     "currency contradicted the market the holding is declared "
+                     "on. Those positions keep their existing price; the app is "
+                     "not redenominating a holding on a provider's guess.",
+                     conflicts)
     if repaired_minor:
         logger.warning("price refresh: repaired %d position(s) that were stored "
                        "in a minor unit and therefore valued 100x too high",
@@ -280,6 +375,8 @@ async def refresh_all_positions(session, positions=None) -> dict:
             "repaired_cash": repaired, "stale": stale,
             "minor_unit_quotes": minor_units,
             "repaired_minor_unit_rows": repaired_minor,
+            "currency_conflicts": conflicts,
+            "repaired_currency_rows": repaired_conflict,
             "stale_tickers": stale_tickers, "by_source": by_source,
             "prices": prices, "errors": errors}
 

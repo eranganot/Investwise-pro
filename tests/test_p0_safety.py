@@ -68,8 +68,21 @@ def test_trading_days_ignore_the_weekend():
     assert ps.trading_days_between(sat, sun) == 0
 
 
-def _q(as_of, source="market", price=100.0):
-    return Quote(ticker="X", market="US", price=price, currency="USD",
+def _q(as_of, source="market", price=100.0, currency="ILS", market="TASE"):
+    """A quote for the holdings `_pos` builds, which default to Tel Aviv.
+
+    It used to say ``market="US", currency="USD"`` against positions declared on
+    TASE -- incoherent from the start, and harmless only while nothing compared
+    the two. A quote whose currency contradicts the declared market is now
+    refused rather than applied, because that mismatch was the CI leak: the
+    provider's guess about a ticker was overruling the market the user chose,
+    and every such holding was multiplied by the FX rate.
+
+    These tests are about FRESHNESS, so the fixture is made coherent rather than
+    the check relaxed. `test_price_refresh_keeps_the_declared_currency.py` pins
+    the currency behaviour on its own.
+    """
+    return Quote(ticker="X", market=market, price=price, currency=currency,
                  as_of=as_of.isoformat() if hasattr(as_of, "isoformat") else as_of,
                  as_of_source=source)
 

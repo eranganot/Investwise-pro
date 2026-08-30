@@ -132,6 +132,33 @@ else {
     }
 }
 
+Sec "2b  no holding was redenominated by a provider guess"
+if ($null -eq $portfolio) { Skip "no portfolio payload. SKIP, not PASS." }
+else {
+    # The provider decides the market from the TICKER. A quote whose currency
+    # contradicts the market the holding is DECLARED on is not a quote about
+    # that holding, and writing it multiplied the position by the FX rate.
+    $conflicted = @($portfolio.positions | Where-Object { $_.price_currency_conflict })
+    $unverified = @($portfolio.positions | Where-Object { $_.price_unverified })
+    if ($conflicted.Count -eq 0) {
+        Ok "no position has a quote whose currency contradicts its market"
+    } else {
+        foreach ($x in $conflicted) {
+            $cf = $x.price_currency_conflict
+            Write-Host "        $($x.ticker) on $($x.market): declared $($cf.declared), $($cf.source) quoted $($cf.quoted)" -ForegroundColor Yellow
+        }
+        # Reported is the CORRECT state - the quote was refused rather than
+        # applied. This is a PASS with a note, not a failure.
+        Ok "$($conflicted.Count) quote(s) refused and reported instead of redenominating the holding"
+    }
+    if ($unverified.Count -gt 0) {
+        foreach ($x in $unverified) {
+            Write-Host "        $($x.ticker): price flagged unverified - it was written by a provider answering about something else" -ForegroundColor Yellow
+        }
+        Write-Host "        Check those prices against your broker; the app is not standing behind them." -ForegroundColor Yellow
+    }
+}
+
 Sec "3  the payload can say what the provider actually quoted"
 if ($null -eq $portfolio -or @($portfolio.positions).Count -eq 0) {
     Skip "no positions to inspect. SKIP, not PASS."
@@ -160,6 +187,15 @@ if (-not $AllowRefresh) {
             Bad "no minor_unit_quotes in the refresh report - this is the OLD build"
         } else {
             Ok "the refresh reports minor-unit handling: $($res.minor_unit_quotes) quote(s) normalised, $($res.repaired_minor_unit_rows) row(s) repaired"
+        }
+        if ($null -eq $res.PSObject.Properties['currency_conflicts']) {
+            Bad "no currency_conflicts in the refresh report - this build predates PR 20"
+        } else {
+            Ok "the refresh reports currency handling: $($res.currency_conflicts) quote(s) refused, $($res.repaired_currency_rows) row(s) restored"
+            if ([int]$res.repaired_currency_rows -gt 0) {
+                Write-Host "        Those rows were being multiplied by the FX rate on every read." -ForegroundColor Yellow
+                Write-Host "        Expect NAV to FALL. That fall is the error leaving." -ForegroundColor Yellow
+            }
         }
         $after = Api GET '/api/v1/portfolio'
         if ($null -eq $after) { Bad "/portfolio returned nothing usable after the refresh" }

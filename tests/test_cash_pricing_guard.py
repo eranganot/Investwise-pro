@@ -22,9 +22,13 @@ from app.services.intake_service import (  # noqa: E402
 class _Row:
     """Stand-in for a Position row (no DB needed for the invariant itself)."""
 
-    def __init__(self, ticker, price, basis, meta):
+    def __init__(self, ticker, price, basis, meta, market="NYSE"):
+        # `market` is NOT NULL on Position and the refresh now reads it: a quote
+        # whose currency contradicts the declared market is refused rather than
+        # applied. A stub without it was modelling a row that cannot exist.
         self.ticker, self.current_price, self.cost_basis, self.meta = (
             ticker, Decimal(str(price)), Decimal(str(basis)), meta)
+        self.market = market
 
 
 def test_cash_is_detected_by_ticker_and_by_asset_class():

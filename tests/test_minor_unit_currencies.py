@@ -88,9 +88,10 @@ def test_a_stored_minor_unit_stamp_is_reported_as_its_major_currency():
 def test_fx_keeps_the_last_real_rate_instead_of_inventing_one(monkeypatch):
     """A provider wobble must not value a USD book at 27% of its worth.
 
-    Falling back to 1.0 was never "safe": USD/ILS is ~3.71, so the fallback
-    understates a dollar holding by 73%. The last rate that actually resolved is
-    a far better answer than 1.
+    Falling back to 1.0 was never "safe": USD/ILS is ~2.98 today, so the
+    fallback understates a dollar holding by about two thirds. The stub below
+    uses 3.71 because that is what the builtin provider hardcodes, and these
+    tests must not depend on a live rate.
     """
     from app.providers import registry
     from app.services import fx as fxmod

@@ -82,6 +82,22 @@ class BuiltinMarketDataProvider(MarketDataProvider):
 
 
 class BuiltinFXProvider(FXProvider):
+    """SYNTHETIC rates for tests and offline development. Not market data.
+
+    `_BASE` is a frozen fixture, and it has drifted: 3.71 USD/ILS was written
+    once and the market was ~2.98 on 2026-08-28 -- about 25% apart. That is
+    harmless in a test, where a constant is exactly what is wanted, and it is a
+    24% valuation error on a real book.
+
+    `config.py` DEFAULTS `fx_provider` to "builtin", so a deployment that does
+    not set FX_PROVIDER converts every foreign holding at these numbers with
+    nothing on screen to say so. Production sets it -- verified 2026-08-30, the
+    live app reports an implied USD/ILS of 2.9728 -- but a fresh environment, or
+    a lost variable, would silently inherit this table. `registry.fx_provider()`
+    logs a warning when this provider is the one selected, because "the rates
+    are made up" is not something a reader should have to infer from source.
+    """
+
     name = "builtin"
     _BASE = {("USD", "ILS"): 3.71, ("EUR", "ILS"): 4.02, ("USD", "EUR"): 0.92}
 
