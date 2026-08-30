@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (HOTFIX — a pin that could never resolve)._
+_Last updated: 2026-08-30 by Claude (PR 23 — the agent map)._
 _Seeded from git history + prior transcripts._
 
 ## 🔴 PR 22 shipped a pin that could not resolve, and main stopped building
@@ -60,6 +60,42 @@ up. It asks whether `/api/v1/portfolio/nav-history` returns
 **`unexplained_flows`**, the key PR 22 added at `nav_history.py:362`. Present
 means the new code is running; absent means it is not, whatever the sha and the
 deploy dashboard say.
+
+---
+
+## ✅ PR 23 — the agent map, and it found four things
+
+`docs/AGENTS.md` is Eran's item 1. Every claim in it carries a `file:line`.
+
+**The headline.** `war_room.py:18` declares **seven** agents; **five** classes
+exist under `app/agents/`; the overlap is **two** (Research, Adversary). Alpha,
+Risk, Tax and Decision are *engines* rendered as dialogue; UX is a render step
+with no class at all. The doc recommends renaming the four engine speakers
+rather than promoting five engines — a large change bought for a labelling
+problem.
+
+**Four findings that are not documentation problems:**
+
+1. **"What's moving" reads a four-row fixture, unconditionally** — item 5's root
+   cause. `registry.py:63` returns `BuiltinEconomicDataProvider()` with no
+   settings branch, and `app/providers/live.py` has **no economic provider** to
+   switch to. Four is all there will ever be until one is wired in.
+2. **That list is captioned with the price-refresh clock.** `index.html:2791`
+   renders "Updates hourly · last refreshed N" from `last_refreshed`, which
+   `market.py:44` fills from `market_status()`. A static list under a ticking
+   clock — same class of defect as the +35% caption PR 22 removed.
+3. **The Allocation Agent's veto is unreachable from the app.** The only veto
+   raised *before* a card is built. Its sole caller is an ANALYST-role endpoint
+   the front end never calls, behind two request fields that both default to
+   `None`. `recommendations.py` never imports it.
+4. **No agent reads your strategy when choosing what to buy** — item 2.
+   `recommendations.py:2698` calls `screen_equities(top_n=5)` with no weights;
+   the only weight input in the codebase is a query string nothing builds. Grow
+   and Preserve rank identically.
+
+Findings 1, 3 and 4 are pinned as **defects** in
+`tests/test_the_agent_roster_is_what_actually_runs.py`: the tests pass while the
+bug is present and **fail when it is fixed**, telling you to update the map.
 
 ---
 

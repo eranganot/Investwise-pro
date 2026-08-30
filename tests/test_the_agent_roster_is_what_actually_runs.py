@@ -1,0 +1,286 @@
+"""A map nobody checks is a map that quietly stops being true.
+
+Eran, 2026-08-30: *"map all the agents in the tool and for each one write its
+goals, objectives, and purpose."* `docs/AGENTS.md` is that map. This file is the
+reason it stays one.
+
+Writing the map surfaced the thing it was written to surface: `war_room.py:18`
+declares SEVEN agents, five classes exist under `app/agents/`, and the overlap
+between the two sets is TWO. Nothing in the suite noticed, because nothing had
+ever compared the label to the code.
+
+These tests are deliberately shaped so they fail on the change that would break
+the document, not on cosmetics:
+
+  * add or delete an agent class            -> ROSTER fails
+  * change the war-room speaker list        -> WAR_ROOM_SPEAKERS fails
+  * move an agent's veto power              -> the veto tests fail
+  * teach the screener to read strategy     -> the strategy test fails LOUDLY,
+                                               which is the good direction and
+                                               means the doc needs updating
+
+Every constant below is a claim `docs/AGENTS.md` makes in prose. If you are
+here because one of them failed, the fix is to change BOTH.
+"""
+from __future__ import annotations
+
+import inspect
+import re
+from pathlib import Path
+
+import pytest
+
+DOC = Path(__file__).resolve().parents[1] / "docs" / "AGENTS.md"
+
+# The five classes under app/agents/ that decide something.
+ROSTER = {
+    "ResearchAgent": "app.agents.research_agent",
+    "OpportunityAgent": "app.agents.screener_agent",
+    "FeeAgent": "app.agents.fee_agent",
+    "AllocationAgent": "app.agents.allocation_agent",
+    "Adversary": "app.agents.adversary",
+}
+
+# What the user is shown under "How the decisions are made".
+WAR_ROOM_SPEAKERS = ["Research", "Alpha", "Risk", "Tax", "Decision", "Adversary", "UX"]
+
+# Of the seven names above, the ones backed by a class under app/agents/.
+SPEAKERS_THAT_ARE_REALLY_AGENTS = {"Research", "Adversary"}
+
+
+def test_the_map_exists():
+    assert DOC.is_file(), (
+        "docs/AGENTS.md is gone. Every test below reads it, and the agents it "
+        "describes are the ones that decide what lands in your feed.")
+
+
+def test_every_agent_class_on_disk_is_in_the_roster_and_in_the_map():
+    """A new agent must not be able to arrive unannounced.
+
+    Discovered by walking app/agents/, not by reading a list -- a list checked
+    against itself proves nothing.
+    """
+    import importlib
+
+    agents_dir = Path(__file__).resolve().parents[1] / "app" / "agents"
+    found: set[str] = set()
+    for path in sorted(agents_dir.glob("*.py")):
+        if path.stem.startswith("_"):
+            continue
+        mod = importlib.import_module(f"app.agents.{path.stem}")
+        for name, obj in vars(mod).items():
+            if (inspect.isclass(obj) and obj.__module__ == mod.__name__
+                    and not name.startswith("_")
+                    and not issubclass(obj, Exception)
+                    and not name.endswith(("Note", "Report", "Event", "Pick"))
+                    and name != "Severity"):
+                found.add(name)
+
+    assert found == set(ROSTER), (
+        f"the agent classes on disk are {sorted(found)}, the roster says "
+        f"{sorted(ROSTER)}. Update BOTH this list and docs/AGENTS.md.")
+
+    text = DOC.read_text(encoding="utf-8")
+    missing = [f"{mod.replace('.', '/')}.py" for mod in ROSTER.values()
+               if mod.replace(".", "/") + ".py" not in text]
+    assert not missing, f"docs/AGENTS.md never cites {missing}"
+
+
+def test_the_war_room_speaker_list_has_not_moved():
+    from app.services.war_room import AGENTS
+
+    assert AGENTS == WAR_ROOM_SPEAKERS, (
+        "war_room.AGENTS changed. That list is rendered to the user as the "
+        "cast of specialists weighing in on their money, so docs/AGENTS.md has "
+        "to change with it.")
+
+
+def test_the_gap_between_what_is_shown_and_what_exists_is_recorded():
+    """THE FINDING THIS FILE EXISTS FOR.
+
+    Seven names are shown; five agents exist; two are in both sets. The other
+    five speakers are ENGINES -- deterministic calculators -- wearing an agent's
+    name in the transcript.
+
+    This is not asserted as desirable. It is asserted as CURRENT, so that fixing
+    it (renaming the four engine speakers, per the recommendation in the doc)
+    fails here and forces the map to be updated in the same commit.
+    """
+    from app.services.war_room import AGENTS
+
+    real = {n for n in AGENTS if f"{n}Agent" in ROSTER or n in ROSTER}
+    assert real == SPEAKERS_THAT_ARE_REALLY_AGENTS, (
+        f"the war-room names backed by an agent class are now {sorted(real)}, "
+        f"not {sorted(SPEAKERS_THAT_ARE_REALLY_AGENTS)}. If you renamed the "
+        "engine speakers, say so in docs/AGENTS.md and update this test.")
+
+    engines = [n for n in AGENTS if n not in real]
+    assert engines == ["Alpha", "Risk", "Tax", "Decision", "UX"]
+
+
+# --------------------------------------------------------------------------
+# Veto power. WHO can stop a card is the single most consequential fact in the
+# map, so it is checked rather than described.
+# --------------------------------------------------------------------------
+
+def test_the_allocation_agent_still_holds_the_only_pre_card_veto():
+    from app.agents.allocation_agent import AllocationAgent, VetoException
+    from app.engines.allocation_engine import AllocationEngine
+
+    src = inspect.getsource(AllocationAgent.review_buy)
+    assert "raise VetoException" in src, (
+        "review_buy no longer raises. It is the only veto in the codebase that "
+        "fires BEFORE a card is built rather than annotating one afterwards.")
+    assert issubclass(VetoException, Exception)
+    assert hasattr(AllocationEngine, "overweight_classes")
+
+
+def test_the_allocation_veto_is_still_unreachable_from_the_app():
+    """Recorded as a DEFECT, pinned so the fix is visible when it lands.
+
+    The veto's only caller is PipelineOrchestrator.generate, reached solely by
+    POST /api/v1/decision-feed/generate -- an ANALYST-role endpoint the front
+    end never calls. The cards the user actually sees come from
+    recommendations.py, which does not import AllocationAgent at all.
+
+    When someone wires the veto into the live path, this test fails. That is the
+    point: it is the notification that item 2's biggest hole has been closed.
+    """
+    root = Path(__file__).resolve().parents[1]
+
+    recs = (root / "app" / "services" / "recommendations.py").read_text(encoding="utf-8")
+    assert "AllocationAgent" not in recs, (
+        "recommendations.py now knows about the Allocation Agent -- the live "
+        "card path may finally be honouring the overweight veto. Verify, then "
+        "update docs/AGENTS.md, which currently states it never runs.")
+
+    ui = (root / "app" / "static_app" / "index.html").read_text(encoding="utf-8")
+    assert "decision-feed" not in ui, (
+        "the front end now calls /decision-feed. docs/AGENTS.md says it never "
+        "does, and that claim is load-bearing for the whole Allocation Agent "
+        "entry.")
+
+
+def test_the_adversary_veto_is_wired_into_the_path_that_builds_cards():
+    """It was prose for months and nothing read it. Keep it wired."""
+    from app.services import war_room
+
+    src = inspect.getsource(war_room.build_war_room)
+    assert src.count("blocks_now") >= 3, (
+        "the Adversary's BLOCK is no longer consulted at all three stages "
+        "(detected/vetted, optimized, ranked)")
+    assert 'outcome": "VETOED"' in src
+
+
+def test_the_research_agent_is_still_read_only():
+    """Its docstring promises this. A promise in a docstring is not a check."""
+    from app.agents.research_agent import ResearchAgent
+
+    src = inspect.getsource(ResearchAgent)
+    for forbidden in ("session", "commit", "add(", "Recommendation", "apply"):
+        assert forbidden not in src, (
+            f"ResearchAgent mentions {forbidden!r}. Its stated invariant is that "
+            "it emits evidence and never touches portfolio state.")
+
+
+# --------------------------------------------------------------------------
+# Item 2: are the agents aligned with the strategy the user picked?
+# Measured, not assumed.
+# --------------------------------------------------------------------------
+
+def test_no_agent_reads_the_users_strategy_when_choosing_what_to_buy():
+    """CURRENT STATE, pinned so the fix announces itself.
+
+    `screen_equities(weights=...)` is the only strategy-shaped input any agent
+    accepts, and every caller inside the app omits it -- so Grow and Preserve
+    rank the identical candidates in the identical order. The one code path that
+    supplies weights is a query string on /api/v1/screener, which nothing builds.
+
+    Fixing this SHOULD break this test.
+    """
+    root = Path(__file__).resolve().parents[1]
+    recs = (root / "app" / "services" / "recommendations.py").read_text(encoding="utf-8")
+
+    calls = re.findall(r"screen_equities\((.*?)\)", recs, flags=re.S)
+    assert calls, "recommendations.py no longer calls screen_equities at all"
+    assert not any("weights" in c for c in calls), (
+        f"recommendations.py now passes weights to the screener: {calls}. If "
+        "those weights come from the user's objective, item 2 is fixed -- say "
+        "so in docs/AGENTS.md and delete this test.")
+
+    ui = (root / "app" / "static_app" / "index.html").read_text(encoding="utf-8")
+    assert "/screener" not in ui, "the front end now calls /screener"
+
+
+# --------------------------------------------------------------------------
+# Item 5: What's moving. The map's sharpest finding, and the easiest to regress
+# back into silence.
+# --------------------------------------------------------------------------
+
+def test_whats_moving_is_still_served_by_a_fixture_with_four_rows():
+    """Pinned as a DEFECT. Passing means the bug is still there.
+
+    `registry.economic_provider()` returns BuiltinEconomicDataProvider
+    unconditionally -- no settings branch, and app/providers/live.py has no
+    economic provider to switch to. So the Explore page's "What's moving" list
+    cannot show a fifth item today no matter what happens in the market, which
+    is the literal answer to "I'm not getting enough cards from What's moving".
+    """
+    from app.providers.builtin import BuiltinEconomicDataProvider
+    from app.providers.registry import economic_provider
+
+    assert isinstance(economic_provider(), BuiltinEconomicDataProvider), (
+        "a live economic provider is now wired in -- item 5's root cause may be "
+        "fixed. Update docs/AGENTS.md and this test.")
+
+    events = BuiltinEconomicDataProvider().get_events()
+    assert len(events) == 4, (
+        f"the fixture now has {len(events)} rows, not 4. The count is quoted in "
+        "docs/AGENTS.md as the reason the section looks thin.")
+
+    src = inspect.getsource(economic_provider)
+    assert "settings" not in src and "get_settings" not in src, (
+        "economic_provider now branches on configuration. That is the fix; "
+        "record it in docs/AGENTS.md.")
+
+
+def test_the_research_agent_emits_one_event_per_fixture_row():
+    """No filtering, no dedupe -- so nothing downstream is thinning the list.
+
+    Worth pinning separately: if the section ever looks thin for a DIFFERENT
+    reason, this test says whether the agent is the one dropping rows.
+    """
+    from app.agents.research_agent import ResearchAgent
+
+    events = ResearchAgent().scan()
+    assert len(events) == 4, (
+        f"ResearchAgent emitted {len(events)} events from a 4-row fixture -- "
+        "something is now filtering them")
+    assert [e.relevance_score for e in events] == sorted(
+        (e.relevance_score for e in events), reverse=True), "no longer sorted"
+
+
+@pytest.mark.parametrize("claim", [
+    "app/agents/research_agent.py:15",
+    "app/agents/screener_agent.py:22",
+    "app/agents/fee_agent.py:25",
+    "app/agents/allocation_agent.py:22",
+    "app/agents/adversary.py:116",
+    "app/services/war_room.py:18",
+])
+def test_every_line_anchor_in_the_map_points_where_it_says(claim):
+    """The whole document's value is that its citations are openable.
+
+    A `file:line` that has drifted by three lines is worse than no citation --
+    it reads as verified and is not.
+    """
+    path, lineno = claim.rsplit(":", 1)
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / path).read_text(encoding="utf-8").splitlines()
+    target = lines[int(lineno) - 1]
+    assert re.match(r"\s*(class |AGENTS = )", target), (
+        f"docs/AGENTS.md cites {claim}, which is now:\n    {target!r}\n"
+        "Re-anchor the citation.")
+
+    text = DOC.read_text(encoding="utf-8")
+    assert claim in text, f"docs/AGENTS.md no longer cites {claim}"
