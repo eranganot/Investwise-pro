@@ -26,7 +26,7 @@ param(
     [switch]$AllowRefresh)
 
 . "$PSScriptRoot\..\agent-key.ps1"
-$AgentKey = Get-AgentKey
+$AgentKey = Get-AgentKey -BaseUrl $BaseUrl
 if (-not $AgentKey) { exit 1 }
 $ApiHeaders = @{ 'x-agent-key' = $AgentKey }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
@@ -43,11 +43,36 @@ function Ok($m) { $script:Pass++; Write-Host "  PASS  $m" -ForegroundColor Green
 function Bad($m) { $script:Fail++; Write-Host "  FAIL  $m" -ForegroundColor Red }
 function Skip($m) { $script:Skipped++; Write-Host "  SKIP  $m" -ForegroundColor Yellow }
 
+# A 401 IS AN ANSWER. Reporting it as "did not answer" is the same class of
+# defect these scripts exist to catch: two very different failures rendered
+# identically, so the reader cannot tell an outage from a rejected key. The
+# status code is printed whenever the server sent one.
 function Api($method, $path, $timeout = 180) {
+    # NOT $args. That is a PowerShell AUTOMATIC variable holding the function's
+    # own unbound arguments, and assigning to it inside a function is the same
+    # family of trap as the $h that once silently clobbered the auth headers.
+    $reqArgs = @{
+        Method     = $method
+        Uri        = "$BaseUrl$path"
+        Headers    = $ApiHeaders
+        TimeoutSec = $timeout
+    }
     try {
-        return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $ApiHeaders -TimeoutSec $timeout
+        return Invoke-RestMethod @reqArgs
     } catch {
-        Write-Host "        $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkGray
+        $code = 0
+        if ($_.Exception.PSObject.Properties.Name -contains 'Response' -and $_.Exception.Response) {
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
+        }
+        if ($code -eq 401 -or $code -eq 403) {
+            Write-Host "        HTTP $code - the server REJECTED the agent key. Not an outage." -ForegroundColor Yellow
+            Write-Host "        Clear a stale one and let agent-key.ps1 resolve it:" -ForegroundColor DarkGray
+            Write-Host "          Remove-Item Env:\IW_AGENT_KEY" -ForegroundColor DarkGray
+        } elseif ($code -gt 0) {
+            Write-Host "        HTTP $code from $path - $($_.Exception.GetType().Name)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "        $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkGray
+        }
         return $null
     }
 }
@@ -70,7 +95,7 @@ elseif ($Sha) {
 # payload or the pair is incoherent.
 Sec "1  no holding is priced in a minor unit"
 $portfolio = Api GET '/api/v1/portfolio'
-if ($null -eq $portfolio) { Bad "/portfolio did not answer" }
+if ($null -eq $portfolio) { Bad "/portfolio returned nothing usable - see the line above for why" }
 else {
     $rows = @($portfolio.positions)
     Write-Host "        NAV $([math]::Round([double]$portfolio.nav_ils, 2)) ILS across $($rows.Count) positions" -ForegroundColor DarkGray
@@ -128,7 +153,7 @@ if (-not $AllowRefresh) {
     Write-Host "        holdings; it buys and sells nothing." -ForegroundColor DarkGray
 } else {
     $res = Api POST '/api/v1/portfolio/refresh-prices'
-    if ($null -eq $res) { Bad "the refresh did not answer" }
+    if ($null -eq $res) { Bad "the refresh returned nothing usable - see the line above for why" }
     else {
         Write-Host "        updated $($res.updated), failed $($res.failed), stale $($res.stale)" -ForegroundColor DarkGray
         if ($null -eq $res.PSObject.Properties['minor_unit_quotes']) {
@@ -137,7 +162,7 @@ if (-not $AllowRefresh) {
             Ok "the refresh reports minor-unit handling: $($res.minor_unit_quotes) quote(s) normalised, $($res.repaired_minor_unit_rows) row(s) repaired"
         }
         $after = Api GET '/api/v1/portfolio'
-        if ($null -eq $after) { Bad "/portfolio did not answer after the refresh" }
+        if ($null -eq $after) { Bad "/portfolio returned nothing usable after the refresh" }
         else {
             $stillBad = @($after.positions | Where-Object { $MinorUnits -contains "$($_.currency)" })
             if ($stillBad.Count -eq 0) { Ok "after the refresh, no holding is priced in a minor unit" }

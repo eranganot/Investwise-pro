@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-29 by Claude (PR 18 — agorot and pence stop being shekels and pounds)._
+_Last updated: 2026-08-29 by Claude (PR 19 — the contradiction check stops reading card titles)._
 _Seeded from git history + prior transcripts._
 
 ## Where the seven-day audit stands
@@ -31,6 +31,99 @@ _Seeded from git history + prior transcripts._
 | 15c | W3 — contribution modelling | 🔴 not started |
 
 ---
+
+## ✅ PR 19 — two cards contradicted each other and rule 2 could not see either leg
+
+Eran, 2026-08-29, on the deployed app: one card sold ~₪1,071 of Equities
+(*"Rebalance toward your target mix"*, BOOK scope) while another bought ~₪3,139
+of SOXL (SLEEVE scope). **SOXL is Equities.** Accepting both moves the mix the
+wrong way. `contradictions.py` rule 2 exists for exactly this and reported
+nothing — measured on the real pair: **0 contradictions found, 0 notes on either
+card.**
+
+**Two holes, both live at once, and the pair went through both.**
+
+- `:111` — the sell side required
+  `str(r.get("title","")).lower().startswith("sell")`. `_reconcile` merges the
+  rebalance legs and renames the survivor *"Rebalance toward your target mix"*,
+  which does not start with "sell".
+- `:109` — `if not cls: continue`. The SOXL sleeve top-up is ticker-scoped and
+  carries no `asset_class` at all, so the card was skipped before its direction
+  was ever considered.
+
+**The deeper defect, which the plan did not anticipate.** The merge does not just
+rename the card — it *destroys the structure the check needs*. After
+`_reconcile`, `apply.asset_class` names whichever leg sorted first and every
+other leg survives only as a **title string** in `meta.merged_legs`. So a card
+that sells Equities *and* buys Commodities presented itself to every consumer as
+one card about Equities. There was no data to read even if rule 2 had wanted to.
+
+**Fixed structurally on both sides, per the card-claim rule already in force**
+(*"verify by applying the card's spec, never by asserting on card text"*):
+
+1. the generator records `apply.direction` instead of leaving it to be read back
+   off the title;
+2. `_reconcile` writes `apply.legs[]` — one entry per leg with its own class,
+   direction and amount — so the merged card describes itself as data;
+3. `contradictions._class_moves` derives `{(asset_class, direction)}` from
+   `apply.legs[]` → `apply.asset_class` + kind → `allocation_mix.classify` on
+   every ticker the card names. **No branch of it reads a title.** A card with
+   no `asset_class` is not a card with no asset class.
+
+A card is never flagged against itself: a merged rebalance sells one class and
+buys another in one decision, and flagging that would turn the fix into a
+permanent false alarm on every rebalance — a fast way to get a real warning
+ignored.
+
+Still **reported, not suppressed**. Both cards are defensible alone and the
+choice is Eran's; what was unacceptable was being told nothing. Each card now
+carries a note naming the other.
+
+**Measured, old code vs new, on the live pair:**
+
+| | contradictions | `buys_and_sells_one_class` | notes on either card |
+|---|---|---|---|
+| before | 0 | 0 | none |
+| after | 1 | 1 (`Equities`) | both |
+
+**Gate:** SQLite 1351 passed / 4 skipped; Postgres 1347 passed / 12 skipped; `ruff check app tests`
+clean. `tests/test_contradictions_read_structure.py` asserts on the reported
+contradiction and on `_class_moves`, never on card text — including a test that
+renames the card to five different titles and requires the answer not to move.
+
+### Also in here: the key helper had the defect it was written to describe
+
+`scripts/agent-key.ps1` shipped in PR 18 and Eran hit its failure within the
+hour. `Get-AgentKey` preferred `$env:IW_AGENT_KEY` **unconditionally**, so an env
+var holding a *wrong* value silently beat a working fallback — and the smoke
+scripts then printed *"/portfolio did not answer"* when the server had answered
+perfectly clearly with a **401**. Two very different failures rendered
+identically, which is the class of defect these scripts exist to catch.
+
+- `Get-AgentKey` now **tests** each candidate against the live API and falls
+  through on a 401/403, naming the source it skipped. Only 401/403 counts as a
+  rejection: a timeout or a 5xx says nothing about the key, so the key is kept
+  rather than discarded for the wrong reason.
+- The smoke `Api` helper prints the status code and says in words that a 401 is
+  a rejected key, not an outage.
+- The request splat is `$reqArgs`, never `$args` — `$args` is a PowerShell
+  **automatic** variable holding the function's own unbound arguments. Same
+  family as the `$h` that once clobbered the auth headers.
+
+Verified against the live deploy from the sandbox: with `IW_AGENT_KEY` set to the
+placeholder string, `Get-AgentKey` reports the 401, skips it, resolves the
+committed key, and `Test-AgentKey` confirms that key authenticates while a
+deliberately wrong one does not.
+
+**Every `.ps1` written this session is now parse-checked with the PowerShell
+language parser rather than eyeballed** — 0 parse errors across all seven ship
+and smoke scripts. The ASCII-only and no-backtick rules were being enforced by
+hand until now; a parser catches what a reader does not.
+
+**Ship:** `scripts/deploy/ship-pr19-contradictions-read-structure.ps1`
+**Smoke:** `scripts/smoke/smoke-contradictions.ps1` (read-only).
+
+Not financial advice.
 
 ## ✅ PR 18 — agorot and pence were valued as shekels and pounds
 

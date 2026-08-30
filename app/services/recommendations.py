@@ -421,6 +421,25 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
         # Sell Equities (~5,694)". The first leg's real name was gone, which is
         # the one thing this card exists to tell you.
         legs = [(r["title"], abs(r.get("est_amount") or 0)) for r in rebal]
+        # THE LEGS, AS DATA, ON THE CARD THAT ABSORBS THEM.
+        #
+        # Everything below rewrites the merged card's title, action and why into
+        # prose about a move it no longer describes structurally: after this
+        # block `apply.asset_class` names whichever leg sorted first, and the
+        # other legs exist only as strings in `meta.merged_legs`. So a card that
+        # sells Equities AND buys Commodities presented itself to every consumer
+        # as one card about Equities.
+        #
+        # `contradictions.py` rule 2 is that consumer, and it could not see the
+        # sell leg (the title no longer starts with "Sell") or a second class at
+        # all. That is how "Rebalance toward your target mix" sold ~1,071 of
+        # Equities beside a card buying ~3,139 of SOXL, which IS Equities, with
+        # nothing noticing.
+        structural_legs = [{"asset_class": (r.get("apply") or {}).get("asset_class"),
+                            "direction": ((r.get("apply") or {}).get("direction")
+                                          or "").lower() or None,
+                            "amount_ils": abs(r.get("est_amount") or 0)}
+                           for r in rebal]
         keep = rebal[0]
         # THE MERGED CARD GETS ITS OWN ID, built from every leg it absorbed.
         #
@@ -453,6 +472,10 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
         keep["severity"] = max((r.get("severity") or "MEDIUM" for r in rebal),
                                key=lambda s: _rank.get(s, 1))
         keep["meta"] = {**(keep.get("meta") or {}), "merged_legs": [t for t, _ in legs]}
+        # `asset_class` is left in place for existing consumers, but it is now
+        # the FIRST leg's class rather than the card's, and `legs` is the honest
+        # answer. Anything deciding what this card does to a class reads `legs`.
+        keep["apply"] = {**(keep.get("apply") or {}), "legs": structural_legs}
         for r in rebal[1:]:
             drop.add(r["id"])
 
@@ -1112,7 +1135,17 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                              f"After tax & costs that's about {_ils(a.net_trade_value_currency)} moved",
                              f"Target is {whence}"],
                      "est_amount": a.net_trade_value_currency,
-                     "apply": {"kind": "rebalance_to_objective", "asset_class": a.asset_class}})
+                     # `direction` is recorded, not left to be read back off the
+                     # title. `_reconcile` merges these legs into one card and
+                     # rewrites the title, after which "Sell Equities" survives
+                     # only as prose inside `meta.merged_legs` -- and
+                     # `contradictions.py` was reading exactly that prose,
+                     # through `title.lower().startswith("sell")`, to decide
+                     # which way a card pointed. A card that says what it does
+                     # in a field cannot be misread by a string test.
+                     "apply": {"kind": "rebalance_to_objective",
+                               "asset_class": a.asset_class,
+                               "direction": str(a.action_type).lower()}})
         recs[-1]["audit_trail"] = audit_for("allocation",
             raw_data={"asset_class": a.asset_class, "current_weight": round(mix.get(a.asset_class, 0.0), 4),
                       "target_weight": round(target.get(a.asset_class, 0.0), 4), "nav": round(nav, 2),

@@ -28,7 +28,7 @@ param(
 # backlog item. This one does not add a 35th; it asks the one helper that knows
 # where the key lives, so rotating it later is a one-line change.
 . "$PSScriptRoot\..\agent-key.ps1"
-$AgentKey = Get-AgentKey
+$AgentKey = Get-AgentKey -BaseUrl $BaseUrl
 if (-not $AgentKey) { exit 1 }
 $ApiHeaders = @{ 'x-agent-key' = $AgentKey }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
@@ -38,11 +38,36 @@ function Ok($m) { $script:Pass++; Write-Host "  PASS  $m" -ForegroundColor Green
 function Bad($m) { $script:Fail++; Write-Host "  FAIL  $m" -ForegroundColor Red }
 function Skip($m) { $script:Skipped++; Write-Host "  SKIP  $m" -ForegroundColor Yellow }
 
+# A 401 IS AN ANSWER. Reporting it as "did not answer" is the same class of
+# defect these scripts exist to catch: two very different failures rendered
+# identically, so the reader cannot tell an outage from a rejected key. The
+# status code is printed whenever the server sent one.
 function Api($method, $path, $timeout = 180) {
+    # NOT $args. That is a PowerShell AUTOMATIC variable holding the function's
+    # own unbound arguments, and assigning to it inside a function is the same
+    # family of trap as the $h that once silently clobbered the auth headers.
+    $reqArgs = @{
+        Method     = $method
+        Uri        = "$BaseUrl$path"
+        Headers    = $ApiHeaders
+        TimeoutSec = $timeout
+    }
     try {
-        return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $ApiHeaders -TimeoutSec $timeout
+        return Invoke-RestMethod @reqArgs
     } catch {
-        Write-Host "        $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkGray
+        $code = 0
+        if ($_.Exception.PSObject.Properties.Name -contains 'Response' -and $_.Exception.Response) {
+            try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
+        }
+        if ($code -eq 401 -or $code -eq 403) {
+            Write-Host "        HTTP $code - the server REJECTED the agent key. Not an outage." -ForegroundColor Yellow
+            Write-Host "        Clear a stale one and let agent-key.ps1 resolve it:" -ForegroundColor DarkGray
+            Write-Host "          Remove-Item Env:\IW_AGENT_KEY" -ForegroundColor DarkGray
+        } elseif ($code -gt 0) {
+            Write-Host "        HTTP $code from $path - $($_.Exception.GetType().Name)" -ForegroundColor DarkGray
+        } else {
+            Write-Host "        $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkGray
+        }
         return $null
     }
 }
@@ -73,7 +98,7 @@ elseif ($Sha) {
 Sec "1  the book, and the cash the rebalance used to spend"
 $portfolio = Api GET '/api/v1/portfolio'
 $cashBefore = CashOf $portfolio
-if ($null -eq $portfolio) { Bad "/portfolio did not answer" }
+if ($null -eq $portfolio) { Bad "/portfolio returned nothing usable - see the line above for why" }
 elseif ($null -eq $cashBefore) {
     Skip "no CASH row on this book, so there is nothing for a rebalance to spend. SKIP, not PASS."
 } else {
@@ -84,7 +109,7 @@ elseif ($null -eq $cashBefore) {
 Sec "2  what the rebalance cards actually claim"
 $recs = Api GET '/api/v1/recommendations'
 $rebal = @()
-if ($null -eq $recs) { Bad "/recommendations did not answer" }
+if ($null -eq $recs) { Bad "/recommendations returned nothing usable - see the line above for why" }
 else {
     $rebal = @($recs.recommendations | Where-Object { $_.apply.kind -eq 'rebalance_to_objective' })
     if ($rebal.Count -eq 0) {
@@ -109,7 +134,7 @@ else {
 
 Sec "3  the cash floor this book is supposed to keep"
 $hc = Api GET '/api/v1/health-check'
-if ($null -eq $hc) { Bad "/health-check did not answer" }
+if ($null -eq $hc) { Bad "/health-check returned nothing usable - see the line above for why" }
 elseif ($null -ne $hc.message) { Skip "no book to score - $($hc.message). SKIP, not PASS." }
 else {
     Write-Host "        objective $($hc.objective), liquidity $($hc.liquidity_score)" -ForegroundColor DarkGray
@@ -152,7 +177,7 @@ if (-not $AllowExecute) {
         } catch {
             Write-Host "        $($_.Exception.GetType().Name): $($_.Exception.Message)" -ForegroundColor DarkGray
         }
-        if ($null -eq $res) { Bad "the accept did not answer - book state unknown, check /portfolio by hand" }
+        if ($null -eq $res) { Bad "the accept returned nothing usable - book state unknown, check /portfolio by hand" }
         else {
             # 1. The fix: the balance survives.
             $after = CashOf (Api GET '/api/v1/portfolio')

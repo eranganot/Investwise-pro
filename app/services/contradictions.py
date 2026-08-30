@@ -53,6 +53,90 @@ def _note(rec: dict, text: str) -> None:
         rec["notes"].append(text)
 
 
+def _direction_of(kind: str) -> str | None:
+    if kind in _SELLS:
+        return "sell"
+    if kind in _BUYS:
+        return "buy"
+    return None
+
+
+def _class_moves(rec: dict) -> set[tuple[str, str]]:
+    """{(asset_class, "buy" | "sell")} -- every class this card moves, and which way.
+
+    THE WHOLE POINT IS THAT IT NEVER READS THE TITLE. Rule 2 used to decide
+    which way a card pointed with
+
+        _kind(r) in _SELLS and str(r.get("title","")).lower().startswith("sell")
+
+    and to take the class from a single `apply.asset_class` field, skipping the
+    card entirely when that field was absent. Both holes were live at once on
+    2026-08-29, and the pair Eran found went through both:
+
+      * the SELL leg was invisible because `_reconcile` merges the rebalance
+        legs and renames the survivor "Rebalance toward your target mix", which
+        does not start with "sell";
+      * the BUY leg was invisible because the SOXL sleeve top-up is
+        ticker-scoped and carries no `asset_class` at all, so `if not cls:
+        continue` dropped it.
+
+    So one card sold ~1,071 ILS of Equities, another bought ~3,139 of SOXL --
+    which IS Equities -- and accepting both moved the mix the wrong way. Every
+    test in the area asserted on strings, which is the failure mode STATUS.md
+    already records once.
+
+    Three sources, most specific first:
+
+      1. `apply.legs[]` -- a merged rebalance carries one entry per leg with its
+         own class and direction. This is the only place a multi-class card
+         tells the truth about itself.
+      2. `apply.asset_class` with the direction taken from the KIND, not the
+         wording. `apply.direction` wins when the generator recorded one.
+      3. failing both, classify every ticker the card names through
+         `allocation_mix.classify` -- the same classifier the allocation engine
+         and the funding path use, so a card cannot be judged against a
+         different idea of what SOXL is.
+    """
+    from app.services.allocation_mix import classify
+
+    ap = rec.get("apply") or {}
+    kind = _kind(rec)
+    if kind not in _MOVES_MONEY:
+        return set()
+    default_dir = _direction_of(kind)
+    out: set[tuple[str, str]] = set()
+
+    legs = [x for x in (ap.get("legs") or []) if isinstance(x, dict)]
+    for leg in legs:
+        direction = str(leg.get("direction") or "").lower() or default_dir
+        if direction not in ("buy", "sell"):
+            continue
+        cls = leg.get("asset_class")
+        if not cls and leg.get("ticker"):
+            cls = classify(str(leg["ticker"]), str(leg.get("market") or ""), None)
+        if cls:
+            out.add((str(cls), direction))
+    if out:
+        return out
+
+    direction = str(ap.get("direction") or "").lower() or default_dir
+    if direction not in ("buy", "sell"):
+        return set()
+
+    cls = ap.get("asset_class") or (rec.get("meta") or {}).get("asset_class")
+    if cls:
+        return {(str(cls), direction)}
+
+    # No class anywhere: derive it from what the card actually names. A card
+    # with no asset_class is not a card with no asset class.
+    market = str(ap.get("market") or (rec.get("meta") or {}).get("market") or "")
+    for tk in _tickers(rec):
+        if tk == "CASH":
+            continue
+        out.add((classify(tk, market, None), direction))
+    return out
+
+
 def check(recs: list[dict], *, sleeve_targets: dict[str, float], nav: float,
           weights: dict[str, float], book_target: dict[str, float] | None = None) -> tuple[list[dict], list[dict]]:
     """Return (surviving cards, contradictions found).
@@ -99,21 +183,27 @@ def check(recs: list[dict], *, sleeve_targets: dict[str, float], nav: float,
 
     # ------------------------------------------------------------------ #
     # 2. No two surviving cards may buy and sell the same asset class.
+    #
+    # Read `_class_moves`, not the title. This rule had two holes and the pair
+    # Eran found on 2026-08-29 went through both of them.
     # ------------------------------------------------------------------ #
     live = [r for r in recs if r.get("id") not in drop]
     sell_cls: dict[str, dict] = {}
     buy_cls: dict[str, dict] = {}
     for r in live:
-        k = _kind(r)
-        cls = (r.get("apply") or {}).get("asset_class") or (r.get("meta") or {}).get("asset_class")
-        if not cls:
-            continue
-        if k in _SELLS and str(r.get("title", "")).lower().startswith("sell"):
-            sell_cls.setdefault(cls, r)
-        elif k in _BUYS or str(r.get("title", "")).lower().startswith("buy"):
-            buy_cls.setdefault(cls, r)
-    for cls in set(sell_cls) & set(buy_cls):
+        for cls, direction in _class_moves(r):
+            if direction == "sell":
+                sell_cls.setdefault(cls, r)
+            elif direction == "buy":
+                buy_cls.setdefault(cls, r)
+    for cls in sorted(set(sell_cls) & set(buy_cls)):
         a, b = sell_cls[cls], buy_cls[cls]
+        if a.get("id") == b.get("id"):
+            # A merged rebalance sells one class and buys another IN ONE
+            # DECISION, and both halves are legs of the same card. A card cannot
+            # contradict itself; flagging it would turn the fix for the real
+            # contradiction into a permanent false alarm on every rebalance.
+            continue
         found.append({"kind": "buys_and_sells_one_class", "card": b.get("id"),
                       "other": a.get("id"), "asset_class": cls,
                       "detail": f"One card sells {cls} while another buys it.",
