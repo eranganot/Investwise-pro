@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 23 — the agent map)._
+_Last updated: 2026-08-30 by Claude (PR 24 — the wiring, without the tilt)._
 _Seeded from git history + prior transcripts._
 
 ## 🔴 PR 22 shipped a pin that could not resolve, and main stopped building
@@ -96,6 +96,115 @@ problem.
 Findings 1, 3 and 4 are pinned as **defects** in
 `tests/test_the_agent_roster_is_what_actually_runs.py`: the tests pass while the
 bug is present and **fail when it is fixed**, telling you to update the map.
+
+---
+
+## ⚠️ PR 24 — the objective reaches the screener, and no tilt rides in with it
+
+Item 2, half fixed on purpose, and the half that is missing is the interesting
+part.
+
+**The bug.** `recommendations.py` called `screen_equities(top_n=5)` with no
+weights, so `ScreenerEngine` used `DEFAULT_WEIGHTS` for every book. Grow and
+Preserve ranked the identical candidates in the identical order. The objective
+influenced *how much* was bought and never *what*.
+
+**What shipped.** The wiring. Both call sites pass the objective, `/screener`
+defaults to it, the pin travels with every buy idea — and **`OBJECTIVE_WEIGHTS`
+is empty**, so every book still ranks exactly as before. The ranking is
+unchanged for everybody, deliberately.
+
+### Why the table is empty
+
+Eran, before deploying the first cut: *"I don't want anything to be hardcoded —
+everything must be calculated."* The first cut carried four hand-chosen vectors
+behind `OWNER_REVIEWED = False`. That flag admits the problem; it does not solve
+it. The numbers would still have reordered real buy recommendations.
+
+The one derivation available was tried: each objective's strategies carry a real
+`basket`, so the factor signature of those baskets could *be* the tilt,
+calculated from live fundamentals. Computed against 69 tickers:
+
+| objective | value | growth | quality | income |
+|---|---|---|---|---|
+| Grow | .241 | .292 | .253 | .214 |
+| Balanced | .213 | .224 | .278 | .285 |
+| Income | .229 | **.322** | .252 | **.196** |
+| Preserve | .262 | .238 | .212 | .288 |
+
+**Income derived to growth-highest, income-lowest** — the exact contradiction
+the tilt exists to remove. Cause: `builtin.py:56-81` seeds every fundamental off
+a sha1 of the ticker, so SCHD's "dividend yield" is a hash. The method cannot be
+validated on the only data this environment has, and on real data it may still
+be weak — the Income and Preserve baskets are almost entirely ETFs, whose
+pass-through P/E and ROE are poor inputs for exactly the objectives that matter.
+
+So: ship the wiring, ship the counter, leave the table empty. **Item 2 stays
+open with a proven reason rather than an oversight**, and a defensible tilt is
+four numbers away whenever one exists.
+
+---
+
+## 🔴 The equity screener ranks a third of the universe, by transport luck
+
+Found while building PR 24 — the first cut of its tests passed alone and failed
+intermittently in the suite. The cause was not the test. `_fundamentals_for`
+fires one provider call per candidate in a tight loop and the tier's bucket is
+`TokenBucket(20, 20)`:
+
+```
+58 equity candidates in, 20 ranked, 38 RateLimitedError
+```
+
+The survivors are literally the **first twenty entries** of `equity_universe()`,
+AAPL through PFE. MRK, ABBV, PG, KO, PEP, COST, WMT, HD, MCD, NKE, DIS, XOM and
+twenty-six more were **never scored at all** — so "the best buys in the universe"
+meant "the best of whichever names the bucket allowed".
+
+**All seven Israeli names are among the 38.** A second, previously unknown cause
+for item 3, independent of the known one (all seven `TASE_STOCKS` entries are
+NYSE/NASDAQ listings; there is still not one Tel Aviv listing in the universe).
+
+This is the bug `screener_agent.py` already documents twice — `screen_commodities`
+and `screen_bonds` both act on the unreachable/no-data distinction and log it.
+`screen_equities` never got it. **It has it now**, and `coverage` rides in the
+recommendations payload.
+
+**Deliberately not fixed yet.** Production runs Yahoo, where per-call latency
+lets the bucket refill, so it may drop nothing. That is a *guess*, and the reason
+it could not be checked is exactly the silence PR 24 removes. Smoke section 3
+reads the real number off production; **PR 25 fixes the limiter only if that
+number says it needs fixing**, and adds real Tel Aviv listings either way.
+
+---
+
+## 🔴 A Postgres run went red once on `trading_rules`, and has not repeated
+
+Recorded because a red run that is re-rolled away is a red run nobody ever
+diagnoses.
+
+```
+test_c4_per_sleeve.py::test_two_sleeves_wanting_one_ticker_produce_ONE_drift_card
+sqlalchemy.orm.exc.StaleDataError: UPDATE statement on table 'trading_rules'
+expected to update 1 row(s); 0 were matched.
+```
+
+plus an `SAWarning` on the same table from `test_c3_funding` — both rows
+vanishing between load and write.
+
+**Not reproduced.** It passed alone, passed paired with `test_c3_funding`,
+passed with the new test file added, and the next full Postgres run on the
+**identical tree** was clean. Ordering is deterministic here — no randomising
+plugin — so a deterministic fault would have repeated.
+
+| | |
+|---|---|
+| **What is true** | The three previous Postgres runs never mentioned `trading_rules`, and this appeared on a tree carrying PR 24. |
+| **What is also true** | Three clean runs do not disprove a race, and `build_recommendations` does concurrent work through `_offload` with `trading_rules` writes inside it — a shape a timing shift can *expose* rather than cause. |
+
+**ROOT CAUSE: UNKNOWN. CONFIDENCE: nothing.** Same family as the +739.2 ILS
+leak. No speculative fix shipped. **CI can go red on it** — if it does, send the
+block.
 
 ---
 

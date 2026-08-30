@@ -19,6 +19,7 @@ from app.services.audit_trail import audit_for, f
 from app.services.audit_trail import f as _fml  # alias: 'f' is shadowed by Fundamentals locals below
 from app.agents.fee_agent import FeeAgent
 from app.engines.backtest_engine import BacktestEngine
+from app.services import objective_weights as _obj_weights
 from app.services.intake_service import (
     credit_cash, delete_position, list_positions, update_position,
 )
@@ -1893,8 +1894,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     _tm.mark("backtest")
+    # `objective` IS THE THIRD ARGUMENT, and its absence was item 2's root cause:
+    # every book was ranked on DEFAULT_WEIGHTS, so the objective changed how much
+    # was bought and never what.
     _ideas = await _offload(_buy_ideas, snap,   # screener; timed separately, it hits providers
-                            (getattr(plan, "currency", None) or "ILS"))
+                            (getattr(plan, "currency", None) or "ILS"),
+                            objective)
     _tm.mark("buy_ideas")
 
     # ---- WHICH STRATEGY DOES EACH CARD SERVE, AND DO ANY OF THEM FIGHT? ----
@@ -1961,6 +1966,20 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             # it turns "the endpoint is slow" into a specific culprit.
             "timings_ms": {**_tm.marks, "slowest": _tm.slowest()},
             "buy_ideas": _ideas,
+            # The tilt these ideas were ranked under, at the top level where a
+            # reader will actually see it -- and the tilt_disclosure is None when
+            # nothing was tilted, so a Balanced book is not told about a change
+            # it did not get.
+            #
+            # The pin is lifted off the ideas rather than recomputed, so it
+            # carries the COVERAGE the scan actually achieved. Recomputing it
+            # here would produce a pin that describes the intent instead of the
+            # run, which is the difference that matters when someone asks why a
+            # name never appears.
+            "buy_ideas_ranked_for": next(
+                (i["ranked_for"] for i in (_ideas or []) if i.get("ranked_for")),
+                _obj_weights.audit_block(objective)),
+            "buy_ideas_tilt_disclosure": _obj_weights.tilt_disclosure(objective),
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,
                                 "risk_implied_beta": bt.risk_implied_beta,
@@ -2422,13 +2441,27 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         else:
             # The plan wants this class and you hold none of it -- a real gap, so
             # a new name is warranted rather than concentrating further.
-            pick = next((b for b in _buy_ideas(snap, _ccy)
+            #
+            # TILTED TOO, and this is the site where it matters most: this pick
+            # becomes a NEW POSITION in a class the book is empty of. Ranking
+            # that on a growth-weighted default while the plan says Preserve is
+            # the contradiction item 2 is about, arriving as an actual holding.
+            pick = next((b for b in _buy_ideas(snap, _ccy, objective)
                          if classify(b.get("ticker"), None) == cls), None)
             amt = round(min(budget, remaining), 2)
             if pick and amt >= _fund.MIN_TRADE_ILS:
+                # THE DISCLOSURE RIDES WITH THE LEG, not just the audit trail.
+                # This leg names a security to buy, chosen by a factor tilt that
+                # nobody has signed off. Recording that in a nested audit block
+                # nobody opens is how "12%/yr, 55% vol, buy-and-hold" reached
+                # four screens looking measured. It goes in the sentence.
+                _why = f"you hold no {cls}; the plan targets {tw:.0%}"
+                _tilt = _obj_weights.tilt_disclosure(objective)
+                if _tilt:
+                    _why += f" -- {_tilt}"
                 legs.append({"ticker": pick["ticker"], "amount_ils": amt, "asset_class": cls,
-                             "reason": f"you hold no {cls}; the plan targets {tw:.0%}",
-                             "new_position": True})
+                             "reason": _why, "new_position": True,
+                             "ranked_for": _obj_weights.audit_block(objective)})
                 remaining = round(remaining - amt, 2)
             else:
                 # Nothing to buy for a class the plan wants but you don't hold
@@ -2688,15 +2721,48 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
     return out
 
 
-def _buy_ideas(snap, currency: str = "USD") -> list[dict]:
+def _buy_ideas(snap, currency: str = "USD", objective: str | None = None) -> list[dict]:
     """Top fundamentals-ranked equity buy ideas plus screener-ranked commodity
-    picks from the Opportunity Agent (informational)."""
+    picks from the Opportunity Agent (informational).
+
+    `objective` TILTS THE EQUITY RANKING, and until this parameter existed it
+    could not. `screen_equities` was called with no weights, so ScreenerEngine
+    used DEFAULT_WEIGHTS for every book and Grow and Preserve ranked the
+    identical candidates in the identical order.
+
+    MEASURED on the same universe, top 5 (builtin provider, sandbox):
+
+        today / Balanced   CRM  V    LLY  AAPL PFE
+        Grow               CRM  LLY  V    AVGO BAC   <- AVGO and BAC are names
+        Income             V    AAPL PFE  CRM  LLY      today never surfaces
+        Preserve           V    CRM  AAPL PFE  LLY
+
+    Balanced is identical to the old behaviour on purpose -- it is the one
+    objective DEFAULT_WEIGHTS fits, and it is the control for the change.
+
+    The commodity and bond legs are deliberately NOT tilted. They rank on
+    duration fit, cost and measured trend; there is no factor model there to
+    tilt, and inventing one would be the thing this change exists to stop.
+    """
     try:
         from app.agents.screener_agent import OpportunityAgent
+        from app.services import objective_weights as _ow
         ag = OpportunityAgent()
+        _w = _ow.weights_for(objective)   # None for Balanced/unknown -> default
+
+        _picks = ag.screen_equities(weights=_w, top_n=5)
+        # HOW MUCH OF THE UNIVERSE THIS RANKING ACTUALLY SAW, read straight after
+        # the equity scan and BEFORE the commodity and bond legs below. A
+        # percentile is only meaningful against the set it was computed over, so
+        # "top 5" over 20 of 58 candidates is a different claim from "top 5" over
+        # 58 -- and until the screener started counting, the two were
+        # indistinguishable from out here.
+        _pin = {**_ow.audit_block(objective),
+                "coverage": dict(getattr(ag, "last_coverage", {}) or {})}
         out = [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
                 "sector": p.sector, "reasons": p.reasons, "flags": p.flags,
-                "metrics": p.metrics} for p in ag.screen_equities(top_n=5)]
+                "metrics": p.metrics, "ranked_for": _pin}
+               for p in _picks]
         try:
             out += [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
                      "sector": "Commodities", "reasons": p.reasons, "flags": p.flags,

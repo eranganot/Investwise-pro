@@ -23,16 +23,78 @@ class OpportunityAgent:
     def __init__(self, engine: ScreenerEngine | None = None) -> None:
         self.engine = engine or ScreenerEngine()
 
+    #: What the last `_fundamentals_for` call could and could not reach. Read by
+    #: `screen_equities` so the CALLER can say the ranking was over a subset.
+    last_coverage: dict = {}
+
     def _fundamentals_for(self, candidates: list[dict]) -> list[dict]:
-        items = []
+        """Resolve fundamentals, AND RECORD WHAT IT COULD NOT REACH.
+
+        This swallowed every exception into `f = None` and dropped the candidate
+        with no counter and no log, so a name that was never scored looked
+        exactly like a name that scored badly.
+
+        MEASURED, 2026-08-30, builtin provider in the sandbox:
+
+            58 equity candidates in, 20 resolved, 38 RateLimitedError
+
+        `provider_rate_limit_per_sec` is 20 and the tier's TokenBucket is
+        `TokenBucket(20, 20)`. The loop fires 58 calls in a few milliseconds, so
+        the first 20 take every token and the remaining 38 fail instantly. The
+        survivors are literally the first twenty entries of `equity_universe()`:
+        AAPL through PFE. MRK, ABBV, PG, KO, PEP, COST, WMT, HD, MCD, NKE, DIS,
+        XOM and twenty-six more were never scored at all -- so "the best buys in
+        the universe" meant "the best of whichever names the token bucket
+        happened to allow".
+
+        THIS IS THE BUG THIS FILE ALREADY DOCUMENTS TWICE. `_history` draws the
+        line between "the provider ANSWERED and there is nothing there" and "we
+        could not reach it", because ranking bonds three times in one process
+        silently lost twenty of twenty-four candidates and returned three
+        identical wrong answers. `screen_commodities` and `screen_bonds` both
+        act on that distinction and both log the unreachable set.
+        `screen_equities` never got it.
+
+        Production runs Yahoo, where each call takes real network time and the
+        bucket refills as the loop runs, so it is likely far less affected --
+        LIKELY, not measured, and the reason it cannot be measured is precisely
+        the silence this fixes. After this, the count is in the payload and the
+        question is answerable instead of arguable.
+        """
+        items: list[dict] = []
+        unreachable: list[str] = []
+        empty: list[str] = []
         for c in candidates:
+            ticker = c["ticker"]
             try:
-                f = guarded_fundamentals(c["ticker"])
-            except Exception:
-                f = None
+                f = guarded_fundamentals(ticker)
+            except ValueError:
+                # The provider ANSWERED: this symbol has nothing. A real fact
+                # about the ticker, not about the transport.
+                empty.append(ticker)
+                continue
+            except Exception:  # noqa: BLE001 -- transport, not the ticker
+                unreachable.append(ticker)
+                continue
             if f is None:
+                empty.append(ticker)
                 continue
             items.append({"meta": c, "fundamentals": f})
+
+        self.last_coverage = {
+            "requested": len(candidates),
+            "ranked": len(items),
+            "unreachable": sorted(unreachable),
+            "no_data": sorted(empty),
+        }
+        if unreachable:
+            logger.warning(
+                "equity candidates UNREACHABLE this scan (provider, not ticker): "
+                "%d of %d -- THIS RANKING IS OVER A SUBSET. Not scored: %s",
+                len(unreachable), len(candidates), ", ".join(sorted(unreachable)))
+        if empty:
+            logger.info("equity candidates the provider says have no fundamentals: %s",
+                        ", ".join(sorted(empty)))
         return items
 
     def _history(self, ticker: str, days: int) -> tuple[list[float], str]:
@@ -74,6 +136,13 @@ class OpportunityAgent:
 
     def screen_equities(self, weights: dict | None = None, top_n: int = 10,
                         candidates: list[dict] | None = None) -> list[ScreenPick]:
+        """Rank the equity universe. `self.last_coverage` says how much of it.
+
+        A percentile is only meaningful against the set it was computed over, so
+        a ranking of 20 names out of 58 is not the same claim as a ranking of
+        58 -- and until `_fundamentals_for` started counting, the two were
+        indistinguishable from the outside.
+        """
         cands = candidates if candidates is not None else _universe.equity_universe()
         items = self._fundamentals_for(cands)
         if not items:

@@ -118,18 +118,55 @@ reacting to what you already hold.
 - `GET /api/v1/screener` → `screener.py:32`. **The app never calls this
   endpoint** — zero references in `index.html`.
 
-**What it does not do — and this is item 2's headline.** It does not read your
+**What it did not do — item 2's headline, and now fixed.** It did not read your
 strategy. `screen_equities` takes a `weights` argument and every caller inside
-the app omits it:
+the app omitted it:
 
-- `recommendations.py:2698` calls `ag.screen_equities(top_n=5)` — no weights, so
-  `ScreenerEngine` uses `DEFAULT_WEIGHTS`.
-- `screener.py:31` takes weights **only from URL query parameters**
-  (`?value=&growth=&quality=&income=`), and nothing in the app builds that URL.
+- `recommendations.py` called `ag.screen_equities(top_n=5)` — no weights, so
+  `ScreenerEngine` used `DEFAULT_WEIGHTS`.
+- `screener.py` took weights **only from URL query parameters**
+  (`?value=&growth=&quality=&income=`), and nothing in the app built that URL.
 
-So whether your objective is Grow, Balanced, Income or Preserve, the buy ideas
-are ranked by the identical factor mix. The strategy influences *how much* is
+So whether your objective was Grow, Balanced, Income or Preserve, the buy ideas
+were ranked by the identical factor mix. The strategy influenced *how much* was
 bought (through the target mix and the funding logic) and never *what*.
+
+> **HALF FIXED — the wiring, not the tilt.** `app/services/objective_weights.py`
+> carries the objective from the plan to the screener at both call sites, and
+> `/screener` defaults to it. **`OBJECTIVE_WEIGHTS` is empty**, so `weights_for`
+> returns `None` for every objective, `ScreenerEngine` uses `DEFAULT_WEIGHTS`,
+> and **every book ranks exactly as it did before**.
+>
+> **Why empty, and it is not an oversight.** Eran's constraint is that nothing
+> is hardcoded. Four hand-chosen vectors behind an `OWNER_REVIEWED = False` flag
+> failed that test — the flag admits the problem, it does not solve it, and the
+> numbers would still have reordered real buy recommendations.
+>
+> The one derivation available was tried: each objective's own strategies carry
+> a real `basket`, so the factor signature of those baskets could *be* the tilt,
+> calculated from live fundamentals. Grow resolves 14 names, Balanced 5, Income
+> 6, Preserve 6. Computed against the full universe (69 tickers), the sandbox
+> returned:
+>
+> | objective | value | growth | quality | income |
+> |---|---|---|---|---|
+> | Grow | .241 | .292 | .253 | .214 |
+> | Balanced | .213 | .224 | .278 | .285 |
+> | Income | .229 | **.322** | .252 | **.196** |
+> | Preserve | .262 | .238 | .212 | .288 |
+>
+> **Income came out weighting growth highest and income lowest** — the exact
+> contradiction the tilt exists to remove, reproduced by the derivation. All four
+> sit inside 0.20–0.33 and would barely differentiate anything.
+>
+> The cause is `builtin.py:56-81`: the sandbox provider seeds every fundamental
+> off a sha1 of the ticker, so SCHD's "dividend yield" is a hash. The method
+> cannot be validated on the only data this environment has — and on real data it
+> may still be weak, because the Income and Preserve baskets are almost entirely
+> ETFs, whose pass-through P/E and ROE are poor inputs for exactly the objectives
+> that matter most.
+>
+> So the table stays empty. **Item 2 remains open, with a proven reason.**
 
 **Its two liveness rules are worth knowing** because they legitimately produce
 silence: a candidate the provider cannot price is dropped rather than scored
@@ -247,6 +284,27 @@ These have no class under `app/agents/`. They are engines whose output
 | **Decision** · Scorer | `DecisionEngine` via `StateMachine.rank` — impact/confidence | `war_room.py:150` |
 | **UX** · Decision Feed | `StateMachine.display` + a string. No class at all. | `war_room.py:180, 200` |
 
+> **⚠ Alpha is the first step, not the decision maker.** Worth stating plainly,
+> because the name invites the opposite reading. `LagEngine` compares a spot
+> price to a listing price and emits a signal if the gap clears a noise floor —
+> `lag_engine.py:36-52`. `war_room.py:86` is `for det in lag.scan(observations)`,
+> so Alpha's output is what the pipeline *iterates over*. It consults nobody and
+> runs before everything. "The ALPHA mandate" in its docstring means only that it
+> ranks backbone (Depth 3) divergences above surface ones.
+>
+> **`DecisionEngine` is the one that synthesises** — Impact from five components,
+> Confidence from four, reading Risk's ruin probability and Tax's net gain
+> (`decision_engine.py:31-55`). Alpha finds candidates; Decision scores what
+> survived. They are opposite ends of the same conveyor.
+>
+> **And the role that would consult everyone does not exist.** The pipeline is
+> Alpha → Risk → Tax → Decision → UX, strictly linear, with Adversary
+> cross-examining each stage's output. There is no back-channel: no stage can ask
+> another a question, push back, or request a re-run. `StateMachine` runs them in
+> order but exercises no judgement — it is plumbing. So the war room's name
+> promises deliberation and the code is a conveyor belt. See the Tier 4 decision
+> below.
+
 **Risk holds a veto** (`war_room.py:103-117`: `veto_flag` → `outcome: "VETOED"`,
 `outcome_label: "Skipped — too risky"`), so one of the four is not merely
 cosmetic. It is still an engine — the discretion lives in `StateMachine`, not in
@@ -278,11 +336,44 @@ Two ways to make the label true:
    with its own judgement layer. Cost: five new classes, five new test surfaces,
    and a real risk of ceremony around code that is already correct.
 
-**Recommendation: (1).** Promoting five engines is a large change bought for a
-labelling problem. The engines are not deficient; they are accurately named
-where they live and inaccurately named where they are displayed.
+My recommendation was (1), on the grounds that promoting five engines is a large
+change bought for a labelling problem, and that being an *agent* is not what
+makes something strategy-aware — `RiskEngine` is an engine and already flexes
+with the plan.
 
-Whichever is chosen, `tests/test_the_agent_roster_is_what_actually_runs.py`
+### DECIDED, 2026-08-30: (2), deferred to Tier 4
+
+Eran's call, and the reasoning that settled it is better than either option as
+originally framed. The useful line is not *agent or engine*. It is:
+
+> **The agent holds the judgement and the policy. The engine stays underneath as
+> pure, reproducible computation.**
+
+Every participant here has both, and today they are welded together — Risk's
+veto is `if sigma > cap`, one threshold standing in for a decision that ought to
+vary by objective. That resolves the reproducibility objection cleanly: the Monte
+Carlo stays a seeded pure function, and what to *do* with its answer moves up a
+layer where it can be argued with.
+
+So promoting is not ceremony, **provided each agent holds a real decision**.
+`AllocationAgent` felt like ceremony because its entire judgement was one
+threshold — an argument for making the judgements richer, not for deleting the
+layer.
+
+**Scope of the Tier 4 item:**
+
+- Research, Opportunity, Allocation, Fee, Adversary, Tax, Risk, Decision → all
+  agents, each over its engine.
+- **UX is not promoted.** It has no class, and inventing one to reach a count of
+  seven is the one piece of pure ceremony on the list.
+- **Alpha keeps its real job** — the price-divergence scout — and a **new Chief
+  agent** is added above the others: the synthesising role that consults each one
+  and makes the call. That role does not exist today (see the note above the Risk
+  veto), and it is the largest idea to come out of this map.
+
+**Not started.** The four findings below come first.
+
+Whichever shape it lands in, `tests/test_the_agent_roster_is_what_actually_runs.py`
 fails when this document and the code drift apart.
 
 ---
@@ -306,13 +397,39 @@ Four things that are not documentation problems:
    that both default to `None`. Nothing on the live path prevents a buy into an
    overweight class.
 
-4. **No agent reads your strategy when choosing what to buy.**
-   `recommendations.py:2698` calls `screen_equities(top_n=5)` with no weights;
-   the only weight input in the codebase is a query string nothing builds.
-   Grow and Preserve are ranked identically. → your item 2.
+4. **No agent reads your strategy when choosing what to buy.** → your item 2.
+   **STILL OPEN — half fixed.** The *wiring* is done: both screener call sites
+   pass the objective and `/screener` defaults to it
+   (`app/services/objective_weights.py`). The *tilt* is not, because
+   `OBJECTIVE_WEIGHTS` is empty and nothing in this codebase derives one. Every
+   book therefore still ranks on `DEFAULT_WEIGHTS`, exactly as before.
 
-None of the four is fixed by this document. Each is a PR, and (1) and (2) are
-the same PR.
+   Hand-chosen weights were rejected as hardcoding. The one available
+   derivation — the factor signature of each objective's own strategy baskets —
+   was computed and produced **Income weighting growth highest and income
+   lowest**, because the sandbox provider seeds fundamentals off a sha1 of the
+   ticker. Full working in the Opportunity Agent entry above. The wiring is in
+   place, so a defensible tilt is four numbers away whenever one exists.
+
+   **A sharper version of the same defect is still open.** `settings.objective`
+   is written into the settings object every engine holds
+   (`plan_service.py:55`) and read by **nothing else** — not one engine, not one
+   agent. The screener reads the objective from the plan directly rather than
+   from that field, so the dead setting stays dead. Measured:
+
+   | participant | reads the plan? | what |
+   |---|---|---|
+   | Risk · `RiskEngine` | yes | `volatility_cap`, `ruin_probability_cap` (`risk_engine.py:92,96`) |
+   | Decision · `DecisionEngine` | partly | `preferred_depth` (`decision_engine.py:40`) |
+   | Alpha · `LagEngine` | no | a global noise floor, not plan-derived (`lag_engine.py:37`) |
+   | Tax · `TaxEngine` | **no** | nothing — zero settings reads |
+
+   Being an *engine* is not why Tax is blind; `RiskEngine` is an engine and is
+   not blind. Nobody wired it. The contract test that would make this impossible
+   rather than invisible is the natural companion to the Tier 4 work above.
+
+**All four are still open.** (1) and (2) are the same PR. (4) is half done —
+the wiring landed, the tilt is waiting on a basis that survives measurement.
 
 ---
 

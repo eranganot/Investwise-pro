@@ -188,28 +188,48 @@ def test_the_research_agent_is_still_read_only():
 # Measured, not assumed.
 # --------------------------------------------------------------------------
 
-def test_no_agent_reads_the_users_strategy_when_choosing_what_to_buy():
-    """CURRENT STATE, pinned so the fix announces itself.
+def test_the_objective_reaches_the_screener_but_still_changes_nothing():
+    """THE DEFECT PIN THAT FIRED, AND WHY IT IS STILL A DEFECT PIN.
 
-    `screen_equities(weights=...)` is the only strategy-shaped input any agent
-    accepts, and every caller inside the app omits it -- so Grow and Preserve
-    rank the identical candidates in the identical order. The one code path that
-    supplies weights is a query string on /api/v1/screener, which nothing builds.
+    Until 2026-08-30 this asserted the BUG: `screen_equities` called with no
+    weights anywhere in the app, so Grow and Preserve ranked the identical
+    candidates in the identical order. It was written to fail the day someone
+    fixed that.
 
-    Fixing this SHOULD break this test.
+    It fired -- and the fix turned out to be half a fix. The WIRING is now real:
+    the objective travels from the plan to the screener at both call sites. The
+    TILT is not, because nothing in this codebase derives one and inventing four
+    vectors would be the `strategy_profile.assumptions_for()` failure again.
+
+    So item 2 is STILL OPEN, and this test says so precisely rather than
+    reporting a fix that has not happened. The two halves are pinned separately
+    so that adding a real tilt fails HERE and forces docs/AGENTS.md to be
+    updated with where the numbers came from.
     """
     root = Path(__file__).resolve().parents[1]
     recs = (root / "app" / "services" / "recommendations.py").read_text(encoding="utf-8")
 
+    # -- the half that IS fixed ------------------------------------------
     calls = re.findall(r"screen_equities\((.*?)\)", recs, flags=re.S)
     assert calls, "recommendations.py no longer calls screen_equities at all"
-    assert not any("weights" in c for c in calls), (
-        f"recommendations.py now passes weights to the screener: {calls}. If "
-        "those weights come from the user's objective, item 2 is fixed -- say "
-        "so in docs/AGENTS.md and delete this test.")
+    assert any("weights" in c for c in calls), (
+        f"recommendations.py stopped passing weights to the screener: {calls}. "
+        "That is item 2's original bug returning -- the objective would once "
+        "again be unable to influence the ranking at all.")
+    assert "objective_weights" in recs, (
+        "weights are passed but not sourced from the plan's objective")
 
-    ui = (root / "app" / "static_app" / "index.html").read_text(encoding="utf-8")
-    assert "/screener" not in ui, "the front end now calls /screener"
+    # -- the half that IS NOT --------------------------------------------
+    from app.services import objective_weights as ow
+
+    assert ow.OBJECTIVE_WEIGHTS == {}, (
+        f"a factor tilt now exists: {ow.OBJECTIVE_WEIGHTS}.\n"
+        "Item 2 may finally be fixed -- but only if those numbers are CALCULATED "
+        "from data the app holds, or are a stated human judgement with an owner. "
+        "Say which in docs/AGENTS.md, then rewrite this test to assert the "
+        "derivation rather than the absence.")
+    assert all(ow.weights_for(o) is None for o in ow.OBJECTIVES), (
+        "an objective resolves to weights while the table is empty")
 
 
 # --------------------------------------------------------------------------
