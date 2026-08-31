@@ -230,9 +230,18 @@ async def test_a_row_already_stored_in_agorot_is_repaired(own_session):
             def _no_quote(_tk):
                 raise LookupError("provider down")
 
+            # AND the secondary provider, which is NOT reached through
+            # guarded_quote. refresh_all_positions builds a real
+            # YahooMarketDataProvider and calls it directly when the primary
+            # returns nothing, so patching the two guarded_quote references --
+            # which is what the house rule says to do -- left this test talking
+            # to the live market. It asserted against TEVA.TA's real price and
+            # failed with a different number on every machine and every CI run.
             monkey = registry.guarded_quote
+            monkey_fb = pricing_service.fallback_provider
             registry.guarded_quote = _no_quote
             pricing_service.guarded_quote = _no_quote
+            pricing_service.fallback_provider = lambda: None
             try:
                 async with own_session() as s:
                     user = (await s.execute(select(User))).scalars().first()
@@ -242,6 +251,7 @@ async def test_a_row_already_stored_in_agorot_is_repaired(own_session):
             finally:
                 registry.guarded_quote = monkey
                 pricing_service.guarded_quote = monkey
+                pricing_service.fallback_provider = monkey_fb
 
             assert res.get("repaired_minor_unit_rows") == 1
             nav = float(c.get("/api/v1/portfolio").json()["nav_ils"])

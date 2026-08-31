@@ -22,6 +22,45 @@ from app.providers.registry import guarded_quote, market_provider
 from app.services.fx import MARKET_CCY, major_unit, to_major_units
 from app.services.intake_service import is_cash_position, repair_cash_row
 
+
+def fallback_provider():
+    """The secondary quote source, behind a seam so it can be stubbed.
+
+    THIS CALL REACHED THE INTERNET FROM INSIDE THE TEST SUITE, and it is the
+    reason `test_a_row_already_stored_in_agorot_is_repaired` failed on five
+    different machines with five different numbers.
+
+    The line was `yahoo = None if primary.name == "yahoo" else
+    YahooMarketDataProvider()` -- a REAL provider, constructed unconditionally
+    whenever the primary is anything else (so always, under the builtin default
+    the tests run on), and then called at `yahoo.get_quote(tk)` **outside**
+    `guarded_quote`. That test patches `registry.guarded_quote` AND
+    `pricing_service.guarded_quote` to raise, exactly as the house rule says,
+    and it still could not stop this: nothing named `guarded_quote` is on this
+    path at all.
+
+    MEASURED. The test forges a TASE row at 11030 agorot and asserts the repair
+    lands it at 11030.00 ILS. Observed instead:
+
+        10800.00  10810.00  10820.00  10830.00  10850.00
+
+    across two local machines and CI runs #187 and #188. TEVA.TA traded at
+    10820 agorot that afternoon. Those are not five bugs and not flakiness --
+    the suite was asserting against a live market price, and the "no quote
+    available at all" branch the test exists to exercise was never reached
+    because a quote WAS available, by a route the test could not see.
+
+    It is not only a test problem. This bypasses the whole resilience tier the
+    registry exists to provide -- rate limiting, the circuit breaker, the cache,
+    and the minor-unit/currency guards that live in `guarded_quote`. A provider
+    call that skips those is one the app cannot throttle, break or observe.
+    Routing it through the tier is the better fix and is left as a named
+    remaining item rather than smuggled into a bug-fix PR; this seam is the
+    minimum that makes the path stubbable and the failure visible.
+    """
+    return YahooMarketDataProvider()
+
+
 logger = logging.getLogger("investwise.pricing")
 
 KV_LAST_SOURCE = "last_price_source"
@@ -112,7 +151,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
     must not decide a holding is worthless.
     """
     primary = market_provider()
-    yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
+    yahoo = None if primary.name == "yahoo" else fallback_provider()
     if positions is None:
         positions = list((await session.scalars(select(Position))).all())
     by_source: dict[str, int] = {}

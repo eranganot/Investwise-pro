@@ -62,6 +62,75 @@ def net_flow_between(flows: list[dict], after: str, upto: str) -> float:
     return round(total, 2)
 
 
+#: How much of an attributed flow the NEXT step has to give back before the
+#: snapshot is judged a spike rather than a flow. 0.2 = at least 80% reversed.
+_SPIKE_REVERSAL = 0.2
+#: ...and how big it has to be relative to the book first. A ten-shekel wobble
+#: that happens to reverse is noise; this is aimed at a NAV that is plainly wrong.
+_SPIKE_MATERIAL = 0.05
+
+
+def _spike_indices(points: list[dict], flows: list[dict] | None) -> set[int]:
+    """Snapshots whose NAV the NEXT snapshot contradicts. A spike is not a flow.
+
+    PR 22 taught this module that a NAV move with a position-count change and a
+    silent ledger must not be booked as performance. It fixed the step INTO such
+    a move. It left the step OUT of it alone, and that is where the damage was:
+
+        08-17  NAV 21,168.33  10 positions
+        08-22  NAV 28,496.54   5 positions   <- +34.6% while HALF the book left
+        08-24  NAV 21,369.63   5 positions   <- reverts, no shape change
+
+    The +7,328.21 was attributed as a flow, so the step into 08-22 correctly
+    scored 0.00%. But 08-22's RAW NAV then anchored the next period, and
+    21,369.63 / 28,496.54 - 1 = **-25.0097%**. That one step was the whole of
+    the -24.9137% Eran saw on a book that had actually moved +0.78%.
+
+    THE ATTRIBUTION WAS THE WRONG CALL, not just incomplete. Money arriving and
+    a wrong number look identical for exactly one snapshot; the next one tells
+    them apart. Real money stays in the book, so the level holds. A bad reading
+    reverts. Half a book cannot be removed while its total rises a third, and
+    two days later the total agreed.
+
+    So: when an attributed flow is materially large and the very next step gives
+    at least 80% of it back **without the book changing shape again**, the
+    snapshot is not evidence of a flow -- it is a bad row. It is dropped as an
+    anchor and from the plotted series, and named in `suspect_snapshots`.
+    Dropping it silently would be the same sin in a new place.
+
+    Deliberately NOT caught here: a real removal that is not reversed. The
+    -63.41 on 2026-08-29 stays an ordinary attributed flow, because nothing
+    contradicts it. That is the difference this function exists to draw, and a
+    fix that also swallowed the 63.41 would have turned the whole series back
+    into the raw NAV change.
+    """
+    pts = points or []
+    if len(pts) < 3:
+        return set()
+    out: set[int] = set()
+    for i in range(1, len(pts) - 1):
+        prev_nav = float(pts[i - 1].get("nav_ils") or 0.0)
+        nav = float(pts[i].get("nav_ils") or 0.0)
+        nxt = float(pts[i + 1].get("nav_ils") or 0.0)
+        n_prev = int(pts[i - 1].get("positions") or 0)
+        n_now = int(pts[i].get("positions") or 0)
+        n_next = int(pts[i + 1].get("positions") or 0)
+        if n_now == n_prev or n_now != n_next:
+            # Either no shape change to attribute, or the shape changed AGAIN --
+            # in which case the next step has its own explanation and cannot be
+            # read as a clean reversal of this one.
+            continue
+        if abs(net_flow_between(flows or [], str(pts[i - 1].get("as_of")),
+                                str(pts[i].get("as_of")))) >= 0.005:
+            continue                      # the ledger explained it; not a guess
+        amount = nav - prev_nav
+        if prev_nav <= 0 or abs(amount) < prev_nav * _SPIKE_MATERIAL:
+            continue
+        if abs((nxt - nav) + amount) < abs(amount) * _SPIKE_REVERSAL:
+            out.add(i)
+    return out
+
+
 def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
     """Chain sub-period returns across every cash-flow boundary.
 
@@ -108,13 +177,27 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
     flows = flows or []
     out = {"dates": [], "pct": [], "nav_ils": [], "flows_ils": [],
            "total_pct": 0.0, "flow_total_ils": 0.0, "points": len(points or []),
-           "unexplained_flows": []}
+           "unexplained_flows": [], "suspect_snapshots": []}
     if not points:
         return out
 
+    suspect = _spike_indices(points, flows)
+    for i in sorted(suspect):
+        p = points[i]
+        out["suspect_snapshots"].append({
+            "as_of": str(p.get("as_of")), "nav_ils": round(float(p.get("nav_ils") or 0.0), 2),
+            "positions": int(p.get("positions") or 0),
+            "reason": "this NAV is contradicted by the next snapshot, which reverses it "
+                      "without the book changing shape again -- a spike is not a flow, so "
+                      "the row is excluded from the return series rather than anchoring it"})
+
     cum = 1.0
     prev = None
-    for p in points:
+    for idx, p in enumerate(points):
+        if idx in suspect:
+            # NOT plotted and NOT an anchor. Leaving it in the chart would draw a
+            # spike the caption underneath has just called untrustworthy.
+            continue
         d = str(p.get("as_of"))
         nav = float(p.get("nav_ils") or 0.0)
         if prev is None:

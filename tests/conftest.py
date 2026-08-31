@@ -4,6 +4,42 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:////tmp/iw_test_app.db")
 os.environ.setdefault("AUTO_CREATE_TABLES", "true")
 os.environ.setdefault("DEBUG", "false")
 
+# THE SUITE WAS RACING A BACKGROUND THREAD THAT REPRICES THE BOOK FROM THE LIVE
+# PROVIDER, and it had been doing so since the scheduler was added.
+#
+# `enable_scheduler` defaults to True (config.py:130) and nothing here turned it
+# off, so every `TestClient(m.app)` ran `start_scheduler()`. One of its jobs is
+# not on a timer at all:
+#
+#     scheduler.py:140  add_job(run_price_refresh_blocking, "interval",
+#                               minutes=30, next_run_time=datetime.now(utc))
+#
+# `next_run_time=now` PRIMES IT IMMEDIATELY. A worker thread then fetches real
+# quotes and writes `current_price` into the test database, at whatever moment
+# it happens to finish -- including after a test's `finally` has restored the
+# provider it thought it had stubbed.
+#
+# MEASURED, CI runs #187 and #188 plus two local machines. The same assertion
+# failed with a different number every time:
+#
+#     10800.00   10810.00   10830.00   10850.00   10910.00     expected 11030.00
+#
+# Those are not five bugs. TEVA.TA traded at 10820 agorot that afternoon and the
+# figures track it -- the suite was asserting against a live market price.
+# `test_preview_is_read_only_and_names_its_anchors` is the same fault wearing a
+# different hat: NAV moved between two GETs, so a read-only preview was accused
+# of writing.
+#
+# The repo had already SEEN this and filtered it. STATUS.md records 183 warnings
+# from "APScheduler's price job fires during TestClient startup", muted by
+# coroutine name in PR 21. The warning was the symptom of this hole; silencing it
+# removed the last thing that pointed at it. Same lesson as
+# `logging.disable(CRITICAL)` hiding the NAV-conservation diagnostics.
+#
+# Any test that WANTS the scheduler must start it explicitly. A background thread
+# that writes to the database is not test scaffolding, it is a second writer.
+os.environ.setdefault("ENABLE_SCHEDULER", "false")
+
 import pytest
 import pytest_asyncio
 

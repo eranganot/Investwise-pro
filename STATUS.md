@@ -35,6 +35,130 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ---
 
+## PR 28 — the suite was asserting against the live market, and the chart charged a bad snapshot to performance
+
+Two unrelated-looking reds, one shape: **something outside the test was writing
+while the test believed it had stopped everything.**
+
+### 1. The chart said -24.91% on a book that had moved +0.78%
+
+Reported live 2026-08-31: the account-history chart read **-24.9137%** while the
+summary card on the same screen read +6.67%. The whole of it is ONE step, from
+the live payload:
+
+| date | NAV | positions |
+|---|---|---|
+| 08-17 | 21,168.33 | 10 |
+| 08-22 | **28,496.54** | **5** | ← +34.6% while HALF the book left |
+| 08-24 | 21,369.63 | 5 | ← reverts, no shape change |
+
+`21369.63 / 28496.54 - 1 = -25.0097%`. Every other day in the window is
+ordinary (+0.77, +0.03, +2.66, -3.24).
+
+**Root cause: `nav_history.py:154`, `prev = (d, nav, n_now)`.** PR 22 taught this
+module that a NAV move with a position-count change and a silent ledger is not
+performance, and it fixed the step **into** such a move — 08-22 scores 0.00%,
+correctly. It left the step **out** of it alone: the phantom +7,328 was removed
+from the numerator of one period and left sitting in the denominator of the next.
+
+**PR 22's test asserts the flagged step is 0.0%. It never asserts what the NEXT
+step does.** That is the entire gap.
+
+**The fix, and the wrong turn on the way to it.** My first attempt stripped the
+attributed flow from the next period's base as well. It produced **+0.7807%** —
+*exactly* the raw NAV change. That looked like confirmation and was the opposite:
+matching the simple change to the decimal is the tell that it had cancelled
+**every** flow adjustment, so a genuine deposit would have stopped being excluded
+from performance. It also re-charged the real ₪63.41 removal as a -0.30% "loss"
+the next day. A number that agrees with you is not evidence.
+
+What shipped instead: a snapshot whose attributed flow is **reversed by the next
+step with no further shape change** is a bad row, not a flow. Money that really
+arrives stays in the book; a bad reading reverts. Such a row is dropped as an
+anchor *and* from the plotted series, and named in `suspect_snapshots` — dropping
+it silently would be PR 22's own mistake in a new place.
+
+The 08-17 → 08-24 boundary is then **abstained**, not scored: five holdings left
+and the total rose ₪201.30, and performance across that boundary is
+`(21369.63 + W - 21168.33) / 21168.33` where `W` is what the five were worth. The
+snapshot stores a count and a total, never `W`. Scoring it +0.95% would assert
+`W = 0`. Ground or abstain.
+
+**-24.9137% → +0.1281%**, against a simple NAV change of +0.78%.
+
+⚠️ **The 08-22 row is still in the database.** The code stops it poisoning the
+return, but the chart will keep *plotting* a ₪28,496 spike until the row goes.
+Deleting it is an ops action, not a code change.
+
+ℹ️ The summary card's **+6.67%** will still differ, and should: that is gain vs
+contributions since inception (₪1,334 on ₪20,000 put in), not a one-month
+time-weighted return. What was broken was -24.9% against +6.67%.
+
+### 2. The suite was asserting against TEVA.TA's live share price
+
+`test_a_row_already_stored_in_agorot_is_repaired` failed on two local machines
+**and both CI jobs**, with a different number every time:
+
+```
+10800.00   10810.00   10820.00   10830.00   10850.00      expected 11030.00
+```
+
+Not five bugs and not flakiness. **TEVA.TA traded at 10,820 agorot that
+afternoon** and the figures track it. Two separate writers, both fixed:
+
+**a. `pricing_service.py:115` built a real provider outside the resilience tier.**
+
+```python
+yahoo = None if primary.name == "yahoo" else YahooMarketDataProvider()
+...
+if q is None and yahoo is not None:
+    q = yahoo.get_quote(tk)          # NOT guarded_quote
+```
+
+The test patches `registry.guarded_quote` **and** `pricing_service.guarded_quote`
+— exactly what the house rule from PR 21 prescribes — and still could not stop
+this, because **nothing named `guarded_quote` is on that path at all**. The "no
+quote available" branch the test exists to exercise was never reached: a quote
+*was* available, by a route the test could not see. Now behind
+`fallback_provider()`, a stubbable seam.
+
+**b. The scheduler runs during every test.** `enable_scheduler` defaults to
+`True` and `conftest.py` never turned it off, so every `TestClient(m.app)` called
+`start_scheduler()` — and `scheduler.py:140` passes
+`next_run_time=datetime.now(utc)`, priming a live price refresh **immediately**.
+A worker thread then wrote real quotes into the test database, at whatever moment
+it finished, including after a test's `finally` had restored the provider.
+
+That is what `test_preview_is_read_only_and_names_its_anchors` was actually
+catching: NAV moved between two GETs, so a read-only preview was accused of
+writing. It fired in one of two jobs on the identical commit — a race, correctly
+reported, wrongly attributed.
+
+**The repo had already seen this and muted it.** STATUS records 183 warnings from
+"APScheduler's price job fires during `TestClient` startup", filtered by coroutine
+name in PR 21. The warning *was* the symptom of this hole; silencing it removed
+the last thing pointing at it. Same lesson as `logging.disable(CRITICAL)` hiding
+the NAV-conservation diagnostics.
+
+**Measured side effect: the suite went 750s → 227s.** It had been waiting on the
+network.
+
+**Gate:** SQLite **1473 passed / 0 failed**; Postgres **1473 passed / 0 failed**;
+`ruff check app tests` clean. All 7 new history tests confirmed failing against
+the old code first.
+
+### Known remaining
+* Routing the secondary provider through `guarded_quote` so it gets the rate
+  limiter, breaker and cache. The seam makes it stubbable; it does not yet make
+  it governed. Named rather than smuggled into a bug-fix PR.
+* The 08-22 snapshot row (ops action above).
+* Buy ideas as Today cards — Eran's call, and the right one: the screener already
+  reaches Today through `recommendations.py:2480` and `:2696`, so what is missing
+  is *why this name*, not a new section. A second surface proposing trades is
+  what the card-claim invariant exists to prevent.
+
+---
+
 ## PR 27 — the screener could see again, and three of the numbers were wrong
 
 PR 25 is **verified live**. `/health` serves `7edb624`; measured against
