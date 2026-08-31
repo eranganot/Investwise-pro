@@ -47,4 +47,10 @@ class ScreenPick(BaseModel):
     factor_scores: FactorScores
     metrics: dict                # the raw numbers behind the score
     reasons: list[str]           # plain-English "why it screens well"
-    flags: list[str] = []        # e.g. "hype-priced", "loss-making"
+    flags: list[str] = []        # e.g. "hype-priced", "loss-making", "partial-data"
+    # Which of the eight factors did NOT contribute to `score`, and why:
+    # "not reported" (the provider had nothing) or "implausible" (it had
+    # something that cannot be true). A composite over five factors is a
+    # different claim from one over eight; without this the two render
+    # identically. Defaulted so every existing construction still validates.
+    data_gaps: list[str] = []

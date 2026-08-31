@@ -205,6 +205,35 @@ class YahooMarketDataProvider(MarketDataProvider):
             v = raw(d, key)
             return round(v * 100.0, 2) if v is not None else None
 
+        def dividend_yield():
+            """A company that pays nothing answers 0.0. It does not answer None.
+
+            MEASURED against Yahoo, 2026-08-31:
+
+                BRK-B  dividendYield {}   trailingAnnualDividendYield {'raw': 0.0}
+                AMZN   dividendYield {}   trailingAnnualDividendYield {'raw': 0.0}
+                JPM    dividendYield {'raw': 0.0168}
+
+            Yahoo drops `dividendYield` entirely for a non-payer while still
+            reporting, on the same object, that the trailing yield is zero. The
+            adapter read only the first field, so a MEASURED zero was filed as
+            "unknown" -- the same conflation PR 25 removed at the transport
+            layer, surviving in the field mapping.
+
+            It happened to produce the right ranking, because `_mean([None])`
+            collapsed to 0.0 and 0.0 was the truth. That is luck, not
+            correctness: the moment `_pillar` started scoring an unmeasured
+            factor neutral (as it must), every non-payer would have been handed
+            a middling income score it has not earned. Right answer, wrong
+            route -- and the route is what breaks when the data shifts.
+
+            A `None` from here now means only what it should: Yahoo did not say.
+            """
+            v = pct(sd, "dividendYield")
+            if v is not None:
+                return v
+            return pct(sd, "trailingAnnualDividendYield")
+
         return Fundamentals(
             ticker=sym,
             name=str(sp.get("longName") or sym),
@@ -216,7 +245,7 @@ class YahooMarketDataProvider(MarketDataProvider):
             profit_margin_pct=pct(fd, "profitMargins"),
             roe_pct=pct(fd, "returnOnEquity"),
             debt_to_equity=raw(fd, "debtToEquity"),
-            dividend_yield_pct=pct(sd, "dividendYield"),
+            dividend_yield_pct=dividend_yield(),
             as_of=_now(),
         )
 

@@ -19,7 +19,7 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **4 weeks** | 🔴🔴 **Set `AGENT_API_KEY` and `AUTH_PASSWORD` on Railway — nothing is rotated until you do.** This started four weeks ago as a mild note ("rotate the key, it was pasted into a chat transcript"), was re-flagged on 08-10 as hardcoded in 12 committed scripts, and on 08-30 PR 26 found it in **33** scripts in a **public** repository, together with a SuperAdmin password that no configuration change could retire. PR 26 made rotation *possible*. **It did not perform it.** Until both env vars are set, the two published credentials are still the live ones. Runbook: `ROTATION.md`. This is the top of the file for a reason — four weeks is how long a "should rotate someday" took to become "was readable by anyone". |
+| 2026-08-03 | **4 weeks** | 🔴🔴 **Set `AGENT_API_KEY` and `AUTH_PASSWORD` on Railway — nothing is rotated until you do.** This started four weeks ago as a mild note ("rotate the key, it was pasted into a chat transcript"), was re-flagged on 08-10 as hardcoded in 12 committed scripts, and on 08-30 PR 26 found it in **33** scripts in a **public** repository, together with a SuperAdmin password that no configuration change could retire. PR 26 made rotation *possible*. **It did not perform it.** **RE-MEASURED 2026-08-31: the key committed in the 33 scripts still returns `200` on `GET /api/v1/portfolio`. Nothing has been rotated.** Both `scripts/.agent-key` and `scripts/.agent-key.previous` on this machine hold locally-generated values that production has never seen — the ship script wrote them; Railway was never updated — so every smoke script on this box now 401s while the published key still works. Until both env vars are set, the two published credentials are still the live ones. Runbook: `ROTATION.md`. This is the top of the file for a reason — four weeks is how long a "should rotate someday" took to become "was readable by anyone". |
 | 2026-08-03 | **4 weeks** | **Enable notifications on the Pixel 9**; confirm `subscriptions: 1`, then that the 07:00 digest arrives. Still the single failing check in `smoke-all`, still a device action rather than a defect — which is exactly why it has survived four weeks of code shipping around it. |
 | 2026-08-03 | **4 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. They are DB-generated today, so a DB reset silently invalidates every push subscription at once. |
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). It has been the stated "next initiative", unstarted, for seven weeks, while 26 commits of other work shipped past it. That is not a queue — it is a decision that has not been made. Start it, or move it to the backlog and stop listing it as next. |
@@ -27,9 +27,180 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-08-31 | new | **16 untracked files, including real code** — `app/services/candidate_search.py` and `tests/test_candidate_search.py`, plus `STATUS-V2.md`, `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. The sharp one is `STATUS-V2.md`: the file that tells a cold reader what is left **does not exist in the repo** — it is invisible to a fresh clone and to CI. And `scripts/.agent-key.previous` is untracked **and not gitignored** — `git check-ignore` says nothing matches it, so it is one `git add -A` from being committed. In a repo that spent last week removing a published key, a file holding the previous one should be ignored by rule, not by nobody having typed the wrong command yet. (`STATUS-ARCHIVE.md`, created by this review, is a seventeenth — commit it with this file.) |
 
 ### Next (confirm priority)
+0. **Push PR 26, then PR 27.** `1362ce8` (PR 26) has been sitting **committed and unpushed** on this machine — `main...origin/main [ahead 1]`. Production serves `7edb624`. Until PR 26 deploys, `AUTH_PASSWORD` is still inert, because the old code ignores it. PR 27 sits on top and is delivered as a patch.
 1. **PR 15c / W3 — contribution modelling.** The only 🔴 *not started* row in the seven-day audit table below; every other PR 1–15b is ✅.
 2. Land or discard `candidate_search` — it has tests and no commit.
-3. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
+4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 27 — the screener could see again, and three of the numbers were wrong
+
+PR 25 is **verified live**. `/health` serves `7edb624`; measured against
+production on 2026-08-31:
+
+| | |
+|---|---|
+| equity buy ideas | **5** (CVX, JPM, GOOGL, XOM, BAC) — was zero, every scan, for months |
+| coverage | `requested 58, ranked 58, unreachable 0, no_data 0` |
+| `/screener` | returns equities |
+| NAV | ₪21,333.59 across 4 positions, no stale prices |
+
+58 of 58 also closes the token-bucket question for good: it was a sandbox
+artifact of the builtin provider being instant, exactly as PR 24 suspected.
+
+**What that exposed is that the engine consuming those numbers had never been
+exercised on real data at scale.** It makes the same mistake PR 25 fixed one
+layer down — a missing answer and a bad answer rendering identically — and it
+makes it three times.
+
+### 1. An implausible P/B was ranked as a bargain, and the card said so
+
+BRK-B ranked **#7 on the live buy list** carrying:
+
+```
+"pb": 0.00096701446        value pillar: 98.2  <- the highest in the top 25
+reasons: ["Trades near book value (P/B 0.0)", ...]
+```
+
+Berkshire's price-to-book is about **1.6**. The 0.00097 is Yahoo dividing the
+class-B **price** (~$490) by the class-A **book value per share** (~$507,000) —
+off by a factor of ~1,650. P/B is a lower-is-better column, so the broken number
+handed BRK-B very nearly the best value percentile in the cohort, and `_reasons`
+then **asserted it to the user in plain English**. A caption that vouches for a
+number tells the reader the checking has already been done; PR 22 recorded that
+exact failure on the history chart.
+
+`_safe_pe` had this instinct already and it was never generalised — the same
+"a guard protects the path it is on, not the behaviour" lesson this file records
+against the NAV-inflation bug.
+
+**`_safe_pb` returns `None`, not the worst value, and that is deliberate.** A
+P/E of zero means something specific — no earnings — so `_safe_pe` can map it to
+the worst score honestly. An implausible P/B says nothing about the *direction*
+of the error: Berkshire's real ratio is mid-cohort, and the minor-unit case runs
+the other way (PR 25 measured TEVA 5.48 against TEVA.TA **1657.9**). Scoring it
+worst would be as wrong as scoring it best. Ground or abstain.
+
+This also disarms the trap PR 25 left for the Tel Aviv work: a `.TA` P/B is now
+rejected rather than ranked, so adding those listings cannot quietly import a
+300x error.
+
+### 2. A missing factor had two opposite meanings
+
+```
+_mean([50.0, None])  -> 50.0   dropped   (quality has 3 slots)
+_mean([None])        ->  0.0   the WORST (income has 1 slot)
+```
+
+The only thing deciding which is how many factors happen to share the pillar.
+Both were live:
+
+| | |
+|---|---|
+| **JPM #2**, **BAC #5** | `debt_to_equity: null` — quality scored without leverage, for a bank the one factor you would most want |
+| **MCD #11** | `pb`, `roe_pct` **and** `debt_to_equity` all null — value from P/E alone, quality from profit margin alone, and **quality 78.3, the highest of the names checked** (JPM 61.0, CVX 47.8) |
+| **BRK-B, AMZN, CHKP, MNDY** | `income: 0.0` — "Yahoo did not say" rendered identically to "worst payer in the cohort" |
+
+**8 of the top 25 carried at least one missing factor and not one of them said
+so.** MCD's only visible trace was that its `reasons` list had two entries where
+its neighbours had four, which is a coincidence, not a disclosure.
+
+`_pillar` scores an unmeasured slot neutral in both directions: a name cannot
+win a factor nobody measured and cannot be convicted on one. `data_gaps` names
+every factor that did not contribute and why — `not reported` (chase the
+provider) versus `implausible` (chase the field) — and a gapped name is flagged
+`partial-data`. It is a **label, not a second penalty**; docking a name for its
+provider's silence is the mirror image of the bug. `metrics` keeps the raw
+value, because a silently nulled field cannot be diagnosed.
+
+`_mean` is **unchanged** — `rank_commodities` and `rank_bonds` depend on it and
+neither has the pillar problem. A test pins that, so a later cleanup does not
+merge the two and silently move the bond rankings.
+
+### 3. A company that pays nothing answers zero. The adapter filed it as unknown
+
+Measured against Yahoo, 2026-08-31:
+
+```
+BRK-B  dividendYield {}   trailingAnnualDividendYield {"raw": 0.0}
+AMZN   dividendYield {}   trailingAnnualDividendYield {"raw": 0.0}
+JPM    dividendYield {"raw": 0.0168}
+```
+
+Yahoo drops `dividendYield` entirely for a non-payer while still reporting, on
+the same object, that the trailing yield is zero. Reading only the first field
+filed a **measured zero** as "unknown" — the conflation PR 25 removed at the
+transport layer, surviving in the field mapping.
+
+**It produced the right ranking by luck.** `_mean([None])` collapsed to 0.0 and
+0.0 was the truth. The moment `_pillar` starts scoring an unmeasured factor
+neutral — as it must — every non-payer would be handed a middling income score
+it has not earned. Right answer, wrong route, and the route is what breaks when
+the data shifts. That is why this lands in the same commit as `_pillar`.
+
+### 4. The coverage pin vanished in the case it exists to explain
+
+`_pin` was attached only to equity picks, so a scan that ranked nothing fell
+through to `audit_block`, which has no `coverage` key. PR 25's own smoke script
+names it: *"PR 24 attached the coverage pin only to equity ideas, so it
+disappears in exactly the case worth diagnosing."* Reproduced against PR 25's
+bug shape — the agent held `{"requested": 58, "ranked": 0}` and the payload said
+nothing at all. `_buy_ideas` now publishes the pin through a caller-supplied
+dict, filled before anything can shorten the list — a dict rather than a module
+global, so two concurrent scans cannot hand each other the wrong coverage.
+
+### Two of my own tests passed against the bug before I caught them
+
+Worth recording, because it is the failure mode this repo keeps finding.
+
+The obvious test — three names varying only in leverage — **goes green on the
+old engine**. Dropping a factor does not score it 50; it scores it at the mean
+of whatever else is in the pillar, so with the other factors tied the dropped
+slot lands on 50 by arithmetic accident and the ordering is already correct.
+Tying the unmeasured name at the top of the cohort does not help either, because
+`_pct_ranks` gives ties the **mean** of the ranks they span, so the "perfect"
+score is 83.3 and the assertion passes on both engines. The defect only appears
+when the surviving factors are top-of-cohort **and untied**; then the old pillar
+returned `mean(100, 100)` — a flat 100 for a balance sheet nobody looked at.
+
+**11 of the 14 new tests were confirmed to fail against the old code** before
+being accepted. The three that pass are deliberate no-change guards.
+
+**Gate:** SQLite 1465 passed / 1 failed; Postgres 1465 passed / 1 failed; `ruff
+check app tests` clean. Both PowerShell scripts parse-checked with pwsh 7.4.6,
+pure ASCII, no backticks.
+
+### The one failure, and why it is not this PR's
+
+```
+tests/test_minor_unit_currencies.py::test_a_row_already_stored_in_agorot_is_repaired
+AssertionError: NAV is 10910.00; the repair did not run when the quote failed
+assert 10910.0 == 11030.0 +- 1.1e+00
+```
+
+**ROOT CAUSE: UNKNOWN. CONFIDENCE: nothing** — same treatment as the `trading_rules`
+StaleDataError and the +739.2 leak. What is established:
+
+* It fails **identically on unmodified HEAD**, in a control run taken in the
+  same window, on **both** backends. Not caused by this PR.
+* It fails **deterministically when run alone**, three times out of three, on
+  old and new code alike.
+* It **passed** in one earlier full run in the same sandbox — the only
+  environment delta being that `py-vapid`/`pywebpush` were installed between the
+  two runs.
+* Not the shared `/tmp/iw_test_app.db` (deleted, still fails) and not network
+  (fails with `MARKET_DATA_PROVIDER=builtin`). 10910 is 109.10 x 100 shares; the
+  builtin quote for TEVA.TA is 230.97, so it is not simply a fresh quote leaking
+  through the patch either.
+* PR 26 gated green at 1436/0/0 on both backends six days ago, so this most
+  likely does not reproduce on CI or on the Windows box. **Worth one run there
+  to confirm before believing that.**
+
+A test that passes only when something earlier in the suite has run is the
+`a-skip-is-never-a-pass` family: it reports a pass for a condition it did not
+establish. Recorded, not fixed here.
 
 ---
 

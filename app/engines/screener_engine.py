@@ -68,6 +68,53 @@ def _mean(xs: list[float | None]) -> float:
     return round(sum(vals) / len(vals), 1) if vals else 0.0
 
 
+#: What a factor scores when nobody measured it: the middle of the cohort.
+#:
+#: A percentile column runs 0-100 across the names that HAVE the factor, so 50
+#: is the one value that neither rewards nor punishes a gap. It is not a guess
+#: at the missing number -- it is a refusal to let an unmeasured factor decide
+#: a ranking in either direction.
+_NEUTRAL = 50.0
+
+
+def _pillar(parts: list[float | None]) -> float:
+    """Score a pillar over the slots it was SUPPOSED to have, not the ones present.
+
+    `_mean` DROPS a `None`, and that gives one missing factor two opposite
+    meanings depending only on how many factors happen to share its pillar:
+
+        _mean([50.0, None])  -> 50.0   dropped   (quality has 3 slots)
+        _mean([None])        ->  0.0   the WORST (income has 1 slot)
+
+    Both are wrong, in opposite directions, and both were live on 2026-08-31.
+
+    * QUALITY is `[profit_margin, roe, debt_to_equity]`. Yahoo reports no
+      `debtToEquity` for JPM or MCD -- MEASURED: the field comes back `{}` --
+      so their quality was the mean of the two factors that survived. JPM
+      ranked #2 and BAC #5 on the live buy list with leverage, for a bank the
+      one factor you would most want, silently out of the denominator.
+      Reproduced on three names identical but for leverage: CLEAN 66.7,
+      UNKNOWN 50.0, LEVERED 33.3 -- **not knowing beat being measured and
+      bad.**
+    * INCOME is `[dividend_yield]`, one slot, so a gap collapsed to 0.0, the
+      harshest score there is. "Yahoo did not say" rendered identically to
+      "worst payer in the cohort".
+
+    Both now score `_NEUTRAL`. A name cannot win a factor nobody measured, and
+    it cannot be convicted on one either. The gap itself is not swallowed: the
+    pick carries `data_gaps` naming every factor that went unscored, because a
+    composite built from five of eight numbers is a different claim from one
+    built from eight, and the reader is entitled to tell them apart.
+
+    This is the distinction PR 25 drew one layer down, at the provider
+    boundary, arriving in the engine that consumes those values: a missing
+    answer and a bad answer must not render the same.
+    """
+    if not parts:
+        return 0.0
+    return round(sum(_NEUTRAL if p is None else p for p in parts) / len(parts), 1)
+
+
 class ScreenerEngine:
     def rank_equities(self, items: list[dict], weights: dict | None = None,
                       top_n: int | None = None) -> list[ScreenPick]:
@@ -75,9 +122,16 @@ class ScreenerEngine:
         w = {**DEFAULT_WEIGHTS, **(weights or {})}
         funds: list[Fundamentals] = [it["fundamentals"] for it in items]
 
+        # The SANITISED P/B, computed once and used everywhere below: the
+        # percentile column, the flags and the reasons all have to agree about
+        # whether a number is usable, or the score rejects it while the card
+        # still quotes it. That is precisely how "Trades near book value
+        # (P/B 0.0)" reached the user.
+        safe_pb = [_safe_pb(f.pb) for f in funds]
+
         # cross-sectional percentile columns
         pe = _pct_ranks([_safe_pe(f.pe) for f in funds], higher_is_better=False)
-        pb = _pct_ranks([f.pb for f in funds], higher_is_better=False)
+        pb = _pct_ranks(safe_pb, higher_is_better=False)
         eg = _pct_ranks([f.earnings_growth_pct for f in funds], higher_is_better=True)
         rg = _pct_ranks([f.revenue_growth_pct for f in funds], higher_is_better=True)
         pm = _pct_ranks([f.profit_margin_pct for f in funds], higher_is_better=True)
@@ -89,21 +143,32 @@ class ScreenerEngine:
         for i, it in enumerate(items):
             f = funds[i]
             meta = it["meta"]
+            # `_pillar`, not `_mean`: a slot nobody measured scores neutral
+            # instead of being dropped from a 3-factor pillar or collapsing to
+            # zero in a 1-factor one. See `_pillar`.
             fs = FactorScores(
-                value=_mean([pe[i], pb[i]]),
-                growth=_mean([eg[i], rg[i]]),
-                quality=_mean([pm[i], roe[i], de[i]]),
-                income=_mean([dy[i]]),
+                value=_pillar([pe[i], pb[i]]),
+                growth=_pillar([eg[i], rg[i]]),
+                quality=_pillar([pm[i], roe[i], de[i]]),
+                income=_pillar([dy[i]]),
             )
+            gaps = _data_gaps(f, safe_pb[i])
             composite = round(
                 fs.value * w["value"] + fs.growth * w["growth"]
                 + fs.quality * w["quality"] + fs.income * w["income"], 1)
 
-            flags = _flags(f)
+            flags = _flags(f, safe_pb[i])
             if "loss-making" in flags:
                 composite = round(composite * 0.6, 1)   # penalize unprofitable names
             if "hype-priced" in flags:
                 composite = round(composite * 0.8, 1)   # penalize richly-valued names
+            if gaps:
+                # NOT a penalty -- `_pillar` already made the gap score-neutral,
+                # and docking a name for its provider's silence would be the
+                # mirror of the bug being fixed. This is a label, so a reader
+                # comparing two scores can see that one was computed over fewer
+                # numbers than the other.
+                flags = [*flags, "partial-data"]
 
             picks.append(ScreenPick(
                 ticker=meta["ticker"], name=f.name or meta.get("name", meta["ticker"]),
@@ -112,13 +177,18 @@ class ScreenerEngine:
                 sector=f.sector or "Unknown",
                 score=max(0.0, min(100.0, composite)),
                 factor_scores=fs,
+                # `metrics` keeps the RAW value even when the engine rejected
+                # it. It is the audit trail: "pb: 0.000967" plus a data_gaps
+                # line saying it was implausible is diagnosable, and a silently
+                # nulled field is not.
                 metrics={"pe": f.pe, "pb": f.pb, "earnings_growth_pct": f.earnings_growth_pct,
                          "revenue_growth_pct": f.revenue_growth_pct,
                          "profit_margin_pct": f.profit_margin_pct, "roe_pct": f.roe_pct,
                          "debt_to_equity": f.debt_to_equity,
                          "dividend_yield_pct": f.dividend_yield_pct},
-                reasons=_reasons(f, fs),
+                reasons=_reasons(f, fs, safe_pb[i]),
                 flags=flags,
+                data_gaps=gaps,
             ))
 
         picks.sort(key=lambda p: p.score, reverse=True)
@@ -293,21 +363,120 @@ def _safe_pe(pe: float | None) -> float | None:
     return pe if pe > 0 else 9_999.0
 
 
-def _flags(f: Fundamentals) -> list[str]:
+#: A price-to-book ratio outside this band is not a valuation. It is a unit or
+#: share-class error, and it must not be ranked as though it were a bargain.
+#:
+#: Real equities live between roughly 0.2 (a distressed bank) and 60 (a
+#: capital-light compounder). The band is deliberately far wider than that,
+#: because its job is to catch numbers that are wrong by ORDERS of magnitude,
+#: not to have an opinion about expensive stocks -- `_flags` already does that.
+_PB_FLOOR, _PB_CEILING = 0.05, 500.0
+
+
+def _safe_pb(pb: float | None) -> float | None:
+    """P/B, or None when the number cannot be a P/B.
+
+    THIS RAN LIVE, AND IT DECIDED A RECOMMENDATION. Measured against production
+    on 2026-08-31, BRK-B was ranked #7 on the buy list carrying:
+
+        "pb": 0.00096701446        value pillar: 98.2  -- the highest in the top 25
+        reasons: ["Trades near book value (P/B 0.0)", ...]
+
+    Berkshire's price-to-book is about 1.6. The 0.00097 is Yahoo dividing the
+    class-B PRICE (~$490) by the class-A BOOK VALUE PER SHARE (~$507,000) --
+    off by a factor of ~1,650. P/B is a lower-is-better column, so the broken
+    number handed BRK-B very nearly the best value percentile in the cohort,
+    and `_reasons` then asserted it to the user in plain English. A caption
+    that vouches for a number tells the reader the checking has already been
+    done; PR 22 recorded that exact failure and this is another instance of it.
+
+    `_safe_pe` had this instinct already and it was never generalised -- the
+    same "a guard protects the path it is on, not the behaviour" lesson
+    STATUS.md records against the NAV-inflation bug.
+
+    THE ANSWER IS None, NOT THE WORST VALUE, and the difference matters. A P/E
+    of zero means something specific -- no earnings -- so `_safe_pe` can map it
+    to the worst score honestly. An implausible P/B tells us nothing about the
+    direction of the error: Berkshire's real ratio is mid-cohort, and the
+    minor-unit case runs the other way (PR 25 measured TEVA 5.48 against
+    TEVA.TA 1657.9, off by FX x 100). Scoring it worst would be as wrong as
+    scoring it best. Ground or abstain: we abstain, `_pillar` scores the slot
+    neutral, and `data_gaps` says so out loud.
+
+    This also disarms the trap PR 25 left for the Tel Aviv work: a `.TA` P/B is
+    rejected here rather than ranked, so adding those listings can no longer
+    quietly import a 300x error.
+    """
+    if pb is None:
+        return None
+    if pb <= 0:
+        # Negative book equity. Real (MCD has it) and a genuine fact, but it is
+        # not a ratio you can rank -- there is no "cheap" end of a negative
+        # denominator.
+        return None
+    if pb < _PB_FLOOR or pb > _PB_CEILING:
+        return None
+    return pb
+
+
+#: The eight factors a composite is supposed to be built from, in payload order.
+_FACTORS = ("pe", "pb", "earnings_growth_pct", "revenue_growth_pct",
+            "profit_margin_pct", "roe_pct", "debt_to_equity", "dividend_yield_pct")
+
+
+def _data_gaps(f: Fundamentals, safe_pb: float | None) -> list[str]:
+    """Which of the eight factors did NOT contribute to this score, and why.
+
+    Two different silences, named separately, because they need different
+    answers from whoever reads them:
+
+    * `not reported` - the provider had nothing. Chase the provider.
+    * `implausible`  - the provider had something and it cannot be true.
+                       Chase the FIELD; `_safe_pb` explains the live case.
+
+    Measured on production's top 25, 2026-08-31: eight of twenty-five names
+    carried at least one gap and nothing in the payload said so. MCD was
+    missing P/B, ROE *and* debt-to-equity -- its value pillar was P/E alone and
+    its quality pillar profit-margin alone -- and it still scored the HIGHEST
+    quality of the names checked (78.3, against JPM 61.0 and CVX 47.8). The
+    only visible trace was that its `reasons` list had two entries where its
+    neighbours had four, which is not a disclosure, it is a coincidence.
+    """
+    gaps: list[str] = []
+    for name in _FACTORS:
+        if name == "pb":
+            if f.pb is None:
+                gaps.append("pb: not reported")
+            elif safe_pb is None:
+                gaps.append(f"pb: implausible ({f.pb:.6g}) - not scored")
+            continue
+        if getattr(f, name) is None:
+            gaps.append(f"{name}: not reported")
+    return gaps
+
+
+def _flags(f: Fundamentals, safe_pb: float | None = None) -> list[str]:
     flags = []
     if (f.pe is not None and f.pe <= 0) or (f.profit_margin_pct is not None and f.profit_margin_pct < 0):
         flags.append("loss-making")
-    if (f.pe is not None and f.pe > 60) or (f.pb is not None and f.pb > 10):
+    # `safe_pb`, not `f.pb`: a P/B the engine refused to rank must not be
+    # allowed to trigger a judgement about the name either. It cannot say
+    # "expensive" any more than it could say "cheap".
+    if (f.pe is not None and f.pe > 60) or (safe_pb is not None and safe_pb > 10):
         flags.append("hype-priced")
     return flags
 
 
-def _reasons(f: Fundamentals, fs: FactorScores) -> list[str]:
+def _reasons(f: Fundamentals, fs: FactorScores, safe_pb: float | None = None) -> list[str]:
     out: list[str] = []
     if f.pe is not None and 0 < f.pe <= 18 and fs.value >= 55:
         out.append(f"Cheap on earnings (P/E {f.pe:.0f})")
-    if f.pb is not None and f.pb <= 2.5 and fs.value >= 55:
-        out.append(f"Trades near book value (P/B {f.pb:.1f})")
+    # THE SANITISED VALUE, and this line is the one the user actually read.
+    # With `f.pb` here, BRK-B's 0.00097 sailed through `<= 2.5` and the card
+    # asserted "Trades near book value (P/B 0.0)" -- a sentence that vouches
+    # for a number nobody checked, on a stock trading at ~1.6x book.
+    if safe_pb is not None and safe_pb <= 2.5 and fs.value >= 55:
+        out.append(f"Trades near book value (P/B {safe_pb:.1f})")
     if f.earnings_growth_pct is not None and f.earnings_growth_pct >= 15:
         out.append(f"Earnings growing ~{f.earnings_growth_pct:.0f}%/yr")
     if f.revenue_growth_pct is not None and f.revenue_growth_pct >= 12:

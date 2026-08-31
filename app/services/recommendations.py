@@ -1897,9 +1897,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # `objective` IS THE THIRD ARGUMENT, and its absence was item 2's root cause:
     # every book was ranked on DEFAULT_WEIGHTS, so the objective changed how much
     # was bought and never what.
+    # `_pin_out` IS HOW THE COVERAGE SURVIVES A SCAN THAT RANKED NOTHING. The
+    # pin used to be lifted off the equity ideas, so it disappeared in exactly
+    # the case worth diagnosing -- see the comment on `buy_ideas_ranked_for`
+    # below. A dict passed in and filled in, rather than a module global, so two
+    # concurrent scans cannot hand each other the wrong coverage.
+    _pin_out: dict = {}
     _ideas = await _offload(_buy_ideas, snap,   # screener; timed separately, it hits providers
                             (getattr(plan, "currency", None) or "ILS"),
-                            objective)
+                            objective, _pin_out)
     _tm.mark("buy_ideas")
 
     # ---- WHICH STRATEGY DOES EACH CARD SERVE, AND DO ANY OF THEM FIGHT? ----
@@ -1976,9 +1982,21 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             # here would produce a pin that describes the intent instead of the
             # run, which is the difference that matters when someone asks why a
             # name never appears.
-            "buy_ideas_ranked_for": next(
-                (i["ranked_for"] for i in (_ideas or []) if i.get("ranked_for")),
-                _obj_weights.audit_block(objective)),
+            #
+            # AND IT HAS TO SURVIVE A SCAN THAT PRODUCED NO EQUITIES. `_pin` was
+            # attached only to equity picks, so when `screen_equities` returned
+            # nothing this `next(...)` fell through to `audit_block`, which has
+            # no `coverage` key at all -- the diagnostic vanished in precisely
+            # the situation it exists to explain. Reproduced against PR 25's own
+            # bug shape: the agent held {"requested": 58, "ranked": 0} and the
+            # payload said nothing. PR 25's smoke script names this as a known
+            # defect ("it rides on equity ideas, and there may be none").
+            # `_pin_out` is filled by the scan itself, so it is there whether or
+            # not anything was ranked.
+            "buy_ideas_ranked_for": (
+                next((i["ranked_for"] for i in (_ideas or []) if i.get("ranked_for")), None)
+                or _pin_out.get("ranked_for")
+                or _obj_weights.audit_block(objective)),
             "buy_ideas_tilt_disclosure": _obj_weights.tilt_disclosure(objective),
             "risk_validation": {"beta_validated": bt.beta_validated,
                                 "structural_beta": bt.structural_beta,
@@ -2721,7 +2739,8 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
     return out
 
 
-def _buy_ideas(snap, currency: str = "USD", objective: str | None = None) -> list[dict]:
+def _buy_ideas(snap, currency: str = "USD", objective: str | None = None,
+               pin_out: dict | None = None) -> list[dict]:
     """Top fundamentals-ranked equity buy ideas plus screener-ranked commodity
     picks from the Opportunity Agent (informational).
 
@@ -2759,9 +2778,15 @@ def _buy_ideas(snap, currency: str = "USD", objective: str | None = None) -> lis
         # indistinguishable from out here.
         _pin = {**_ow.audit_block(objective),
                 "coverage": dict(getattr(ag, "last_coverage", {}) or {})}
+        # Published to the caller BEFORE anything can shorten the list, so a scan
+        # that ranked zero names still reports what it tried. This assignment is
+        # the whole fix for "the coverage pin rides on equity ideas, so it
+        # vanishes when there are none".
+        if pin_out is not None:
+            pin_out["ranked_for"] = _pin
         out = [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
                 "sector": p.sector, "reasons": p.reasons, "flags": p.flags,
-                "metrics": p.metrics, "ranked_for": _pin}
+                "metrics": p.metrics, "data_gaps": p.data_gaps, "ranked_for": _pin}
                for p in _picks]
         try:
             out += [{"ticker": p.ticker, "name": p.name, "score": p.score, "kind": p.kind,
