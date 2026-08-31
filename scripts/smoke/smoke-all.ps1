@@ -12,7 +12,8 @@ $BaseUrl = "https://investwise-pro-production.up.railway.app"
 # parameter binding ("Cannot convert PSCustomObject to IDictionary") -- which the
 # old handler reported as "NO RESPONSE", implying a network fault that never
 # existed. Four wrong hypotheses came out of that one hidden error message.
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $pass = 0; $fail = 0; $skip = 0; $retried = 0
 # A run where calls 1-5 succeeded and everything after returned no HTTP status
 # at all turned out to be a Railway REDEPLOY draining the old container, not a

@@ -33,9 +33,12 @@ if (-not (Get-Command railway -ErrorAction SilentlyContinue)) {
 
 if ($Trigger) {
     # Provoke the 500 immediately before reading, so the entry is at the tail.
-    $h = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+    . "$PSScriptRoot\agent-key.ps1"
+    # $ApiHeaders, never $h. A one-letter $h sits next to PowerShell's automatic
+    # variables and has silently clobbered auth headers in this repo before.
+    $ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
     Write-Host "Triggering $TriggerMethod $TriggerPath ..." -ForegroundColor Cyan
-    try { Invoke-RestMethod -Method $TriggerMethod -Uri "$BaseUrl$TriggerPath" -Headers $h -TimeoutSec 900 | Out-Null }
+    try { Invoke-RestMethod -Method $TriggerMethod -Uri "$BaseUrl$TriggerPath" -Headers $ApiHeaders -TimeoutSec 900 | Out-Null }
     catch { Write-Host "  (it failed, as expected: $($_.Exception.Message))" -ForegroundColor DarkGray }
     Start-Sleep -Seconds 4
 }

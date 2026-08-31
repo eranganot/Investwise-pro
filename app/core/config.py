@@ -139,7 +139,14 @@ class Settings(BaseSettings):
     session_ttl_sec: int = 2592000    # "remember me": Google session lasts 30 days
     agent_api_key: str = ""           # if set, X-Agent-Key header grants SUPERADMIN write access (for the agent)
     superadmin_email: str = "eran.ganot@gmail.com"
-    auth_password: str = "changeme-dev"  # SuperAdmin login password (set in prod)
+    # NO DEFAULT, deliberately. A default here is a PUBLISHED credential rather
+    # than a password: everyone with repo access has it, and this repository was
+    # public until 2026-08-30. The placeholder that stood on this line from the
+    # first commit was still accepted by production that day -- POST
+    # /api/v1/auth/token returned 200 and a SUPERADMIN token. It is named in
+    # auth_service.PUBLISHED_PASSWORDS, which now refuses it, and nowhere else.
+    # Blank means password login is unavailable rather than open.
+    auth_password: str = ""           # SuperAdmin login password; set AUTH_PASSWORD in the environment
     jwt_secret: str = ""               # if set, HS256 with this secret -> stable sessions across redeploys
     jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank
     jwt_public_key: str = ""

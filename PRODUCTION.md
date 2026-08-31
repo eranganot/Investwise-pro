@@ -75,6 +75,14 @@ Auth is **off by default** (open demo). To enforce it:
 1. Set `REQUIRE_AUTH=true`, a strong `AUTH_PASSWORD`, and an RS256 keypair
    (`JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` as PEM). If the keys are blank an ephemeral
    pair is generated per process (tokens won't survive restarts).
+
+   > **This instruction did nothing before PR 26.** `ensure_superadmin_credential`
+   > only ever ran an `INSERT`, so the password hash was written once at first
+   > boot and every later change to `AUTH_PASSWORD` was ignored — while the
+   > default value sat published in `config.py`. `AUTH_PASSWORD` is now
+   > authoritative: change it and the stored hash is replaced on the next login
+   > request. Leave it blank and password login is unavailable rather than
+   > open. See **ROTATION.md**, and rotate both credentials if you have not.
 2. `POST /api/v1/auth/token` to log in (returns access + refresh). Send
    `Authorization: Bearer <access>` on protected routes. Roles:
    SUPERADMIN > ADVISOR > ANALYST > READ_ONLY (write routes need ANALYST+).

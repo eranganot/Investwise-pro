@@ -150,7 +150,8 @@ if ($SkipTests) { Warn "-SkipTests set. CI is still the real gate." }
 else { Invoke-Suite }
 
 Step "3. Record what the live book says BEFORE the drop"
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 try {
     $preSl = Invoke-RestMethod -Uri "$BaseUrl/api/v1/plan/sleeves" -Headers $ApiHeaders -TimeoutSec 60
     $prePlan = Invoke-RestMethod -Uri "$BaseUrl/api/v1/plan" -Headers $ApiHeaders -TimeoutSec 60

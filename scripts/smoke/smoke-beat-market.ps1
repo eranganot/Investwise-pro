@@ -26,7 +26,8 @@ $ErrorActionPreference = 'Continue'
 # copies at once, and then only these two lines need updating.
 # NOT $h -- PowerShell variable names are case-insensitive and a later $h
 # assignment silently clobbered the headers once already (see smoke-all.ps1).
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $pass = 0; $fail = 0; $skip = 0; $dense = 0
 [Net.ServicePointManager]::DefaultConnectionLimit = 100
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}

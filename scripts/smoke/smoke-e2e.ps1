@@ -23,8 +23,17 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# This script SHELLS OUT to the other smoke scripts, and a child process
+# inherits the ENVIRONMENT, not the caller's variables. So unlike every other
+# migrated script this one resolves the key once and exports it.
+. "$PSScriptRoot\..\agent-key.ps1"
 if (-not $env:IW_AGENT_KEY) {
-    $env:IW_AGENT_KEY = "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070"
+    $resolved = Get-AgentKey -BaseUrl $BaseUrl
+    if (-not $resolved) {
+        Write-Host "  No usable agent key - every child script would 401. Stopping." -ForegroundColor Red
+        exit 1
+    }
+    $env:IW_AGENT_KEY = $resolved
 }
 $here = $PSScriptRoot
 $repo = (Resolve-Path "$here\..\..").Path

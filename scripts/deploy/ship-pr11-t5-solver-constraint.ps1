@@ -143,7 +143,8 @@ if ($SkipTests) { Warn "-SkipTests set. CI is still the real gate." }
 else { Invoke-Suite }
 
 Step "3. Record what the war room says BEFORE the change"
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 try {
     $pre = Invoke-RestMethod -Uri "$BaseUrl/api/v1/war-room" -Headers $ApiHeaders -TimeoutSec 600
     $shown = @(@($pre.sessions) | Where-Object { $_.outcome -eq 'DISPLAYED' })

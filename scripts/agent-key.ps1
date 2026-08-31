@@ -3,28 +3,30 @@
 #   . "$PSScriptRoot\..\agent-key.ps1"      # from scripts/smoke/*
 #   $ApiHeaders = @{ 'x-agent-key' = Get-AgentKey -BaseUrl $BaseUrl }
 #
-# There is no "create a key" endpoint. app/core/config.py:140 reads a single
+# There is no "create a key" endpoint. app/core/config.py reads a single
 # setting, agent_api_key, from the AGENT_API_KEY environment variable on
 # Railway, and app/core/auth.py:115 grants SUPERADMIN write access to any
-# request whose x-agent-key header equals it. One value, server-side. So a NEW
-# key means changing that Railway variable - which instantly breaks every script
-# that has the old one baked in, and 34 of them do.
+# request whose x-agent-key header equals it. One value, server-side.
 #
-# That is the open backlog item: the key is a literal in 34 committed scripts,
-# 160+ commits of history, and pasted into chat transcripts repeatedly. It has
-# been deferred four times and has not become less true.
+# PR 26 finished the migration this file was written for. The literal that
+# used to be baked into 33 committed scripts is gone from all of them, and
+# the third resolution candidate -- "read it back out of smoke-p0.ps1" --
+# went with it. There is no longer anywhere in the repo to read a key from,
+# which is the entire point: rotating is now one Railway variable plus one
+# git-ignored line on each machine.
 #
-# This file is the step that makes rotating it a one-line change instead of a
-# 34-file change. New scripts call Get-AgentKey; old ones can be migrated to it
-# whenever anyone is in them anyway.
+# The old value must still be treated as burned. It was committed to a repo
+# that was public until 2026-08-30, it is in 160+ commits of history, and it
+# was pasted into chat transcripts repeatedly. Making the repo private does
+# not un-publish it.
 #
 # Resolution order, most private first:
 #   1. $env:IW_AGENT_KEY          - set per session, never on disk
 #   2. scripts\.agent-key         - one line, git-ignored (see .gitignore)
-#   3. the literal already committed in scripts\smoke\smoke-p0.ps1
-#      Using it adds NO new exposure - it is already in the repo and in the
-#      history - but it says so out loud, because a key read out of a tracked
-#      file is not a secret and should not feel like one.
+#
+# There is no third candidate any more. If neither is set, this returns $null
+# and says how to fix it, which is a far better failure than a working script
+# authenticating with a key everyone has.
 #
 # EACH CANDIDATE IS TESTED BEFORE IT IS RETURNED, and a rejected one falls
 # through to the next. The first version of this file returned $env:IW_AGENT_KEY
@@ -32,6 +34,34 @@
 # fallback -- and every check downstream then reported "the endpoint did not
 # answer" when the server had answered perfectly clearly with a 401. Preferring
 # a source is not the same as trusting it.
+
+function Test-IsBurnedKey {
+    <#
+      .SYNOPSIS
+      $true if this is a key that was published and must never be used again.
+
+      Compared by SHA-256, not by value. A fingerprint is not a credential:
+      storing the hash lets this file RECOGNISE the retired key without
+      carrying it, which is the whole reason the literal was removed. Adding
+      the value back "just to compare against it" would undo PR 26.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Key)
+
+    if (-not $Key) { return $false }
+    $burned = @(
+        # The key committed in 33 scripts from 2026-06 to 2026-08-30.
+        'BCB13D47A22BEF955A858CCBC3ABED3D36FF443F29B580EB71145CA400B66B1E'
+    )
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Key))
+    } finally {
+        $sha.Dispose()
+    }
+    $hex = ($bytes | ForEach-Object { $_.ToString('X2') }) -join ''
+    return ($burned -contains $hex)
+}
 
 function Test-AgentKey {
     <#
@@ -93,17 +123,9 @@ function Get-AgentKey {
         }
     }
 
-    # Last resort: the value that is already committed. Not a fallback to be
-    # comfortable about - it is the backlog item, restated at the moment it
-    # matters.
-    $p0 = Join-Path $PSScriptRoot "smoke\smoke-p0.ps1"
-    if (Test-Path $p0) {
-        $hit = Select-String -Path $p0 -Pattern 'iwk_[A-Za-z0-9_\-]+' | Select-Object -First 1
-        if ($hit) {
-            $candidates += ,@{ key = $hit.Matches[0].Value
-                               from = "scripts\smoke\smoke-p0.ps1, where it is COMMITTED" }
-        }
-    }
+    # There is deliberately no third candidate. PR 26 removed the literal from
+    # every tracked script, and a resolver that reads a key back out of the
+    # repository would quietly reinstate the thing that was fixed.
 
     if ($candidates.Count -eq 0) {
         Write-Host ""
@@ -130,11 +152,15 @@ function Get-AgentKey {
                     }
                 }
                 Write-Host "  key: from $($c.from)" -ForegroundColor DarkGray
-                if ($c.from -like "*COMMITTED*") {
-                    Write-Host "       That key is in git history and in chat transcripts. Rotating" -ForegroundColor Yellow
-                    Write-Host "       it is an open backlog item. To stop using it here:" -ForegroundColor Yellow
-                    Write-Host '         $env:IW_AGENT_KEY = "<key>"' -ForegroundColor DarkGray
-                    Write-Host "       or put it on one line in scripts\.agent-key (git-ignored)." -ForegroundColor DarkGray
+                if (Test-IsBurnedKey -Key $c.key) {
+                    Write-Host ""
+                    Write-Host "  WARNING: this is the RETIRED key." -ForegroundColor Red
+                    Write-Host "  It was committed to this repo while the repo was public, it is in" -ForegroundColor Yellow
+                    Write-Host "  160+ commits of history, and it was pasted into chat. Making the" -ForegroundColor Yellow
+                    Write-Host "  repo private did not un-publish it. The server still accepts it," -ForegroundColor Yellow
+                    Write-Host "  which means AGENT_API_KEY on Railway has not been rotated yet." -ForegroundColor Yellow
+                    Write-Host "  See ROTATION.md." -ForegroundColor Yellow
+                    Write-Host ""
                 }
             }
             return $c.key
@@ -154,10 +180,10 @@ function Get-AgentKey {
     return $null
 }
 
-# ROTATING IT, when that day comes:
+# ROTATING IT. Step 4 is done as of PR 26, so this is now a two-machine chore
+# rather than a 33-file edit. The full runbook, including the SuperAdmin
+# password, is in ROTATION.md; the short version:
 #   1. Generate:  python -c "import secrets; print('iwk_' + secrets.token_urlsafe(36))"
 #   2. Set AGENT_API_KEY to the new value in Railway, and redeploy.
 #   3. Put the same value in scripts\.agent-key (git-ignored) on each machine.
-#   4. Strip the literal out of the 34 scripts that carry it and have them call
-#      Get-AgentKey. Until step 4 is done, those scripts break at step 2 - which
-#      is exactly why this helper exists first.
+# Nothing in the repository needs to change, which is the difference PR 26 made.

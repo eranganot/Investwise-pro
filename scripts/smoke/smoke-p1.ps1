@@ -21,7 +21,8 @@ param(
     [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
 
 $ErrorActionPreference = 'Continue'
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $pass = 0; $fail = 0; $skip = 0
 [Net.ServicePointManager]::DefaultConnectionLimit = 100
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}

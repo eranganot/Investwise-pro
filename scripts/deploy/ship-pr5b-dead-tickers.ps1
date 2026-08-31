@@ -143,7 +143,8 @@ if ($live -eq $sha) { Write-Host "  Railway is serving $sha" -ForegroundColor Gr
 else { Warn "Still serving '$live' after 8 minutes. Check the Railway build log." }
 
 Step "6. Verify the dead tickers are gone from the LIVE catalogue"
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $fail = 0
 try {
     $cat = Invoke-RestMethod -Uri "$BaseUrl/api/v1/commodities" -Headers $ApiHeaders -TimeoutSec 60

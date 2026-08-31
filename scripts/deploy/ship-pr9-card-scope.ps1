@@ -180,7 +180,8 @@ if ($SkipTests) { Warn "-SkipTests set. CI is still the real gate." }
 else { Invoke-Suite }
 
 Step "3. Record what Today is telling you BEFORE the change"
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 try {
     $preRecs = Invoke-RestMethod -Uri "$BaseUrl/api/v1/recommendations" -Headers $ApiHeaders -TimeoutSec 300
     Write-Host "  cards on Today right now:" -ForegroundColor DarkGray

@@ -1,7 +1,94 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-30 by Claude (PR 25 — the screener can see stocks again)._
+_Last updated: 2026-08-31 by Claude (PR 26 — the published credentials)._
 _Seeded from git history + prior transcripts._
+
+## 🔴 PR 26 — two credentials were published, and one of them could not be changed
+
+The repository was **public** until 2026-08-30. Two credentials were readable by
+anyone who opened it, and both worked.
+
+Measured against production on 2026-08-30, before the fix:
+
+| probe | result |
+|---|---|
+| `GET /api/v1/portfolio` with no key | `401` |
+| `GET /api/v1/portfolio` with a wrong key | `401` |
+| `GET /api/v1/portfolio` with the key committed in 33 scripts | **`200`** |
+| `POST /api/v1/auth/token` with the default password in `config.py` | **`200`**, SUPERADMIN token |
+
+**Authentication was working correctly.** A wrong key and no key were both
+refused. The credentials were simply public.
+
+### The password half was worse, because the documented remedy was inert
+
+`PRODUCTION.md` section 8 said to set `AUTH_PASSWORD`.
+`auth_service.ensure_superadmin_credential` only ever ran an `INSERT` —
+`if res.scalar_one_or_none() is None` — so the bcrypt hash was written **once**,
+at first boot, from whatever the setting was then. Every later change to the
+environment variable was ignored, and there is **no password-change endpoint
+anywhere in the app**. The published password could not be retired by any
+configuration change at all. That is why it survived five months of the item
+sitting in the backlog labelled "known".
+
+### Why it was silent
+
+Nothing failed. Nothing logged. The test that covered this path *asserted the
+hole*: `test_ensure_credential_and_login` logged in with the default value and
+passed on every run, because the test hard-coded the same literal the config
+did. **A test written against a default cannot notice that the default is
+published.**
+
+### Fixed
+
+* `auth_password` has no default. Blank means password login is **unavailable**,
+  not open — fail-closed. Google sign-in is a separate path and is untouched.
+* `AUTH_PASSWORD` is now authoritative: a stored hash that does not verify
+  against it is replaced. This is the app's only means of changing the SuperAdmin
+  password, and it did not exist before.
+* A password in `auth_service.PUBLISHED_PASSWORDS` is refused even if set
+  deliberately, and an existing row still holding one is scrambled to a random
+  value. `/api/v1/auth/token` awaits that **before** it checks credentials, so
+  the first request after the deploy retires the old hash — including a request
+  from someone arriving to use it.
+* The key literal is gone from all 33 scripts; they call `Get-AgentKey`.
+  `agent-key.ps1` lost its third resolution candidate — "read the literal back
+  out of `smoke-p0.ps1`" — which would have quietly undone the migration, and
+  gained a SHA-256 fingerprint check that warns when the retired key is still in
+  use. A hash, not the value.
+* `ROTATION.md` is the runbook. `PRODUCTION.md` section 8 now states that its own
+  instruction used to do nothing.
+
+### The check that would have caught it
+
+`tests/test_no_secret_is_committed.py` reads the files git would carry —
+tracked **and** newly added un-ignored ones — and fails on credential shapes, on
+the two burned values by SHA-256, and on a default reappearing in `config.py`.
+
+My first version of it used plain `git ls-files`. I planted the retired key in a
+new script, ran the suite, and **it passed**: the file was untracked, so the
+check never saw it. It would have gone red in CI one commit too late, which is
+the same "found it afterwards" the test exists to end.
+`--others --exclude-standard` is the load-bearing half.
+
+### What is still true
+
+* **Nothing is rotated until `AGENT_API_KEY` and `AUTH_PASSWORD` are set on
+  Railway.** This PR makes rotation possible; it does not perform it.
+* The old values remain in git history forever. Rotation makes them useless; it
+  does not remove them. Rewriting history is not worth it for two dead
+  credentials.
+* Making the repo private closed *new* exposure. It did not un-publish what was
+  already out, and both values were also pasted into chat transcripts.
+* The agent key still grants SUPERADMIN to any request carrying it
+  (`app/core/auth.py:115`). By design.
+
+**Gate:** SQLite 1436 passed / 0 skipped / 0 warnings; Postgres 1436 passed / 0
+skipped / 0 warnings; ruff clean. Baseline was 1428 — the +8 is four auth tests
+and four guard tests. All four new auth tests were confirmed to **fail against
+the old code** before being accepted.
+
+---
 
 ## 🔴 PR 22 shipped a pin that could not resolve, and main stopped building
 

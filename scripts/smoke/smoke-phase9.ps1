@@ -8,7 +8,8 @@ $BaseUrl = "https://investwise-pro-production.up.railway.app"
 # the header hashtable $H and then doing `$h = Api GET '/health'` silently
 # replaces the headers with the health response, and every later call dies with
 # "Cannot bind parameter 'Headers'". Hence $ApiHeaders, matching smoke-c1/c2.
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $pass = 0; $fail = 0; $skip = 0
 function Ok($m)   { Write-Host "  PASS  $m" -ForegroundColor Green;  $script:pass++ }
 function Bad($m)  { Write-Host "  FAIL  $m" -ForegroundColor Red;    $script:fail++ }

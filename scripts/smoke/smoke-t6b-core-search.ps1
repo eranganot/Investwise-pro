@@ -37,7 +37,8 @@ param(
     # 0 means "use whatever ceiling the stored verdict already carries".
     [double]$MaxDrawdownPct = 0)
 
-$ApiHeaders = @{ 'x-agent-key' = $(if ($env:IW_AGENT_KEY) { $env:IW_AGENT_KEY } else { "iwk_U8DOWb6g2mD--AP8EsEAqfbJVrp8aqF5oipOtVX5070" }) }
+. "$PSScriptRoot\..\agent-key.ps1"
+$ApiHeaders = @{ 'x-agent-key' = (Get-AgentKey -BaseUrl $BaseUrl) }
 $script:Pass = 0; $script:Fail = 0; $script:Skipped = 0
 
 function Sec($m) { Write-Host ""; Write-Host "-- $m" -ForegroundColor Cyan }
