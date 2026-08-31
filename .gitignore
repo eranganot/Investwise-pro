@@ -28,4 +28,4 @@ node_modules/
 # The agent API key, when kept out of the tracked scripts. scripts/agent-key.ps1
 # reads this file if it exists. One line, no quotes. Never commit it -- the whole
 # point is that it is the copy that is NOT in the history.
-scripts/.agent-key
+scripts/.agent-key*
