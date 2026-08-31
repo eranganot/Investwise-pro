@@ -35,6 +35,88 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ---
 
+## PR 29 — the screener finally reaches a screen, as a card
+
+Eran, looking at Today: *"I don't have a buy idea section on any of my tabs."*
+He was right, and the reason is worse than a missing section.
+
+```
+grep buy_ideas app/static_app/ frontend/   ->  0 matches
+grep screener  app/static_app/index.html   ->  0 matches
+```
+
+**`buy_ideas` has been in the `/recommendations` payload for months and nothing
+in the app has ever read it.** Its only consumer was one `next()` inside
+`_redeploy_cash_recs` — the single top-ranked name in a class the book holds
+none of. **PR 24, 25 and 27 were fixing a ranking that reached the user through
+one ticker, on one card, in one situation.** BRK-B's P/B being wrong by 1,650x
+mattered only because it could have won that one slot.
+
+### Cards, not a section — and that was Eran's call, not mine
+
+I proposed a section. He asked why it wouldn't be cards under "What to do", and
+that is the better answer: **a separate list would be a second surface proposing
+trades**, which is exactly what the card-claim invariant and `contradictions.py`
+exist to police — and the only such surface with no `apply` spec to check its
+claim against. STATUS already records three cards arming three trailing stops on
+one ticker because three producers could not see each other. A ranked list would
+have been a fourth producer and the least verifiable one.
+
+As ordinary cards they inherit every guard:
+
+| guard | what it buys |
+|---|---|
+| `propose_funded_buy` returns `None` | no card when the plan doesn't want the class, it can't be funded, or it would push a class further from target |
+| the shared `FundingLedger` | these cards cannot spend shares a needed trade already claimed |
+| `already_named` | never proposes a ticker another card is already naming |
+| built **last** among buying cards | an optional idea uses only what a needed trade left |
+| held-ticker skip | topping up an existing position stays with the drift and rebalance cards |
+| `_MAX_BUY_IDEA_CARDS = 2` | Today is a list of things to do, not a leaderboard |
+
+**The screener call was hoisted above the card producers.** Appended after the
+reconcile-and-sort pass, these cards would have skipped reconciliation — and a
+card that dodges reconciliation is how two cards end up about the same shekels.
+
+### What the card says that the silent pick never did
+
+The score, the reasons, and — the payoff for PR 27 — **the gaps**:
+
+> Ranked WITHOUT 2 of its eight factors (pb, debt_to_equity), which the provider
+> did not report — so this score rests on less than the others.
+
+`data_gaps` was recorded as data in PR 27 precisely so a reader could tell a
+composite built from five factors from one built from eight. Until now nothing
+said it out loud, which is nearly the same as having dropped it.
+
+### The new cards found a false sentence in shared code
+
+`test_no_card_is_presented_short[single_name_breach]` went red on the first run:
+
+```
+Buy ₪63,070 of AGG — ... Fund it with ₪70,078 by selling 188.8887 HUGE.
+Estimated tax on the sale: ₪7,008. That still leaves ₪0 short.
+```
+
+`shortfall_ils` is stored to the agora, so any residue under half a shekel
+formats as `0` while staying truthy — and `describe_funding` narrated it. The
+sentence contradicted the rest of the line **and** the card's own `est_amount`.
+That test had asserted this all along; **no existing producer had ever hit the
+round-to-zero case.** Now thresholded at `MIN_TRADE_ILS`: below the minimum
+tradeable amount there is nothing to act on, so there is nothing to report. The
+fix lands in shared code, so every buy card gets it.
+
+**Gate:** SQLite **1482 passed / 0 failed**; Postgres **1482 passed / 0 failed**;
+ruff clean.
+
+### Known remaining
+* The other nine ranked names, the scores and the coverage counter are still
+  API-only. That is deliberate — they are diagnostics, not decisions — but if
+  the coverage number is ever to be read by a human it needs a home that is not
+  Today.
+* Routing the secondary provider through `guarded_quote` (carried from PR 28).
+
+---
+
 ## PR 28 — the suite was asserting against the live market, and the chart charged a bad snapshot to performance
 
 Two unrelated-looking reds, one shape: **something outside the test was writing

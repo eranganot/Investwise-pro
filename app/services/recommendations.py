@@ -1338,10 +1338,42 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # sync and run in a worker thread, so they cannot await -- which is exactly
     # how they ended up reading OBJ_TARGET directly and quoting a commodities
     # target of 10% in the same payload where the rebalance card quoted 25%.
+    # `objective` IS THE THIRD ARGUMENT, and its absence was item 2's root cause:
+    # every book was ranked on DEFAULT_WEIGHTS, so the objective changed how much
+    # was bought and never what.
+    # `_pin_out` IS HOW THE COVERAGE SURVIVES A SCAN THAT RANKED NOTHING. The
+    # pin used to be lifted off the equity ideas, so it disappeared in exactly
+    # the case worth diagnosing -- see the comment on `buy_ideas_ranked_for`
+    # below. A dict passed in and filled in, rather than a module global, so two
+    # concurrent scans cannot hand each other the wrong coverage.
+    _pin_out: dict = {}
+    _ideas = await _offload(_buy_ideas, snap,   # screener; timed separately, it hits providers
+                            (getattr(plan, "currency", None) or "ILS"),
+                            objective, _pin_out)
+    _tm.mark("buy_ideas")
+
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"])
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"])
+
+    # THE SCREENER GETS A SURFACE. Ranked names become fundable cards here, and
+    # deliberately LAST among the buying cards: the shared `_ledger` has already
+    # been spent down by the rebalance, redeploy and commodity legs, so an
+    # optional idea can only ever use what a needed trade did not. Two cards
+    # spending the same shares is the defect PR 1 fixed and this is the ordering
+    # that keeps it fixed.
+    #
+    # `_ideas` is reused rather than re-screened -- a second `screen_equities`
+    # call here would double the provider fan-out on every render AND could rank
+    # differently from the pin already in the payload. The screener call was
+    # hoisted above the card producers for exactly this: appended after the
+    # reconcile-and-sort pass, these cards would have skipped it, and a card that
+    # dodges reconciliation is how two cards end up about the same shekels.
+    _named = {str(r.get("meta", {}).get("chosen") or "") for r in recs}
+    _named |= {str(r.get("meta", {}).get("ticker") or "") for r in recs}
+    recs += await _offload(_buy_idea_recs, _ideas, rows, snap, plan, objective, cap,
+                           _cash_ils, _sleeve_names, _ledger, _named)
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -1894,19 +1926,6 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     _tm.mark("backtest")
-    # `objective` IS THE THIRD ARGUMENT, and its absence was item 2's root cause:
-    # every book was ranked on DEFAULT_WEIGHTS, so the objective changed how much
-    # was bought and never what.
-    # `_pin_out` IS HOW THE COVERAGE SURVIVES A SCAN THAT RANKED NOTHING. The
-    # pin used to be lifted off the equity ideas, so it disappeared in exactly
-    # the case worth diagnosing -- see the comment on `buy_ideas_ranked_for`
-    # below. A dict passed in and filled in, rather than a module global, so two
-    # concurrent scans cannot hand each other the wrong coverage.
-    _pin_out: dict = {}
-    _ideas = await _offload(_buy_ideas, snap,   # screener; timed separately, it hits providers
-                            (getattr(plan, "currency", None) or "ILS"),
-                            objective, _pin_out)
-    _tm.mark("buy_ideas")
 
     # ---- WHICH STRATEGY DOES EACH CARD SERVE, AND DO ANY OF THEM FIGHT? ----
     #
@@ -2649,6 +2668,140 @@ def _benchmark_recs(perf, objective) -> list[dict]:
         raw_data={"excess_pct": round(ex, 1), "benchmark": bench,
                   "portfolio_return_pct": pret, "benchmark_return_pct": bret},
         formulas=[_fml("Excess return", "excess = portfolio_return - benchmark_return", result=f"{ex:.1f}%")])
+    return out
+
+
+#: At most this many screener names become cards on one render. Today is a list
+#: of things to do, not a leaderboard: eleven ranked ideas would bury the risk
+#: and drift cards under a wall of optional purchases.
+_MAX_BUY_IDEA_CARDS = 2
+
+
+def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
+                   sleeve_names=None, ledger=None, already_named=None) -> list[dict]:
+    """Turn the screener's ranked names into fundable cards on Today.
+
+    THE SCREENER HAD NO SURFACE. `buy_ideas` has been in the /recommendations
+    payload for months and **nothing in the app reads it** -- `grep buy_ideas
+    app/static_app/ frontend/` returns nothing, and `/api/v1/screener` is never
+    called by the UI either. Its only consumer was one `next()` at
+    `_redeploy_cash_recs`, which lifts the single top-ranked name in a class the
+    book holds none of. So PR 24, 25 and 27 fixed a ranking that reached the user
+    through exactly one ticker, on one card, in one situation.
+
+    WHY CARDS AND NOT A SECTION. Eran's call, and it is the right one. A separate
+    "buy ideas" list would be a SECOND SURFACE PROPOSING TRADES, which is the
+    thing `contradictions.py` and the card-claim invariant exist to police --
+    and the only one of them with no `apply` spec to check its claim against.
+    STATUS records three cards arming three trailing stops on one ticker because
+    three producers could not see each other; an unpoliced list would be a fourth
+    producer and the least verifiable one.
+
+    So these are ordinary cards, and they inherit every guard that implies:
+
+    * `propose_funded_buy` decides whether a card exists at all. It returns None
+      when the plan does not want more of that class, when the purchase cannot
+      be funded, or when it would push a class further from target. A ranked
+      name is a candidate, never an instruction.
+    * The shared `FundingLedger` means these cards cannot spend the same shares
+      as the rebalance or commodity cards -- the defect PR 1 fixed.
+    * `already_named` keeps them off tickers another card is already proposing.
+    * The claim is simulated, not asserted: `buy.impact` and `buy.summary` come
+      from the post-trade mix.
+
+    WHAT THE CARD ADDS OVER THE OLD SILENT PICK is the reason. The score, the
+    plain-English reasons the engine derived, and -- the payoff for PR 27 --
+    `data_gaps` when the composite was built from fewer than eight factors. A
+    name ranked without its leverage measured says so on the card, because a
+    reader comparing two scores is entitled to know one of them rests on less.
+    """
+    out: list[dict] = []
+    sleeve_names = set(sleeve_names or set())
+    already_named = {str(t).upper() for t in (already_named or set())}
+    if not ideas:
+        return out
+    try:
+        from app.services import funding_service as _fund
+        from app.services.allocation_mix import classify
+    except Exception:  # noqa: BLE001
+        return out
+
+    held = {str(getattr(r, "ticker", "") or "").upper() for r in (rows or [])}
+
+    for idea in ideas:
+        if len(out) >= _MAX_BUY_IDEA_CARDS:
+            break
+        tk = str(idea.get("ticker") or "").upper()
+        if not tk or tk in already_named or tk in sleeve_names:
+            continue
+        # ALREADY HELD IS NOT A REASON TO SAY NOTHING, but it is a reason to let
+        # the rebalance and drift cards own that ticker. Topping up a position
+        # the book already has is a sizing decision those cards are built to
+        # make; this card exists to surface a name the book does NOT hold.
+        if tk in held:
+            continue
+
+        cls = idea.get("sector_class") or classify(tk, None, idea.get("asset_class"))
+        if not cls:
+            continue
+        buy = _fund.propose_funded_buy(
+            rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+            ticker=tk, buying_class=cls, cash_ils=cash_ils,
+            exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
+            ledger=ledger)
+        if buy is None:
+            # Not a failure and not worth logging as one. The plan does not want
+            # this purchase right now, and the honest response is silence.
+            continue
+
+        name = str(idea.get("name") or "").strip()
+        label = f"{tk} ({name})" if name and name != tk else tk
+        reasons = [str(r) for r in (idea.get("reasons") or [])][:3]
+        gaps = [str(g) for g in (idea.get("data_gaps") or [])]
+        score = idea.get("score")
+
+        why = f"It ranks {('%.0f' % float(score)) if score is not None else 'well'}/100 on the "
+        why += f"{objective or 'Balanced'} screen of the candidate universe"
+        why += (" — " + "; ".join(reasons).lower() + ".") if reasons else "."
+        if gaps:
+            # THE HONESTY CLAUSE, and it is the whole reason PR 27 recorded gaps
+            # as data rather than dropping them. Without this sentence a score
+            # built from five factors reads exactly like one built from eight.
+            why += (f" Ranked WITHOUT {len(gaps)} of its eight factors "
+                    f"({', '.join(g.split(':')[0] for g in gaps)}), which the "
+                    f"provider did not report — so this score rests on less than "
+                    f"the others.")
+
+        how = ([f"Buy {_ils(buy.amount_ils)} of {label}"]
+               + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
+                  for x in (buy.fund or {}).get("sells", [])]
+               + ([f"Use {_ils((buy.fund or {}).get('from_cash_ils'))} of cash"]
+                  if (buy.fund or {}).get("from_cash_ils") else []))
+
+        out.append({
+            "id": _rid("buy_idea", tk, round(buy.amount_ils / 250) * 250),
+            "dimension": "opportunity",
+            # LOW on purpose. Nothing is wrong with the book if this is ignored;
+            # a ranked name is an option, and severity is how Today sorts risk.
+            "severity": "LOW",
+            "title": f"Consider {label} — {_ils(buy.amount_ils)}",
+            "action": f"Buy {_ils(buy.amount_ils)} of {label} — {buy.impact} {buy.summary}",
+            "why": why,
+            "impact": buy.impact,
+            "how": how,
+            "est_amount": buy.amount_ils,
+            "apply": buy.apply_spec,
+            "meta": {"ticker": tk, "score": score, "asset_class": cls,
+                     "data_gaps": gaps, "flags": idea.get("flags") or [],
+                     "metrics": idea.get("metrics") or {},
+                     # The reproducibility pin rides with the card, so a
+                     # recommendation read next month traces to the weights and
+                     # the COVERAGE that produced it rather than to whatever the
+                     # table says by then.
+                     "ranked_for": idea.get("ranked_for")},
+        })
+        already_named.add(tk)
+
     return out
 
 

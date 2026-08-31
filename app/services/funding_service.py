@@ -422,8 +422,24 @@ def describe_funding(fund: dict, buying_class: str | None) -> str:
         line += (f" This does not change your {buying_class} weight — the proceeds buy "
                  f"{buying_class} again. It swaps which {buying_class.lower()} you hold.")
 
-    if fund.get("shortfall_ils"):
-        line += f" That still leaves ₪{fund['shortfall_ils']:,.0f} short."
+    # A SHORTFALL THAT ROUNDS TO ZERO IS NOT A SHORTFALL, and saying so out loud
+    # is a false statement on a card that is otherwise fully funded:
+    #
+    #     "Fund it with 70,078 by selling 188.8887 HUGE. ... That still leaves
+    #      0 short."
+    #
+    # `shortfall_ils` is stored to the agora, so any residue under half a shekel
+    # formats as "0" while still being truthy. The sentence then contradicts the
+    # rest of the line and, worse, contradicts the card's own `est_amount`.
+    #
+    # Caught by `test_no_card_is_presented_short[single_name_breach]`, which has
+    # asserted this all along -- it went unhit because no existing producer had
+    # yet hit the round-to-zero case. The buy-idea cards did on their first run.
+    # Threshold, not truthiness: below the minimum tradeable amount there is
+    # nothing a reader could act on, so there is nothing to report.
+    _short = float(fund.get("shortfall_ils") or 0.0)
+    if _short >= MIN_TRADE_ILS:
+        line += f" That still leaves ₪{_short:,.0f} short."
     return line
 
 
