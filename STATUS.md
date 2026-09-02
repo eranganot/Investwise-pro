@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 32 — a quote of zero is not a quote)._
+_Last updated: 2026-09-02 by Claude (PR 33 — the chart measured the day it could not explain)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,69 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 33 — the chart measured the day it could not explain
+
+**Six of eleven recorded days were reported as exactly 0.00%.** `time_weighted`
+set the flow to the whole inter-snapshot delta whenever the position count
+changed and the ledger said nothing:
+
+```
+f = nav - prev_nav
+r = (nav - f) / prev_nav - 1     ==  0.0, arithmetically, every time
+```
+
+So the one day the book changed shape is the one day the chart reports as
+nothing happening — and it reports it as a *number*, not as a gap.
+
+**Measured.** On 2026-09-01 Eran deleted two holdings the app had priced at 0
+(PR 32 is why they were 0). NAV went 21,474.35 → 20,777.45 and the chart booked
+all **696.90** of it as "money you moved out", drawing the day at 0.00%. From
+real closes: SOXL −6.10%, TQQQ −3.85%, V −1.77%, BND −0.62%, on a book that is
+79% TQQQ and SOXL. **The 696.90 was the market. Nothing left the book.**
+
+**The fix: don't guess, measure.** `window_return` prices the book the user holds
+today across the same two dates from real closes (reusing
+`performance_service`, not a second implementation). What that explains is
+performance; only the residual is a flow — `flow = nav − prev × (1 + r_held)` —
+and the step's return then falls out of the *unchanged* formula as exactly
+`r_held`.
+
+Three outcomes, each said out loud:
+
+| | |
+|---|---|
+| residual is real and correctly signed | an **estimated** flow, labelled with its method |
+| residual is noise or wrong-signed | `resolved_changes` — the app checked, and the step was market movement |
+| no usable history, or the reconstruction contradicts the book | `unmeasured_days` — **the line breaks** |
+
+Three guards, each from a real failure on this book:
+
+- **A removal cannot bring money in.** The 1 Sep residual is +219 ILS on a day
+  two holdings were *removed*. Reading it as a deposit would replace one false
+  claim with another; it is the method's error term, and the recorded NAVs win.
+- **Both ends resolving to the same close is not a zero return.** It would make
+  the residual the whole NAV delta again — the original defect, restored.
+- **The resolved window must cover the same market time.** `performance`
+  intersects dates across every holding, so one missing bar drops the day for
+  the whole book (2026-08-28 is absent because V and BND had no close in the
+  feed). Without the span guard the 30→31 Aug step priced *one* day of NAV
+  against *four* days of market and invented a **1,088 ILS** flow.
+- **A wrong-signed residual above 2% of NAV is the method not applying**, not
+  noise. 2026-08-24 is a reconcile that replaced half the book; today's four
+  tickers miss it by 3,615 ILS (17% of NAV). That day is a hole.
+
+Weekends resolve back to the last close (3-day lookback) — a book does not move
+while the market is shut, and 2026-08-30 is a Sunday.
+
+**On the real series this turns `+0.128% over 11 days` into `−3.12%, measured
+over 7 of 10 steps, with three named holes.`** The old number was a fiction
+built from six fake zeros. Nothing is written to the database: `time_weighted`
+runs on every request, so the whole history repairs itself on the next page load.
+
+Gate: SQLite 1500 / 0, Postgres 16 1500 / 0, ruff clean.
 
 ---
 

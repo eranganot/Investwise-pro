@@ -131,7 +131,8 @@ def _spike_indices(points: list[dict], flows: list[dict] | None) -> set[int]:
     return out
 
 
-def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
+def time_weighted(points: list[dict], flows: list[dict] | None = None, *,
+                  window_return=None) -> dict:
     """Chain sub-period returns across every cash-flow boundary.
 
     For consecutive snapshots V0 (at t0) and V1 (at t1), with net external flow
@@ -177,7 +178,8 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
     flows = flows or []
     out = {"dates": [], "pct": [], "nav_ils": [], "flows_ils": [],
            "total_pct": 0.0, "flow_total_ils": 0.0, "points": len(points or []),
-           "unexplained_flows": [], "suspect_snapshots": []}
+           "unexplained_flows": [], "suspect_snapshots": [],
+           "unmeasured_days": [], "resolved_changes": [], "measured_steps": 0}
     if not points:
         return out
 
@@ -216,20 +218,139 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
         # step must not be booked as return.
         n_now = int(p.get("positions") or 0)
         dn = n_now - prev[2]
-        if dn != 0 and abs(f) < 0.005:
-            unexplained = round(nav - prev[1], 2)
-            if abs(unexplained) >= 0.5:
-                f = unexplained
-                out["unexplained_flows"].append({
-                    "as_of": d, "amount_ils": unexplained,
-                    "positions_before": prev[2], "positions_after": n_now,
+        unmeasured = False
+        raw_delta = round(nav - prev[1], 2)
+        # A COUNT THAT CHANGED WHILE THE MONEY DID NOT IS NOT A MYSTERY. One
+        # holding split into two, or a swap: nothing arrived, nothing left, and
+        # there is nothing to attribute. This short-circuit is PR 22's and it
+        # stays -- without it a swap becomes an unmeasured hole, which would be
+        # the new machinery breaking a case the old code got right.
+        if dn != 0 and abs(f) < 0.005 and abs(raw_delta) >= 0.5:
+            # CHARGING THE WHOLE DELTA TO THE FLOW REPORTS THE DAY AS 0.00%.
+            #
+            # `f = nav - prev_nav` makes the next line arithmetically identical
+            # to zero: r = (nav - (nav - prev)) / prev - 1 = 0. Every time. So
+            # the one day the book changed shape is the one day the chart says
+            # nothing happened -- and it says it as a number, not as a gap.
+            #
+            # MEASURED on this book. On 2026-09-01 Eran deleted two holdings the
+            # app had priced at 0 (see PR 32 for why they were 0). NAV went
+            # 21,474.35 -> 20,777.45, and the chart booked all 696.90 of it as
+            # "money you moved out" and drew the day at 0.00%. What actually
+            # happened that day, from real closes: SOXL -6.10%, TQQQ -3.85%,
+            # V -1.77%, BND -0.62%, on a book that is 79% TQQQ and SOXL. The
+            # 696.90 was the market. Six of eleven recorded days were reported
+            # as exactly 0.00% this way.
+            #
+            # So: do not guess, MEASURE. `window_return` prices the book the
+            # user holds today across the same two dates from real closes. What
+            # that explains is performance; only the RESIDUAL is a flow:
+            #
+            #     flow = nav - prev_nav x (1 + r_held)
+            #
+            # and the step's return then falls out of the unchanged formula
+            # below as exactly r_held. On a day where a worthless row was
+            # removed the residual is ~0 and the day books as the market move,
+            # which is the truth.
+            r_held = None
+            if window_return is not None:
+                try:
+                    r_held = window_return(prev[0], d)
+                except Exception:  # noqa: BLE001 -- a reconstruction that fails
+                    r_held = None   # must degrade to "unmeasured", never to 0%
+            if r_held is not None:
+                est = round(nav - prev[1] * (1.0 + float(r_held)), 2)
+                # A REMOVAL CANNOT BRING MONEY IN, AND AN ADDITION CANNOT TAKE
+                # IT OUT. When the residual's sign contradicts the direction the
+                # book moved, it is not a flow -- it is the gap between the
+                # recorded NAV and a reconstruction built from today's holdings,
+                # which is exactly the error term this method carries.
+                #
+                # On 2026-09-01 that residual is +219 ILS on a day two holdings
+                # were REMOVED. Reading it as money arriving would replace one
+                # false claim with another. The recorded NAVs are the better
+                # evidence about this book -- they were written from the app's
+                # own prices at the time -- so the flow is zero and the day is
+                # measured from them, which lands at -3.25%: the market move.
+                if (dn > 0 and est < 0) or (dn < 0 and est > 0):
+                    # A CONTRADICTION THIS BIG IS NOT NOISE, IT IS THE METHOD
+                    # NOT APPLYING. Measured on this book: 2026-08-24 is a
+                    # reconcile that replaced half the holdings, and pricing the
+                    # window with the FOUR tickers held today produces a 3,615
+                    # ILS residual -- 17% of NAV -- pointing the wrong way. Small
+                    # and wrong-signed is the reconstruction's error term and
+                    # the recorded NAVs are the better evidence; large and
+                    # wrong-signed means this window cannot be reconstructed at
+                    # all, and the honest answer is a hole rather than a
+                    # confident step.
+                    if abs(est) > _RESIDUAL_TOLERANCE * prev[1]:
+                        r_held = None
+                    est = 0.0
+                if r_held is None:
+                    unmeasured = True
+                    out["unmeasured_days"].append({
+                        "as_of": d, "positions_before": prev[2], "positions_after": n_now,
+                        "nav_before": round(prev[1], 2), "nav_after": round(nav, 2),
+                        "reason": ("a holding was added" if dn > 0 else "a holding was removed")
+                                  + ", and pricing your current holdings across the same two "
+                                    "dates contradicts that by more than "
+                                    f"{_RESIDUAL_TOLERANCE:.0%} of the book -- the book on "
+                                    "that date was too different from today's for this to "
+                                    "measure. This day carries no measurement"})
+                elif abs(est) >= 0.5:
+                    f = est
+                    out["unexplained_flows"].append({
+                        "as_of": d, "amount_ils": est,
+                        "positions_before": prev[2], "positions_after": n_now,
+                        "estimated": True,
+                        "method": "measured_against_the_book_you_hold_today",
+                        "held_book_return_pct": round(float(r_held) * 100.0, 4),
+                        "reason": ("a holding was added" if dn > 0 else "a holding was removed")
+                                  + " and no contribution was recorded. The rest of this "
+                                    "step is what your holdings did over the same two "
+                                    "dates, measured from real closes, so only the "
+                                    "difference is treated as money moving in or out"})
+                else:
+                    # SETTLED, not suppressed. The book did change shape, and the
+                    # user is owed that fact -- but it is no longer a warning,
+                    # because the app went and measured it instead of assuming.
+                    out["resolved_changes"].append({
+                        "as_of": d, "positions_before": prev[2], "positions_after": n_now,
+                        "held_book_return_pct": round(float(r_held) * 100.0, 4),
+                        "reason": ("a holding was added" if dn > 0 else "a holding was removed")
+                                  + ", and measuring your holdings across the same two dates "
+                                    "from real closes accounts for the whole step. Nothing "
+                                    "was treated as money moving in or out"})
+            else:
+                # NO RECONSTRUCTION AVAILABLE. The old code drew 0.00% here,
+                # which is a claim. "We could not separate the book change from
+                # the market" is not 0% -- it is no measurement, and the line
+                # must break rather than assert one.
+                unmeasured = True
+                out["unmeasured_days"].append({
+                    "as_of": d, "positions_before": prev[2], "positions_after": n_now,
+                    "nav_before": round(prev[1], 2), "nav_after": round(nav, 2),
                     "reason": ("a holding was added" if dn > 0 else "a holding was removed")
-                              + " and no contribution was recorded, so this step is"
-                                " not counted as performance"})
+                              + " with nothing in the ledger, and there is not enough "
+                                "price history to measure what the rest of the book did "
+                                "over the same dates. This day carries no measurement"})
+
+        if unmeasured:
+            # Plotted as a HOLE: the date and the value are real and are kept,
+            # the percentage is not. `cum` is carried, so the days on either
+            # side still chain to each other rather than being thrown away.
+            out["dates"].append(d)
+            out["pct"].append(None)
+            out["nav_ils"].append(round(nav, 2))
+            out["flows_ils"].append(0.0)
+            prev = (d, nav, n_now)
+            continue
+
         # A zero or negative starting value cannot produce a return; carry the
         # level rather than inventing one or dividing by zero.
         r = ((nav - f) / prev[1] - 1.0) if prev[1] > 0 else 0.0
         cum *= (1.0 + r)
+        out["measured_steps"] += 1
         out["dates"].append(d)
         out["pct"].append(round((cum - 1.0) * 100.0, 4))
         out["nav_ils"].append(round(nav, 2))
@@ -237,7 +358,9 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None) -> dict:
         out["flow_total_ils"] = round(out["flow_total_ils"] + f, 2)
         prev = (d, nav, n_now)
 
-    out["total_pct"] = out["pct"][-1] if out["pct"] else 0.0
+    # The last MEASURED level, not the last slot -- the last slot can be a hole.
+    _measured = [v for v in out["pct"] if v is not None]
+    out["total_pct"] = _measured[-1] if _measured else 0.0
     return out
 
 
@@ -429,7 +552,33 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
                            if recorded_since else "no snapshots recorded yet")}
 
     flows = await list_contributions(session, user)
-    twr = time_weighted(points, flows)
+
+    # Only price the held book when this window actually needs it. The
+    # reconstruction is one history fetch per holding plus the benchmark, and
+    # the overwhelmingly common case -- a window in which the book did not
+    # change shape -- must not pay for it. `time_weighted` is the authority on
+    # what counts as a change; this is the same test, cheaply, up front.
+    _needs = False
+    _prev = None
+    for _p in points:
+        _n = int(_p.get("positions") or 0)
+        if _prev is not None and _n != _prev[1] and abs(
+                net_flow_between(flows, _prev[0], str(_p["as_of"]))) < 0.005:
+            _needs = True
+            break
+        _prev = (str(_p["as_of"]), _n)
+
+    window_return = None
+    reconstruction = {"attempted": _needs, "available": False,
+                      "basis": "held_book_backfill"}
+    if _needs:
+        index = await held_book_index(session, user, points)
+        if index:
+            window_return = window_return_from(index)
+            reconstruction["available"] = True
+            reconstruction["observations"] = len(index)
+
+    twr = time_weighted(points, flows, window_return=window_return)
     return {
         "ok": True, "kind": "nav_snapshots", "range": (range_key or "1M").upper(),
         "recorded_since": recorded_since,
@@ -443,11 +592,151 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
         # or withdrawals in this window" while a holding had just been entered,
         # and a caption that vouches for a number is worse than a wrong number.
         "unexplained_flows": twr["unexplained_flows"],
+        # Days the app could not measure. Drawn as a HOLE in the line, never as
+        # 0.00% -- "we could not separate the book change from the market" is
+        # not a return of zero, and the chart may not assert one.
+        "unmeasured_days": twr["unmeasured_days"],
+        # The book changed shape and the app MEASURED that it was market
+        # movement rather than money. Reported as information, not as a warning:
+        # the difference between "we could not tell" and "we checked" is the
+        # whole of this PR.
+        "resolved_changes": twr["resolved_changes"],
+        # How much of the window the headline percentage actually rests on. A
+        # total compounded over 4 of 11 days is not wrong, but a reader who
+        # thinks it covers 11 has been misled by omission.
+        "measured_steps": twr["measured_steps"],
+        "steps": max(0, len(twr["dates"]) - 1),
+        "reconstruction": reconstruction,
         "gaps": gaps(points),
         "engine_version": SNAPSHOT_VERSION,
         "window": {"start": twr["dates"][0], "end": twr["dates"][-1],
                    "sessions": len(twr["dates"]), "kind": "nav_snapshots"},
     }
+
+
+async def held_book_index(session, user, points: list[dict]) -> dict:
+    """`{date: index}` for the book the user holds TODAY, from real closes.
+
+    This is what lets `time_weighted` separate "a holding left the book" from
+    "the market moved", on a snapshot row that records only a position COUNT.
+    `performance_service` already builds exactly this series -- current holdings
+    valued back through their own real price history, FX-normalised -- so this
+    reads it rather than growing a second implementation that can disagree with
+    the first.
+
+    THE HONEST LIMITATION, stated once and carried onto the card: this prices
+    the book as it is TODAY. For a day on which a holding was REMOVED that is
+    precisely right -- the survivors are what remains, and their return is what
+    the rest of the book did. For a day on which one was ADDED it is a slight
+    bias, because today's book contains something the earlier day did not. Both
+    are far better than the alternative that was there before, which was to book
+    the entire day as a withdrawal and draw it at 0.00%.
+
+    Returns `{}` on any failure. The caller must then mark the day UNMEASURED --
+    never fall back to zero, which is the defect.
+    """
+    if not points:
+        return {}
+    try:
+        first = date.fromisoformat(str(points[0]["as_of"]))
+        span = (date.today() - first).days
+    except (ValueError, KeyError, TypeError):
+        return {}
+    # A margin, because the series is intersected across every holding and the
+    # benchmark: a ticker that did not trade on the first day would otherwise
+    # truncate the window at exactly the point being measured.
+    want = max(60, min(2600, span + 20))
+    try:
+        from app.services.performance_service import performance
+        perf = await performance(session, user, history_days=want)
+    except Exception:  # noqa: BLE001
+        logger.warning("nav history: could not price the held book", exc_info=False)
+        return {}
+    if not perf.get("ok"):
+        return {}
+    dates, index = perf.get("dates") or [], perf.get("portfolio_index") or []
+    if len(dates) != len(index):
+        return {}
+    return {str(d): float(v) for d, v in zip(dates, index) if v}
+
+
+#: How far back a snapshot date may reach for a close. Snapshots are CALENDAR
+#: days and price history is TRADING days, so a snapshot taken on a Saturday has
+#: no bar of its own -- and 2026-08-30, the day before one of the four changes
+#: on this book, is a Sunday. Without this the reconstruction would abstain on
+#: exactly the weekends it is most obviously right about, because a book does
+#: not move while the market is shut. Three days covers a weekend plus a
+#: holiday; beyond that the prices are genuinely about a different week.
+_INDEX_LOOKBACK_DAYS = 3
+
+#: How much longer the RESOLVED window may be than the one asked about. A
+#: weekend of slack; anything more and the index is being asked to speak for
+#: market time the NAV window does not contain.
+_INDEX_SPAN_SLACK_DAYS = 2
+
+#: A wrong-signed residual larger than this share of NAV means the
+#: reconstruction does not describe this window, not that the residual is noise.
+#: The day is marked unmeasured rather than booked from the recorded NAVs.
+_RESIDUAL_TOLERANCE = 0.02
+
+
+def window_return_from(index: dict):
+    """A `(a, b) -> return | None` callable over a `{date: index}` map.
+
+    Returns None when either end cannot be resolved, which is the signal that
+    the day cannot be measured. A missing date is NOT a zero return -- that
+    conflation is the whole bug this exists to fix, one layer up.
+    """
+    keys = sorted(index)
+
+    def _at(d: str):
+        """The last index date at or before `d`, within the lookback."""
+        import bisect
+        i = bisect.bisect_right(keys, str(d)) - 1
+        if i < 0:
+            return None
+        k = keys[i]
+        try:
+            if (date.fromisoformat(str(d)) - date.fromisoformat(k)).days > _INDEX_LOOKBACK_DAYS:
+                return None
+        except ValueError:
+            return None
+        return k
+
+    def _r(a: str, b: str):
+        ka, kb = _at(a), _at(b)
+        if ka is None or kb is None:
+            return None
+
+        # BOTH ENDS RESOLVING TO THE SAME CLOSE IS NOT A ZERO RETURN. It means
+        # the index has nothing to say about this window at all -- and returning
+        # 0.0 would put the original defect straight back: a return of zero
+        # makes the residual the whole NAV delta again, which is the number this
+        # function exists to stop the chart from asserting.
+        if ka == kb:
+            return None
+
+        # AND THE RESOLVED WINDOW MUST COVER THE SAME MARKET TIME. `performance`
+        # intersects dates across every holding, so one ticker with a missing
+        # bar drops that day for the whole book -- measured on this book,
+        # 2026-08-28 is absent because V and BND had no close in the feed. The
+        # lookback would then reach 2026-08-30 back to 08-27 and price a
+        # one-day step across four days of market, inventing a 1,088 ILS flow
+        # on a day nothing was deposited. Stretching by a weekend is fine;
+        # stretching across a trading day is measuring something else.
+        try:
+            want = (date.fromisoformat(str(b)) - date.fromisoformat(str(a))).days
+            got = (date.fromisoformat(kb) - date.fromisoformat(ka)).days
+        except ValueError:
+            return None
+        if got > want + _INDEX_SPAN_SLACK_DAYS:
+            return None
+
+        va, vb = index.get(ka), index.get(kb)
+        if not va or vb is None or va <= 0:
+            return None
+        return (vb / va) - 1.0
+    return _r
 
 
 # --------------------------------------------------------------------------

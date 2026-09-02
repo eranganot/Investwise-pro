@@ -790,9 +790,12 @@ function drawTodayReal(h){
   const _c=$("ch_today"); if(_c)_c.style.display="";
   const cap=$("todayPerfCap");
   const chg=h.total_pct||0, col=chg>=0?"#22c55e":"#ef4444";
+  // spanGaps:false is load-bearing. `pct` now carries NULL for a day the app
+  // could not measure, and the whole point is that the line BREAKS there rather
+  // than drawing a confident flat step. Chart.js would happily bridge it.
   drawChart("ch_today","line",{labels:h.dates,datasets:[
       {label:"% change",data:h.pct,borderColor:col,backgroundColor:col+"22",
-       fill:true,pointRadius:0,tension:.12,borderWidth:2}]},{
+       fill:true,pointRadius:0,tension:.12,borderWidth:2,spanGaps:false}]},{
     plugins:{legend:{display:false},
              tooltip:{callbacks:{title:c=>h.dates[c[0].dataIndex],
                label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`+
@@ -830,9 +833,34 @@ function drawTodayReal(h){
       ? `<div class="warn" style="margin-top:2px">Your holdings changed on
          ${unexplained.map(u=>`<b>${u.as_of}</b> (${u.positions_after>u.positions_before?"a holding was added":"a holding was removed"},
          ${u.amount_ils>=0?"+":""}${Math.round(u.amount_ils).toLocaleString()} ILS)`).join(", ")}
-         with no deposit or withdrawal recorded. That step is treated as money moving in or out,
-         <b>not</b> as performance. If it really was a deposit, record it under Contributions and
-         this line will go away.</div>`
+         with no deposit or withdrawal recorded.
+         ${unexplained.every(u=>u.estimated)
+           ? `The rest of ${unexplained.length>1?"those days":"that day"} is what your holdings
+              actually did over the same dates, measured from real closes &mdash; only the
+              difference above is treated as money moving in or out.`
+           : `That step is treated as money moving in or out, <b>not</b> as performance.`}
+         If it really was a deposit, record it under Contributions.</div>`
+      : "")+
+    // A DAY THE APP COULD NOT MEASURE IS NOT A DAY OF ZERO RETURN. It used to
+    // be drawn as a flat step at 0.00%, which is a claim; the line now breaks
+    // and says so here.
+    ((h.unmeasured_days&&h.unmeasured_days.length)
+      ? `<div class="warn" style="margin-top:2px">No measurement for
+         ${h.unmeasured_days.map(u=>`<b>${u.as_of}</b>`).join(", ")}: your holdings changed and
+         there was not enough price history to tell that apart from the market. The line breaks
+         there rather than drawing a flat day.</div>`
+      : "")+
+    ((h.resolved_changes&&h.resolved_changes.length)
+      ? `<div class="mk" style="margin-top:2px">Your holdings also changed on
+         ${h.resolved_changes.map(u=>`<b>${u.as_of}</b>`).join(", ")}, and measuring what you hold
+         across the same dates from real closes accounts for the whole step &mdash; so
+         ${h.resolved_changes.length>1?"those days are":"that day is"} counted as market
+         movement, not as money in or out.</div>`
+      : "")+
+    ((h.measured_steps!=null&&h.steps>0&&h.measured_steps<h.steps)
+      ? `<div class="mk" style="margin-top:2px">The <b>${chg>=0?"+":""}${chg}%</b> above is
+         compounded over ${h.measured_steps} of ${h.steps} steps in this window; the rest could
+         not be measured.</div>`
       : "")+
     `<div class="mk" style="margin-top:2px">Recorded daily since ${h.recorded_since}. This is your
      actual account, not a reconstruction.</div>`+
