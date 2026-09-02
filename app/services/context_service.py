@@ -6,6 +6,7 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
+from app.services.allocation_mix import classify_holding
 from app.services.intake_service import list_positions
 from app.services.performance_service import performance
 from app.services.plan_service import get_plan
@@ -20,7 +21,15 @@ async def gather(session: AsyncSession, user: User) -> dict:
     rows = await list_positions(session, user)
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
-               "asset_class": (p.meta or {}).get("asset_class"),
+               # CLASSIFIED, not read raw. This projection took
+               # `meta["asset_class"]` straight off the row, so the sleeve
+               # funder's "Equities" default reached the assistant and the
+               # digest untouched -- and the breakdown below then applied a
+               # SECOND `or "Equities"` on top of it. Two independent fallbacks
+               # to the same wrong answer, in the one module whose stated job is
+               # that "the LLM only ever sees these numbers, so it can't invent
+               # them". A number it cannot invent can still be wrong.
+               "asset_class": classify_holding(p),
                "volatility_pct": (p.meta or {}).get("volatility_pct")} for p in rows]
     snap = compute_snapshot(pdicts) if pdicts else {"nav": 0.0}
     ctx: dict = {
@@ -33,7 +42,7 @@ async def gather(session: AsyncSession, user: User) -> dict:
     from collections import defaultdict
     byc: dict[str, float] = defaultdict(float)
     for d in pdicts:
-        byc[d.get("asset_class") or "Equities"] += d["quantity"] * d["current_price"]
+        byc[d["asset_class"]] += d["quantity"] * d["current_price"]
     _tot = sum(byc.values()) or 1.0
     ctx["asset_class_breakdown"] = {k: round(v / _tot, 3) for k, v in byc.items()}
     # what the user could add / switch to (grounding for "should I..." questions)

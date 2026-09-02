@@ -22,7 +22,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from app.services.allocation_mix import OBJ_TARGET, classify
+from app.services.allocation_mix import OBJ_TARGET, classify, classify_holding
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def _position_rows(rows, snap) -> list[dict]:
             "ticker": tk, "market": p.market, "price": price, "price_ils": price * rate,
             "quantity": float(p.quantity), "cost_basis": float(p.cost_basis or 0.0),
             "value_ils": value, "weight": (value / nav) if nav else 0.0,
-            "asset_class": classify(tk, p.market, meta.get("asset_class")),
+            "asset_class": classify_holding(p),
             "meta": meta, "_row": p,
         })
     return out

@@ -7,7 +7,7 @@ exposed, and *what to do* — keeping everything anchored to the plan.
 """
 from __future__ import annotations
 
-from app.services.allocation_mix import classify
+from app.services.allocation_mix import classify_holding
 from app.schemas.state_machine import MARKET_CURRENCY
 
 
@@ -101,7 +101,7 @@ def annotate(events, rows) -> list[dict]:
         rate = fx_rate(price_currency(p.market, meta))
         val = float(p.quantity) * float(p.current_price or 0) * rate
         nav += val
-        cls = classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))
+        cls = classify_holding(p)
         holdings.append({
             "ticker": (p.ticker or "").upper(), "market": (p.market or "").upper(),
             "cur": price_currency(p.market, meta),

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-08-31 by Claude (PR 26 — the published credentials)._
+_Last updated: 2026-09-02 by Claude (PR 31 — the bond it called a stock)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,69 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 31 — the bond it called a stock
+
+**13.7% of the book was bonds and every screen called it equity.** Measured on
+production `63c0559`, read-only, 2026-09-02, while answering seven items Eran
+raised against the live app.
+
+```
+/api/v1/portfolio   BND 13.1331 sh @ 71.79 USD = 2,842.15 ILS of a 20,777.45 NAV
+                    meta.asset_class = "Equities"
+/api/v1/mix         current_allocation {"Equities": 0.9703, "Cash": 0.0298}
+                    Fixed Income: ABSENT. Not 0.0 — absent.
+                    BUY  Fixed Income  2,243.96
+                    SELL Equities      1,626.87
+```
+
+`2,243.96` is exactly **10.8% of NAV — the whole fixed-income target**, because
+the app believed the holding was zero. Accepting that card lands the book at
+~24% bonds against a 10.8% target. The equity leg was wrong in the same breath:
+the book was 83.3% equities against 89.2%, so the card asked to **sell what it
+was short of and buy what it already held too much of**. Both signs inverted,
+from one string.
+
+**The chain.** `buy_into_book` defaulted `asset_class="Equities"`;
+`_execute_funded_sleeve` — the sleeve funder, its busiest caller — passes none
+(the audit log puts the two `POST /plan/sleeves/fund` calls that created this row
+at 17:23 and 17:24 on 2026-08-31); so the row was stamped on the way in; and
+`classify` returned that stamp on its **first line**, before reading
+`FIXED_INCOME_TICKERS` four lines below — where `BND` has sat since the fix for
+this same failure one asset class over.
+
+Nothing here is a new capability. Every part of the answer was already in the
+file and the precedence read them in the wrong order.
+
+**Now:** Cash first and alone (`CASH` is in neither table, so tables-first would
+file the shekel row as equity and `_class_gap_recs` would offer to buy cash with
+cash) → a class a **human** set, recorded as `asset_class_source="user"` by
+`update_position`, the one writer of that flag → the tables → whatever was
+stored, which is only ever a default → Equities. `_from_tables` is split out so
+the tables can be consulted *without* the Equities fallthrough: "I do not
+recognise this ticker" and "this ticker is an equity" are different answers, and
+collapsing them is what let a default outrank a lookup.
+
+**No data migration.** The stale stamps stay on the rows and stop being
+authoritative — strictly smaller than rewriting a user's holdings in place, and
+there is no half-done state it can leave behind.
+
+**Five other readers had the same raw read**, including `intake.py:154` (the
+holdings card — literally where `BND · NASDAQ · Equities` was printed) and
+`context_service`, which read the stamp raw *and* applied a second
+`or "Equities"` on top of it: two independent fallbacks to the same wrong answer
+in the one module whose docstring says the LLM "can't invent" these numbers. A
+number it cannot invent can still be wrong. `classify_holding()` is now the one
+way a held row is classified.
+
+**One existing test was asserting the defect** — `test_pr4_cards.py:329` pinned
+`classify("GLD","NYSE",asset_class="Equities") == "Equities"`. The lookup was
+well covered; the branch that outranked it was not covered once, because every
+other test in the area called `classify` with no meta at all.
+
+Gate: SQLite 1483 / 0, Postgres 16 1483 / 0, ruff clean.
 
 ---
 

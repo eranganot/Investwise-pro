@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.offload import offload
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import KVSetting, User
-from app.services.allocation_mix import OBJ_TARGET, classify, current_mix
+from app.services.allocation_mix import OBJ_TARGET, classify, classify_holding, current_mix
 from app.services.book_target import explain as bt_explain
 from app.services.audit_trail import audit_for, f
 from app.services.audit_trail import f as _fml  # alias: 'f' is shadowed by Fundamentals locals below
@@ -801,8 +801,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
         alpha = next((ln.get("says") for ln in s.get("transcript", [])
                       if ln.get("agent") == "Alpha"), "")
         pos = held.get(tk)
-        cls = classify(tk, getattr(pos, "market", "NYSE") if pos else "NYSE",
-                       ((pos.meta or {}).get("asset_class") if pos is not None else None))
+        cls = classify_holding(pos) if pos is not None else classify(tk, "NYSE")
         weight = snap.get("exposure_ticker", {}).get(tk, 0.0)
 
         # `ActionType.REBALANCE.value` is "Rebalance", not "REBALANCE". So even
@@ -2433,9 +2432,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         # heuristics otherwise, and "CASH" matches none of them -- so the cash
         # row itself would land in Equities and become a top-up target, i.e. the
         # app proposing to buy cash with cash.
-        _meta = getattr(r, "meta", None)
-        cls = classify(r.ticker, getattr(r, "market", None),
-                       (_meta or {}).get("asset_class") if isinstance(_meta, dict) else None)
+        cls = classify_holding(r)
         if cls and cls.lower() != "cash":
             held_by_class.setdefault(cls, []).append(r)
 
@@ -3020,7 +3017,7 @@ async def _rebalance_to(session, user, rows, objective: str) -> None:
         return
     byc = defaultdict(list)
     for p in investable:
-        byc[classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))].append(p)
+        byc[classify_holding(p)].append(p)
     present_weight = sum(w for c, w in target.items() if c in byc) or 1.0
     for c, rowsc in byc.items():
         w = target.get(c, 0.0)
@@ -3455,7 +3452,7 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     # quantity -- so "Swap into SCHD" on a book already holding SCHD replaced the
     # whole position with just the shares bought and deleted the rest.
     await buy_into_book(session, user, ticker=ticker, market=mk, price=price,
-                        shares=qty, asset_class=spec.get("asset_class") or "Equities")
+                        shares=qty, asset_class=spec.get("asset_class"))
     await session.commit()
     # Cash pays only its share; sale proceeds went straight into the buy.
     await set_cash(session, user, round(cash_before - from_cash, 2))
@@ -3530,7 +3527,7 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     # Blend if the cheaper fund is already held -- a fee swap into something you
     # own must add to it, not replace it.
     await buy_into_book(session, user, ticker=buy_tk.upper(), market=mk, price=price,
-                        shares=qty, asset_class=spec.get("asset_class") or "Equities")
+                        shares=qty, asset_class=spec.get("asset_class"))
     await session.commit()
     return {"swapped": True, "sold": [sell_tk], "bought": buy_tk.upper(),
             "value_ils": round(net_ils, 2), "tax_ils": round(tax, 2)}

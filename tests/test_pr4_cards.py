@@ -325,8 +325,15 @@ def test_i_commodity_etfs_are_not_equities():
         assert classify(tk, "NASDAQ") == "Fixed Income", f"{tk} misfiled"
     for tk in ("V", "MSFT", "SCHD", "TQQQ"):
         assert classify(tk, "NASDAQ") == "Equities", f"{tk} misfiled"
-    # an explicit asset_class still wins over the lookup
-    assert classify("GLD", "NYSE", asset_class="Equities") == "Equities"
+    # THE PRECEDENCE FLIPPED, deliberately. This line used to read
+    #     assert classify("GLD", "NYSE", asset_class="Equities") == "Equities"
+    # and what it was asserting is the defect: a STORED class outranked the
+    # table, while the only writers that ever stored one were defaults. On the
+    # live book that default reached BND and 13.7% of NAV was filed as equity.
+    # A stored class now wins only when a human set it, which the flag records.
+    assert classify("GLD", "NYSE", asset_class="Equities") == "Commodities"
+    assert classify("GLD", "NYSE", asset_class="Equities",
+                    asset_class_source="user") == "Equities"
 
 
 def test_j_war_room_sessions_carry_action_type():

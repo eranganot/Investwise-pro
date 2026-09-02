@@ -42,16 +42,86 @@ FIXED_INCOME_TICKERS = frozenset({
 })
 
 
-def classify(ticker: str, market: str, asset_class: str | None = None) -> str:
-    if asset_class:
-        return asset_class
+# A stored `asset_class` is only authoritative when a human PUT it there.
+# `update_position` stamps this alongside it; nothing else may write it.
+ASSET_CLASS_SOURCE_USER = "user"
+
+
+def _from_tables(ticker: str, market: str | None) -> str | None:
+    """The class the two tables above know for this ticker, or None.
+
+    Split out of `classify` so the tables can be consulted WITHOUT the
+    "Equities" fallthrough. "I do not recognise this ticker" and "this ticker is
+    an equity" are different answers, and collapsing them is what let a default
+    outrank a lookup below.
+    """
     t = (ticker or "").upper()
     if t in FIXED_INCOME_TICKERS or any(k in t for k in ("BOND", "BND", "AGG", "GOV", "GILT")):
         return "Fixed Income"
     if (t in COMMODITY_TICKERS or market == "SPOT"
             or any(k in t for k in ("GOLD", "OIL", "SILVER"))):
         return "Commodities"
-    return "Equities"
+    return None
+
+
+def classify(ticker: str, market: str, asset_class: str | None = None, *,
+             asset_class_source: str | None = None) -> str:
+    """The asset class of one holding. The TABLE outranks an unconfirmed default.
+
+    THE BUG THIS FIXES. `buy_into_book` defaulted `asset_class="Equities"` and
+    `_execute_funded_sleeve` never passed one, so every holding the sleeve
+    funder bought was stamped "Equities" on the way in -- including BND. This
+    function then returned that stamp before ever reading `FIXED_INCOME_TICKERS`
+    four lines below, where "BND" has sat since the fix for exactly this failure
+    one asset class over. The result on a live book: 2,842 ILS of bonds, 13.7%
+    of NAV, reported as equity, `/mix` showing Fixed Income at **0%**, and a
+    rebalance card with the sign wrong on both legs -- it asked to buy the whole
+    fixed-income target because it believed the holding was zero.
+
+    So the precedence is now: a class a HUMAN set wins (that is an override and
+    the app has no business second-guessing it); otherwise the table wins;
+    otherwise whatever was stored, which is only ever a default; otherwise
+    Equities. Cash is decided first and by itself -- the synthetic CASH row
+    carries `asset_class: "Cash"` in `CASH_META` and no table knows the ticker,
+    so letting the tables run first would file the user's shekels as an equity.
+
+    No data migration accompanies this. The stale "Equities" stamps stay on the
+    rows and simply stop being authoritative, which is a strictly smaller change
+    than rewriting a user's holdings in place.
+    """
+    ac = str(asset_class or "").strip()
+    if ac.lower() == "cash":
+        return "Cash"
+    if ac and str(asset_class_source or "").strip().lower() == ASSET_CLASS_SOURCE_USER:
+        return ac
+    known = _from_tables(ticker, market)
+    if known:
+        return known
+    return ac or "Equities"
+
+
+def classify_holding(row) -> str:
+    """`classify` for a Position row or a holding dict, reading meta correctly.
+
+    Every call site that had a Position in hand was spelling out
+    `classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))`, and the
+    provenance flag would have had to be threaded through every one of them --
+    which is how the next call site forgets. One helper, and a holding is
+    classified the same way wherever it is read.
+    """
+    if isinstance(row, dict):
+        def get(k, d=None):
+            return row.get(k, d)
+    else:
+        def get(k, d=None):
+            return getattr(row, k, d)
+    meta = get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return classify(get("ticker"), get("market"),
+                    meta.get("asset_class", get("asset_class")),
+                    asset_class_source=meta.get("asset_class_source",
+                                                get("asset_class_source")))
 
 
 def current_mix(rows) -> tuple[dict, float]:
@@ -68,6 +138,6 @@ def current_mix(rows) -> tuple[dict, float]:
     if not nav:
         return mix, 0.0
     for p in rows:
-        cls = classify(p.ticker, p.market, (p.meta or {}).get("asset_class"))
+        cls = classify_holding(p)
         mix[cls] = round(mix.get(cls, 0.0) + _val(p) / nav, 4)
     return mix, nav

@@ -13,6 +13,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
+from app.services.allocation_mix import classify, classify_holding
 from app.services.performance_service import performance
 from app.services.portfolio_risk_service import portfolio_risk
 from app.services.intake_service import (
@@ -151,7 +152,11 @@ async def get_portfolio(entity: str | None = None,
             "gain_ils": round(val_ils - cost_ils, 2),
             "depth": (p.meta or {}).get("depth"),
             "volatility_pct": (p.meta or {}).get("volatility_pct"),
-            "asset_class": (p.meta or {}).get("asset_class"),
+            # CLASSIFIED, not the raw stamp. This is the field the holdings
+            # card prints, and it is where "BND  NASDAQ  Equities" came from
+            # on a live screen. One route reading the row differently from
+            # every other reader is how two screens disagree about one book.
+            "asset_class": classify_holding(p),
             # A frozen price counts in NAV exactly like a live one, so the row
             # has to say which it is. Without this, "this holding did not move"
             # and "this holding has no market any more" look identical.
@@ -312,7 +317,10 @@ async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(ge
     if price <= 0:
         return {"ok": False, "error": f"no live price for {req.ticker}"}
     qty = req.amount / price
-    ac = req.asset_class or ("Commodities" if is_commodity(req.ticker) else "Equities")
+    # No "Equities" fallback: `classify` reads the tables far better than a
+    # coin flip at the moment of least information does, and a stored default
+    # is exactly what it now declines to trust.
+    ac = req.asset_class or ("Commodities" if is_commodity(req.ticker) else None)
     mk = req.market if req.market in {m.value for m in Market} else "NYSE"
     er = (commodity(req.ticker) or {}).get("expense_ratio_pct")
     ip = IntakePosition(ticker=req.ticker.upper(), market=Market(mk), depth=1,
@@ -323,7 +331,8 @@ async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(ge
     await upsert_positions(session, account, [ip])
     await session.commit()
     return {"ok": True, "ticker": req.ticker.upper(), "price": round(price, 2),
-            "quantity": round(qty, 4), "value": round(qty * price, 2), "asset_class": ac}
+            "quantity": round(qty, 4), "value": round(qty * price, 2),
+            "asset_class": classify(req.ticker, mk, ac)}
 
 
 @router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -512,7 +521,7 @@ async def edit_position(position_id: str, body: EditPositionRequest,
     return {"id": str(row.id), "ticker": row.ticker, "market": row.market,
             "quantity": float(row.quantity), "cost_basis": float(row.cost_basis),
             "current_price": float(row.current_price) if row.current_price is not None else None,
-            "asset_class": (row.meta or {}).get("asset_class")}
+            "asset_class": classify_holding(row)}
 
 
 class ContributionRequest(BaseModel):

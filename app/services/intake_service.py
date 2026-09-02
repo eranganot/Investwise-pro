@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import Account, Contribution, Entity, Position, User, money
 from app.schemas.intake import IntakePosition
+from app.services.allocation_mix import ASSET_CLASS_SOURCE_USER
 from app.schemas.lag import LagObservation
 
 
@@ -79,6 +80,16 @@ async def upsert_positions(
             "expense_ratio_pct": ip.expense_ratio_pct,
         }
         row = existing.get(ip.ticker)
+        # A class the user set DELIBERATELY survives a re-import that does not
+        # name one. This function replaces `row.meta` wholesale, so without this
+        # a second intake of the same book silently demotes an override back to
+        # a guess -- and the demotion is invisible, because the value it lands
+        # on is usually the same one.
+        if row is not None and ip.asset_class is None:
+            old = row.meta if isinstance(row.meta, dict) else {}
+            if old.get("asset_class_source") == ASSET_CLASS_SOURCE_USER and old.get("asset_class"):
+                meta["asset_class"] = old["asset_class"]
+                meta["asset_class_source"] = ASSET_CLASS_SOURCE_USER
         if row is None:
             session.add(Position(
                 account_id=account.id, ticker=ip.ticker, market=ip.market.value,
@@ -98,9 +109,16 @@ async def upsert_positions(
 
 async def buy_into_book(
     session: AsyncSession, user: User, *, ticker: str, market: str, price: float,
-    shares: float, asset_class: str = "Equities", depth: int = 1,
+    shares: float, asset_class: str | None = None, depth: int = 1,
 ) -> bool:
     """Add `shares` of `ticker` at `price` (native currency) to the user's book.
+
+    `asset_class` defaults to **None**, not to "Equities". It used to default to
+    the string, and `_execute_funded_sleeve` -- the sleeve funder, the busiest
+    caller here -- never passes one. So every holding it bought was stamped
+    "Equities" on the way in, BND included, and `classify` returned that stamp
+    ahead of its own bond table. None means "nobody has said", which is the
+    truth at this call site and lets the lookup answer.
 
     THE ONE implementation of "top up a holding", because there were three and two
     of them were wrong.
@@ -213,8 +231,13 @@ async def update_position(
     if current_price is not None:
         row.current_price = money(current_price)
     if asset_class is not None:
+        # THE ONE WRITER of the provenance flag. Reaching this line means a
+        # human named the class through the API, which is the only case where a
+        # stored class is allowed to outrank `allocation_mix._from_tables`.
+        # Every other writer of `meta["asset_class"]` is supplying a default.
         meta = dict(row.meta or {})
         meta["asset_class"] = asset_class
+        meta["asset_class_source"] = ASSET_CLASS_SOURCE_USER
         row.meta = meta
     await session.commit()
     return row
