@@ -550,6 +550,18 @@ async def target_applications(limit: int = 20,
         for r in rows]}
 
 
+@router.get("/plan/target/accepted")
+async def target_accepted(session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """The target the user last accepted, for the card to seed itself from.
+
+    Read-only. `accepted` is null when no acceptance stands -- either none was
+    ever made, or the last one was undone.
+    """
+    from app.services.target_apply import last_accepted
+    return {"ok": True, "accepted": await last_accepted(session, user)}
+
+
 @router.get("/plan/target/split")
 async def target_split(max_drawdown_pct: float,
                        session: AsyncSession = Depends(get_session),

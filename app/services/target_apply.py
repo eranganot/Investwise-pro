@@ -259,6 +259,51 @@ async def apply_target(session, user, *, resizes: list[dict],
                      "and nothing was bought or sold.")}
 
 
+async def last_accepted(session, user) -> dict | None:
+    """The target the user last ACCEPTED, or None if no acceptance stands.
+
+    Every apply already records the question it answered: `tgtAccept` sends
+    `context.excess_pct` and `context.ceiling_pct` from the solve, and `_record`
+    stores that verbatim on the `PlanApplication` row. Nothing has ever read it
+    back, so the card that owns those two boxes has been re-deriving them from a
+    measurement on every load -- and a measurement is not the decision you took.
+
+    AN UNDO WITHDRAWS THE ACCEPTANCE. Undo restores the sizes the apply
+    replaced; the target that produced them stops describing the book, and
+    seeding from it afterwards would put a decision the user reversed back into
+    the boxes. So the newest row decides: if it is an undo, nothing stands.
+
+    Returns None rather than a partial: a row whose context lost one of the two
+    figures cannot seed a pair, and half a seed is worse than none -- the user
+    would see one remembered number beside one measured one with nothing saying
+    which was which.
+    """
+    from sqlalchemy import select
+
+    from app.models.tables import PlanApplication
+
+    row = (await session.execute(
+        select(PlanApplication)
+        .where(PlanApplication.subject == user.email)
+        .order_by(PlanApplication.created_at.desc()).limit(1))).scalars().first()
+    if row is None or (row.action or "") != "apply":
+        return None
+    ctx = dict(row.context or {})
+    ex, ce = ctx.get("excess_pct"), ctx.get("ceiling_pct")
+    if ex is None or ce is None:
+        return None
+    try:
+        ex, ce = float(ex), float(ce)
+    except (TypeError, ValueError):
+        return None
+    return {"excess_pct": ex, "ceiling_pct": ce,
+            "accepted_at": row.created_at.isoformat() if row.created_at else None,
+            "outcome": ctx.get("outcome"),
+            "solved_total_sleeve_pct": ctx.get("solved_total_sleeve_pct"),
+            "allocated_pct_after": row.allocated_pct_after,
+            "application_id": str(row.id)}
+
+
 async def undo_last(session, user, *, confirm: bool = False) -> dict:
     """Restore the sizes the last apply replaced."""
     from sqlalchemy import select

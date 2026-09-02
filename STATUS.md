@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 35 — the digest cannot compose a false sentence)._
+_Last updated: 2026-09-02 by Claude (PR 36 — the target card remembers what you accepted)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,72 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 36 — the target card remembers what you accepted
+
+> *"I want these fields (beat the benchmark & without exceeding) to be the
+> default of what I have approved."* — Eran, 2026-09-02
+
+He had accepted **12 / 49** and the card kept opening on a measurement. Both
+defaults are seeded in `_seedTarget`: the ceiling from
+`performance(range=MAX).max_drawdown_pct`, the target from
+`max(0, ceil(excess_cagr))`. That was right while nothing remembered an
+answer — a made-up default is the card guessing on your behalf, which is what
+this card exists to stop.
+
+But an accepted target is neither a guess nor a measurement. It is the question
+he decided to ask and then acted on — **and it has been recorded on every apply
+since Phase A.** `tgtAccept` sends `context.excess_pct` and
+`context.ceiling_pct`; `_record` writes them verbatim onto the
+`PlanApplication` row. Nothing had ever read them back. So this is a **read
+path and no new storage** — no table, no column, no migration.
+
+Two rules the read path has to get right, both about not putting words in the
+user's mouth:
+
+- **An undo withdraws the acceptance.** Undo restores the sizes the apply
+  replaced, so the target that produced them stops describing the book. Seeding
+  from it afterwards would put a decision he reversed back in the box. The
+  newest row decides, in both directions.
+- **Half a seed is worse than none.** A row that lost one of the two figures
+  returns `None` rather than a partial — one remembered number beside one
+  measured one, with nothing saying which is which, is exactly the confusion
+  this card is for.
+
+The measured pair is still fetched, still shown in the note, and one tap away
+behind *"use what the book measures now"*. Silently replacing a remembered
+decision with a measurement is the mirror of the bug. And the boxes now say
+where they came from: *"These are the target you accepted on 2026-08-16 — not a
+measurement"*, or *"These start from what your book measures, not from a target
+you have set."* A number in an input with no provenance is the same problem as a
+figure on a card with no basis.
+
+**Issue 7 rides along, and the first draft of it was wrong.**
+`measured_assumptions._headline` said *"78.8% of the book is priced from its own
+measured strategies"* and stopped. That reads as a coverage hole — it was the
+first thing Eran asked about — so the line now names the other half.
+
+The first attempt named it as *"your core and cash, which run no strategy to
+measure"*. Eran: *"that's not true.... the sleeves have their strategy and the
+core has its own strategy — the portfolio is being managed by two different
+strategies."* He is right, and this repo agrees with him: `core_search` ranks
+fourteen candidate cores on measured return, volatility and drawdown through
+`blend.core_spec` + `blend.measure_blend`. His core is `bal_6040` — a basket
+plus a rebalance discipline, sized at 27% of the book.
+
+So the line now names **a gap in the app**: `book_assumptions` never asks for
+the core row, so even a core held exactly to its basket lands in `unallocated`
+and is priced ticker by ticker. That is not a neutral substitution — a
+per-ticker table has no covariance term, so pricing a rebalanced 60/40 as the
+weighted average of a VTI row and a BND row **overstates the core's volatility
+by construction**. Closing it is PR 37.
+
+14 tests, **13 fail against PR 35**. The one that passes guards the untouched
+fully-static branch.
+
+Gate: SQLite 1544 / 0, Postgres 16 1544 / 0, ruff clean.
 
 ---
 

@@ -207,9 +207,22 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
     book is this strategy actually running".
 
     Everything no sleeve claims -- the core, loose holdings, anything bought by
-    hand -- keeps the static per-ticker table, and says so. A static basket held
-    buy-and-hold is exactly what that table is for; the defect was only ever
-    applying it to rule-based sleeves.
+    hand -- keeps the static per-ticker table, and says so.
+
+    THAT IS A KNOWN GAP, NOT A FINISHED DESIGN. The original comment here read
+    "a static basket held buy-and-hold is exactly what that table is for; the
+    defect was only ever applying it to rule-based sleeves", and that is wrong
+    on its own terms. A CORE IS A STRATEGY TOO: `bal_6040` is a basket plus a
+    rebalance discipline, and `core_search` already measures fourteen of them
+    through `blend.core_spec` + `blend.measure_blend`. Pricing a rebalanced
+    60/40 as the weighted average of a VTI row and a BND row cannot express the
+    one thing rebalancing between them does, because a per-ticker table has no
+    covariance term -- so it overstates the core's volatility by construction.
+
+    This function does not yet ask for the core row at all, so even a core held
+    exactly to its basket lands in `unallocated`. Fixing that is its own change;
+    until then `_headline` says so in the user's words rather than implying the
+    core has nothing to measure.
     """
     from app.core.config import get_settings
     from app.services.backtest_service import ENGINE_VERSION
@@ -384,6 +397,23 @@ def _headline(out: dict, basis: str) -> str:
     label = {RETURN_BASIS_OOS: "out-of-sample measured",
              RETURN_BASIS_FULL: "full-window measured",
              RETURN_BASIS_STATIC: "instrument-table"}.get(basis, basis)
+    # NAME THE REST, AND DO NOT EXCUSE IT. "78.8% of the book measured" reads as
+    # a coverage hole and invites the reader to supply the missing half himself,
+    # so the other side of the percentage has to be said out loud.
+    #
+    # It must NOT be said the way the first draft of this line said it -- "the
+    # core and cash, which run no strategy to measure". THAT IS FALSE. A core is
+    # a strategy: `bal_6040` is a basket with a rebalance discipline, this app
+    # already measures fourteen candidate cores in `core_search` through
+    # `blend.core_spec` + `blend.measure_blend`, and it ranks them on exactly
+    # the numbers this function says cannot be had. The book is managed by TWO
+    # kinds of strategy, sleeves and a core, and only one of them is measured
+    # here. So the sentence names a gap in the app instead of inventing a
+    # property of the core.
+    rest = round(100.0 - float(pct), 1)
     return (f"{pct:g}% of the book is priced from its own measured strategies "
-            f"({label} returns, measured volatility). The rest uses the instrument "
-            f"table, which is what it is for.")
+            f"({label} returns, measured volatility) -- that is your sleeves. "
+            f"The remaining {rest:g}% is your core and your cash, and it is priced "
+            f"holding by holding from the instrument table because this app does "
+            f"not yet measure a core the way it measures a sleeve. That is a gap "
+            f"here, not a verdict on your core.")
