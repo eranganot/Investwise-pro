@@ -276,8 +276,16 @@ _REFIRE_FLOOR_ILS = 100.0
 
 _SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
+#: PR 38. How long a "done" gets the benefit of the doubt before the book is
+#: allowed to contradict it. An order placed on Friday settles on Tuesday, a
+#: transfer takes days, and a card reappearing the same afternoon to say "this
+#: did not happen" would be wrong most of the time and rude the rest. Three days
+#: is long enough for a real trade to reach the positions and short enough that
+#: something meant and forgotten comes back the same week.
+_DONE_SETTLE_DAYS = 3
 
-def moved_on(entry, card: dict) -> str | None:
+
+def moved_on(entry, card: dict, *, done: bool = False) -> str | None:
     """Why this card's mute no longer applies, or None if it still does.
 
     THE DEFECT THIS ANSWERS. A card's id is `sha1(category|ticker)` -- no
@@ -323,7 +331,46 @@ def moved_on(entry, card: dict) -> str | None:
     if abs(now_amt - then_amt) / base > _REFIRE_DELTA:
         return (f"it asked for about {then_amt:,.0f} ILS when you filed it "
                 f"and asks for about {now_amt:,.0f} ILS now")
-    return None
+
+    # ------------------------------------------------------------------ #
+    # PR 38 -- A "DONE" THE BOOK CONTRADICTS IS NOT DONE.
+    #
+    # Eran, 2026-09-02: *"if I'm not holding VTI as part of my portfolio -->
+    # I expect to get a recommendation card to purchase it."*
+    #
+    # The card existed. "Buy Equities", MEDIUM, 1,215 ILS -- hidden since
+    # 2026-08-21 because he pressed DONE. The equities gap on 2026-09-02 was
+    # 1,194 ILS: twelve days later, the same instruction, to within 2%.
+    #
+    # And the rule above is why it stayed hidden, working exactly as designed.
+    # For a card you IGNORED that is right: you looked, you chose not to act,
+    # and only a changed situation earns your attention again.
+    #
+    # FOR A CARD YOU MARKED DONE THE SIGNAL IS INVERTED. "Done" is a claim
+    # about the book, and the book can be asked. If the same instruction still
+    # stands, unchanged, after the trade would have settled, then the number
+    # NOT MOVING is the evidence the action was never taken -- and the mute is
+    # resting on something that did not happen. The app took the user's word
+    # for it and never checked; nothing else in this file trusts a claim it can
+    # measure.
+    #
+    # Deliberately narrow, because the failure mode is nagging:
+    #   * only "done", never "ignored";
+    #   * only after `_DONE_SETTLE_DAYS`, so real settlement is not called a lie;
+    #   * only for a card asking to move real money (`_REFIRE_FLOOR_ILS`), since
+    #     a 40 ILS ask that stays 40 has not proved anything;
+    #   * and the card says WHY it is back, in the user's own timeline.
+    # ------------------------------------------------------------------ #
+    if not done:
+        return None
+    if abs(now_amt) < _REFIRE_FLOOR_ILS:
+        return None
+    when = _parse_dt(_at(entry))
+    if datetime.now(timezone.utc) - when < timedelta(days=_DONE_SETTLE_DAYS):
+        return None
+    return (f"you marked this done on {when.date().isoformat()}, and your book "
+            f"still shows about {now_amt:,.0f} ILS to move - the same ask, so it "
+            f"looks like it did not happen")
 
 
 def _dismiss_key(user: User) -> str:
@@ -1273,6 +1320,139 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 f("Net of frictions", "net = gross - tax_drag - cost - slippage",
                   result=f"₪{a.net_trade_value_currency:,.0f}")])
 
+    # 3a) THE CORE'S OWN BASKET, LEG BY LEG.
+    #
+    # Eran, 2026-09-02: *"if I'm not holding VTI as part of my portfolio --> I
+    # expect to get a recommendation card to purchase it."*
+    #
+    # Card (3) above is right and is not that card. It works at ASSET-CLASS
+    # level: "Buy Equities, about 1,215 ILS". On this book the equities target
+    # is 89.2% -- 73% from two leveraged sleeves plus 16.2% from the core -- so
+    # BUYING MORE TQQQ SATISFIES THAT CARD COMPLETELY and leaves the core still
+    # holding no VTI at all. A class is not an instruction.
+    #
+    # The core is the one place where the app knows the actual instrument,
+    # because a core IS a basket (PR 37): bal_6040 is 60% VTI, 40% BND, and the
+    # book's target for each leg is core_pct x weight x NAV. That arithmetic is
+    # already what `_book_target` folds into the class targets; here it is left
+    # un-aggregated, which is the whole point.
+    #
+    # ADVICE, NOT AN ACTION. No `apply` block: funding a 3,417 ILS VTI purchase
+    # out of a 619 ILS cash balance is not something this app can carry out, and
+    # a button that reports success without doing anything is the exact defect
+    # `_ACTIONABLE_KINDS` exists to prevent. The card names the ticker and the
+    # amount and stops there.
+    try:
+        _core_id = btgt.get("core_strategy_id")
+        _core_pct = float(btgt.get("core_pct") or 0.0)
+        if _core_id and _core_pct > 0 and nav > 0:
+            from app.services import sleeve_service as _sv_core
+            from app.services.measured_assumptions import core_matches_basket
+            from app.services.strategies import core_weights as _cw
+
+            _basket = _cw(_core_id) or {}
+            _cname = btgt.get("core_strategy_name") or _core_id
+            # Whatever a sleeve claims belongs to that sleeve, not to the core.
+            # `sleeve_tickers` is the app's existing exclusion set -- the one
+            # `blend.core_weights_from` and PR 37 both work from.
+            _claimed = {str(t).upper()
+                        for t in await _sv_core.sleeve_tickers(session, user)}
+            # THE SAME FX NORMALISATION `current_mix` AND `_portfolio_stats` USE.
+            # A second way of turning a position into shekels is a second answer
+            # to what the book is worth, and these numbers are compared against
+            # the class-level card built from `mix` a few lines up
+            # (investing-discipline S2).
+            from app.services.allocation_mix import classify_holding as _ch
+            from app.services.fx import fx_rate as _fxr
+            from app.services.fx import price_currency as _pcur
+
+            _held: dict[str, float] = {}
+            for _p in rows:
+                _tk = str(getattr(_p, "ticker", "") or "").upper()
+                if not _tk or _tk in _claimed or _tk == "CASH":
+                    continue
+                if _ch(_p) == "Cash":
+                    continue          # cash is in no basket; it is not a leg
+                _meta = _p.meta if isinstance(_p.meta, dict) else None
+                _v = (float(_p.quantity or 0.0) * float(_p.current_price or 0.0)
+                      * _fxr(_pcur(_p.market, _meta)))
+                if _v > 0:
+                    _held[_tk] = _held.get(_tk, 0.0) + _v
+
+            _ok, _ev = core_matches_basket(_held, _basket,
+                                           band_pct=SLEEVE_DRIFT_BAND_PCT)
+            if _basket and not _ok and not _ev.get("reason"):
+                _bsum = sum(w for w in _basket.values() if w > 0) or 1.0
+                # Every leg the basket names, plus every holding sitting in the
+                # core region that the basket does NOT name. Both are ways for a
+                # core to stop being the thing it says it is.
+                _legs = [(t.upper(), (w / _bsum)) for t, w in _basket.items() if w > 0]
+                _legs += [(t, 0.0) for t in sorted(_ev.get("extra") or [])]
+                for _tk, _share in _legs:
+                    _want_ils = round(_core_pct * _share * nav, 2)
+                    _have_ils = round(_held.get(_tk, 0.0), 2)
+                    _gap = round(_want_ils - _have_ils, 2)
+                    # Below the floor a "gap" is rounding, and the same floor the
+                    # mute logic uses keeps one answer to "is this worth saying".
+                    if abs(_gap) < _REFIRE_FLOOR_ILS:
+                        continue
+                    _drift_pp = abs(float((_ev.get("drift_pct") or {}).get(_tk, 100.0)))
+                    if _drift_pp <= SLEEVE_DRIFT_BAND_PCT:
+                        continue
+                    _buy = _gap > 0
+                    _want_w = _core_pct * _share
+                    _have_w = _have_ils / nav
+                    _sev = _drift_severity(_have_w, _want_w)
+                    if _tk in (_ev.get("missing") or []):
+                        _title = f"Your core is missing {_tk}"
+                        _why_ = (f"{_cname} holds {_share:.0%} {_tk}, and you hold none of it. "
+                                 f"Your core is {_core_pct:.0%} of the book, so {_tk} should be "
+                                 f"{_want_w:.1%} of it — about {_ils(_want_ils)}.")
+                    elif _share <= 0:
+                        _title = f"{_tk} is not in your core's basket"
+                        _why_ = (f"You hold {_ils(_have_ils)} of {_tk} in the part of the book "
+                                 f"your core manages, and {_cname} does not hold {_tk} at all. "
+                                 f"It is not wrong to own it — it is not your core.")
+                    else:
+                        _title = f"Your core holds {'too little' if _buy else 'too much'} {_tk}"
+                        _why_ = (f"{_cname} holds {_share:.0%} {_tk}. Against a core of "
+                                 f"{_core_pct:.0%} of the book that is {_ils(_want_ils)}, and you "
+                                 f"hold {_ils(_have_ils)}.")
+                    _verb = "Buy" if _buy else "Trim"
+                    recs.append({
+                        "id": _rid("corebasket", _core_id, _tk),
+                        "dimension": "allocation", "severity": _sev,
+                        "title": _title, "why": _why_,
+                        "action": f"{_verb} about {_ils(abs(_gap))} of {_tk}.",
+                        "impact": (f"Brings the core back to the basket {_cname} is measured on. "
+                                   f"Until it does, your core's measurement is not used to price "
+                                   f"your book — it describes a basket you are not holding."),
+                        "how": [f"{_verb} about {_ils(abs(_gap))} of {_tk}",
+                                f"Target is {_want_w:.1%} of the book "
+                                f"({_share:.0%} of a {_core_pct:.0%} core)",
+                                f"You hold {_have_w:.1%} today",
+                                "Your sleeves are not touched by this"],
+                        "est_amount": abs(_gap),
+                    })
+                    recs[-1]["audit_trail"] = audit_for("allocation", raw_data={
+                        "core_strategy_id": _core_id, "ticker": _tk,
+                        "core_pct_of_book": round(_core_pct, 4),
+                        "basket_weight": round(_share, 4),
+                        "target_ils": _want_ils, "held_ils": _have_ils,
+                        "nav": round(nav, 2),
+                        "band_pct": SLEEVE_DRIFT_BAND_PCT,
+                        "leg_drift_pp": round(_drift_pp, 2)},
+                        formulas=[
+                            f("Leg target", "target = core_pct x basket_weight x NAV",
+                              substituted=f"{_core_pct:.4f} x {_share:.4f} x {nav:,.0f}",
+                              result=f"₪{_want_ils:,.0f}"),
+                            f("Gap", "gap = target - held",
+                              substituted=f"{_want_ils:,.0f} - {_have_ils:,.0f}",
+                              result=f"₪{_gap:,.0f}")])
+    except Exception:  # noqa: BLE001
+        # A core the app cannot read is not a reason to lose every other card.
+        logger.warning("core-basket cards: could not build", exc_info=True)
+
     # 3b) Concentration in one region / currency, or a hard-to-sell book — the same
     #     vectors the "biggest risk" panel shows, surfaced here as actionable to-dos so
     #     a pushed risk alert always maps to something you can do in the app.
@@ -1977,7 +2157,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _rid_ = _r.get("id")
             if _rid_ not in dismissed and _rid_ not in completed:
                 continue
-            _why = moved_on(_marks.get(_rid_), _r)
+            # WHICH MAP THE MARK CAME FROM IS THE WHOLE QUESTION for PR 38's
+            # branch: "done" is a claim about the book and can be contradicted
+            # by it, "ignored" is a claim about your attention and cannot.
+            _why = moved_on(_marks.get(_rid_), _r, done=(_rid_ in completed))
             if _why:
                 _moved[_rid_] = _why
 

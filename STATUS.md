@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 37 — a core is a strategy too)._
+_Last updated: 2026-09-02 by Claude (PR 38 — a done the book contradicts)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,64 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 38 — a done the book contradicts, and the card that names the ticker
+
+> *"if I'm not holding VTI as part of my portfolio --> I expect to get a
+> recommendation card to purchase it."* — Eran, 2026-09-02
+
+**The card existed.** "Buy Equities", MEDIUM, ₪1,215 — hidden since
+**2026-08-21**, because he pressed Done. Measured on 2026-09-02, twelve days
+later, the equities gap was ₪1,194: the same instruction, to within 2%.
+
+### Half one — "done" is a claim about the book, and nothing asked the book
+
+PR 34's rule is why it stayed hidden, working exactly as designed: a muted card
+returns when its own number **moves**. For a card you *ignored* that is right —
+you looked, you chose not to act, and only a changed situation earns your
+attention again.
+
+**For a card you marked done the signal is inverted.** If the same instruction
+still stands, unchanged, after the trade would have settled, then the number
+*not* moving is the evidence the action was never taken. The app took the user's
+word for it and never checked; nothing else in this file trusts a claim it can
+measure.
+
+Deliberately narrow, because the failure mode of this rule is nagging: only
+`done`, never `ignored`; only after `_DONE_SETTLE_DAYS` (3), so real settlement
+is not called a lie; only for a card asking to move real money; and a book that
+*did* move is never accused — it gets PR 34's neutral wording instead.
+
+### Half two — a class is not an instruction
+
+Even when that card fires it says *"Buy Equities, about ₪1,215"*. On this book
+the equities target is 89.2% — 73% from two leveraged sleeves plus 16.2% from
+the core — so **buying more TQQQ satisfies it completely** and leaves the core
+still holding no VTI.
+
+The core is the one place the app knows the instrument, because a core *is* a
+basket (PR 37). The leg target is `core_pct × weight × NAV` — the same
+arithmetic `_book_target` already folds *into* the class target, here left
+un-aggregated. On his book, NAV ₪21,092, core 27%:
+
+| leg | target | held | card |
+|---|---:|---:|---|
+| VTI | ₪3,417 | ₪0 | Your core is missing VTI — buy ~₪3,417 |
+| BND | ₪2,278 | ₪2,854 | Your core holds too much BND — trim ~₪576 |
+| V | ₪0 | ₪955 | V is not in your core's basket |
+
+**Advice, not an action.** No `apply` block: funding a ₪3,417 purchase out of a
+₪619 cash balance is not something this app can carry out, and a button that
+reports success without doing anything is the exact defect `_ACTIONABLE_KINDS`
+exists to prevent.
+
+24 tests, **18 fail against PR 37**. The six that pass pin the leg arithmetic
+(₪3,417 / −₪576 / ₪955), which PR 37's `core_matches_basket` already supplies —
+they guard the numbers the cards are built from.
+
+Gate: SQLite 1589 / 0, Postgres 16 1589 / 0, ruff clean.
 
 ---
 
