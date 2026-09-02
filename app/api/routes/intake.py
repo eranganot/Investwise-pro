@@ -104,7 +104,21 @@ async def intake_portfolio_csv(
 async def get_portfolio(entity: str | None = None,
                         session: AsyncSession = Depends(get_session),
                         user: User = Depends(acting_user)) -> dict:
-    from app.services.fx import price_currency, fx_rate
+    # `fx_rate_with_status`, NOT `fx_rate`. The status is the whole point here.
+    #
+    # `fx_rate` returns the rate alone, which is right for the call sites doing
+    # plain arithmetic -- but this one BUILDS NAV, and an "unresolved" rate is
+    # the literal 1.0 that `fx.py:167` returns when the provider failed and
+    # nothing was ever cached. That function's own docstring says of it:
+    # "Never present it as a value." Read through `fx_rate`, that 1.0 is
+    # indistinguishable from a genuine peg, so a holding in a currency nobody
+    # could resolve is valued at PAR and lands in NAV with no signal at all.
+    #
+    # This does not refuse to value it. Writing a holding down is not the app's
+    # call -- the same reasoning as `price_stale` twenty lines below. It reports
+    # it, so every reader of NAV can say which part of the total rests on a
+    # conversion that did not happen.
+    from app.services.fx import price_currency, fx_rate_with_status
     from app.core.config import get_settings as _gs
     base = _gs().base_currency
     positions = await list_positions(session, user, entity)
@@ -113,7 +127,7 @@ async def get_portfolio(entity: str | None = None,
         price = float(p.current_price) if p.current_price is not None else None
         qty = float(p.quantity)
         ccy = price_currency(p.market, p.meta if isinstance(p.meta, dict) else None)
-        rate = fx_rate(ccy)
+        rate, fx_status = fx_rate_with_status(ccy)
         val_native = (qty * price) if price is not None else 0.0
         val_ils = val_native * rate
         # What you actually put in: cost_basis is per-share in the position's own
@@ -127,6 +141,10 @@ async def get_portfolio(entity: str | None = None,
             "quantity": qty, "cost_basis": float(p.cost_basis),
             "current_price": price,
             "currency": ccy,
+            # "live" | "stale" | "unresolved". On the row, because the row is
+            # where a reader can act on it: a value converted at par is not the
+            # same fact as one converted at a rate that resolved this morning.
+            "fx_status": fx_status,
             "current_price_ils": (round(price * rate, 4) if price is not None else None),
             "value_ils": round(val_ils, 2),
             "invested_ils": round(cost_ils, 2),
@@ -248,6 +266,26 @@ async def get_portfolio(entity: str | None = None,
              "price_as_of": o["price_as_of"], "trading_days": o["price_stale_days"]}
             for o in out if o["price_stale"]],
         "stale_value_ils": round(sum(o["value_ils"] for o in out if o["price_stale"]), 2),
+        # THE SAME DISCLOSURE, FOR THE OTHER HALF OF THE MULTIPLICATION.
+        #
+        # `value_ils` is `quantity x price x rate`. `stale_positions` above says
+        # when the PRICE cannot be trusted; nothing said when the RATE could
+        # not. An unresolved rate is 1.0 -- a holding quoted in a currency the
+        # provider could not resolve is counted into NAV as though its currency
+        # were the base one. On a TASE or LSE holding that is not a rounding
+        # difference, it is the entire conversion.
+        #
+        # Split from `stale` deliberately, because they need different answers:
+        # "stale" is a real rate that is a few hours old and roughly right;
+        # "unresolved" is not a rate at all.
+        "fx_unresolved_positions": [
+            {"ticker": o["ticker"], "currency": o["currency"], "value_ils": o["value_ils"]}
+            for o in out if o.get("fx_status") == "unresolved"],
+        "fx_unresolved_value_ils": round(
+            sum(o["value_ils"] for o in out if o.get("fx_status") == "unresolved"), 2),
+        "fx_stale_positions": [
+            {"ticker": o["ticker"], "currency": o["currency"], "value_ils": o["value_ils"]}
+            for o in out if o.get("fx_status") == "stale"],
         "positions": out,
     }
 

@@ -100,6 +100,26 @@ async def get_vapid(session: AsyncSession) -> tuple[str, str, str]:
     s = get_settings()
     subject = s.vapid_subject or "mailto:admin@example.com"
     if s.vapid_public_key and s.vapid_private_key:
+        # PINNING THE WRONG PAIR IS SILENT, AND IT KILLS EVERY SUBSCRIPTION.
+        #
+        # A browser subscription is bound to the public key it was created with.
+        # Pin a NEWLY GENERATED pair and every existing subscriber becomes
+        # unreachable -- the send fails at the push gateway, not here, so the app
+        # records a fan-out to nobody and the phone simply goes quiet. The pin
+        # that preserves them is the pair ALREADY IN THIS DATABASE.
+        #
+        # Same shape as the agent key on 2026-08-31: two locally generated
+        # values on the machine, a third on the server, and a resolver reporting
+        # that everything was fine. The cost of noticing is one string compare
+        # against a row this function already reads three lines below.
+        db_pub = await _kv_get(session, _KV_PUB)
+        if db_pub and db_pub != s.vapid_public_key:
+            logger.error(
+                "VAPID MISMATCH: the pinned VAPID_PUBLIC_KEY is not the pair this "
+                "database minted. Subscriptions created before the pin were bound "
+                "to the OLD key and can no longer be reached -- pushes will report "
+                "as sent and arrive nowhere. Either put the DB pair in the env "
+                "vars, or accept that every device has to re-subscribe.")
         return s.vapid_public_key, s.vapid_private_key, subject
     pub = await _kv_get(session, _KV_PUB)
     priv = await _kv_get(session, _KV_PRIV)
@@ -512,9 +532,21 @@ async def diagnostics(session: AsyncSession, user: User) -> dict:
         if jid not in history and sched.get("scheduler_running"):
             blockers.append(f"Job {jid} has not run yet since this process started.")
 
+    # The pin is only useful if it is the RIGHT pair, and "wrong pair" is
+    # otherwise invisible until a phone quietly stops buzzing.
+    _env_pub = get_settings().vapid_public_key
+    _db_pub = await _kv_get(session, _KV_PUB)
+    _mismatch = bool(_env_pub and _db_pub and _env_pub != _db_pub)
+    if _mismatch:
+        blockers.append(
+            "VAPID_PUBLIC_KEY on this environment is not the pair this database "
+            "minted. Every subscription created before the pin is unreachable; "
+            "pushes will look sent and arrive nowhere.")
+
     return {
         "subscriptions": len(subs),
-        "vapid_pinned_by_env": bool(get_settings().vapid_public_key),
+        "vapid_pinned_by_env": bool(_env_pub),
+        "vapid_env_matches_db": (None if not _env_pub else not _mismatch),
         "push_library_ok": library_ok,
         "push_library_error": library_error,
         "last_fanout_run": last_run,

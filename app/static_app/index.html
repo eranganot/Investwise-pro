@@ -2752,7 +2752,16 @@ async function loadPerf(){
     if(!r.ok){cap.textContent=r.reason||"Add holdings with real tickers, then Refresh prices.";return;}
     const ds=[{label:"Your portfolio",data:r.portfolio_index,borderColor:"#3b82f6",fill:false,pointRadius:0,tension:.12,borderWidth:2}];
     if(r.benchmark_index)ds.push({label:r.benchmark,data:r.benchmark_index,borderColor:"#8b97a8",borderDash:[5,4],fill:false,pointRadius:0,tension:.12,borderWidth:1.5});
-    drawChart("ch_perf","line",{labels:r.dates,datasets:ds},{plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}}},scales:{x:{ticks:{display:false},grid:{display:false}}}});
+    // THE DATES WERE ALWAYS THERE. `r.dates` has been passed as the labels
+    // since this chart was written; only the ticks were switched off, so a
+    // performance chart spanning up to ten years had no x axis at all and
+    // nothing on screen said which end was which.
+    //
+    // maxTicksLimit + maxRotation is why this is not just `display:true`:
+    // MAX is ~2600 daily labels, and Chart.js will happily draw every one of
+    // them into an unreadable smear. Six upright labels stay legible at 1W
+    // and at MAX alike, which is the range the same canvas has to cover.
+    drawChart("ch_perf","line",{labels:r.dates,datasets:ds},{plugins:{legend:{display:true,labels:{color:"#8b97a8",boxWidth:12}}},scales:{x:{ticks:{display:true,color:"#8b97a8",autoSkip:true,maxTicksLimit:6,maxRotation:0,minRotation:0},grid:{display:false}}}});
     // Each excess sits next to the return it is an excess OF. The old line put a
     // TOTAL-period "vs SPY" beside an ANNUALIZED CAGR -- two bases, one row, no
     // labels, so the two numbers could not be compared with each other.

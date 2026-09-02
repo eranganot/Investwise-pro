@@ -35,6 +35,91 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ---
 
+## PR 30 — three things the app knew and would not say
+
+None of these is a new feature. Each is a value the app already had and threw
+away before a reader could see it. All three came out of validating the plan
+backlog **against production** rather than against the documents — which also
+retired eight items that were recorded as open and were not.
+
+### 1. An unresolved exchange rate reached NAV looking like a peg
+
+`fx.py` is careful: `fx_rate_with_status()` returns `(rate, status)` where
+`"unresolved"` means *"the provider failed, nothing was ever cached, this 1.0
+means no idea"* — its own docstring says **"Never present it as a value."**
+
+`fx_rate()` then hands back the rate alone, correctly, for the call sites doing
+plain arithmetic. But `/portfolio` — **the one route that builds NAV** — used it
+too. Read through that wrapper, the 1.0 is indistinguishable from a genuine peg,
+so a holding in a currency nobody could resolve is counted **at par** and lands
+in the total with no signal at all. On a TASE or LSE position that is not a
+rounding difference, it is the entire conversion.
+
+`value_ils` is `quantity × price × rate`. `stale_positions` has said since PR 20
+when the **price** cannot be trusted; nothing said when the **rate** could not.
+Now the other half of the multiplication is disclosed the same way:
+
+* per row, `fx_status` — `live` / `stale` / `unresolved`
+* per payload, `fx_unresolved_positions` + `fx_unresolved_value_ils`, and
+  `fx_stale_positions` kept **separate** — a stale rate is real and a few hours
+  old; an unresolved one is not a rate at all, and the two want different
+  responses.
+
+NAV still includes the holding. Writing one down is not the app's call — the same
+reasoning as `price_stale`. The roll-up selects on the **status**, never on
+`rate == 1.0`; testing the value is the broken signal that made the status field
+necessary in the first place.
+
+### 2. The performance chart was handed its dates and drew no axis
+
+`index.html` passed `r.dates` as the labels and set `ticks:{display:false}`. A
+chart spanning up to ten years had no x axis, and nothing on screen said which
+end was which. V4 called it the best ratio on the list and every renumber pushed
+it back.
+
+Not simply `display:true`: MAX is ~2600 daily labels and Chart.js will draw all
+of them into a smear. `autoSkip` + `maxTicksLimit:6` + `maxRotation:0` — **the
+tick config this same file already uses on another chart**, so the two read
+alike rather than drifting apart.
+
+### 3. Pinning VAPID to the wrong keypair is silent, and kills every subscriber
+
+`vapid_pinned_by_env` was `false` — measured on production, not assumed. Pinning
+is an ops action, but it has a trap worth code: **a browser subscription is bound
+to the public key it was created with.** Pin a freshly generated pair and every
+existing subscriber becomes unreachable — the send fails at the push gateway, so
+the app records a fan-out to nobody and the phone just goes quiet.
+
+This app already knows that failure one layer downstream: `DEAD_CODES` includes
+403 precisely because *"the keypair no longer matches the one the subscription
+was created with"*, and the comment there calls the un-pruned version **"a
+permanent, completely silent outage."** `get_vapid` now compares the pinned
+public key against the pair this database minted and says so at ERROR, and
+`push/status` carries `vapid_env_matches_db` (`None` when nothing is pinned —
+"not pinned" and "pinned wrongly" are different states and a bool cannot hold
+three). The env still wins; this reports, it does not overrule the operator.
+
+**It is the same shape as the agent key this morning**: two locally generated
+values on the machine, a third on the server, and a resolver reporting that
+everything was fine.
+
+⚠️ **The pin itself is an ops action, and the order matters.** Use the pair
+already in `kv_settings` — `scripts/pin-vapid-from-db.sql` reads it. Generating
+a new pair would kill the subscription registered today.
+
+### One of my own tests was wrong first
+
+`assert "display:false" not in call` also matches `grid:{display:false}`, which
+is deliberate — that chart has never drawn gridlines. It failed, and had I read
+it as a code fault I would have "fixed" the wrong thing. The assertion is now
+scoped to the ticks, and pins the gridlines staying off.
+
+**Gate:** SQLite **1491 passed / 0 failed**; Postgres **1491 passed / 0 failed**;
+ruff clean; `node --check` on the inline script. 6 of the 9 new tests confirmed
+failing against the old code (the other 3 are no-change guards).
+
+---
+
 ## PR 29 — the screener finally reaches a screen, as a card
 
 Eran, looking at Today: *"I don't have a buy idea section on any of my tabs."*
