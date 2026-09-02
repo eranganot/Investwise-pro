@@ -1,5 +1,6 @@
 """Actionable recommendations endpoint (Today view)."""
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
@@ -13,6 +14,22 @@ from app.services.recommendations import (
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
 
 
+class CardState(BaseModel):
+    """What the card SAID at the moment the user acted on it.
+
+    Optional, and the caller that had the card on screen is the one that knows
+    it. Rebuilding the whole Today list to look the card up would put a
+    multi-second sweep on a button press -- `/recommendations` is the slowest
+    path in the app.
+
+    Trusting the client here is bounded on purpose: `recommendations.moved_on`
+    only ever uses this to bring a card BACK early. A wrong value cannot extend
+    a mute, hide anything, or change a single number in the book.
+    """
+    amount: float | None = None
+    severity: str | None = None
+
+
 @router.get("/recommendations")
 async def recommendations(session: AsyncSession = Depends(get_session),
                           user: User = Depends(acting_user)) -> dict:
@@ -20,7 +37,8 @@ async def recommendations(session: AsyncSession = Depends(get_session),
 
 
 @router.post("/recommendations/{rec_id}/accept")
-async def accept_recommendation(rec_id: str, session: AsyncSession = Depends(get_session),
+async def accept_recommendation(rec_id: str, state: CardState | None = None,
+                                session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
     """Apply a recommendation to the portfolio/plan immediately."""
     result = await apply_recommendation(session, user, rec_id)
@@ -28,15 +46,18 @@ async def accept_recommendation(rec_id: str, session: AsyncSession = Depends(get
         raise HTTPException(status_code=404, detail="Recommendation not found (it may have changed).")
     # Accepting/completing is NOT the same as ignoring: it goes in the completed
     # bucket so the card is gone rather than parked in the ignored list.
-    await complete_recommendation(session, user, rec_id)
+    await complete_recommendation(session, user, rec_id,
+                                  state.model_dump() if state else None)
     return {"ok": True, **result}
 
 
 @router.post("/recommendations/{rec_id}/dismiss")
-async def dismiss_recommendation_route(rec_id: str, session: AsyncSession = Depends(get_session),
+async def dismiss_recommendation_route(rec_id: str, state: CardState | None = None,
+                                       session: AsyncSession = Depends(get_session),
                                        user: User = Depends(acting_user)) -> dict:
     """Mark a recommendation as ignored so it stops showing AND stops notifying."""
-    await dismiss_recommendation(session, user, rec_id)
+    await dismiss_recommendation(session, user, rec_id,
+                                 state.model_dump() if state else None)
     return {"ok": True}
 
 

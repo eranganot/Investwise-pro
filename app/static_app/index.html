@@ -893,14 +893,18 @@ async function loadToday(){
     REC_BANNER=r.rule_banner||null; renderRuleBanner();
     const _sn=activeSnoozed();
     const all=r.recommendations||[];
+    RECMAP={};
+    all.forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),
+                                 severity:o.severity||null};});
     const recs=all.filter(o=>!_sn.has(o.id));
     // "Nothing to do" and "you ignored everything" and "an agent failed" are three
     // different states — say which one it actually is instead of always claiming health.
     const hidden=(all.length-recs.length)+(r.dismissed_count||0);
     const done=r.completed_count||0;
     const degraded=r.degraded||[];
-    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done))
-      + (hidden&&recs.length?ignoredNote(hidden):"")
+    const hiddenCards=r.hidden_cards||[];
+    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
+      + (hidden&&recs.length?ignoredNote(hidden,hiddenCards):"")
       + (done&&recs.length?doneNote(done):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
@@ -944,21 +948,34 @@ async function restoreCompleted(){
   try{await fetch("/api/v1/recommendations/restore-completed",{method:"POST"});}catch(e){}
   loadToday();
 }
-function emptyRecs(hidden,done){
+function emptyRecs(hidden,done,cards){
   if(!hidden&&done>0) return `<div class="card center"><div style="font-size:22px">✅</div>
     <b>All done.</b><div class="muted">You've worked through everything — ${done} ${done>1?"items":"item"} marked done.</div>
     <button class="soft" style="margin-top:10px" onclick="restoreCompleted()">↩︎ Show completed</button></div>`;
   if(hidden>0) return `<div class="card center"><div style="font-size:22px">🙈</div>
     <b>Nothing showing — but ${hidden} ${hidden>1?"suggestions are":"suggestion is"} ignored.</b>
     <div class="muted">You hid ${hidden>1?"them":"it"} earlier. They aren't gone — bring ${hidden>1?"them":"it"} back to review.</div>
+    ${_hiddenTitles(cards)}
     <button class="soft" style="margin-top:10px" onclick="restoreIgnored()">↩︎ Show ignored ${hidden>1?"suggestions":"suggestion"}</button></div>`;
   return `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b>
     <div class="muted">You're tracking your plan.</div></div>`;
 }
-function ignoredNote(hidden){
+// A COUNT CANNOT ANSWER "WHY IS THERE NO CARD ABOUT MY MIX".
+// This line already existed and already rendered next to live cards -- it said
+// "4 other suggestions are ignored" while the two rebalance cards were inside
+// that 4, and nothing on the screen said so. Naming them is the fix; the count
+// never was the problem.
+function _hiddenTitles(cards){
+  if(!cards||!cards.length) return "";
+  const names=cards.slice(0,4).map(c=>`<b>${c.title}</b>`).join(", ");
+  const more=cards.length>4?`, and ${cards.length-4} more`:"";
+  return `<div style="margin-top:4px">${names}${more}</div>`;
+}
+function ignoredNote(hidden,cards){
   return `<div class="card center muted" style="font-size:13px">
-    ${hidden} other ${hidden>1?"suggestions are":"suggestion is"} ignored ·
-    <span class="link" onclick="restoreIgnored()">show ${hidden>1?"them":"it"}</span></div>`;
+    ${hidden} other ${hidden>1?"suggestions are":"suggestion is"} hidden ·
+    <span class="link" onclick="restoreIgnored()">show ${hidden>1?"them":"it"}</span>
+    ${_hiddenTitles(cards)}</div>`;
 }
 function degradedNote(list){
   if(!list||!list.length) return "";
@@ -1045,11 +1062,18 @@ function recCard(o){
     ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid var(--warn,#e5b857);
          background:rgba(229,184,87,.07);border-radius:4px">${(o.notes||[]).map(n=>`⚠ ${n}`).join("<br>")}</div>`
     : "";
-  return `<div class="rec"><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
+  // A CARD THAT COMES BACK SAYS WHY IT CAME BACK. Reappearing with no
+  // explanation reads as the app having forgotten you dealt with it -- which is
+  // the complaint the mute exists to prevent, arriving by another door.
+  const back=o.refired_because
+    ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid #60a5fa;
+         background:rgba(96,165,250,.08);border-radius:4px">You marked this handled &mdash; it is back because ${o.refired_because}.</div>`
+    : "";
+  return `<div class="rec"${o.refired_because?' style="border-left:3px solid #60a5fa"':''}><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
     <div style="margin:2px 0 6px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${scopeChip}${tag}</div>
     ${why}
     <div class="act">${o.action}</div>
-    ${notes}
+    ${back}${notes}
     ${impact}
     ${fund}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
@@ -1079,7 +1103,7 @@ async function acceptRec(id,actionable){
     ? "Apply this now? It will update your holdings/plan."
     : "Mark this as done?\n\nThis is guidance — nothing will be bought or sold. It just clears the card and stops the reminders.";
   if(!confirm(msg))return;
-  try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,{method:"POST"});
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,_statePost(_cardState(id)));
     const j=await r.json().catch(()=>({}));
     if(r.status===404){
       // The suggestion no longer applies (prices moved, or you already acted).
@@ -1095,9 +1119,21 @@ async function acceptRec(id,actionable){
   }catch(e){alert(e.message||e);}
 }
 function snooze(id){snoozeAdd(id);
-  fetch(`/api/v1/recommendations/${id}/dismiss`,{method:"POST"}).catch(()=>{});  // also stop notifications
+  // also stop notifications, and record what the card asked for so a materially
+  // different ask comes back instead of inheriting this mute
+  fetch(`/api/v1/recommendations/${id}/dismiss`,_statePost(_cardState(id))).catch(()=>{});
   loadToday();}
 
+// WHAT EACH CARD SAID, at the moment it was rendered. Sent with Ignore and
+// Mark-as-done so the server can record the SITUATION you acted on, not just
+// the id -- see recommendations.moved_on. The client is the only place that
+// knows this without rebuilding the whole Today list on a button press.
+let RECMAP={};
+function _cardState(id){ return RECMAP[id] || {amount:null, severity:null}; }
+function _statePost(state){
+  return {method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(state)};
+}
 let HMAP={};
 let COMM=null, CCAT=null;
 async function loadCommodities(){

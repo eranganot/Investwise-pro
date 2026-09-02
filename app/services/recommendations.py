@@ -266,6 +266,66 @@ _DISMISS_TTL_DAYS = 7
 _DONE_TTL_DAYS = 14
 
 
+#: How far a card's own number has to move before "done" stops applying to it.
+#: Big enough that ordinary drift does not un-hide a card you just filed; small
+#: enough that a materially different ask reaches you.
+_REFIRE_DELTA = 0.25
+#: ...and below this a ratio means nothing. A card that asked for 40 ILS and now
+#: asks for 55 has not changed situation, it has rounded.
+_REFIRE_FLOOR_ILS = 100.0
+
+_SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+
+def moved_on(entry, card: dict) -> str | None:
+    """Why this card's mute no longer applies, or None if it still does.
+
+    THE DEFECT THIS ANSWERS. A card's id is `sha1(category|ticker)` -- no
+    amount, no date -- so the card you file today and the card the same
+    condition generates next week are THE SAME id, and the mute lands on both.
+    Measured on this book, 2026-09-02: `/mix` wanted to sell 1,627 of Equities
+    and buy 2,244 of Fixed Income, `/recommendations` returned four screener
+    cards, and `dismissed_count: 4, completed_count: 5` -- nine cards muted,
+    the rebalance pair among them, for a fortnight, however far the drift moved
+    afterwards.
+
+    The id is deliberately NOT changed. A content-bearing id was the obvious
+    fix and it is the worse one: the id is what Restore, the audit log and the
+    push dedupe all key on, and it would churn on every boundary crossing --
+    1,499 and 1,501 becoming different cards. What changes instead is that the
+    mark remembers the SITUATION, and the situation is compared. No boundary,
+    no new identity, and the comparison can be read in the reason string.
+
+    Two things un-mute a card:
+
+      * its severity went UP. "I dealt with that" was said about a MEDIUM; the
+        app now calls it HIGH, which is new information.
+      * its own number moved by more than `_REFIRE_DELTA`. Selling 1,627 of
+        equities and selling 260 of them are not the same instruction.
+
+    An old mark (or one whose card carries no amount) has no situation to
+    compare, so it keeps the old behaviour exactly: muted until the TTL runs
+    out. Nothing needs migrating and nothing silently changes meaning.
+    """
+    if not isinstance(entry, dict):
+        return None
+    then_sev, now_sev = entry.get("severity"), card.get("severity")
+    if then_sev and now_sev and _SEV_RANK.get(str(now_sev), -1) > _SEV_RANK.get(str(then_sev), -1):
+        return (f"you filed it while it was {then_sev}; the app now calls it {now_sev}")
+    if entry.get("amount") is None or card.get("est_amount") is None:
+        return None
+    try:
+        then_amt = float(entry["amount"])
+        now_amt = float(card["est_amount"])
+    except (TypeError, ValueError):
+        return None
+    base = max(abs(then_amt), _REFIRE_FLOOR_ILS)
+    if abs(now_amt - then_amt) / base > _REFIRE_DELTA:
+        return (f"it asked for about {then_amt:,.0f} ILS when you filed it "
+                f"and asks for about {now_amt:,.0f} ILS now")
+    return None
+
+
 def _dismiss_key(user: User) -> str:
     return f"dismissed_recs:{user.email}"
 
@@ -286,8 +346,26 @@ def _parse_dt(ts: str) -> datetime:
         return datetime.now(timezone.utc)  # unparseable -> treat as fresh
 
 
-async def _load_map(session: AsyncSession, key: str) -> dict[str, str]:
-    """Return {rec_id: marked_at_iso}. Tolerates the legacy list-of-ids shape."""
+def _at(entry) -> str:
+    """The timestamp out of a mark, whichever shape it is stored in.
+
+    A mark used to be the bare ISO string. It is now a dict, because "when did
+    you hide this" was never enough to answer the question that matters --
+    "is this still the same card I hid" -- and the answer needs the card's own
+    number alongside the date. Both shapes are read; only the dict is written.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("at") or "")
+    return str(entry or "")
+
+
+async def _load_map(session: AsyncSession, key: str) -> dict[str, dict]:
+    """Return {rec_id: {"at": iso, "amount": float|None, "severity": str|None}}.
+
+    Tolerates both older shapes: a bare list of ids, and {id: iso}. An old mark
+    carries no situation, so it behaves exactly as it did before -- muted until
+    its TTL runs out. Nothing has to be migrated.
+    """
     row = await session.get(KVSetting, key)
     if not row:
         return {}
@@ -296,8 +374,13 @@ async def _load_map(session: AsyncSession, key: str) -> dict[str, str]:
     except Exception:  # noqa: BLE001
         return {}
     if isinstance(data, list):  # legacy: ids only -> give each a fresh window
-        return {i: _now_iso() for i in data}
-    return data if isinstance(data, dict) else {}
+        return {i: {"at": _now_iso()} for i in data}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for k, v in data.items():
+        out[k] = dict(v) if isinstance(v, dict) else {"at": str(v)}
+    return out
 
 
 async def _active(session: AsyncSession, key: str, ttl_days: int) -> set[str]:
@@ -305,14 +388,36 @@ async def _active(session: AsyncSession, key: str, ttl_days: int) -> set[str]:
     if not m:
         return set()
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-    return {rid for rid, ts in m.items() if _parse_dt(ts) >= cutoff}
+    return {rid for rid, e in m.items() if _parse_dt(_at(e)) >= cutoff}
 
 
-async def _mark(session: AsyncSession, key: str, rec_id: str, ttl_days: int) -> None:
+async def _mark(session: AsyncSession, key: str, rec_id: str, ttl_days: int,
+                state: dict | None = None) -> None:
+    """Record that this card was hidden, and WHAT IT SAID when it was.
+
+    `state` is the card's own situation at the moment the user acted on it --
+    its amount and its severity. It is supplied by the caller that had the card
+    in hand, because rebuilding the whole Today list on a button press costs
+    seconds on the slowest path in the app.
+
+    A wrong or stale `state` can only ever make a card come BACK early (see
+    `moved_on`). It can never extend a mute past its TTL. That asymmetry is
+    deliberate: the failure mode of trusting it is a card the user sees again,
+    not a card they never see.
+    """
     m = await _load_map(session, key)
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-    m = {k: v for k, v in m.items() if _parse_dt(v) >= cutoff}  # prune expired
-    m[rec_id] = _now_iso()
+    m = {k: v for k, v in m.items() if _parse_dt(_at(v)) >= cutoff}  # prune expired
+    entry: dict = {"at": _now_iso()}
+    if isinstance(state, dict):
+        if state.get("amount") is not None:
+            try:
+                entry["amount"] = float(state["amount"])
+            except (TypeError, ValueError):
+                pass
+        if state.get("severity"):
+            entry["severity"] = str(state["severity"])[:16]
+    m[rec_id] = entry
     payload = json.dumps(m)
     row = await session.get(KVSetting, key)
     if row:
@@ -327,7 +432,7 @@ async def _clear(session: AsyncSession, key: str, ttl_days: int) -> int:
     if not m:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-    active = sum(1 for ts in m.values() if _parse_dt(ts) >= cutoff)
+    active = sum(1 for e in m.values() if _parse_dt(_at(e)) >= cutoff)
     row = await session.get(KVSetting, key)
     if row:
         row.value = json.dumps({})
@@ -367,13 +472,15 @@ async def _resolve_if_rule_card(session: AsyncSession, user: User, rec_id: str,
         logger.warning("could not resolve rule for %s", rec_id, exc_info=False)
 
 
-async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
-    await _mark(session, _dismiss_key(user), rec_id, _DISMISS_TTL_DAYS)
+async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str,
+                                 state: dict | None = None) -> None:
+    await _mark(session, _dismiss_key(user), rec_id, _DISMISS_TTL_DAYS, state)
     await _resolve_if_rule_card(session, user, rec_id, "dismissed")
 
 
-async def complete_recommendation(session: AsyncSession, user: User, rec_id: str) -> None:
-    await _mark(session, _done_key(user), rec_id, _DONE_TTL_DAYS)
+async def complete_recommendation(session: AsyncSession, user: User, rec_id: str,
+                                  state: dict | None = None) -> None:
+    await _mark(session, _done_key(user), rec_id, _DONE_TTL_DAYS, state)
     await _resolve_if_rule_card(session, user, rec_id, "acknowledged")
 
 
@@ -1765,6 +1872,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     dismissed = await load_dismissed(session, user)
     completed = await load_completed(session, user)
     suppressed = done_count = 0
+    _hidden_cards: list[dict] = []
     if dismissed or completed:
         # The two mark maps, id -> when-it-was-marked. `load_dismissed` and
         # `load_completed` throw the timestamp away and return bare id sets, and
@@ -1802,8 +1910,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 try:
                     _fired = next(((r.get("meta") or {}).get("triggered_at")
                                    for r in recs if r.get("id") == _hid), None)
-                    _dealt = _marks.get(_hid)
-                    if _fired and _dealt and _parse_dt(str(_fired)) > _parse_dt(str(_dealt)):
+                    _dealt = _at(_marks.get(_hid))
+                    if _fired and _dealt and _parse_dt(str(_fired)) > _parse_dt(_dealt):
                         # Fired again since. Do not resolve it, and do not
                         # suppress its card either -- healing it while still
                         # hiding it is the deadlock this block exists to break.
@@ -1858,9 +1966,46 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _high = {r.get("id") for r in recs if r.get("severity") == "HIGH"}
         _high_cut = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
         _stale_high = {rid for rid in (completed & _high)
-                       if _parse_dt(str(_done_map.get(rid) or _now_iso())) < _high_cut}
-        dismissed = dismissed - _refired - _persistent
-        completed = completed - _refired - _stale_high - _persistent
+                       if _parse_dt(_at(_done_map.get(rid)) or _now_iso()) < _high_cut}
+
+        # THE THIRD WAY A MUTE OUTLIVED ITS CONDITION, and the general one: the
+        # card still describes the same category and the same ticker, so it
+        # keeps the same id and the same mark -- while the number it is asking
+        # for has moved somewhere else entirely. See `moved_on`.
+        _moved: dict[str, str] = {}
+        for _r in recs:
+            _rid_ = _r.get("id")
+            if _rid_ not in dismissed and _rid_ not in completed:
+                continue
+            _why = moved_on(_marks.get(_rid_), _r)
+            if _why:
+                _moved[_rid_] = _why
+
+        dismissed = dismissed - _refired - _persistent - set(_moved)
+        completed = completed - _refired - _stale_high - _persistent - set(_moved)
+
+        # A CARD THAT COMES BACK MUST SAY WHY IT CAME BACK. Reappearing without
+        # explanation reads as the app having forgotten you dealt with it, which
+        # is the complaint the mute exists to prevent.
+        for _r in recs:
+            if _r.get("id") in _moved:
+                _r["refired_because"] = _moved[_r["id"]]
+
+        # WHAT IS HIDDEN, NOT JUST HOW MANY. The card already carried a count
+        # and the screen already showed it -- "4 other suggestions are ignored".
+        # A count cannot answer the question the user actually had, which was
+        # "why is there no card telling me to fix my mix": the rebalance pair
+        # was inside that 4 and nothing on the screen said so.
+        for _r in recs:
+            _rid_ = _r.get("id")
+            if _rid_ in dismissed or _rid_ in completed:
+                _hidden_cards.append({
+                    "id": _rid_, "title": _r.get("title"),
+                    "severity": _r.get("severity"), "dimension": _r.get("dimension"),
+                    "how": ("done" if _rid_ in completed else "ignored"),
+                    "hidden_at": _at(_marks.get(_rid_)) or None,
+                    "est_amount": _r.get("est_amount")})
+        _hidden_cards.sort(key=lambda x: _SEV.get(x.get("severity") or "", 9))
 
         _n = len(recs)
         recs = [r for r in recs if r.get("id") not in dismissed]
@@ -1985,6 +2130,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             # "you ignored everything" and "an agent failed" are three different things.
             "dismissed_count": suppressed,
             "completed_count": done_count,
+            # ...and WHICH ones. The count was always here and the screen always
+            # showed it; a count cannot tell you the rebalance pair is inside it.
+            "hidden_cards": _hidden_cards,
             "degraded": degraded, "rule_banner": rule_banner,
             # Where the time actually went, per agent (ms). Cheap to compute and
             # it turns "the endpoint is slow" into a specific culprit.

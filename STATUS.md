@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 33 — the chart measured the day it could not explain)._
+_Last updated: 2026-09-02 by Claude (PR 34 — a mute does not outlive its number)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,68 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 34 — a mute does not outlive its number
+
+**Nine cards were hidden, and two of them were the ones he needed.** Read live
+from production on 2026-09-02, while Eran was asking why the app had nothing to
+say about a book that was off target:
+
+```
+/api/v1/mix              rebalance_required: true
+                         BUY  Fixed Income  2,243.96
+                         SELL Equities      1,626.87
+/api/v1/recommendations  4 cards, all screener verdicts
+                         dismissed_count: 4   completed_count: 5
+```
+
+A card's id is `sha1(category|ticker)` — no amount, no date — so the card you
+file today and the card the same condition generates next week are **the same
+id**, and one click mutes both for a fortnight however far the number travels in
+between. `_DONE_TTL_DAYS` was already cut from 90 to 14 for this reason, and the
+comment that did it says so: *"making the id carry its own content is the actual
+fix and is a separate change."* This is that change, **and it does not touch the
+id.**
+
+**Why not a content-bearing id.** The id is what Restore, the audit log and the
+push dedupe all key on, and quantising an amount into it churns on every
+boundary — 1,499 and 1,501 become different cards, and a card that re-fires on a
+0.1% move is as useless as one that never re-fires. So the *mark* remembers the
+situation instead, and the situation is compared. No boundary, no new identity,
+and the comparison is legible in the reason the card carries back.
+
+Two things un-mute a card (`moved_on`): its **severity went up** — "I dealt with
+that" was said about a MEDIUM and the app now calls it HIGH — or its **own
+number moved** by more than 25%, floored at ₪100 so a card asking for pocket
+change does not re-fire on rounding. A mark with no situation (every mark made
+before this ships, and every card that carries no amount) keeps exactly the old
+behaviour: muted until the TTL runs out. **Nothing is migrated and no existing
+mute silently changes meaning.**
+
+The amount comes from the client, because rebuilding the whole Today list on a
+button press would put a multi-second sweep on the slowest path in the app. That
+trust is bounded by construction: `moved_on` only ever uses it to bring a card
+**back** early. A wrong value cannot extend a mute, hide anything, or move a
+single number in the book.
+
+**A card that comes back says why it came back** — reappearing with no
+explanation reads as the app having forgotten you dealt with it, which is the
+complaint the mute exists to prevent, arriving through another door.
+
+**The second half was misdiagnosed at first and the correction matters.** The
+"N suggestions are hidden" line already existed and already rendered next to
+live cards — the count was never missing. What was missing is *which*: it said
+"4 other suggestions are ignored" while the two rebalance cards sat inside that
+4 and nothing named them. `hidden_cards` now carries id, title, severity,
+dimension, how it was hidden and when, and the screen lists them.
+
+15 tests; **14 fail against PR 33**. The one that passes is
+`test_dismissing_without_a_body_still_works` — a deliberate no-change guard, so
+it must pass on both.
+
+Gate: SQLite 1515 / 0, Postgres 16 1515 / 0, ruff clean.
 
 ---
 
