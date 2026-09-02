@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 36 — the target card remembers what you accepted)._
+_Last updated: 2026-09-02 by Claude (PR 37 — a core is a strategy too)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,64 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 37 — a core is a strategy too
+
+> *"that's not true.... the sleeves have their strategy and the core has its own
+> strategy. the portfolio is being managed by two different strategies (sleeves
+> strategy and core strategy)"* — Eran, 2026-09-02, on the line PR 36 shipped
+
+He is right, and this repo already agreed with him everywhere except the one
+place it mattered. `core_search` ranks **fourteen** candidate cores on measured
+return, volatility and drawdown, through `blend.core_spec` +
+`blend.measure_blend`. His core is `bal_6040` — a basket plus a rebalance
+discipline, sized at 27% of the book.
+
+But `backtest_service.refresh_all` only ever walked `strategy_catalog`, the
+**rule-based sleeves**. No static family had ever been backtested, so
+`book_assumptions` had no core row to read — and it never asked for one. Every
+unclaimed holding went through the per-ticker instrument table. That is the
+whole of the 79%.
+
+**The fallback was not neutral.** A per-ticker table has no covariance term, so
+pricing a rebalanced 60/40 as the weighted average of a VTI row and a BND row
+**overstates its volatility by construction**: the one thing rebalancing between
+two weakly-correlated legs does is the one thing the table cannot express.
+
+So the core is measured nightly, into the same `StrategyBacktest` table, gated by
+the same `usable()` — one fetch for the union of every basket, but each basket
+measured on a feed **scoped to its own tickers**, because `align()` intersects
+the date axis and one late-listing ticker would otherwise truncate all fourteen
+(the trap `target_solver._core_blocking` documents).
+
+**A fixed basket has no fitted parameter**, so it gets no out-of-sample fold.
+`_pick_return` prefers the OOS figure because a *rule* can be tuned until the
+past looks good; splitting a 60/40's history measures the decade, not the
+strategy. That is stored as a named reason (`NO_FIT_TO_TEST`), not as an empty
+`robustness` a reader could mistake for a failure.
+
+**And one gate a sleeve does not need.** A sleeve's tickers are its tickers; a
+core's basket is a *target*, and a book can name `bal_6040` and hold something
+else — which is exactly what Eran's book does: BND and V, no VTI at all. Pricing
+those holdings from a measurement of a basket they are not is the same class of
+error as PR 6's target-weighting, so composition is checked first against
+`recommendations.SLEEVE_DRIFT_BAND_PCT` (the app's existing answer, not a second
+private tolerance) and a mismatch abstains **by name**:
+
+> *"Classic 60/40 (bal_6040) IS measured, and your core is not holding it: you
+> hold none of VTI; V is not in the basket…"*
+
+So on his book today the numbers do not move — and the app finally says why, in
+terms he can act on. It is the same finding as issues 2 and 3 arriving through a
+third door.
+
+21 tests, **20 fail against PR 36**. The one that passes guards a pre-existing
+invariant — that `bal_6040` is in `core_candidates()` with a basket — because if
+that stops being true, `measure_cores` measures nothing and tells nobody.
+
+Gate: SQLite 1565 / 0, Postgres 16 1565 / 0, ruff clean.
 
 ---
 

@@ -237,6 +237,139 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     return result
 
 
+# ---------------------------------------------------------------------------
+# PR 37 -- a core is a strategy too
+# ---------------------------------------------------------------------------
+#
+# Eran, 2026-09-02: *"the sleeves have their strategy and the core has its own
+# strategy -- the portfolio is being managed by two different strategies."*
+#
+# He is right, and until now only one of the two was ever measured. `measure()`
+# above walks `strategy_catalog`, which holds RULE-BASED sleeves. The static
+# families in `strategies.CATALOG` -- the ones that can stand as a core -- were
+# never backtested at all, so `book_assumptions` had no row to read and fell
+# back to the per-ticker instrument table for the entire core.
+#
+# THAT FALLBACK IS NOT NEUTRAL. A per-ticker table has no covariance term, so
+# pricing a rebalanced 60/40 as the weighted average of a VTI row and a BND row
+# OVERSTATES ITS VOLATILITY BY CONSTRUCTION -- the one thing rebalancing between
+# two weakly-correlated legs does is the one thing the table cannot express.
+#
+# Nothing new is invented here. `blend.core_spec` turns a basket into a
+# buy-and-hold spec and `blend.measure_blend` runs it through the same
+# `targets_for` -> `_simulate` -> `_metrics` path every sleeve takes, which is
+# how `core_search` already ranks fourteen candidate cores. This wires that to
+# the nightly job and the same `StrategyBacktest` table, so a core passes
+# `usable()` on exactly the terms a sleeve does.
+
+# A fixed basket has no fitted parameter, so it gets no out-of-sample fold. This
+# is a REASON, not a failure, and it is stored as one.
+NO_FIT_TO_TEST = "NO_FIT_TO_TEST"
+
+
+def measure_cores(candidates: list[dict] | None = None) -> dict[str, dict]:
+    """Every static core family, measured as the buy-and-hold basket it is.
+
+    ONE FETCH for the union of every basket plus the benchmark. Fourteen
+    separate fetches of a heavily overlapping ticker set is how a run gets
+    rate-limited into reporting that none of the cores can be measured -- the
+    exact failure `_fetch`'s own docstring records from the first live T6b run.
+
+    BUT EACH BASKET IS MEASURED ON A FEED SCOPED TO ITS OWN TICKERS. `align()`
+    intersects the DATE AXIS across everything in the feed, so one late-listing
+    ticker in one basket would silently truncate all fourteen to its history and
+    report ten-year figures for none of them. `target_solver._core_blocking`
+    documents that trap at length; this is the same trap and the same answer.
+
+    A basket whose own tickers are missing is excluded BY NAME, and the other
+    thirteen are still measured.
+    """
+    from app.engines import blend
+    from app.services import strategies as static_cat
+
+    cands = candidates if candidates is not None else static_cat.core_candidates()
+    if not cands:
+        return {}
+
+    bench_tk = get_settings().benchmark_ticker
+    wanted = {bench_tk}
+    for c in cands:
+        wanted |= {t.upper() for t in (c.get("weights") or {})}
+    series, no_data, unavailable = _fetch(sorted(wanted), classify=True)
+    # The two kinds of absence stay apart to the end: "BND has no price history"
+    # is a fact about BND, "BND was rate-limited" is a fact about this run, and
+    # a reader who cannot tell them apart goes off to check for a delisting.
+    missing_set, unavail_set = set(no_data), set(unavailable)
+    bench = series.get(bench_tk)
+
+    out: dict[str, dict] = {}
+    for c in cands:
+        sid = c.get("id")
+        need = {t.upper() for t in (c.get("weights") or {})}
+        if not need:
+            out[sid] = {"ok": False, "reason": "NO_WEIGHTS",
+                        "detail": "this family carries no basket"}
+            continue
+        short = sorted(need & (missing_set | unavail_set))
+        if short:
+            hard = [t for t in short if t in missing_set]
+            out[sid] = (
+                {"ok": False, "reason": bt.MISSING_TICKER,
+                 "detail": f"no price history for {', '.join(hard)}"}
+                if hard else
+                {"ok": False, "reason": "PROVIDER_UNAVAILABLE",
+                 "detail": (f"{', '.join(short)} could not be fetched on this run; "
+                            f"that is a fact about the run, not about the ticker")})
+            continue
+        feed = {tk: series[tk] for tk in need if tk in series}
+        try:
+            res = blend.measure_blend(
+                feed,
+                [{"id": sid, "spec": blend.core_spec(c["weights"]), "weight": 1.0}],
+                benchmark=bench, detail=False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backtest: core %s blew up", sid, exc_info=True)
+            res = {"ok": False, "reason": "ENGINE_ERROR", "detail": str(e)[:255]}
+        if res.get("ok"):
+            # Which benchmark this is relative to, for the same reason `measure`
+            # records it: a later settings change must mark the row stale rather
+            # than relabel a SPY-measured excess as excess-over-QQQ.
+            res["benchmark_ticker"] = bench_tk
+            # A BUY-AND-HOLD BASKET HAS NOTHING TO FIT, SO IT GETS NO
+            # OUT-OF-SAMPLE FOLD. `measure()` stores one for a rule because a
+            # rule has parameters that can be tuned until the past looks good.
+            # A fixed 60/40 has no parameter, so splitting its history would
+            # measure the decade rather than the strategy. Recording that as a
+            # named reason beats leaving `robustness` empty and letting a reader
+            # take the silence for a failed measurement.
+            res["robustness"] = {"out_of_sample": {
+                "ok": False, "reason": NO_FIT_TO_TEST,
+                "detail": ("a fixed basket has no fitted parameter, so an "
+                           "out-of-sample split would measure the window, "
+                           "not the strategy")}}
+            res["is_core_basket"] = True
+        out[sid] = res
+    return out
+
+
+async def refresh_cores(session: AsyncSession, *,
+                        only: list[str] | None = None) -> dict:
+    """Measure and store every static core family. Part of the nightly job."""
+    from app.services import strategies as static_cat
+
+    wanted = set(only) if only else None
+    cands = [c for c in static_cat.core_candidates()
+             if wanted is None or c["id"] in wanted]
+    results = measure_cores(cands)
+    done = 0
+    for sid, res in results.items():
+        await store(session, sid, res)
+        if res.get("ok"):
+            done += 1
+    return {"computed": done, "abstained": len(results) - done,
+            "ids": sorted(results)}
+
+
 async def store(session: AsyncSession, strategy_id: str, result: dict) -> StrategyBacktest:
     """Upsert one result. An abstention replaces the previous metrics, never hides behind them."""
     row = (await session.execute(
@@ -391,6 +524,13 @@ async def refresh_all(session: AsyncSession, *, only: list[str] | None = None) -
             done += 1
         else:
             failed += 1
+    # THE CORES, in the same run and the same table. A book is managed by two
+    # kinds of strategy and the nightly job used to measure one of them.
+    cores = {"computed": 0, "abstained": 0, "ids": []}
+    try:
+        cores = await refresh_cores(session)
+    except Exception:  # noqa: BLE001
+        logger.warning("backtest: core refresh failed", exc_info=True)
     await session.commit()
     # Every strategy failing on price history at once is one provider outage,
     # not seven broken strategies -- and the resilience tier's circuit breaker
@@ -398,7 +538,15 @@ async def refresh_all(session: AsyncSession, *, only: list[str] | None = None) -
     # "history" tier at once. Saying so stops a run that should be retried from
     # reading as a catalog that fell apart.
     outage = bool(specs) and done == 0 and failed == len(specs)
-    return {"computed": done, "abstained": failed, "engine_version": ENGINE_VERSION,
+    # Sleeves and cores are counted TOGETHER in the headline, because the caller
+    # asked "did the nightly measurement work", and separately underneath,
+    # because "every sleeve measured and every core failed" is a different
+    # morning from "everything measured".
+    return {"computed": done + cores["computed"],
+            "abstained": failed + cores["abstained"],
+            "sleeves": {"computed": done, "abstained": failed},
+            "cores": cores,
+            "engine_version": ENGINE_VERSION,
             "provider_outage": outage,
             "note": ("every strategy failed to fetch prices - likely a provider "
                      "outage or an open circuit breaker, not a catalog problem; "

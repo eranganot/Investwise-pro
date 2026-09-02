@@ -219,9 +219,13 @@ def test_the_headline_does_not_claim_the_core_has_no_strategy():
     lower = text.lower()
     assert "no strategy" not in lower, (
         f"the core is a strategy and the headline denies it: {text}")
-    # ...and it owns the gap rather than presenting it as the intended design
-    assert ("not yet" in lower) or ("gap" in lower), (
-        f"the headline does not say the app is what falls short here: {text}")
+    # ...and it says what is actually true of the core right now rather than
+    # presenting the shortfall as the intended design. PR 36 said "this app does
+    # not yet measure a core"; PR 37 measures it, and this branch became "the
+    # core has no usable measurement yet". Both own the gap; neither denies the
+    # strategy, which is the invariant this test exists to hold.
+    assert ("yet" in lower) or ("gap" in lower), (
+        f"the headline does not say what falls short here: {text}")
 
 
 def test_a_fully_static_book_still_says_so_plainly():

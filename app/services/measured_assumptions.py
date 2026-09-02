@@ -77,6 +77,11 @@ NOT_MEASURED_FAILED = "MEASUREMENT_FAILED"    # the row exists and ok is False
 NOT_MEASURED_STALE = "ENGINE_VERSION_MOVED"   # measured by an engine we no longer run
 NOT_MEASURED_SHORT = "TOO_FEW_OBSERVATIONS"   # under the 260-session floor
 NOT_MEASURED_NO_OOS = "NO_OUT_OF_SAMPLE"      # asked for OOS, the row has none
+# PR 37. The core IS measured, and the book is not holding it. Distinct from
+# every reason above, all of which say the measurement is missing: this one says
+# the measurement is fine and does not describe these holdings.
+CORE_NOT_HELD = "CORE_NOT_HELD"
+CORE_NOT_SET = "NO_CORE_STRATEGY"             # the book names no core at all
 
 BASIS_MEASURED = "measured"
 BASIS_MIXED = "mixed"
@@ -112,6 +117,33 @@ def _pick_return(metrics: dict, robustness: dict, basis: str) -> tuple[float | N
     v = (inner or {}).get("cagr_pct")
     if v is None:
         return None, NOT_MEASURED_NO_OOS
+    return float(v), None
+
+
+def _pick_core_return(metrics: dict, robustness: dict, basis: str) -> tuple[float | None, str | None]:
+    """The return half for a CORE, which is not the same question as for a rule.
+
+    `_pick_return` defaults to the out-of-sample fold because a rule has
+    parameters, and a full-sample CAGR for a tuned rule is the overfitting W1
+    exists to detect wearing a better label.
+
+    A FIXED BASKET HAS NO PARAMETER. There is nothing to tune, so there is
+    nothing for an out-of-sample split to catch -- splitting a 60/40's history
+    measures the decade, not the strategy. `backtest_service.measure_cores`
+    stores that as `NO_FIT_TO_TEST` rather than leaving `robustness` empty, and
+    here it means the full-window figure is the honest reading rather than a
+    fallback.
+
+    Which is NOT the same as saying the number is a forecast. `RETURN_CAVEAT`
+    still travels with it, and a 60/40 measured over 2015-2025 is still a
+    bull-market window; the component records `full_window_because` so the
+    reason is on the payload rather than in this docstring only.
+    """
+    if basis == RETURN_BASIS_STATIC:
+        return None, None
+    v = metrics.get("cagr_pct")
+    if v is None:
+        return None, NOT_MEASURED_NO_ROW
     return float(v), None
 
 
@@ -227,7 +259,8 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
     from app.core.config import get_settings
     from app.services.backtest_service import ENGINE_VERSION
     from app.services.intake_service import list_positions
-    from app.services.sleeve_service import sleeve_occupancy
+    from app.services.backtest_service import NO_FIT_TO_TEST
+    from app.services.sleeve_service import core_strategy_id, sleeve_occupancy
     from app.services.strategy_profile import assumptions_for
 
     st = get_settings()
@@ -242,7 +275,13 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
                 "note": "no holdings, so there is nothing to characterise."}
 
     sleeve_rows = occ.get("sleeves") or []
+    # The core's measurement is fetched in the SAME query as the sleeves'. Two
+    # queries would be two chances for the two halves of one book to be read at
+    # different moments, and they are compared against each other below.
+    core_id = await core_strategy_id(session, user)
     ids = [s["strategy_id"] for s in sleeve_rows if s.get("held_pct")]
+    if core_id:
+        ids = ids + [core_id]
     by_id = {}
     if ids:
         from sqlalchemy import select
@@ -315,14 +354,15 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
                      "computed_at": (row.computed_at.isoformat()
                                      if getattr(row, "computed_at", None) else None)})
 
-    # Everything no sleeve claims. Priced from the instrument table, which is
-    # what that table is FOR -- a static basket held buy-and-hold. The bug was
-    # only ever pointing it at rule-based sleeves.
+    # Everything no sleeve claims: the core region, plus cash and anything
+    # bought by hand.
     # `list_positions` returns ORM Position rows, not dicts -- attribute access,
     # and the same FX normalisation `_portfolio_stats` uses, so the two cannot
     # disagree about what a holding is worth (investing-discipline S2).
     rows = await list_positions(session, user)
     from app.services.fx import fx_rate, price_currency
+
+    unclaimed: list[tuple[str, dict, float]] = []      # (ticker, meta, value_ils)
     for p in rows:
         tk = str(getattr(p, "ticker", "") or "").upper()
         if not tk or tk in claimed:
@@ -331,6 +371,94 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
         rate = fx_rate(price_currency(p.market, meta))
         val = float(p.quantity or 0.0) * float(p.current_price or 0.0) * rate
         if val <= 0:
+            continue
+        unclaimed.append((tk, meta, val))
+
+    # ----------------------------------------------------------------- #
+    # PR 37 -- THE CORE IS A STRATEGY, AND IT GETS MEASURED LIKE ONE.
+    #
+    # Until now this function walked the sleeves and then priced every
+    # remaining holding one ticker at a time, which meant a core never had a
+    # measurement to be read even when one existed. It does now
+    # (`backtest_service.measure_cores`), so the core is asked for by name and
+    # gated exactly as a sleeve is.
+    #
+    # With ONE extra gate that a sleeve does not need. A sleeve's tickers are
+    # its tickers by definition; a core's basket is a TARGET, and a book can
+    # hold something else entirely. Pricing holdings from a measurement of a
+    # basket they are not is the same class of error as PR 6's target-weighting,
+    # so the composition is checked first and a mismatch abstains BY NAME.
+    # ----------------------------------------------------------------- #
+    core_tickers: set[str] = set()
+    core_row_id = core_id
+    if core_row_id:
+        from app.services.recommendations import SLEEVE_DRIFT_BAND_PCT
+        from app.services.strategies import core_weights as _core_weights
+        from app.services.strategies import get as _static_get
+
+        basket = _core_weights(core_row_id) or {}
+        cname = ((_static_get(core_row_id) or {}).get("name") or core_row_id)
+        # Cash is in no basket, so it is not part of the composition question.
+        held = {tk: val for tk, meta, val in unclaimed
+                if str(meta.get("asset_class") or "") != "Cash" and tk != "CASH"}
+        matched, evidence = core_matches_basket(held, basket,
+                                                band_pct=SLEEVE_DRIFT_BAND_PCT)
+        crow = by_id.get(core_row_id)
+        cok, cwhy = usable(crow, engine_version=ENGINE_VERSION)
+        core_w = round(sum(held.values()) / nav * 100.0, 4)
+
+        if not matched:
+            # The measurement is fine. It just is not a measurement of this.
+            abstained.append({"kind": "core", "id": core_row_id, "weight_pct": core_w,
+                              "reason": CORE_NOT_HELD,
+                              "detail": _core_not_held_detail(cname, core_row_id, evidence),
+                              "evidence": evidence})
+        elif not cok:
+            abstained.append({"kind": "core", "id": core_row_id, "weight_pct": core_w,
+                              "reason": cwhy,
+                              "detail": _why_detail(cwhy, core_row_id, crow, ENGINE_VERSION)})
+        elif core_w > 0:
+            cmetrics = dict(crow.metrics or {})
+            crobust = dict(crow.robustness or {})
+            m_r, r_why = _pick_core_return(cmetrics, crobust, basis)
+            m_v, v_why = _pick_volatility(cmetrics)
+            st_r, st_v = _static_for(sorted(held), assumptions_for)
+            if m_r is None and r_why:
+                abstained.append({"kind": "core", "id": core_row_id, "weight_pct": core_w,
+                                  "reason": r_why, "side": "return",
+                                  "detail": f"{cname} has no stored CAGR to read."})
+            if m_v is None and v_why:
+                abstained.append({"kind": "core", "id": core_row_id, "weight_pct": core_w,
+                                  "reason": v_why, "side": "volatility",
+                                  "detail": f"{cname} stored no volatility."})
+            core_tickers = set(held)
+            components.append({
+                "kind": "core", "id": core_row_id, "name": cname,
+                "weight_pct": core_w, "tickers": sorted(held),
+                "return_pct": m_r if m_r is not None else st_r,
+                "volatility_pct": m_v if m_v is not None else st_v,
+                "return_source": SOURCE_MEASURED if m_r is not None else SOURCE_STATIC,
+                "volatility_source": SOURCE_MEASURED if m_v is not None else SOURCE_STATIC,
+                "measured_full_return_pct": cmetrics.get("cagr_pct"),
+                "measured_max_drawdown_pct": cmetrics.get("max_drawdown_pct"),
+                "static_return_pct": st_r, "static_volatility_pct": st_v,
+                # WHY THE FULL WINDOW, on the payload rather than only in the
+                # code: a fixed basket has no parameter to overfit, so there is
+                # no out-of-sample fold to prefer. See `_pick_core_return`.
+                "full_window_because": NO_FIT_TO_TEST,
+                "composition": evidence,
+                "note": (f"your core runs {cname}, and the book is holding it, so it is "
+                         f"priced from its own measurement rather than ticker by ticker"),
+            })
+            pins.append({"id": core_row_id, "kind": "core",
+                         "engine_version": crow.engine_version,
+                         "period_start": crow.period_start, "period_end": crow.period_end,
+                         "observations": crow.observations,
+                         "computed_at": (crow.computed_at.isoformat()
+                                         if getattr(crow, "computed_at", None) else None)})
+
+    for tk, meta, val in unclaimed:
+        if tk in core_tickers:
             continue
         w = round(val / nav * 100.0, 4)
         s_r, s_v = assumptions_for(tk, meta.get("asset_class"))
@@ -352,6 +480,65 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
                 "caveat": RETURN_CAVEAT})
     out["note"] = _headline(out, basis)
     return out
+
+
+def core_matches_basket(held_ils: dict[str, float], weights: dict[str, float],
+                        *, band_pct: float) -> tuple[bool, dict]:
+    """Is the core region actually holding the basket its core strategy names?
+
+    PURE -- two dicts in, a verdict and its evidence out, no ORM and no I/O,
+    matching `blend` / `split_solver` / `core_search`.
+
+    This gate exists because measuring `bal_6040` and then pricing a book that
+    holds no VTI with it would describe a book that does not exist. That is the
+    defect PR 6 removed at the other end, where sleeves were weighted by their
+    TARGET rather than by what they held. A measurement is only allowed to price
+    the holdings it is a measurement OF.
+
+    `band_pct` is `recommendations.SLEEVE_DRIFT_BAND_PCT` -- the app's existing
+    answer to "how far may this wander before Today says so". A second, private
+    tolerance here would be a second answer to one question.
+
+    Cash is the caller's business: it is not in any basket, so the caller keeps
+    it out of `held_ils` rather than this function knowing what cash is.
+    """
+    total = sum(v for v in held_ils.values() if v > 0)
+    basket_total = sum(w for w in weights.values() if w > 0)
+    if total <= 0 or basket_total <= 0:
+        return False, {"reason": "nothing is held in the core region"
+                       if total <= 0 else "the core names no basket"}
+    want = {t.upper(): w / basket_total * 100.0
+            for t, w in weights.items() if w > 0}
+    have = {t.upper(): v / total * 100.0
+            for t, v in held_ils.items() if v > 0}
+    missing = sorted(t for t in want if t not in have)
+    extra = sorted(t for t in have if t not in want)
+    drift = {t: round(have.get(t, 0.0) - want[t], 2) for t in want}
+    worst = max((abs(d) for d in drift.values()), default=0.0)
+    ok = not missing and not extra and worst <= band_pct
+    return ok, {"missing": missing, "extra": extra, "drift_pct": drift,
+                "worst_drift_pct": round(worst, 2), "band_pct": band_pct,
+                "held_pct": {t: round(v, 2) for t, v in sorted(have.items())},
+                "basket_pct": {t: round(v, 2) for t, v in sorted(want.items())}}
+
+
+def _core_not_held_detail(name: str, sid: str, ev: dict) -> str:
+    """Say which holding is wrong, not that something is."""
+    if ev.get("reason"):
+        return f"{name} ({sid}): {ev['reason']}."
+    bits = []
+    if ev.get("missing"):
+        bits.append(f"you hold none of {', '.join(ev['missing'])}")
+    if ev.get("extra"):
+        bits.append(f"{', '.join(ev['extra'])} is not in the basket")
+    if not bits:
+        bits.append(f"the biggest leg is {ev.get('worst_drift_pct')}pp off, "
+                    f"past the {ev.get('band_pct')}pp band")
+    return (f"{name} ({sid}) IS measured, and your core is not holding it: "
+            f"{'; '.join(bits)}. The measurement describes the basket, so it is "
+            f"not used to price holdings that are not that basket -- these are "
+            f"priced from the instrument table instead. Bring the core back to "
+            f"its basket and it will be priced from its own measurement.")
 
 
 def _static_for(tickers: list[str], assumptions_for) -> tuple[float | None, float | None]:
@@ -410,10 +597,41 @@ def _headline(out: dict, basis: str) -> str:
     # kinds of strategy, sleeves and a core, and only one of them is measured
     # here. So the sentence names a gap in the app instead of inventing a
     # property of the core.
+    #
+    # PR 37 CLOSED THAT GAP, so the sentence now has three cases to tell apart,
+    # and the difference between the last two is the whole point:
+    #
+    #   * the core is measured and priced from its own measurement;
+    #   * the core is measured and the book is NOT HOLDING IT, so the
+    #     measurement is deliberately not applied -- that is a fact about the
+    #     holdings, and the reader has to be able to act on it;
+    #   * there is no core, or it has no usable measurement yet.
     rest = round(100.0 - float(pct), 1)
-    return (f"{pct:g}% of the book is priced from its own measured strategies "
-            f"({label} returns, measured volatility) -- that is your sleeves. "
-            f"The remaining {rest:g}% is your core and your cash, and it is priced "
-            f"holding by holding from the instrument table because this app does "
-            f"not yet measure a core the way it measures a sleeve. That is a gap "
-            f"here, not a verdict on your core.")
+    head = (f"{pct:g}% of the book is priced from its own measured strategies "
+            f"({label} returns, measured volatility)")
+    kinds = {c.get("kind") for c in (out.get("components") or [])
+             if c.get("weight_pct") and c.get("return_source") == SOURCE_MEASURED}
+    core_measured = "core" in kinds
+    not_held = next((a for a in (out.get("abstained") or [])
+                     if a.get("reason") == CORE_NOT_HELD), None)
+
+    if core_measured:
+        return (f"{head} -- your sleeves AND your core, each measured as the "
+                f"strategy it is. The remaining {rest:g}% is cash, which is "
+                f"priced as cash.")
+    if not_held:
+        ev = not_held.get("evidence") or {}
+        gaps = []
+        if ev.get("missing"):
+            gaps.append(f"you hold none of {', '.join(ev['missing'])}")
+        if ev.get("extra"):
+            gaps.append(f"{', '.join(ev['extra'])} is not in it")
+        why = ("; ".join(gaps) if gaps
+               else f"its biggest leg is {ev.get('worst_drift_pct')}pp off")
+        return (f"{head} -- that is your sleeves. Your core IS measured too, and "
+                f"the remaining {rest:g}% is not priced from it because the book "
+                f"is not holding that basket: {why}. Those holdings are priced "
+                f"one ticker at a time until the core holds its basket again.")
+    return (f"{head} -- that is your sleeves. The remaining {rest:g}% is your core "
+            f"and your cash. The core has no usable measurement yet, so it is "
+            f"priced holding by holding from the instrument table.")
