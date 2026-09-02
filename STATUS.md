@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 34 — a mute does not outlive its number)._
+_Last updated: 2026-09-02 by Claude (PR 33b — the tests PR 33 rewrote and PR 33 did not commit)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,46 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 33b — the tests PR 33 rewrote and PR 33 did not commit
+
+**CI run #194 went red on both backends**, three failures, all of them the tests
+PR 33 rewrote:
+
+```
+test_a_spike_is_not_a_flow::test_a_removal_that_is_NOT_reversed_stays_an_ordinary_flow
+test_history_does_not_call_an_intake_performance::test_the_step_is_named_rather_than_folded_in_silently
+test_history_does_not_call_an_intake_performance::test_a_holding_sold_out_of_is_not_a_loss
+```
+
+PR 33 changed *where* an unexplained step lands, and rewrote those three to
+assert the property rather than the mechanism. **Two of the three files were
+missing from `ship-pr33`'s `$Files` list.** `New-Commit` is path-limited by
+design — that is the "never `git add -A`" rule — so it committed the new code
+and left the rewritten tests sitting in the working tree.
+
+**The local gate could not have caught it.** It ran the new tests against the
+new code and went green, correctly, because that is what was on disk. The
+divergence existed only between the working tree and the commit — and nothing
+looked there.
+
+So the check goes where the two actually diverge. `New-Commit` now lists every
+**modified tracked file that is not in `$Files`**, says plainly that the gate
+tested them and CI will not have them, and requires a confirmation before
+committing without them. Exclusions are the tracked files that are dirty for
+reasons unrelated to any commit: `investwise.db` (rewritten by every local
+pytest run), `frontend/node_modules`, `scripts/railway-error.log`, and
+`COMMIT_MSG.txt`.
+
+The general shape, worth keeping: **a gate that tests the working tree cannot
+verify a commit.** Every rule in this repo about naming files on a commit buys
+safety at the cost of a blind spot, and the blind spot needs its own guard.
+
+No application code changes.
+
+Gate: SQLite 1515 / 0, Postgres 16 1515 / 0, ruff clean.
 
 ---
 

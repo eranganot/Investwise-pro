@@ -48,6 +48,42 @@ function New-Commit {
     $missing = $Files | Where-Object { -not (Test-Path $_) }
     if ($missing) { Write-Host "Missing files: $($missing -join ', ')" -ForegroundColor Red; exit 1 }
 
+    # A MODIFIED TRACKED FILE THAT IS NOT IN $Files IS THIS COMMIT'S BLIND SPOT,
+    # AND THE LOCAL GATE CANNOT SEE IT BY CONSTRUCTION.
+    #
+    # PR 33 rewrote three tests alongside app/services/nav_history.py and its
+    # $Files list named only one of them. The gate ran the NEW tests against the
+    # NEW code and went green - correctly, because that is the working tree.
+    # The commit carried the new code and the OLD tests, so CI ran run #194 and
+    # went red on three of them, on both backends. The gate is not at fault: it
+    # tests what is on disk, and what was on disk was right.
+    #
+    # So the check has to live HERE, at the only point where the two diverge.
+    # Before the 'git add' below, because after it these files move into the
+    # index and drop out of the unstaged diff.
+    #
+    # The exclusions are the tracked files that are routinely dirty for reasons
+    # that have nothing to do with any commit: investwise.db is rewritten by
+    # every local pytest run, node_modules is tracked and CRLF-noisy, and
+    # COMMIT_MSG.txt is this function's own scratch file.
+    $noisy = @("investwise.db", "COMMIT_MSG.txt", "scripts/railway-error.log")
+    $left = @(git diff --name-only) | Where-Object {
+        $_ -and ($Files -notcontains $_) -and ($noisy -notcontains $_) -and
+        ($_ -notlike "frontend/node_modules/*") -and ($_ -notlike ".claude/*")
+    }
+    if ($left.Count -gt 0) {
+        Write-Host ""
+        Write-Host "MODIFIED AND NOT IN THIS COMMIT ($($left.Count)):" -ForegroundColor Red
+        foreach ($f in $left) { Write-Host "  $f" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  Your local gate tested these files. CI will NOT have them." -ForegroundColor Yellow
+        Write-Host "  If any of them is a test this change rewrote, CI runs the OLD" -ForegroundColor Yellow
+        Write-Host "  test against the NEW code and goes red. That is CI run #194." -ForegroundColor Yellow
+        Write-Host "  Add them to the script's file list, or stash them." -ForegroundColor Yellow
+        Write-Host ""
+        if ((Read-Host "  Commit WITHOUT them anyway? (y/N)") -ne "y") { exit 1 }
+    }
+
     git add -- $Files
 
     # PATH-LIMITED, ALL THE WAY THROUGH.

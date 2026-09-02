@@ -98,14 +98,26 @@ def test_a_removal_that_is_NOT_reversed_stays_an_ordinary_flow():
     performance too.
 
     The -63.41 on 2026-08-29 is a real removal. Nothing contradicts it, so it
-    must stay an attributed flow and keep scoring 0.00% for its step.
+    must stay ATTRIBUTED -- and never quietly folded into the return.
+
+    PR 33 changed WHERE an unexplained step lands, not whether it is named. With
+    a reconstruction available it is an estimated flow; without one the day is
+    unmeasurable and the line breaks. Both are "named"; neither is performance.
+    The assertion is on the property, so a future change of mechanism does not
+    silently drop the protection this test exists for.
     """
     r = time_weighted(LIVE, [])
-
-    dates = [f["as_of"] for f in r["unexplained_flows"]]
-    assert "2026-08-29" in dates, "the real removal stopped being treated as a flow"
-    assert "2026-08-22" not in dates, (
+    named = ([f["as_of"] for f in r["unexplained_flows"]]
+             + [u["as_of"] for u in r["unmeasured_days"]])
+    assert "2026-08-29" in named, "the real removal stopped being attributed at all"
+    assert "2026-08-22" not in named, (
         "the spike is still being called a flow; it should be a suspect snapshot")
+
+    # and with a reconstruction it is specifically a FLOW, correctly signed
+    r2 = time_weighted(LIVE, [], window_return=lambda a, b: 0.0)
+    flows = {f["as_of"]: f["amount_ils"] for f in r2["unexplained_flows"]}
+    assert "2026-08-29" in flows, "a flat market leaves the whole step as a flow"
+    assert flows["2026-08-29"] < 0, "a removal cannot be money arriving"
 
     # ...and the two measures must still DIFFER. If time-weighted return equals
     # the raw NAV change to the decimal, the flow logic is dead again.

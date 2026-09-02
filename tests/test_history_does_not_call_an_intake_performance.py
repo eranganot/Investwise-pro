@@ -55,14 +55,31 @@ def test_the_step_is_named_rather_than_folded_in_silently():
     quietly is how the +35% happened; guessing quietly in the other direction is
     not the fix.
     """
+    # PR 33: WITHOUT a way to measure what the rest of the book did, the app no
+    # longer asserts that the whole delta was a flow -- because that assertion
+    # draws the day at exactly 0.00%, which is itself a claim. The step is still
+    # NAMED, which is what this test is about; it is named as unmeasurable.
     out = time_weighted(INTAKE_BOOK, flows=[])
-    flagged = out["unexplained_flows"]
+    assert out["unexplained_flows"] == []
+    holes = out["unmeasured_days"]
+    assert len(holes) == 1, f"the step stopped being named at all: {out}"
+    assert holes[0]["as_of"] == "2026-08-22"
+    assert holes[0]["positions_before"] == 3
+    assert holes[0]["positions_after"] == 4
+    assert out["pct"][2] is None, "an unmeasurable day must break the line"
+
+    # WITH a reconstruction -- here a flat market, so the whole jump is the
+    # holding -- it is named as a flow, with its amount and its method.
+    out2 = time_weighted(INTAKE_BOOK, flows=[], window_return=lambda a, b: 0.0)
+    flagged = out2["unexplained_flows"]
     assert len(flagged) == 1, f"expected one named step, got {flagged}"
     assert flagged[0]["as_of"] == "2026-08-22"
     assert flagged[0]["amount_ils"] == pytest.approx(3500.0, abs=0.01)
     assert flagged[0]["positions_before"] == 3
     assert flagged[0]["positions_after"] == 4
-    assert "not counted as performance" in flagged[0]["reason"]
+    assert flagged[0]["estimated"] is True
+    assert "money moving in or out" in flagged[0]["reason"]
+    assert out2["total_pct"] == pytest.approx(0.0, abs=0.01)
 
 
 def test_a_recorded_deposit_still_wins_over_the_position_count():
@@ -96,10 +113,16 @@ def test_a_holding_sold_out_of_is_not_a_loss():
     """The same arithmetic in reverse, and the same wrong answer without it."""
     sold = [_p("2026-08-20", 13_500.0, 4),
             _p("2026-08-21", 10_000.0, 3)]
+    # Unmeasurable: named as a hole, and above all NOT reported as a -26% loss.
     out = time_weighted(sold, flows=[])
     assert out["total_pct"] == pytest.approx(0.0, abs=0.01), (
         "removing a holding was reported as a loss")
-    assert out["unexplained_flows"][0]["amount_ils"] == pytest.approx(-3500.0, abs=0.01)
+    assert [u["as_of"] for u in out["unmeasured_days"]] == ["2026-08-21"]
+
+    # Measurable, flat market: the whole step is the holding that left.
+    out2 = time_weighted(sold, flows=[], window_return=lambda a, b: 0.0)
+    assert out2["total_pct"] == pytest.approx(0.0, abs=0.01)
+    assert out2["unexplained_flows"][0]["amount_ils"] == pytest.approx(-3500.0, abs=0.01)
 
 
 def test_a_position_count_change_with_no_value_change_is_not_a_flow():

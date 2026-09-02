@@ -19,6 +19,12 @@ $Files = @(
     "app/services/nav_history.py",
     "app/static_app/index.html",
     "tests/test_the_chart_measures_the_day_it_cannot_explain.py",
+    # REWRITTEN BY THIS CHANGE, and missing from this list on the first run.
+    # The commit went out with the new code and the old tests, and CI #194 went
+    # red on three of them. _common.ps1 now refuses to commit while a modified
+    # tracked file is unlisted.
+    "tests/test_a_spike_is_not_a_flow.py",
+    "tests/test_history_does_not_call_an_intake_performance.py",
     "scripts/smoke/smoke-history-measured.ps1",
     "scripts/deploy/ship-pr33-the-day-it-could-not-explain.ps1",
     "STATUS.md"
