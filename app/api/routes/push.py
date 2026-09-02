@@ -12,6 +12,25 @@ from app.services import push_service
 router = APIRouter(prefix="/api/v1/push", tags=["push"])
 
 
+@router.get("/digest/preview")
+async def digest_preview(session: AsyncSession = Depends(get_session),
+                         user: User = Depends(acting_user)) -> dict:
+    """Build the digest and return it WITHOUT sending anything.
+
+    Read-only: no push, no dedupe mark, no state written. It exists so the
+    verification result is observable -- `verified: false` plus the offending
+    figures in `unsupported_numbers` -- without waiting for 07:00 and without
+    the only way to see the digest being to receive it on a phone.
+
+    A `verified: false` here is the system WORKING: the model quoted a number
+    it was not given and the deterministic text was substituted. It is still
+    worth reading, because a number that SHOULD have been in the context is a
+    gap in the context rather than a fault in the model.
+    """
+    from app.services.digest_service import build
+    return await build(session, user)
+
+
 @router.get("/public-key")
 async def public_key(session: AsyncSession = Depends(get_session)) -> dict:
     """VAPID applicationServerKey for the browser to subscribe with."""

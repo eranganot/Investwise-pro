@@ -1,7 +1,28 @@
 """Assemble a compact, deterministic snapshot of the user's finances to ground
-the AI assistant and the digest. Everything here comes from the real engines -
-the LLM only ever sees these numbers, so it can't invent them."""
+the AI assistant and the digest.
+
+Everything here comes from the real engines, so the LLM cannot invent a number.
+**A number it cannot invent can still be wrong**, and the 2026-09-01 push is how:
+
+    "Your account is currently valued at 21,474.35 ILS, with a total return
+     of 17.76%."
+
+Both figures were real and neither was about the other. 21,474.35 was the NAV
+snapshot. 17.76% was `performance.total_return_pct` -- a BACKFILL that prices
+the holdings held TODAY back through 252 sessions of real closes, answering
+"what would this book have done" and not "what did my money do". The account's
+actual return on the 20,000 contributed was +3.89%. The model was handed two
+true numbers on incompatible bases, in a flat blob with nothing saying so, and
+welded them into one false sentence. The prompt said "never invent numbers" and
+it did not invent one.
+
+So every figure that can be quoted now travels as `{value, means}`: the number
+and, in plain language, WHAT IT IS A MEASUREMENT OF. `digest_service.verify`
+then refuses any number in the generated text that is not in here.
+"""
 from __future__ import annotations
+
+import json
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,8 +87,22 @@ async def gather(session: AsyncSession, user: User) -> dict:
     try:
         r = await portfolio_risk(session, user)
         if r.get("ok"):
+            # `goal` is DELIBERATELY NOT COPIED. It carries a second probability
+            # of reaching the target, computed by a different engine from the
+            # one the Plan screen shows -- and on 2026-09-02 it was `null` while
+            # the push claimed "89.2% probability of reaching your 102,973 goal
+            # in 5 years", against a plan of 100,288.77 over 6 years at 22.7%.
+            # Two sources for one question is how a reader gets a third answer.
             ctx["risk"] = {k: r.get(k) for k in ("annualized_volatility_pct", "annualized_return_pct",
-                           "var_95_1d_pct", "cvar_95_1d_pct", "beta", "avg_correlation", "goal")}
+                           "var_95_1d_pct", "cvar_95_1d_pct", "beta", "avg_correlation")}
+            # THE CONFIDENCE LEVEL IS A NUMBER THE DIGEST WILL WRITE, so it has
+            # to be a number the digest was given. "1-day VaR (95%)" is the
+            # standard way to say this and the 95 in it is part of the
+            # measurement's NAME, not a figure -- but `unsupported_numbers`
+            # cannot tell a label from a quantity and should not try. Putting it
+            # in the context is the honest way to let it be quoted.
+            if r.get("var_95_1d_pct") is not None:
+                ctx["risk"]["var_confidence_pct"] = 95
     except Exception:
         pass
     try:
@@ -77,4 +112,74 @@ async def gather(session: AsyncSession, user: User) -> dict:
                                   "max_drawdown_pct", "benchmark", "benchmark_return_pct", "excess_return_pct")}
     except Exception:
         pass
+    # THE ONE PLACE THE GOAL PROBABILITY COMES FROM, and the same one the Plan
+    # screen reads. Without it the model has a target and no probability, which
+    # is the vacuum the invented 89.2% filled.
+    try:
+        from app.api.routes.plan import goal_projection
+        _pj = await goal_projection(session=session, user=user)
+        if isinstance(_pj, dict) and not _pj.get("message"):
+            ctx["projection"] = {k: _pj.get(k) for k in
+                                 ("years", "target_amount", "probability_meets_target",
+                                  "projected_median", "assumption_basis")}
+    except Exception:  # noqa: BLE001
+        pass
     return ctx
+
+
+#: What each quotable figure is a MEASUREMENT OF, in the words the digest should
+#: use. Keyed by the dotted path into the context. A figure with no entry here is
+#: still allowed in the text -- the verifier only checks that a number is
+#: PRESENT in the context -- but anything a reader could misread on its own
+#: belongs here, because the failure this fixes was a basis confusion and not an
+#: invention.
+FIGURE_BASIS = {
+    "nav_ils": ("what your holdings are worth right now, at today's prices and "
+                "today's FX rate"),
+    "performance.total_return_pct": (
+        "a BACKFILL: the holdings you hold TODAY, priced back through real "
+        "closes, as if you had held them for the whole window. It is NOT what "
+        "your account did, and it is NOT a return on your NAV"),
+    "performance.cagr_pct": "the same backfill, expressed per year",
+    "performance.max_drawdown_pct": "the worst peak-to-trough fall inside that backfill",
+    "performance.benchmark_return_pct": "the benchmark over the same backfill window",
+    "performance.excess_return_pct": "the backfill minus the benchmark, over the whole window",
+    "risk.annualized_volatility_pct": "how much the book moves, annualised from recent history",
+    "risk.beta": "how the book moves relative to the benchmark",
+    "risk.var_95_1d_pct": "a one-day loss the book exceeds about 1 day in 20",
+    "goal.target_ils": "the target amount you set in Plan. Not a forecast",
+    "projection.probability_meets_target": (
+        "the ONLY probability of reaching your goal. A fraction between 0 and 1, "
+        "from the same simulation the Plan screen shows"),
+    "projection.years": "the horizon that probability is measured over",
+    "projection.projected_median": "the median simulated end value, in real terms",
+}
+
+
+def for_prompt(ctx: dict) -> dict:
+    """A COPY of the context with every known figure labelled `{value, means}`.
+
+    Separate from `gather` on purpose. The labels exist to constrain a PROMPT;
+    `gather`'s output is also returned to the browser by `/api/v1/ask`, and
+    wrapping the values there changes a payload shape that has readers -- a
+    `context.nav_ils` that used to be a number becomes an object, and every one
+    of them breaks quietly. Labelling at the seam where the text is generated
+    keeps the API exactly as it was.
+
+    Written as one table rather than a phrase beside each number so a figure
+    added later without a basis is visibly missing from a single list.
+    """
+    out = json.loads(json.dumps(ctx, default=str))
+    for path, means in FIGURE_BASIS.items():
+        parts = path.split(".")
+        node = out
+        for p in parts[:-1]:
+            node = node.get(p) if isinstance(node, dict) else None
+            if not isinstance(node, dict):
+                break
+        if not isinstance(node, dict):
+            continue
+        leaf = parts[-1]
+        if leaf in node and node[leaf] is not None and not isinstance(node[leaf], dict):
+            node[leaf] = {"value": node[leaf], "means": means}
+    return out

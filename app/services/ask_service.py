@@ -6,7 +6,7 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
-from app.services.context_service import gather
+from app.services.context_service import for_prompt, gather
 from app.services.llm import gemini_enabled, gemini_generate_ex
 
 _PROMPT = (
@@ -31,8 +31,12 @@ async def answer(session: AsyncSession, user: User, question: str) -> dict:
         return {"llm": False, "grounded_on": grounded, "context": ctx,
                 "answer": "The AI assistant is off. Set GOOGLE_API_KEY to enable it - "
                           "your data context is included below."}
+    # LABELLED for the model, PLAIN for the caller. The assistant hands the
+    # same figures to the same kind of reader as the digest, so it gets the same
+    # protection -- but `context` in the response keeps its original shape.
     out, err = gemini_generate_ex(
-        _PROMPT.format(data=json.dumps(ctx, default=str)[:12000], q=question.strip()))
+        _PROMPT.format(data=json.dumps(for_prompt(ctx), default=str)[:12000],
+                       q=question.strip()))
     if not out:
         # Say WHY. "Couldn't reach the model" made an exhausted billing balance
         # (a two-minute fix) look identical to a permanent outage.

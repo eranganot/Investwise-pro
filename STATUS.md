@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 33b — the tests PR 33 rewrote and PR 33 did not commit)._
+_Last updated: 2026-09-02 by Claude (PR 35 — the digest cannot compose a false sentence)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,67 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 35 — the digest cannot compose a false sentence
+
+The 07:00 push on **2026-09-01**, verbatim:
+
+> "Hello! Your account is currently valued at ₪21,474.35, with a total return of
+> 17.76%. You have an 89.2% probability of reaching your ₪102,973 goal in 5
+> years. To diversify your holdings, consider buying ₪2,147 of PDBC (Broad
+> commodities) to reach your 10% target in this asset class."
+
+Measured against the app the same morning:
+
+| figure | verdict |
+|---|---|
+| 21,474.35 | **real** — the NAV snapshot for 2026-08-31 |
+| 17.76% | **real, and not a return on that NAV.** A *backfill* of today's holdings priced through 252 sessions of real closes. The account's return on the ₪20,000 contributed was **+3.89%** |
+| 89.2% | not in the context at all. `/plan/projection` says **22.7%** |
+| 102,973 | not in the context. The plan target is **100,288.77** |
+| 5 years | not in the context. The horizon is **6** |
+| 2,147 | exactly 10% of NAV, **computed by the model** |
+| 10% | from `OBJ_TARGET["Grow"]`, which is not in the context either |
+
+The first two are the interesting failure. **Both numbers were true and the
+sentence was false**, because they measure different things and nothing in the
+payload said so. The prompt's *"never invent numbers"* was not violated.
+
+So the fix is not a better instruction:
+
+1. **Every quotable figure travels as `{value, means}`** — `FIGURE_BASIS` is one
+   table mapping a dotted path to what that number is a measurement *of*, in the
+   words the digest should use. A BACKFILL now says it is a backfill inside the
+   same object as the number.
+2. **Every number in the generated text must appear in the context**, or the
+   whole digest is discarded and the deterministic one is sent.
+   `unsupported_numbers` matches by **rounding to the decimals the text used** —
+   never a tolerance band, because a band wide enough to accept "21,474" for
+   21474.35 also accepts 17.76 for 17.03. Fractions may be quoted as percentages
+   (0.227 → "23%"), and numbers that reached the context inside a *string* are
+   quotable, so repeating a card's own wording back is not an invention.
+
+Run against the real notification, the check names **6 unsupported figures**:
+`17.76, 89.2, 102973, 5, 2147, 10` — and leaves 21,474.35 alone.
+
+Two source problems went with it. `risk.goal` carried a **second** probability
+of reaching the target, from a different engine than the Plan screen, and it was
+`null` on the day the push claimed 89.2% — it is no longer copied, and
+`/plan/projection` is the one source. And the fallback said *"Performance:
+17.03% total"* directly under the net-worth line: the same two figures in the
+same order, without a model in between. It now names the basis every time.
+
+**The labelling is applied at the seam, not in `gather`.** The first version
+wrapped the values inside `gather` itself, and `/api/v1/ask` returns that object
+to the browser — `context.nav_ils` stopped being a number. `test_assistant.py`
+caught it. `for_prompt()` returns a labelled *copy* and the API shape is
+unchanged; the assistant's prompt gets the same protection.
+
+15 tests, all 15 fail against PR 34.
+
+Gate: SQLite 1530 / 0, Postgres 16 1530 / 0, ruff clean.
 
 ---
 
