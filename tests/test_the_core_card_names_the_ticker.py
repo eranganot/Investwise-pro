@@ -120,17 +120,31 @@ def test_the_leg_target_is_the_same_arithmetic_the_class_target_uses():
 # --------------------------------------------------------------------------- #
 # what the card may and may not claim
 # --------------------------------------------------------------------------- #
-def test_the_card_is_advice_and_never_claims_it_can_execute():
-    """No `apply` block, so Accept acknowledges rather than faking a trade."""
+def test_the_card_offers_an_action_the_app_can_actually_carry_out():
+    """PR 38 shipped this as advice and PR 39 reversed that, on purpose.
+
+    PR 38's reasoning: this app cannot fund a 3,392 ILS purchase from a 619 ILS
+    cash balance, so offering a button would be the fake-success defect
+    `_ACTIONABLE_KINDS` exists to prevent. Eran: *"guidance is not enough... I
+    want these cards to act on my behalf."*
+
+    He was right, and the reasoning was half wrong: the money is already in the
+    book, in the wrong places. So the card now declares `core_to_basket`, and
+    the rule it must satisfy is no longer "declare nothing" but "declare only
+    what the app implements".
+    """
     import inspect
 
     from app.services import recommendations as R
+    from app.services.recommendations import _ACTIONABLE_KINDS
 
     src = inspect.getsource(R.build_recommendations)
     block = src.split("3a) THE CORE'S OWN BASKET")[1].split("3b)")[0]
-    assert '"apply"' not in block, (
-        "the core-basket card declares an apply kind it cannot carry out")
-    assert '_rid("corebasket"' in block, "the cards share an id scheme"
+    assert '"kind": "core_to_basket"' in block
+    assert "core_to_basket" in _ACTIONABLE_KINDS, (
+        "the card offers a button the apply path does not implement")
+    assert hasattr(R, "_apply_core_to_basket"), "the kind dispatches to nothing"
+    assert '_rid("corebasket"' in block, "the card keeps its id scheme"
 
 
 def test_cash_is_never_treated_as_a_leg_of_the_basket():

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 38 — a done the book contradicts)._
+_Last updated: 2026-09-02 by Claude (PR 39 — the core card acts)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,61 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 39 — the core card stops giving advice and does the thing
+
+> *"I'm missing the most important thing in these cards --> guidance is not
+> enough... I want these cards to act on my behalf (as other cards can do it)."*
+> — Eran, 2026-09-02
+
+PR 38 shipped three cards and made every one of them advice, reasoning that this
+app cannot fund a ₪3,392 purchase from a ₪619 cash balance. **The reasoning was
+half right and the conclusion was wrong.** The money is already in the book,
+sitting in the wrong places:
+
+| | | |
+|---|---:|---|
+| V | ₪955 | in the core region, not in the core's basket |
+| BND | ₪576 | above the core's own 40% leg |
+| sleeves | ₪1,268 | above the sleeve sizes he set (79% held vs 73%) |
+
+Bringing the core back to Classic 60/40 is a **rebalance, not a purchase**, and
+this app rebalances. Three cards became one that acts: *"Bring your core back to
+Classic 60/40"*, `apply.kind = core_to_basket`.
+
+### The one rule
+
+`_core_plan` sizes it, and **the card and the button both call it**.
+`_rebalance_to` is the cautionary tale this repo already carries: the card read
+one target, Accept applied another, the screen said "sell 4,324" and the button
+sold 12,139. The arithmetic itself lives in `core_realign.plan_realign` — pure,
+no ORM, no I/O — so the tests assert a real trade's numbers without mocking one.
+
+### What it will not do
+
+- Take cash below the app's own floor.
+- Trim a sleeve **below** its own target. The sleeve sizes are a decision made
+  on the Plan tab; this reclaims what is above that decision and never overrules
+  it.
+- Buy more than the sells raised. On his book, after CGT (₪143) and the cash
+  floor, everything the book can raise still leaves **₪565 unfunded** — and the
+  card says that on its face rather than quietly buying less than it promised.
+- Sell anything before it knows it can buy. Every buy leg is priced **first**;
+  one timed-out quote aborts the whole action with the book untouched.
+  (`_apply_buy_funded` sells first and holds proceeds as cash — survivable for
+  one swap, not for three positions.)
+- Take the sleeve trim from one ticker: it is pro-rata, because concentrating it
+  would silently re-weight the sleeves against each other.
+
+Every leg is listed on the card **before** the button, from the same plan the
+executor runs. And it updates the tracked book — no brokerage order is placed.
+
+20 new tests; the PR 38 test asserting "this card declares no apply block" was
+rewritten, since it documented the decision this PR reverses.
+
+Gate: SQLite 1609 / 0, Postgres 16 1609 / 0, ruff clean.
 
 ---
 

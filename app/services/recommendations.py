@@ -45,7 +45,7 @@ SLEEVE_DRIFT_BAND_PCT = 5.0
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
-                     "fund_plan", "relevel_sleeve_caps"}
+                     "fund_plan", "relevel_sleeve_caps", "core_to_basket"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -1382,73 +1382,84 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _ok, _ev = core_matches_basket(_held, _basket,
                                            band_pct=SLEEVE_DRIFT_BAND_PCT)
             if _basket and not _ok and not _ev.get("reason"):
-                _bsum = sum(w for w in _basket.values() if w > 0) or 1.0
-                # Every leg the basket names, plus every holding sitting in the
-                # core region that the basket does NOT name. Both are ways for a
-                # core to stop being the thing it says it is.
-                _legs = [(t.upper(), (w / _bsum)) for t, w in _basket.items() if w > 0]
-                _legs += [(t, 0.0) for t in sorted(_ev.get("extra") or [])]
-                for _tk, _share in _legs:
-                    _want_ils = round(_core_pct * _share * nav, 2)
-                    _have_ils = round(_held.get(_tk, 0.0), 2)
-                    _gap = round(_want_ils - _have_ils, 2)
-                    # Below the floor a "gap" is rounding, and the same floor the
-                    # mute logic uses keeps one answer to "is this worth saying".
-                    if abs(_gap) < _REFIRE_FLOOR_ILS:
-                        continue
-                    _drift_pp = abs(float((_ev.get("drift_pct") or {}).get(_tk, 100.0)))
-                    if _drift_pp <= SLEEVE_DRIFT_BAND_PCT:
-                        continue
-                    _buy = _gap > 0
-                    _want_w = _core_pct * _share
-                    _have_w = _have_ils / nav
-                    _sev = _drift_severity(_have_w, _want_w)
-                    if _tk in (_ev.get("missing") or []):
-                        _title = f"Your core is missing {_tk}"
-                        _why_ = (f"{_cname} holds {_share:.0%} {_tk}, and you hold none of it. "
-                                 f"Your core is {_core_pct:.0%} of the book, so {_tk} should be "
-                                 f"{_want_w:.1%} of it — about {_ils(_want_ils)}.")
-                    elif _share <= 0:
-                        _title = f"{_tk} is not in your core's basket"
-                        _why_ = (f"You hold {_ils(_have_ils)} of {_tk} in the part of the book "
-                                 f"your core manages, and {_cname} does not hold {_tk} at all. "
-                                 f"It is not wrong to own it — it is not your core.")
-                    else:
-                        _title = f"Your core holds {'too little' if _buy else 'too much'} {_tk}"
-                        _why_ = (f"{_cname} holds {_share:.0%} {_tk}. Against a core of "
-                                 f"{_core_pct:.0%} of the book that is {_ils(_want_ils)}, and you "
-                                 f"hold {_ils(_have_ils)}.")
-                    _verb = "Buy" if _buy else "Trim"
+                # ONE CARD, AND IT ACTS.
+                #
+                # PR 38 shipped three cards -- buy VTI, trim BND, sell V -- and
+                # every one of them was advice, on the grounds that this app
+                # cannot fund a 3,392 ILS purchase from a 619 ILS cash balance.
+                # Eran, reading them: *"guidance is not enough... I want these
+                # cards to act on my behalf (as other cards can do it)."*
+                #
+                # The reasoning was half right and the conclusion was wrong. The
+                # money is already in the book, sitting in the wrong places: a
+                # holding the basket does not name, a leg above its share, and
+                # sleeves holding more than the sizes he set. Bringing the core
+                # back is a REBALANCE, not a purchase, and the app can do those.
+                #
+                # `_core_plan` sizes it. THE CARD AND THE BUTTON CALL THE SAME
+                # FUNCTION -- `_rebalance_to` is the cautionary tale, where the
+                # card read one target, Accept applied another, and the screen
+                # said "sell 4,324" while the button sold 12,139.
+                _plan = await _core_plan(session, user, rows, nav, objective, btgt)
+                if _plan and _plan.get("ok"):
+                    from app.services.core_realign import describe as _describe
+                    _steps = _describe(_plan)
+                    _missing = ", ".join(_ev.get("missing") or []) or None
+                    _extra = ", ".join(_ev.get("extra") or []) or None
+                    _bits = []
+                    if _missing:
+                        _bits.append(f"you hold none of {_missing}")
+                    if _extra:
+                        _bits.append(f"{_extra} is in it and not in the basket")
+                    _short = float(_plan.get("shortfall_ils") or 0.0)
+                    _moved = float(_plan.get("buys_ils") or 0.0)
                     recs.append({
-                        "id": _rid("corebasket", _core_id, _tk),
-                        "dimension": "allocation", "severity": _sev,
-                        "title": _title, "why": _why_,
-                        "action": f"{_verb} about {_ils(abs(_gap))} of {_tk}.",
-                        "impact": (f"Brings the core back to the basket {_cname} is measured on. "
-                                   f"Until it does, your core's measurement is not used to price "
-                                   f"your book — it describes a basket you are not holding."),
-                        "how": [f"{_verb} about {_ils(abs(_gap))} of {_tk}",
-                                f"Target is {_want_w:.1%} of the book "
-                                f"({_share:.0%} of a {_core_pct:.0%} core)",
-                                f"You hold {_have_w:.1%} today",
-                                "Your sleeves are not touched by this"],
-                        "est_amount": abs(_gap),
+                        "id": _rid("corebasket", _core_id),
+                        "dimension": "allocation",
+                        "severity": _drift_severity(
+                            sum(_held.values()) / nav if nav else 0.0, _core_pct),
+                        "title": f"Bring your core back to {_cname}",
+                        "why": (f"Your core is {_core_pct:.0%} of the book and runs {_cname}, "
+                                f"and it is not holding that basket: {'; '.join(_bits) or 'its legs are off'}. "
+                                f"Until it holds the basket, the measurement of {_cname} is not "
+                                f"used to price your book."),
+                        "action": (f"Rebalance about {_ils(_moved)} inside your own book — "
+                                   f"no new money."),
+                        "impact": (f"Puts the core back on {_cname}, so its measured return and "
+                                   f"volatility start pricing {_core_pct:.0%} of your book."
+                                   + (f" About {_ils(_short)} would still be unfunded."
+                                      if _short >= _REFIRE_FLOOR_ILS else "")),
+                        # EVERY LEG, BEFORE THE BUTTON. These lines come from the
+                        # same plan the executor runs, so the card cannot promise
+                        # a trade Apply will not make, or hide one it will.
+                        "how": _steps,
+                        "est_amount": round(_moved, 2),
+                        "apply": {"kind": "core_to_basket", "objective": objective,
+                                  "core_strategy_id": _core_id},
+                        "meta": {"plan": {k: v for k, v in _plan.items()
+                                          if k in ("sells_ils", "sleeve_trim_ils",
+                                                   "cash_used_ils", "buys_ils",
+                                                   "tax_ils", "shortfall_ils")}},
                     })
                     recs[-1]["audit_trail"] = audit_for("allocation", raw_data={
-                        "core_strategy_id": _core_id, "ticker": _tk,
+                        "core_strategy_id": _core_id,
                         "core_pct_of_book": round(_core_pct, 4),
-                        "basket_weight": round(_share, 4),
-                        "target_ils": _want_ils, "held_ils": _have_ils,
                         "nav": round(nav, 2),
-                        "band_pct": SLEEVE_DRIFT_BAND_PCT,
-                        "leg_drift_pp": round(_drift_pp, 2)},
+                        "want_ils": _plan.get("want_ils"),
+                        "have_ils": _plan.get("have_ils"),
+                        "legs": _plan.get("legs"),
+                        "band_pct": SLEEVE_DRIFT_BAND_PCT},
                         formulas=[
                             f("Leg target", "target = core_pct x basket_weight x NAV",
-                              substituted=f"{_core_pct:.4f} x {_share:.4f} x {nav:,.0f}",
-                              result=f"₪{_want_ils:,.0f}"),
-                            f("Gap", "gap = target - held",
-                              substituted=f"{_want_ils:,.0f} - {_have_ils:,.0f}",
-                              result=f"₪{_gap:,.0f}")])
+                              result=str(_plan.get("want_ils"))),
+                            f("Funding", "sells + sleeve overshoot + spendable cash - tax",
+                              substituted=(f"{_plan.get('sells_ils')} + "
+                                           f"{_plan.get('sleeve_trim_ils')} + "
+                                           f"{_plan.get('cash_used_ils')} - "
+                                           f"{_plan.get('tax_ils')}"),
+                              result=f"₪{_plan.get('buys_ils'):,.0f} bought"),
+                            f("Unfunded", "shortfall = wanted - funded",
+                              result=f"₪{_short:,.0f}")])
     except Exception:  # noqa: BLE001
         # A core the app cannot read is not a reason to lose every other card.
         logger.warning("core-basket cards: could not build", exc_info=True)
@@ -3544,6 +3555,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = await _apply_fee_swap(session, user, by_ticker, spec)
     elif kind == "buy_funded":
         detail = await _apply_buy_funded(session, user, spec)
+    elif kind == "core_to_basket":
+        detail = await _apply_core_to_basket(session, user, spec)
     elif kind == "redeploy_cash":
         detail = await _apply_redeploy_cash(session, user, spec)
     elif kind == "fund_sleeve":
@@ -3790,6 +3803,224 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": ticker,
             "shares": round(qty, 4), "value_ils": round(budget, 2),
             "from_cash_ils": round(from_cash, 2)}
+
+
+async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
+                     objective: str | None, btgt: dict) -> dict | None:
+    """THE ONE SIZING OF "bring the core back to its basket".
+
+    Called by the CARD that offers the action and by the EXECUTOR that performs
+    it, which is the whole point. `_rebalance_to` records what happens when a
+    card reads one target and the button applies another: the screen said "sell
+    4,324" and Accept sold 12,139. One function, two callers, no second opinion.
+
+    Everything ORM-shaped is resolved here; the arithmetic lives in
+    `core_realign.plan_realign`, which is pure and testable without a database.
+    """
+    from app.services import core_realign
+    from app.services.allocation_mix import classify_holding as _ch
+    from app.services.funding_service import cash_floor_ils
+    from app.services.fx import fx_rate, price_currency
+    from app.services.sleeve_service import sleeve_occupancy, sleeve_tickers
+    from app.services.strategies import core_weights
+
+    core_id = btgt.get("core_strategy_id")
+    core_pct = float(btgt.get("core_pct") or 0.0)
+    basket = core_weights(core_id) if core_id else None
+    if not core_id or not basket or core_pct <= 0 or nav <= 0:
+        return None
+
+    claimed = {str(t).upper() for t in await sleeve_tickers(session, user)}
+
+    def _val(p):
+        meta = p.meta if isinstance(p.meta, dict) else None
+        return (float(p.quantity or 0.0) * float(p.current_price or 0.0)
+                * fx_rate(price_currency(p.market, meta)))
+
+    def _gain_frac(p):
+        """The share of a position's value that is unrealised GAIN.
+
+        Tax is owed on the gain, not the proceeds, so a plan that estimated tax
+        on the whole sale would overstate the cost of every trim and under-fund
+        every buy. A loss owes nothing, hence the floor at zero.
+        """
+        px, basis = float(p.current_price or 0.0), float(p.cost_basis or 0.0)
+        return (max(0.0, px - basis) / px) if px > 0 else 0.0
+
+    held: dict[str, float] = {}
+    gain: dict[str, float] = {}
+    cash_ils = 0.0
+    sleeve_val: dict[str, float] = {}
+    for p in rows:
+        tk = str(getattr(p, "ticker", "") or "").upper()
+        if not tk:
+            continue
+        v = _val(p)
+        if v <= 0:
+            continue
+        if tk == "CASH" or _ch(p) == "Cash":
+            cash_ils += v
+            continue
+        if tk in claimed:
+            sleeve_val[tk] = sleeve_val.get(tk, 0.0) + v
+            gain[tk] = _gain_frac(p)
+            continue
+        held[tk] = held.get(tk, 0.0) + v
+        gain[tk] = _gain_frac(p)
+
+    # HOW MUCH THE SLEEVES HOLD ABOVE THE SIZES THE USER SET. This is the only
+    # money the core may take from them, and it comes from `sleeve_occupancy` --
+    # the one function that answers "target versus held" -- rather than from a
+    # second subtraction here that could disagree with the Sleeves card.
+    occ = await sleeve_occupancy(session, user)
+    over = 0.0
+    for s in (occ.get("sleeves") or []):
+        held_pct = float(s.get("held_pct") or 0.0) * 100.0   # held_pct is a fraction
+        want_pct = float(s.get("sleeve_pct") or 0.0)
+        if held_pct > want_pct:
+            over += (held_pct - want_pct) / 100.0 * nav
+    if sleeve_val:
+        tot = sum(sleeve_val.values())
+        gain["__sleeves__"] = sum(gain.get(t, 0.0) * v for t, v in sleeve_val.items()) / tot
+
+    from app.core.config import get_settings
+    plan_row = await get_plan(session, user)   # module-level import; one loader
+    out = core_realign.plan_realign(
+        basket=basket, core_pct=core_pct, nav=nav, held=held,
+        cash_ils=cash_ils, cash_floor_ils=cash_floor_ils(nav, objective, plan_row),
+        sleeve_over_ils=over, cgt_rate=float(get_settings().cgt_rate),
+        gain_frac=gain)
+    out["core_strategy_id"] = core_id
+    out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
+    out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}
+    return out
+
+
+async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -> dict:
+    """Bring the core back to the basket it names. Sells, sleeve trim, then buys.
+
+    PRICES BEFORE IT SELLS. `_apply_buy_funded` sells first and, if the buy
+    cannot be priced afterwards, leaves the proceeds sitting in cash and says
+    so. That is survivable for a single swap; here it would mean selling three
+    positions and leaving the whole core in cash because one quote timed out.
+    So every buy leg is priced FIRST and the entire action refuses before
+    anything is sold.
+
+    RE-PLANNED AT APPLY TIME, from live rows, rather than executing the spec the
+    card was built with. The card may be minutes old and the book may have moved;
+    a spec carried from the render is a claim about a book that no longer exists.
+    The card's own numbers are still shown to the user as an estimate, which is
+    what `_core_plan` being the one sizing function guarantees.
+    """
+    from app.providers.registry import guarded_quote
+    from app.schemas.state_machine import Market
+    from app.services.fx import book_nav_ils, fx_rate, price_currency
+    from app.services.intake_service import buy_into_book, credit_cash
+
+    objective = spec.get("objective")
+    rows = await list_positions(session, user)
+    nav = book_nav_ils(rows)
+    btgt = await _book_target(session, user, objective)
+    plan = await _core_plan(session, user, rows, nav, objective, btgt)
+    if not plan or not plan.get("ok"):
+        return {"note": ((plan or {}).get("detail")
+                         or "There is nothing to realign in your core right now.")}
+
+    buys = [leg for leg in plan["legs"] if leg["action"] == "buy"]
+    priced: dict[str, tuple[float, str]] = {}
+    for leg in buys:
+        tk = leg["ticker"]
+        try:
+            q = guarded_quote(tk)
+            px, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+        except Exception:  # noqa: BLE001
+            px, ccy = 0.0, "USD"
+        if px <= 0:
+            return {"note": (f"Could not get a live price for {tk}, so nothing was "
+                             f"sold or bought. Your book is unchanged."),
+                    "aborted": True, "unpriced": tk}
+        priced[tk] = (px, ccy)
+
+    by_ticker = {(p.ticker or "").upper(): p for p in rows}
+    sold, tax_total, raised = [], 0.0, 0.0
+
+    async def _sell_ils(p, amount_ils: float, full: bool) -> None:
+        nonlocal tax_total, raised
+        meta = p.meta if isinstance(p.meta, dict) else None
+        rate = fx_rate(price_currency(p.market, meta)) or 1.0
+        px = float(p.current_price or 0.0)
+        if px <= 0:
+            return
+        shares = float(p.quantity) if full else min(float(p.quantity),
+                                                    amount_ils / (px * rate))
+        if shares <= 0:
+            return
+        gross, tax = _sale_value_ils(shares, px, float(p.cost_basis or 0.0),
+                                     p.market, p.meta)
+        remaining = float(p.quantity) - shares
+        if remaining <= 1e-9:
+            await delete_position(session, user, p.ticker, p.market)
+        else:
+            await update_position(session, user, str(p.id), quantity=remaining)
+        tax_total += tax
+        raised += max(0.0, gross - tax)
+        sold.append({"ticker": p.ticker, "ils": round(gross, 2),
+                     "tax_ils": round(tax, 2), "full_exit": bool(full)})
+
+    for leg in plan["legs"]:
+        if leg["action"] == "sell":
+            p = by_ticker.get(leg["ticker"])
+            if p is not None:
+                await _sell_ils(p, float(leg["ils"]), bool(leg.get("full_exit")))
+        elif leg["action"] == "trim_sleeves":
+            # PRO-RATA ACROSS THE SLEEVE HOLDINGS. Taking it all from one ticker
+            # would silently re-weight the sleeves against each other, which is a
+            # decision this action was never given.
+            vals = plan.get("sleeve_values_ils") or {}
+            total = sum(vals.values())
+            if total > 0:
+                for tk, v in vals.items():
+                    p = by_ticker.get(tk)
+                    if p is not None:
+                        await _sell_ils(p, float(leg["ils"]) * (v / total), False)
+
+    bought = []
+    budget = raised
+    # Cash may top the buys up, but never below the floor the app enforces
+    # everywhere else -- a realignment that leaves the book unable to pay for
+    # anything is not an improvement.
+    cash_top = float(plan.get("cash_used_ils") or 0.0)
+    if cash_top > 0:
+        credited = await credit_cash(session, user, -cash_top)
+        budget += cash_top if credited is not None else 0.0
+
+    for leg in sorted(buys, key=lambda x: -float(x["ils"])):
+        tk = leg["ticker"]
+        spend = min(float(leg["ils"]), budget)
+        if spend < core_realign_min_leg():
+            continue
+        px, ccy = priced[tk]
+        native = spend / (fx_rate(ccy) or 1.0)
+        mk = leg.get("market") if leg.get("market") in {m.value for m in Market} else "NYSE"
+        await buy_into_book(session, user, ticker=tk, market=mk, price=px,
+                            shares=native / px, asset_class=leg.get("asset_class"))
+        budget -= spend
+        bought.append({"ticker": tk, "ils": round(spend, 2),
+                       "shares": round(native / px, 4)})
+
+    if budget > 0:
+        await credit_cash(session, user, budget)
+    await session.commit()
+    return {"sold": sold, "bought": bought, "tax_ils": round(tax_total, 2),
+            "cash_used_ils": round(cash_top, 2),
+            "left_as_cash_ils": round(max(0.0, budget), 2),
+            "shortfall_ils": plan.get("shortfall_ils"),
+            "broker_note": "Tracked book updated — no brokerage order was placed."}
+
+
+def core_realign_min_leg() -> float:
+    from app.services.core_realign import MIN_LEG_ILS
+    return MIN_LEG_ILS
 
 
 async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) -> dict | None:

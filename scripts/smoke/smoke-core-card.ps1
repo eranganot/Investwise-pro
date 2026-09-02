@@ -85,12 +85,32 @@ try {
         $d1 = "'Buy Equities' can be satisfied by buying more TQQQ - a class is not an instruction"
         Check "the action names an instrument, not a class" $named $d1
 
-        # ADVICE, NOT AN ACTION. A button that reports success without doing
-        # anything is the defect _ACTIONABLE_KINDS exists to prevent.
-        $honest = $true
-        foreach ($c in $core) { if ($c.apply -and $c.apply.kind) { $honest = $false } }
-        $d2 = "this card cannot fund a purchase, so it must not offer to"
-        Check "the card does not claim it can execute the trade" $honest $d2
+        # PR 39: THIS CARD NOW ACTS. The rule is no longer "declare nothing" but
+        # "declare only what the app implements". Note that a card with
+        # apply.kind = "none" is the app's own GUIDANCE marker, stamped by
+        # _ensure_why_impact - not a claim to execute. The PR 38 version of this
+        # check treated "none" as a claim and failed a card that was behaving
+        # correctly; that was a bug in THIS SCRIPT.
+        $acts = $false
+        foreach ($c in $core) { if ($c.apply.kind -eq "core_to_basket") { $acts = $true } }
+        $d2 = "guidance is not enough - the money is already in the book"
+        Check "the card offers an action, not just advice" $acts $d2
+
+        # EVERY LEG, BEFORE THE BUTTON. The How list is generated from the same
+        # plan the executor runs, so anything Apply will do has to be visible
+        # here first.
+        foreach ($c in $core) {
+            if ($c.apply.kind -ne "core_to_basket") { continue }
+            Write-Host "        WHAT APPLY WOULD DO:" -ForegroundColor Yellow
+            foreach ($h in $c.how) { Write-Host ("          - " + $h) -ForegroundColor White }
+            $sells = $false; $buys = $false
+            foreach ($h in $c.how) {
+                if (($h -like "Sell*") -or ($h -like "Trim*")) { $sells = $true }
+                if ($h -like "Buy*") { $buys = $true }
+            }
+            $d4 = "a rebalance that shows only one side is hiding the other"
+            Check "the card lists both what it sells and what it buys" ($sells -and $buys) $d4
+        }
     }
 } catch {
     Check "/api/v1/recommendations answered" $false ($_.Exception.GetType().FullName + ": " + $_.Exception.Message)
