@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 31 — the bond it called a stock)._
+_Last updated: 2026-09-02 by Claude (PR 32 — a quote of zero is not a quote)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -32,6 +32,66 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 2. Land or discard `candidate_search` — it has tests and no commit.
 3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
 4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+
+---
+
+## PR 32 — a quote of zero is not a quote
+
+Eran opened the app on **2026-09-01**, found holdings showing **0 ILS**, and
+deleted two of them — a holding worth nothing looks like junk. By the next
+morning the remaining rows were priced normally again, and nothing on any screen
+said what had happened. The audit log has the two `DELETE /portfolio/position`
+calls at 17:19:09 and 17:19:49. It has nothing about the zero, because nothing
+recorded one.
+
+**Measured on the previous commit, by the new test:**
+
+```
+NAV went 3710.0 -> 0.0 because a provider answered 0. Nothing was bought or sold.
+```
+
+**The hole.** `refresh_all_positions` guards, refuses and *discloses* every other
+way a quote can be unusable — `q is None` is `failed`; a quote nothing has traded
+against is `stale` + `not_written`; a currency that contradicts the market is a
+`conflict` + `not_written`. Its own comment states the rule: *"Do NOT overwrite
+the price: a quote nothing has traded against is not a current price."* A price
+of **0** is the same class of thing, and it was the one case with no guard at
+all — straight through to `p.current_price = money(q_price)`.
+
+Both adapters guarded `price is None` and neither guarded a zero. Yahoo returns
+`regularMarketPrice: 0` for a symbol it half-resolves (a delisted line, a venue
+suffix it does not carry, a ticker that changed); FMP answers an unknown symbol
+with `"price": 0` rather than an error.
+
+**Not a display bug.** `value_ils` is `quantity × price × rate`, so a zeroed
+holding leaves NAV — and NAV is what the mix, the rebalance sizing, the
+concentration cap, the projection and the 22:10 snapshot are measured against. A
+snapshot taken inside a zeroed window is wrong *permanently*; it is the one
+number the app cannot recompute. And it self-heals in 30 minutes, which is why
+it has never been caught: by the time anyone looks, the evidence is overwritten.
+
+**Two layers.** The adapters raise — the better place, because the fallback
+provider then gets its turn and `guarded_quote` caches no poisoned zero. The
+refresh refuses as well, counts it and logs it, so no quote source (present or
+future, including the builtin one the suite runs on) can write a holding down.
+
+**And the disclosure, which is the half that would have saved the two deleted
+rows.** `/api/v1/portfolio` carries `unpriced_positions` and `unpriced_cost_ils`
+beside the existing `stale_positions` and `fx_unresolved_positions`, and the
+holdings card renders such a row as *"could not be priced — not ₪0"* with what
+you paid, instead of a flat zero that reads as "this is worthless, delete it".
+Derived from the **price**, not a meta flag: a flag only describes rows written
+by the build that sets it, and the rows that caused this predate any flag.
+
+NAV is deliberately not padded with a guessed price. `unpriced_cost_ils` reports
+what is missing *at cost* — the only number the app has for a holding it cannot
+price. Inventing a price is the one thing worse than admitting there isn't one.
+
+All six new tests were confirmed to fail against `PR 31` before being accepted,
+and the end-to-end one is ordered so its failure names the damage rather than a
+missing counter.
+
+Gate: SQLite 1489 / 0, Postgres 16 1489 / 0, ruff clean.
 
 ---
 

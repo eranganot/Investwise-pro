@@ -1407,6 +1407,20 @@ async function loadHoldings(){
       // "0.0% since you bought" — that reads as "it didn't move" when the truth
       // is "there is no market here any more".
       const _stale=!!h.price_stale, _asOf=(h.price_as_of||"").slice(0,10);
+      // A HOLDING WORTH 0 AND A HOLDING NOBODY COULD PRICE LOOK THE SAME, and
+      // one of them is junk you should delete while the other is your money.
+      // On 2026-09-01 two rows rendered as a flat "0" here, were deleted for
+      // looking like junk, and by the next morning the survivors were priced
+      // again -- the provider had answered 0 for one refresh cycle and the row
+      // healed itself with nothing left on screen to explain it. This says
+      // which it is, and shows what you PAID rather than a zero nobody means.
+      const _unpriced=!(h.current_price>0);
+      if(_unpriced) return `<div class="row" style="border-left:3px solid #f59e0b"><div><div class="nm">${h.ticker} <span class="rk" style="color:var(--amber)">could not be priced</span></div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'\u2014'}</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm" style="color:var(--amber)">not \u20aa0</div>
+        <div class="mk">you paid ${ils(h.invested_ils)}</div>
+        <div class="mk">no usable quote &mdash; out of your total until one arrives</div></div>
+        <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">\u270e</button>
+        <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">\u2715</button></div></div>`;
       return `<div class="row"${_stale?' style="border-left:3px solid #f59e0b"':''}><div><div class="nm">${h.ticker}${_stale?' <span class="rk" style="color:var(--amber)">⚠ price frozen</span>':''}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div>`}</div>
         <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>

@@ -161,7 +161,9 @@ async def refresh_all_positions(session, positions=None) -> dict:
     repaired_minor = 0       # rows a previous refresh stored in agorot / pence
     conflicts = 0            # quotes whose currency contradicts the declared market
     repaired_conflict = 0    # rows an earlier refresh already redenominated
+    unpriced = 0             # quotes that came back at or below zero
     stale_tickers: list[dict] = []
+    unpriced_tickers: list[str] = []
     prices: list[dict] = []
     errors: list[dict] = []
     quote_cache: dict[str, tuple] = {}  # ticker -> (price, source) or (None, None)
@@ -295,6 +297,56 @@ async def refresh_all_positions(session, positions=None) -> dict:
         q_price, q_ccy = to_major_units(q.price, q.currency)
         quoted_ccy = (q.currency or "").strip()
 
+        # A QUOTE OF ZERO IS NOT A QUOTE, AND IT IS THE ONE THAT WAS GETTING IN.
+        #
+        # Every other way a quote can be unusable is already refused here and
+        # said out loud: no quote at all is `failed`; a quote nothing has traded
+        # against is `stale` and `not_written`; a quote in a currency that
+        # contradicts the holding's market is a `conflict` and `not_written`.
+        # The module's own comment states the rule -- "Do NOT overwrite the
+        # price: a quote nothing has traded against is not a current price".
+        # A price of 0 is the same class of thing and it walked straight through
+        # to `p.current_price = money(q_price)` twenty lines below.
+        #
+        # What that costs, MEASURED on this book: Eran opened the app on
+        # 2026-09-01 and found holdings showing 0 ILS, deleted two of them
+        # because a holding worth nothing looks like junk, and by the next
+        # morning the remaining rows were priced normally again -- because the
+        # next 30-minute refresh got a real quote and healed it silently. The
+        # deletion is the expensive part: a zeroed row is not a worthless
+        # holding, and the app gave him no way to tell the difference.
+        #
+        # It is not only a display bug. `value_ils` is quantity x price x rate,
+        # so a zeroed holding leaves NAV entirely, and NAV is what the mix, the
+        # rebalance sizing, the concentration cap, the projection and the 22:10
+        # snapshot are all measured against. A snapshot taken inside a zeroed
+        # window is wrong permanently -- it is the one number the app cannot
+        # recompute later.
+        #
+        # The provider adapters now refuse a non-positive price too, which is
+        # the better place to stop it (the fallback provider gets its turn and
+        # `guarded_quote` caches nothing). This is the belt: no quote source,
+        # present or future, gets to write a holding down to zero from here.
+        if q_price is None or float(q_price) <= 0:
+            meta = {**(p.meta or {}), "price_source": used,
+                    "price_freshness": "unpriced", "price_unpriced": True,
+                    "price_unpriced_quote": {"price": (None if q.price is None
+                                                       else float(q.price)),
+                                             "currency": quoted_ccy,
+                                             "source": used}}
+            p.meta = meta
+            unpriced += 1
+            unpriced_tickers.append(tk)
+            logger.warning(
+                "%s quoted %r from %s - refusing it rather than writing the "
+                "holding down to zero. Price left at %s.",
+                tk, q.price, used, p.current_price)
+            prices.append({"ticker": tk, "price": float(p.current_price or 0),
+                           "currency": q_ccy, "as_of": (p.meta or {}).get("price_as_of"),
+                           "source": used, "stale": False, "not_written": True,
+                           "unpriced": True})
+            continue
+
         # A QUOTE IN THE WRONG CURRENCY IS NOT A QUOTE ABOUT THIS HOLDING.
         #
         # The market on the position is the user's DECLARATION -- he chose
@@ -367,6 +419,12 @@ async def refresh_all_positions(session, positions=None) -> dict:
             continue
         meta.pop("price_stale", None)
         meta.pop("price_stale_days", None)
+        # A real price heals the row, including one an earlier refresh or an
+        # older build had zeroed. Leaving the flag on a holding that is priced
+        # again would be the mirror of the bug: a warning that outlives its
+        # cause is one nobody reads.
+        meta.pop("price_unpriced", None)
+        meta.pop("price_unpriced_quote", None)
         p.current_price = money(q_price)
         p.meta = meta
         by_source[used] = by_source.get(used, 0) + 1
@@ -409,7 +467,12 @@ async def refresh_all_positions(session, positions=None) -> dict:
         logger.info("price refresh: %d quote(s) arrived in a minor unit "
                     "(agorot / pence) and were normalised to the major unit",
                     minor_units)
+    if unpriced_tickers:
+        logger.warning("price refresh: %d quote(s) came back at or below zero "
+                       "and were refused rather than written: %s",
+                       unpriced, ", ".join(unpriced_tickers))
     return {"updated": updated, "failed": failed, "skipped_cash": skipped,
+            "unpriced": unpriced, "unpriced_tickers": unpriced_tickers,
             "unknown_from_primary": unknown_from_primary,
             "repaired_cash": repaired, "stale": stale,
             "minor_unit_quotes": minor_units,

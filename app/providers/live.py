@@ -64,8 +64,19 @@ class YahooMarketDataProvider(MarketDataProvider):
             raise ValueError(f"unknown symbol '{ticker}' on Yahoo")
         meta = result[0].get("meta") or {}
         price = meta.get("regularMarketPrice")
-        if price is None:
-            raise ValueError(f"no price for '{ticker}'")
+        # A ZERO IS NOT A PRICE. Yahoo returns a meta block with
+        # `regularMarketPrice: 0` for symbols it half-resolves -- a delisted
+        # line, a venue suffix it does not carry, a ticker that has changed. The
+        # `is None` guard let that through as a real quote, and one refresh
+        # later the holding was worth 0 in NAV, on the holdings card, and in
+        # everything sized against NAV. Thirty minutes later a good quote
+        # arrived and it repaired itself with no trace of what happened.
+        #
+        # Raising, rather than returning it, is what matters: the caller's
+        # fallback provider then gets its turn, and `guarded_quote` does not
+        # cache a poisoned zero for the rest of its TTL.
+        if price is None or float(price) <= 0:
+            raise ValueError(f"no usable price for '{ticker}' (Yahoo said {price!r})")
         ts = meta.get("regularMarketTime")
         as_of = (datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else _now())
         return Quote(ticker=sym, market=str(meta.get("fullExchangeName") or meta.get("exchangeName") or "US"),
@@ -317,8 +328,11 @@ class FMPMarketDataProvider(MarketDataProvider):
             raise ValueError(f"no quote for '{ticker}' on FMP")
         q = rows[0]
         price = q.get("price", q.get("previousClose"))
-        if price is None:
-            raise ValueError(f"no price for '{ticker}'")
+        # Same rule as the Yahoo adapter above, and FMP needs it more: it answers
+        # an unknown or delisted symbol with `"price": 0` rather than an error,
+        # so `is None` never fires and a zero walks in wearing a quote's clothes.
+        if price is None or float(price) <= 0:
+            raise ValueError(f"no usable price for '{ticker}' (FMP said {price!r})")
         # FMP reports the venue's last-trade epoch. Stamping `_now()` instead --
         # which this did -- makes every quote look freshly traded, so a delisted
         # instrument whose last print was 14 months ago is indistinguishable from

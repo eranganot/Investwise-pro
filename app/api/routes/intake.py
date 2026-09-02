@@ -271,6 +271,36 @@ async def get_portfolio(entity: str | None = None,
              "price_as_of": o["price_as_of"], "trading_days": o["price_stale_days"]}
             for o in out if o["price_stale"]],
         "stale_value_ils": round(sum(o["value_ils"] for o in out if o["price_stale"]), 2),
+        # THE THIRD WAY A PRICE CAN BE UNUSABLE, and the one that had no name.
+        #
+        # `stale_positions` covers a price nothing has traded against and
+        # `fx_unresolved_positions` covers a rate that never resolved. A holding
+        # whose price is 0 was disclosed by NEITHER: it simply valued at 0 ILS,
+        # dropped out of NAV, and rendered on the holdings card as a line worth
+        # nothing -- indistinguishable from a position that really is worthless.
+        # On 2026-09-01 that cost two holdings, deleted because a row showing 0
+        # looks like junk; by the next morning the survivors were priced again
+        # and there was nothing left to explain what had happened.
+        #
+        # Derived from the PRICE, not from a meta flag, so rows already carrying
+        # a zero from before the refresh guard shipped are disclosed too. A flag
+        # only describes rows written by the build that sets it.
+        "unpriced_positions": [
+            {"ticker": o["ticker"], "market": o["market"], "quantity": o["quantity"],
+             "cost_basis_ils": o["invested_ils"],
+             "reason": ("no price has ever been recorded for this holding"
+                        if o["current_price"] is None else
+                        "the last quote was zero, so this holding could not be valued")}
+            for o in out if not (o["current_price"] or 0) > 0
+            and (o["ticker"] or "").upper() != "CASH"],
+        # What NAV is MISSING because of it, at cost. Not a valuation -- cost is
+        # the only number the app has for a holding it cannot price, and saying
+        # "about this much is not in the total" beats letting the total look
+        # complete. NAV itself is left alone: inventing a price is the one thing
+        # worse than admitting there isn't one.
+        "unpriced_cost_ils": round(sum(o["invested_ils"] for o in out
+                                       if not (o["current_price"] or 0) > 0
+                                       and (o["ticker"] or "").upper() != "CASH"), 2),
         # THE SAME DISCLOSURE, FOR THE OTHER HALF OF THE MULTIPLICATION.
         #
         # `value_ils` is `quantity x price x rate`. `stale_positions` above says
