@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 42 — the funding layer reads the book's target)._
+_Last updated: 2026-09-03 by Claude (PR 43 — the call sites PR 42 missed)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 42.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 43.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,74 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 43 — PR 42 was right and incomplete, which is the same as wrong
+
+**PR 42 shipped as `5e3fa1c` and the card did not change.** Eran screenshotted
+Today and the USO card's funding leg still read:
+
+```
+"cheapest way to raise it: Equities is the most overweight class
+ (86% against a 80% target) and VTI is among its least-taxed positions"
+```
+
+on a book whose own Equities target is 89.2% and whose `/mix` reports
+`rebalance_required: false`.
+
+**Root cause: the call-site list was truncated and I treated it as complete.**
+The grep that found the callers of `propose_funded_buy` was piped through
+`head`, which returned ten lines. Two call sites sat below the cut —
+`_buy_idea_recs` (`recommendations.py:3189`) and `_commodity_recs` (`:3303`) —
+and the first of those is what builds the screener cards on Today. PR 42
+threaded the book target through the funding layer correctly and then handed it
+to four of six callers. A fix that reaches most of the call sites is
+indistinguishable, from the screen, from no fix at all.
+
+This is the failure mode `safe-windows-edits` Rule 1 names for reads — *never
+trust a truncated view* — applied to a search rather than a file.
+
+**The fix.** Both sites now pass `book_target`: `_buy_idea_recs` takes it as a
+parameter, threaded from `btgt["target"]` at its call site, and `_commodity_recs`
+forwards the `book_mix` it was already being handed.
+
+**The guard, which matters more than the fix.**
+`tests/test_every_funding_call_passes_the_book_target.py` walks the **AST** of
+`recommendations.py` and `funding_service.py` and fails if any call to
+`propose_funded_buy`, `plan_funding` or `rank_trim_candidates` omits
+`book_target`. It does not care what is passed — only that the caller says which
+target it means, so a new call site cannot silently inherit the objective table.
+Walking the tree rather than grepping is the point: the defect being pinned was a
+search that stopped early. A second test builds the exact missed call shape and
+asserts the walker flags it, so a green run is evidence rather than an absence.
+
+Against `d4ca292` the guard names all five sites; against the deployed `5e3fa1c`
+it names the two that were missed.
+
+**On the single card.** Today shows one card, not two, and that is **not** this
+bug. `_ledger` nets funding across the card set — the comment at the
+`_buy_idea_recs` call site is explicit that the screener runs last so "an
+optional idea can only ever use what a needed trade did not". USO claimed the
+Commodities gap; COMT is still ranked (84.7) and correctly has no card of its
+own. Two cards spending the same shekels is the defect PR 1 fixed.
+
+**Also found, not fixed here.** `_commodity_recs:3264` and
+`_redeploy_cash_recs:2860` both read `book_mix or OBJ_TARGET[objective]`. That
+`or` is the same trap `targets_for` was written to avoid: a book target that is
+truthy but silent about a class yields **zero** for it, not the objective's view.
+On this book that is why `_commodity_recs` emits nothing at all. Converting them
+to `targets_for` would change which cards exist, so it is listed on the plan
+rather than done quietly.
+
+**Gate:** SQLite **1621 passed / 0 failed / 0 skipped**; Postgres **1621 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+*Postgres note for the next session: an interrupted run leaves rows behind and
+the next run failed 46 tests on card-generation state that had nothing to do with
+the change. `dropdb && createdb` before believing a Postgres-only failure.*
+
+Not financial advice.
 
 ---
 

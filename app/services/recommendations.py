@@ -1772,7 +1772,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _named = {str(r.get("meta", {}).get("chosen") or "") for r in recs}
     _named |= {str(r.get("meta", {}).get("ticker") or "") for r in recs}
     recs += await _offload(_buy_idea_recs, _ideas, rows, snap, plan, objective, cap,
-                           _cash_ils, _sleeve_names, _ledger, _named)
+                           _cash_ils, _sleeve_names, _ledger, _named, btgt["target"])
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -3120,7 +3120,8 @@ _MAX_BUY_IDEA_CARDS = 2
 
 
 def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
-                   sleeve_names=None, ledger=None, already_named=None) -> list[dict]:
+                   sleeve_names=None, ledger=None, already_named=None,
+                   book_target: dict | None = None) -> list[dict]:
     """Turn the screener's ranked names into fundable cards on Today.
 
     THE SCREENER HAD NO SURFACE. `buy_ideas` has been in the /recommendations
@@ -3190,7 +3191,7 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=tk, buying_class=cls, cash_ils=cash_ils,
             exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
-            ledger=ledger)
+            ledger=ledger, book_target=book_target)
         if buy is None:
             # Not a failure and not worth logging as one. The plan does not want
             # this purchase right now, and the honest response is silence.
@@ -3303,7 +3304,8 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
         buy = _fund.propose_funded_buy(
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=pick_tk, buying_class="Commodities", cash_ils=cash_ils,
-            requested_ils=gap_ils, exclude=sleeve_names, market="NYSE", ledger=ledger)
+            requested_ils=gap_ils, exclude=sleeve_names, market="NYSE", ledger=ledger,
+            book_target=book_mix)
         if buy is not None:
             fund = buy.fund
             affordable = buy.amount_ils
