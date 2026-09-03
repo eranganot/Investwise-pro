@@ -219,17 +219,28 @@ def test_tax_harvest_never_targets_the_strategy_sleeve():
 
     Two agents, opposite instructions, same position, same screen. The tax
     engine cannot know the holding is there on purpose.
+
+    PR 41 strengthened what this pins, because ordering was never enough on its
+    own. The exclusion did run first -- and the saving was still READ off
+    `tax_opportunities`, which scans the whole book, so the excluded sleeve's
+    loss was quoted anyway: ILS 143.65 of a ILS 146.46 claim on 2026-09-03. The
+    whole-book read must now be absent entirely and the saving measured over the
+    tickers that survive the exclusion. The resulting numbers are pinned in
+    `tests/test_the_harvest_card_measures_what_it_sells.py`.
     """
     import inspect
 
     from app.services import recommendations as rr
     src = inspect.getsource(rr.build_recommendations)
     assert "sleeve_targets" in src
-    # The exclusion must happen before `save` is computed, or the card would
-    # advertise a saving it is no longer going to realize.
+    assert 'harvest[0]["estimated_annual_tax_savings_currency"]' not in src, (
+        "the saving is being read off the whole-book scan again; it has to be "
+        "measured over the tickers this card actually sells")
+    # The exclusion must happen before the saving is measured, and the
+    # measurement must be scoped to what is left.
     i_excl = src.index("_held_for_strategy")
-    i_save = src.index('harvest[0]["estimated_annual_tax_savings_currency"]')
-    assert i_excl < i_save, "the sleeve must be excluded before the saving is quoted"
+    i_save = src.index("_loss_ils = _unrealized_ils(rows, only=losers")
+    assert i_excl < i_save, "the sleeve must be excluded before the saving is measured"
 
 @pytest.mark.asyncio
 async def test_list_rules_retires_on_read_not_only_in_the_price_job():

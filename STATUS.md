@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 40 — a buy that cannot be priced sells nothing)._
+_Last updated: 2026-09-03 by Claude (PR 41 — the tax card counted losses it was not going to sell)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 40.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 41.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,71 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 41 — the tax card counted losses it was not going to sell
+
+**Measured on production, 2026-09-03, the morning after the core realign:**
+
+```
+apply.tickers          VTI, BND
+est_amount             146.46 ILS      "save about 146 in tax this year"
+losses on VTI + BND     11.17 ILS  ->    2.79 ILS at the 25% CGT rate
+losses on SOXL + TQQQ  574.58 ILS  ->  143.65 ILS, excluded from the sale
+                                        three lines earlier as strategy
+                                        holdings, and counted anyway
+```
+
+**98% of the headline came from two positions the same code block had just
+decided not to touch.** A 52x overstatement of the card's own number. `save` was
+read straight off `tax_opportunities`, which scans the whole book, while `losers`
+had already been filtered by the sleeve exclusion. `_unrealized_ils(rows,
+only=losers)` now measures the loss over the tickers the card actually sells,
+FX-converted per holding.
+
+**Three more, on the same card.**
+
+- **It offered to sell the core.** The exclusion knew about sleeves only, so on a
+  book that had realigned into `bal_6040` the day before, the card proposed
+  selling VTI and BND — the basket itself. Accepting it would have undone the
+  realign and taken `measured_pct_of_book` back down from 97. PR 37 settled that
+  a core is a strategy too; the sentence already in the code applies unchanged —
+  *a tax saving is not a reason to sell your strategy.*
+- **It promised this year.** Every position in the book was below cost, so there
+  were no gains to offset. `tax_opportunities` knew, and says so in its own
+  description — *"future gains (carry-forward)"* — while the card built from it
+  said *"Lowers this year's tax bill"* regardless. An unoffset loss carries
+  forward; it does not reduce a bill that does not exist. The card now says what
+  the loss is worth **once you have a gain to offset**, and names the
+  carry-forward when there is none.
+- **`gains` were unrealized and called realized.** Where a book does show
+  winners they owe no tax until sold, so the loss offsets nothing until they are.
+  `portfolio_analytics.py:195` said "realized gains"; it now says "gains once
+  they are realized", and the card names the unrealized figure as the thing that
+  would have to be sold too.
+
+Plus the disclosure the engine was already carrying and the card never repeated:
+`_TAX_ASSUMPTIONS` states *"no inflation-linked cost basis adjustment"*, so the
+estimate is on the nominal gain and is an upper bound. The card says so now.
+
+**Effect on Today, and it is the smoke test:** on the live book every holding is
+either a sleeve (SOXL, TQQQ) or the core basket (VTI, BND), so after this PR
+there is **no harvest card at all**. That is the correct answer — there is
+nothing harvestable that the plan does not hold on purpose. Today goes from three
+cards to two.
+
+**Tests:** `tests/test_the_harvest_card_measures_what_it_sells.py`, three cases,
+all three confirmed **failing against `8541583`** first. One existing test changed
+with it: `test_tax_harvest_never_targets_the_strategy_sleeve` pinned that the
+exclusion ran *before* the saving was quoted — which it did, and the saving was
+wrong anyway. It now pins that the whole-book read is **absent** and that the
+measurement is scoped to what survives the exclusion. Strengthened, not relaxed.
+
+**Gate:** SQLite **1615 passed / 0 failed / 0 skipped**; Postgres **1615 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+Not financial advice.
 
 ---
 

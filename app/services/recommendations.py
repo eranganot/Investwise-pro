@@ -198,6 +198,36 @@ def _ils(x) -> str:
     return f"₪{round(x):,}"
 
 
+def _unrealized_ils(rows, only: list[str] | None = None, sign: int = -1) -> float:
+    """Unrealized P/L in SHEKELS for the named holdings, one side only.
+
+    ``sign=-1`` sums losses and returns them positive; ``sign=+1`` sums gains.
+
+    FX-converted per holding, because ``(price - cost) x qty`` is in the
+    holding's TRADING currency: SOXL at $106.35 against a $111.24 basis is a
+    $113 loss, and adding that to a shekel total as though it were ILS 113 is
+    the error this app has been bitten by twice. ``compute_snapshot`` does the
+    same conversion; this exists so a card can ask about the subset of holdings
+    it is actually proposing to sell.
+    """
+    from app.services.fx import fx_rate, price_currency
+
+    want = {(t or "").upper() for t in (only or [])} if only is not None else None
+    total = 0.0
+    for p in rows:
+        if want is not None and (p.ticker or "").upper() not in want:
+            continue
+        meta = p.meta if isinstance(p.meta, dict) else None
+        rate = fx_rate(price_currency(p.market, meta)) or 1.0
+        pl = ((float(p.current_price or 0.0) - float(p.cost_basis or 0.0))
+              * float(p.quantity) * rate)
+        if sign < 0 and pl < 0:
+            total += -pl
+        elif sign > 0 and pl > 0:
+            total += pl
+    return round(total, 2)
+
+
 # Plain-language fallbacks so every card explains *why* it fired and its *impact*,
 # even for the agent-built cards that don't set these fields explicitly. Kept
 # qualitative on purpose — the advisor never invents numbers it hasn't computed.
@@ -1165,6 +1195,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 f("Shares to sell", "shares = trim / price",
                   substituted=f"{trim:,.0f} / {price:,.2f}", result=str(shares))])
 
+    # Resolved BEFORE the tax block, because the harvest exclusion needs the
+    # core basket and not only the sleeves. PR 37 settled that a core is a
+    # strategy too; the exclusion below predates it.
+    btgt = await _book_target(session, user, objective)
+
     # 2) Tax-loss harvesting
     tx = tax_opportunities(pdicts)
     harvest = [o for o in tx["opportunities"] if o["trigger"] == "CAPITAL_LOSS_HARVESTING"]
@@ -1193,9 +1228,39 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _sleeve = await sv.sleeve_tickers(session, user)
         except Exception:  # noqa: BLE001
             _sleeve = set()
-        _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _sleeve})
-        losers = [t for t in losers if (t or "").upper() not in _sleeve]
-        save = harvest[0]["estimated_annual_tax_savings_currency"] if losers else 0.0
+        # THE CORE IS A STRATEGY TOO (PR 37). This exclusion knew about sleeves
+        # only. Measured live on 2026-09-03, the day after the core realign: the
+        # card offered to sell VTI and BND -- the Classic 60/40 basket the
+        # realign had just bought -- to bank a tax loss. Accepting it would have
+        # undone the realign and taken `measured_pct_of_book` back down from 97.
+        # The sentence already written above applies unchanged: a tax saving is
+        # not a reason to sell your strategy.
+        try:
+            from app.services.strategies import core_weights as _core_weights
+            _core_basket = {(t or "").upper()
+                            for t in (_core_weights(btgt.get("core_strategy_id")) or {})}
+        except Exception:  # noqa: BLE001
+            _core_basket = set()
+        _protected = set(_sleeve) | _core_basket
+        _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _protected})
+        losers = [t for t in losers if (t or "").upper() not in _protected]
+
+        # THE SAVING IS MEASURED ON WHAT THIS CARD SELLS, not on the book.
+        #
+        # It used to read `estimated_annual_tax_savings_currency` straight off
+        # `tax_opportunities`, which scans EVERY position -- including the ones
+        # the lines above just decided not to sell.
+        #
+        # Measured live on 2026-09-03: the card proposed selling VTI and BND and
+        # claimed a saving of ILS 146.46. Selling VTI and BND realizes ILS 11.17
+        # of losses, worth ILS 2.79 at the 25% CGT rate. The other ILS 143.65 --
+        # 98% of the headline -- was the loss on SOXL and TQQQ, which the card
+        # was not offering to touch. A 52x overstatement of its own number.
+        from app.core.config import get_settings as _get_settings
+        _cgt_rate = float(_get_settings().cgt_rate)
+        _loss_ils = _unrealized_ils(rows, only=losers, sign=-1) if losers else 0.0
+        _gain_ils = _unrealized_ils(rows, sign=+1)
+        save = round(_cgt_rate * _loss_ils, 2) if losers else 0.0
 
     if harvest and losers:
         _note = ("" if not _held_for_strategy else
@@ -1232,33 +1297,64 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # a decision the user should be able to see the shape of.
         _cost_note = ("" if _sev != "LOW" or not _sell_value else
                       f" Worth weighing: that means selling {_ils(_sell_value)} of "
-                      f"holdings to save {_ils(save)}, and giving up the position "
+                      f"holdings to bank {_ils(save)}, and giving up the position "
                       f"for the wash-sale window.")
+
+        # A LOSS IS ONLY A SAVING ONCE THERE IS A GAIN TO NET IT AGAINST, and
+        # this app has no record of gains realized earlier in the year -- it
+        # holds a book, not a tax return. So the card no longer says "this
+        # year". `tax_opportunities` already knew: its own description reads
+        # "future gains (carry-forward)" when the book carries no gains, while
+        # the card built from it said "lowers this year's tax bill" regardless.
+        #
+        # `_gain_ils` is UNREALIZED. It is named as the thing that would have to
+        # be sold too, not counted as tax already owed.
+        _when = (f" You are holding about {_ils(_gain_ils)} of unrealized gains; "
+                 f"realizing some of those in the same tax year is what turns this "
+                 f"loss into a saving."
+                 if _gain_ils > 0 else
+                 " Nothing in your book is currently showing a gain, so this is a "
+                 "carry-forward: it lowers a future tax bill, not this year's.")
+        # The engine states this limitation itself (`_TAX_ASSUMPTIONS`) and the
+        # card never repeated it. An estimate computed on the nominal gain is an
+        # upper bound wherever the basis would be indexed.
+        _basis_note = (" Estimated on the nominal gain, with no inflation-linked "
+                       "cost-basis adjustment - treat it as an upper bound.")
+
         recs.append({"id": _rid("tax", *sorted(losers)), "dimension": "tax",
                      "severity": _sev,
                      "title": ("Harvest a tax loss" if _sev != "LOW"
                                else f"A small tax loss to harvest ({_ils(save)})"),
                      "why": "You hold position(s) below what you paid \u2014 selling now realizes a loss you can "
-                            "use to offset taxable gains before year-end." + _note,
-                     "action": f"Sell your losing position(s) ({', '.join(losers)}) to realize the loss "
-                               f"and save about {_ils(save)} in tax this year.",
-                     "impact": f"Lowers this year's tax bill by about {_ils(save)}; you can re-buy after the "
-                               f"wash-sale window if you still want the exposure." + _cost_note,
+                            "use to offset taxable gains." + _note,
+                     "action": f"Sell your losing position(s) ({', '.join(losers)}) to realize "
+                               f"{_ils(_loss_ils)} of losses, worth about {_ils(save)} in tax "
+                               f"once you have a gain to offset." + _when,
+                     "impact": f"Banks {_ils(save)} of tax value against future gains; you can re-buy after "
+                               f"the wash-sale window if you still want the exposure."
+                               + _cost_note + _basis_note,
                      "how": ["Sell the position(s) currently below what you paid",
-                             "The realized loss offsets taxable gains, lowering your tax bill",
+                             "The realized loss offsets taxable gains, in this year or a later one",
                              "If you still believe in them, re-buy after the wash-sale window"],
                      "est_amount": save,
                      "apply": {"kind": "sell_losers", "tickers": losers}})
         recs[-1]["audit_trail"] = audit_for("tax",
             raw_data={"losing_tickers": losers, "excluded_strategy_sleeve": _held_for_strategy,
-                      "estimated_annual_tax_savings": round(save, 2)},
+                      "realizable_loss_ils": _loss_ils,
+                      "unrealized_gains_ils": _gain_ils,
+                      "offsets_a_gain_now": _gain_ils > 0,
+                      "estimated_tax_value": round(save, 2)},
             formulas=[
-                f("Tax saved", "tax_saved = realized_loss x CGT_rate", result=f"\u20aa{save:,.0f}")])
+                f("Realizable loss", "loss = sum over the tickers THIS CARD SELLS of "
+                                     "(cost - price) x qty x fx",
+                  result=f"\u20aa{_loss_ils:,.2f}"),
+                f("Tax value", "tax_value = realizable_loss x CGT_rate",
+                  substituted=f"{_loss_ils:,.2f} x {_cgt_rate:.2f}",
+                  result=f"\u20aa{save:,.2f}")])
 
     # 3) Rebalance toward the BOOK's target mix -- sleeves plus core, not the
     #    core's mix measured against a book that is 64% something else.
     mix, _ = current_mix(rows)
-    btgt = await _book_target(session, user, objective)
     target = btgt["target"]
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
     # Every action past the drift threshold, not the first two. The slice meant

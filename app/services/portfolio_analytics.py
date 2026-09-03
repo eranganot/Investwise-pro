@@ -192,8 +192,12 @@ def tax_opportunities(positions: list[dict]) -> dict:
         offsetable = min(losses, gains) if gains > 0 else losses
         opps.append({
             "id": _opp_id("harvest", round(losses)), "trigger": "CAPITAL_LOSS_HARVESTING",
+            # "realized gains" was wrong: `gains` here is UNREALIZED, so there is
+            # no tax liability for this loss to offset until those winners are
+            # sold too. The Today card built from this inherited the error and
+            # told the user it lowered "this year's" bill.
             "description": f"Harvest ~₪{round(losses):,} of unrealized losses to offset "
-                           f"{'realized gains' if gains > 0 else 'future gains (carry-forward)'}.",
+                           f"{'gains once they are realized' if gains > 0 else 'future gains (carry-forward)'}.",
             "estimated_annual_tax_savings_currency": round(st.cgt_rate * offsetable, 2),
         })
     if gains > 0:
