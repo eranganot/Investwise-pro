@@ -340,8 +340,24 @@ async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(ge
     from app.schemas.state_machine import Market
     from app.services.commodities import get as commodity, is_commodity
     from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
+    from app.services.fx import to_major_units
     try:
-        price = float(guarded_quote(req.ticker).price)
+        _q = guarded_quote(req.ticker)
+        # THE 100x TRAP, at the one boundary that still had it. `to_major_units`
+        # says "use at every boundary" in its own docstring and exactly one
+        # boundary used it. Yahoo quotes Tel Aviv in AGOROT and says so in the
+        # CURRENCY CODE, not the price: TEVA.TA comes back as 11030.0 with
+        # currency ILA, meaning 110.30 ILS. This threw the currency away and kept
+        # the number.
+        #
+        # What that did was worse than a wrong price, because it cancelled out at
+        # first: a 1,000 ILS purchase booked 0.0907 shares at 11,030 each, so NAV
+        # looked right the moment it was made. `MARKET_CCY["TASE"]` is "ILS", so
+        # nothing downstream disagreed either. Then the next price refresh wrote
+        # the correct major-unit price of 110.30 against those 0.0907 shares and
+        # the position was worth 10 ILS. An error invisible until a job that did
+        # nothing wrong exposes it.
+        price, _ccy = to_major_units(float(_q.price), getattr(_q, "currency", None))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"couldn't price {req.ticker}: {str(e)[:80]}"}
     if price <= 0:

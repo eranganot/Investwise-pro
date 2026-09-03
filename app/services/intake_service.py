@@ -95,16 +95,56 @@ async def upsert_positions(
                 account_id=account.id, ticker=ip.ticker, market=ip.market.value,
                 quantity=money(ip.quantity), cost_basis=money(ip.cost_basis),
                 current_price=money(ip.listing_price), lifecycle_stage="DETECTED",
-                meta=meta,
+                meta=_intake_meta(None, meta, ip.market.value),
             ))
         else:
             row.market = ip.market.value
             row.quantity = money(ip.quantity)
             row.cost_basis = money(ip.cost_basis)
             row.current_price = money(ip.listing_price)
-            row.meta = meta
+            row.meta = _intake_meta(row.meta, meta, ip.market.value)
     await session.flush()
     return len(positions)
+
+
+# Keys the PRICE pipeline owns. `upsert_positions` writes a price too, so on a
+# re-intake these must be re-stamped rather than carried over: a row whose price
+# came from a CSV must not still claim it came from Yahoo, and a repair flag
+# about a price that no longer exists is worse than no flag.
+_PRICE_KEYS = ("price_source", "price_currency", "price_as_of", "price_currency_quoted",
+               "price_currency_repaired", "price_currency_conflict", "price_unverified")
+
+
+def _intake_meta(existing: dict | None, incoming: dict, market: str | None) -> dict:
+    """Intake meta merged over what is already there, with the price re-stamped.
+
+    TWO BUGS IN ONE LINE. `row.meta = meta` REPLACED the dict, so every key the
+    price pipeline had written -- `price_source`, `price_currency`,
+    `price_as_of` -- was dropped on any re-intake, and the row was left holding a
+    price with nothing saying what currency it was in. `pricing_service` merges
+    (`{**(p.meta or {}), ...}`); this is the same discipline on the other writer.
+
+    A previous fix already noticed the wholesale replace and rescued exactly one
+    key (`asset_class_source`). Rescuing one key at a time is how the next one
+    gets lost, so this merges and then re-stamps the price keys deliberately.
+
+    The stamp is the second half: the CSV path and `broker_sync` write a price
+    with no provenance at all, so a row could carry a number nothing in the app
+    could explain. After this every intake-written price says it came from an
+    intake, in which currency, and when.
+    """
+    from datetime import datetime, timezone
+
+    from app.services.fx import price_currency
+
+    old = dict(existing) if isinstance(existing, dict) else {}
+    for k in _PRICE_KEYS:
+        old.pop(k, None)
+    merged = {**old, **incoming}
+    merged["price_source"] = "intake"
+    merged["price_currency"] = price_currency(market, None)
+    merged["price_as_of"] = datetime.now(timezone.utc).isoformat()
+    return merged
 
 
 async def buy_into_book(

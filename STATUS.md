@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 44 — the core is not spare change)._
+_Last updated: 2026-09-03 by Claude (PR 45 — intake prices are shekels, and say so)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 44.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 45.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,73 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 45 — intake wrote a price it could not explain, and one of them was 100x
+
+Two faults at one boundary, found together because they are the same mistake:
+**intake wrote a number without writing what the number meant.**
+
+### The 100x, and why it was invisible
+
+`to_major_units` says *"Use at every boundary"* in its own docstring, and exactly
+one boundary used it. Yahoo quotes Tel Aviv in **agorot** and says so in the
+CURRENCY CODE rather than in the price — `TEVA.TA` comes back as `11030.0` with
+currency `ILA`, meaning 110.30 shekels. `add_holding` took `.price` and threw
+`.currency` away.
+
+What makes this worse than a wrong price is that **it cancelled out at the moment
+it was made**:
+
+```
+budget 1,000 ILS / 11,030 = 0.0907 shares booked at 11,030 each  ->  NAV 1,000
+```
+
+Nothing downstream disagreed either: `MARKET_CCY["TASE"]` is `"ILS"`, and the row
+carried no currency stamp to contradict it. Then the **next scheduled price
+refresh** wrote the correct major-unit price of 110.30 against those 0.0907
+shares, and the holding was worth **₪10**. An error invisible until a job that
+did nothing wrong exposed it — the mirror image of PR 32, where a bad quote
+self-healed in thirty minutes.
+
+### The provenance
+
+`upsert_positions` did `row.meta = meta` — a wholesale replace of a dict the
+price pipeline also writes to. Every re-intake dropped `price_source`,
+`price_currency` and `price_as_of`, leaving a stored price with nothing saying
+what currency it was in; and the CSV path and `broker_sync` never wrote those
+keys at all. A previous fix had already noticed the replace and rescued exactly
+**one** key (`asset_class_source`) — which is how the next one gets lost.
+
+`_intake_meta()` now merges, the way `pricing_service` always has
+(`{**(p.meta or {}), ...}`), and then **re-stamps** the price keys deliberately:
+a row whose price came from a CSV must not still claim it came from Yahoo, and a
+repair flag about a price that no longer exists is worse than no flag. That one
+helper covers three of the four writers the plan listed — `add_holding`, the CSV
+path and `broker_sync` all go through `upsert_positions`.
+
+### Scope note, against what the plan said
+
+V5 called this *"four writers put a price on a holding without normalising it"*.
+Only one of the four has a currency to normalise **from**: the CSV and broker
+paths carry a bare number and no code, so for them the gap was provenance, not
+normalisation. Fixed as it actually is rather than as it was described.
+
+**Tests:** `tests/test_intake_prices_are_shekels_and_say_so.py`, three cases, all
+confirmed failing against `712ff7c` first. The share count is the assertion that
+matters — 9.07 shares, not 0.0907 — because that is the number the next refresh
+turns into a loss.
+
+**Gate:** SQLite **1626 passed / 0 failed / 0 skipped**; Postgres **1626 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+**Smoke:** read-only, and honest about it. This path fires only when a holding is
+added, and adding one to a live book to prove a fix is not a smoke test. The
+tests are the proof; the smoke confirms the deploy is healthy and that no
+existing row moved.
+
+Not financial advice.
 
 ---
 
