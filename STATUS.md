@@ -1,37 +1,105 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-02 by Claude (PR 39 — the core card acts)._
+_Last updated: 2026-09-03 by Claude (PR 40 — a buy that cannot be priced sells nothing)._
 _Seeded from git history + prior transcripts._
 
 ---
 
-## 📍 Where this repo actually is — weekly review 2026-08-31
+## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD `1362ce8` (2026-08-31). 26 commits in the last 7 days — PR 16 → PR 26 — by far the
-busiest of the four repos** (AdaptiveFit: 0, Job Hunter: 0, WealthOS: 0).
+**HEAD is PR 40.** Production served `4076ef1` (v22.1) up to this push — confirm with
+`/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
+VTI, BND and cash.
 
-**For what is still OPEN, read `STATUS-V2.md`**, the cold-start handoff and house rules.
-This file is the history: what shipped and why. Detail from 2026-08-03 → 08-12 now lives in
-`STATUS-ARCHIVE.md`.
+**`measured_pct_of_book` is 97**, up from 78.9. The core card was pressed on 09-02 and the
+realign landed in full: `/mix` reports Fixed Income drift `0.0` and `rebalance_required:
+false`, the book now holds VTI and BND and no longer holds V, and no `core_to_basket` card
+remains on Today. The ₪565 funding question closed with it.
+
+**For what is still OPEN, read `EXECUTION_PLAN_2026-09-03_v6.md`.** It supersedes V5, which
+was re-verified row by row on 09-03: six of its rows had changed state within a day and four
+were wrong on their own terms.
+
+**For what V5 said, read `EXECUTION_PLAN_2026-09-02_v5.md`.** That file replaces the
+"Next" list that used to sit here and supersedes `STATUS-V2.md` as the open-items list;
+it was built by re-validating every candidate against production rather than against these
+documents, which retired twelve items. **This file is the history**: the PR entries below
+are what shipped and why, and they are the best record of the reasoning. Detail from
+2026-08-03 → 08-12 lives in `STATUS-ARCHIVE.md`.
+
+### 🟢 Closed since the 08-31 review — do not re-open
+
+| item | evidence |
+|---|---|
+| Rotate `AGENT_API_KEY` / `AUTH_PASSWORD` — the 4-week-old top item | **Done.** The key in `scripts/.agent-key` returns `200`; the published default password returns `401` on `/auth/token`. One env var holds one value, so the published key cannot also be live. |
+| Enable notifications on the Pixel 9 | **Done.** `subscriptions: 1`; 07:00 digests fired 08-30 → 09-02 plus rule triggers. |
+| Delete the corrupt 08-22 snapshot | **Done.** Absent from `/portfolio/nav-history`. |
+| Push PR 26 / PR 27 | **Done**, and thirteen PRs have shipped since. |
+| `scripts/.agent-key.previous` not gitignored | **Fixed** — `.gitignore:31`, `scripts/.agent-key*`. |
+| `STATUS-V2.md` invisible to a fresh clone | **Fixed** — it and `STATUS-ARCHIVE.md` are tracked. |
+| **Press the core card** — the 09-02 top item | **Done 09-02.** `measured_pct_of_book` 78.9 → **97**; `/mix` Fixed Income drift `0.0`, `rebalance_required: false`; the book holds VTI and BND, V is gone; no `core_to_basket` card remains. The **₪565 funding decision closed with it**. |
 
 ### 🔴 Ops actions (Eran only) — with age
 _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **4 weeks** | 🔴🔴 **Set `AGENT_API_KEY` and `AUTH_PASSWORD` on Railway — nothing is rotated until you do.** This started four weeks ago as a mild note ("rotate the key, it was pasted into a chat transcript"), was re-flagged on 08-10 as hardcoded in 12 committed scripts, and on 08-30 PR 26 found it in **33** scripts in a **public** repository, together with a SuperAdmin password that no configuration change could retire. PR 26 made rotation *possible*. **It did not perform it.** **RE-MEASURED 2026-08-31: the key committed in the 33 scripts still returns `200` on `GET /api/v1/portfolio`. Nothing has been rotated.** Both `scripts/.agent-key` and `scripts/.agent-key.previous` on this machine hold locally-generated values that production has never seen — the ship script wrote them; Railway was never updated — so every smoke script on this box now 401s while the published key still works. Until both env vars are set, the two published credentials are still the live ones. Runbook: `ROTATION.md`. This is the top of the file for a reason — four weeks is how long a "should rotate someday" took to become "was readable by anyone". |
-| 2026-08-03 | **4 weeks** | **Enable notifications on the Pixel 9**; confirm `subscriptions: 1`, then that the 07:00 digest arrives. Still the single failing check in `smoke-all`, still a device action rather than a defect — which is exactly why it has survived four weeks of code shipping around it. |
-| 2026-08-03 | **4 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. They are DB-generated today, so a DB reset silently invalidates every push subscription at once. |
-| 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). It has been the stated "next initiative", unstarted, for seven weeks, while 26 commits of other work shipped past it. That is not a queue — it is a decision that has not been made. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`, ~10 min, 8 sections). Never run; **ten PRs have shipped on top of it since**, so its pre-flight notes (SW `iw-v13`→`iw-v14`) are already stale. |
-| 2026-08-31 | new | **16 untracked files, including real code** — `app/services/candidate_search.py` and `tests/test_candidate_search.py`, plus `STATUS-V2.md`, `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. The sharp one is `STATUS-V2.md`: the file that tells a cold reader what is left **does not exist in the repo** — it is invisible to a fresh clone and to CI. And `scripts/.agent-key.previous` is untracked **and not gitignored** — `git check-ignore` says nothing matches it, so it is one `git add -A` from being committed. In a repo that spent last week removing a published key, a file holding the previous one should be ignored by rule, not by nobody having typed the wrong command yet. (`STATUS-ARCHIVE.md`, created by this review, is a seventeenth — commit it with this file.) |
+| 2026-09-03 | new | **Decide what the ₪618.65 in cash is for.** 2.95% of the book against a 0% target, and the only drift left after the realign. Deploy it, or set a deliberate cash floor and stop calling it drift. |
+| 2026-08-03 | **4 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
+| 2026-08-03 | **4 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest open item on the board. |
+| 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
 
-### Next (confirm priority)
-0. **Push PR 26, then PR 27.** `1362ce8` (PR 26) has been sitting **committed and unpushed** on this machine — `main...origin/main [ahead 1]`. Production serves `7edb624`. Until PR 26 deploys, `AUTH_PASSWORD` is still inert, because the old code ignores it. PR 27 sits on top and is delivered as a patch.
-1. **PR 15c / W3 — contribution modelling.** The only 🔴 *not started* row in the seven-day audit table below; every other PR 1–15b is ✅.
-2. Land or discard `candidate_search` — it has tests and no commit.
-3. **Explain the minor-unit repair failure** (see the PR 27 entry) — first step is one run on the Windows box to find out whether it reproduces off this sandbox at all.
-4. Then the standing list further down this file (smoke-all's one failing check, `smoke-p1 -Apply`, P2 presentation pass).
+---
+
+## PR 40 — a buy that cannot be priced sells nothing
+
+**The defect, in one sentence: two executors sold first and asked for a price
+afterwards.** `_apply_buy_funded` ran every sell leg, realized the capital gains tax, and
+only then quoted the instrument it was buying. When that quote failed it credited the
+proceeds to cash and returned a note saying so — but the positions were already gone and
+the card had claimed a purchase that never happened. The user's book came back as
+something neither the card nor the executor had described.
+
+`_apply_fee_swap` had the identical order with more at stake: it sells the **whole**
+position. A fee swap whose replacement could not be priced was a full exit the card never
+proposed, tax realized, proceeds in cash.
+
+**This was live, not theoretical.** Today carried two `buy_funded` cards when this was
+written — *Consider USO — ₪1,308* and *Consider COMT — ₪775*. Commodity tickers are exactly
+the names most likely to be missing from a given provider, which is how the path gets
+reached.
+
+**Ordering is the entire fix.** `delete_position` commits, so once the first sell lands
+there is nothing left to roll back; before it is the only place either function can refuse
+safely. Both now quote the buy leg first and return
+`{"aborted": True, "unpriced": <ticker>}` with the book untouched.
+
+`_apply_core_to_basket` (PR 39) was already written this way and called the older behaviour
+*"survivable for a single swap"*. It is not: the rule that **a card may not claim a
+portfolio change it does not produce** has no size threshold. Its docstring is corrected
+here — it described a sibling's behaviour that no longer exists.
+
+**Tests:** `tests/test_an_unpriceable_buy_sells_nothing.py`, three cases.
+`test_a_buy_that_cannot_be_priced_sells_nothing` and
+`test_a_fee_swap_that_cannot_price_its_replacement_sells_nothing` were both confirmed
+**failing against `4076ef1`** first — the buy case sold 2 V and credited ₪2,696.48 to cash
+for a purchase that never happened; the swap case liquidated the position outright.
+`test_a_priceable_buy_still_executes` passes in both states by design: the change is a
+reordering, not a new veto, and a guard that only passes after the fix would not prove that.
+
+**Gate:** SQLite **1612 passed / 0 failed / 0 skipped**; Postgres **1612 passed / 0 failed /
+0 skipped**; `ruff check app tests` clean. Both backends run in the sandbox against the
+Postgres 16 service, per `CLAUDE.md`.
+
+**Smoke:** read-only. The behavioural change only fires when a provider fails, which is not
+something to induce in production. What the smoke proves is that the card path is unbroken:
+`/health` serves the new SHA, `/api/v1/recommendations` still returns its cards with their
+`apply.kind`s, and `/api/v1/portfolio` reports the same NAV. The refusal itself is proved by
+the two tests above, not by production.
+
+Not financial advice.
 
 ---
 

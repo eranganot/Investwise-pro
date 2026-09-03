@@ -3736,13 +3736,40 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
 async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> dict:
     """Execute a sized buy, funding it from cash and/or the named trims.
 
-    The sells happen first so the cash is really there, and each leg is priced
-    live rather than assumed. Nothing is bought that can't be funded.
+    PRICES BEFORE IT SELLS. The buy leg is quoted first and the whole action
+    refuses, untouched, if it cannot be.
+
+    This used to run the other way round: every sell executed, and only then was
+    a price asked for. When the quote failed the proceeds were credited to cash
+    with a note saying so -- but the positions were already gone, the capital
+    gains tax was already realized, and the card had claimed a purchase that
+    never happened. `_apply_core_to_basket` was written with this order from the
+    start and described the older behaviour as "survivable for a single swap".
+    Survivable is not correct, and the rule that a card may not claim a portfolio
+    change it does not produce has no size threshold.
+
+    Ordering IS the fix: `delete_position` commits, so once the first sell lands
+    there is nothing left to roll back. Before it is the only place this can
+    refuse safely.
+
+    Nothing is bought that can't be funded, and nothing is sold to fund a buy
+    that cannot happen.
     """
     from app.providers.registry import guarded_quote
     from app.schemas.state_machine import Market
     from app.services.fx import fx_rate
     from app.services.intake_service import buy_into_book, get_cash, set_cash
+
+    ticker = (spec.get("ticker") or "").upper()
+    try:
+        q = guarded_quote(ticker)
+        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+    except Exception:  # noqa: BLE001 - no live price: refuse before anything moves
+        price, ccy = 0.0, "USD"
+    if price <= 0:
+        return {"bought": None, "aborted": True, "unpriced": ticker,
+                "note": (f"Could not get a live price for {ticker}, so nothing was "
+                         f"sold or bought. Your book is unchanged.")}
 
     sold, tax_total, raised = [], 0.0, 0.0
     rows = await list_positions(session, user)
@@ -3773,21 +3800,6 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     budget = round(from_cash + raised, 2)
     if budget <= 0:
         return {"bought": None, "note": "Nothing could be funded, so nothing was bought."}
-
-    ticker = (spec.get("ticker") or "").upper()
-    try:
-        q = guarded_quote(ticker)
-        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
-    except Exception:  # noqa: BLE001 — no live price: keep the money as cash, don't misprice
-        await set_cash(session, user, cash_before + raised)
-        return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": None,
-                "cash_added_ils": round(raised, 2),
-                "note": f"Sold {', '.join(sold) or 'nothing'}; couldn't price {ticker}, held as cash."}
-    if price <= 0:
-        await set_cash(session, user, cash_before + raised)
-        return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": None,
-                "cash_added_ils": round(raised, 2),
-                "note": f"No live price for {ticker}; proceeds held as cash."}
 
     native = budget / (fx_rate(ccy) or 1.0)
     qty = native / price
@@ -3899,12 +3911,12 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
 async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -> dict:
     """Bring the core back to the basket it names. Sells, sleeve trim, then buys.
 
-    PRICES BEFORE IT SELLS. `_apply_buy_funded` sells first and, if the buy
-    cannot be priced afterwards, leaves the proceeds sitting in cash and says
-    so. That is survivable for a single swap; here it would mean selling three
-    positions and leaving the whole core in cash because one quote timed out.
-    So every buy leg is priced FIRST and the entire action refuses before
-    anything is sold.
+    PRICES BEFORE IT SELLS: every buy leg is priced FIRST and the entire action
+    refuses before anything is sold. This was written here first, because
+    selling three positions and leaving the whole core in cash on one timed-out
+    quote is not survivable. `_apply_buy_funded` and `_apply_fee_swap` sold
+    first and priced afterwards until PR 40 gave them the same order -- the
+    difference was only ever how much of the book one failure could strand.
 
     RE-PLANNED AT APPLY TIME, from live rows, rather than executing the spec the
     card was built with. The card may be minutes old and the book may have moved;
@@ -4055,9 +4067,15 @@ async def _create_rule_from_spec(session: AsyncSession, user: User, spec: dict) 
 async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, spec: dict) -> dict:
     """Sell the high-fee fund and buy the cheaper equivalent for the same value.
 
-    The replacement is priced live so the 30-min reprice job keeps it correct; if
-    it can't be priced, we fall back to leaving the net proceeds as cash rather
-    than creating a mis-priced holding.
+    PRICES BEFORE IT SELLS, for the same reason `_apply_buy_funded` does, and
+    with more at stake: this sells the WHOLE position. The old order deleted the
+    holding, then asked for a price on the replacement, and on failure credited
+    the net proceeds to cash -- turning "swap into a cheaper fund" into a full
+    exit the card never proposed, with the tax realized. A swap that cannot buy
+    its replacement is not a swap, so it refuses and sells nothing.
+
+    The replacement is still priced live so the 30-min reprice job keeps it
+    correct; what changed is only when the price is asked for.
     """
     from app.providers.registry import guarded_quote
     from app.schemas.state_machine import Market
@@ -4068,21 +4086,19 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     p = by_ticker.get(sell_tk)
     if not p or not buy_tk:
         return {"swapped": False}
+    try:
+        q = guarded_quote(buy_tk)
+        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+    except Exception:  # noqa: BLE001 - no live price: refuse before anything moves
+        price, ccy = 0.0, "USD"
+    if price <= 0:
+        return {"swapped": False, "aborted": True, "unpriced": buy_tk,
+                "note": (f"Could not get a live price for {buy_tk}, so {sell_tk} was "
+                         f"not sold. Your book is unchanged.")}
     gross, tax = _sale_value_ils(float(p.quantity), float(p.current_price or 0),
                                  float(p.cost_basis or 0), p.market, p.meta)
     net_ils = max(0.0, gross - tax)
     await delete_position(session, user, sell_tk, p.market)
-    try:
-        q = guarded_quote(buy_tk)
-        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
-    except Exception:  # noqa: BLE001 — no live price -> keep proceeds as cash, don't misprice
-        credited = await credit_cash(session, user, net_ils)
-        return {"swapped": False, "sold": [sell_tk], "cash_added_ils": round(credited, 2),
-                "tax_ils": round(tax, 2), "note": f"Sold {sell_tk}; couldn't price {buy_tk} — held as cash."}
-    if price <= 0:
-        credited = await credit_cash(session, user, net_ils)
-        return {"swapped": False, "sold": [sell_tk], "cash_added_ils": round(credited, 2),
-                "tax_ils": round(tax, 2), "note": f"Sold {sell_tk}; no live price for {buy_tk} — held as cash."}
     native = net_ils / (fx_rate(ccy) or 1.0)  # ILS proceeds -> the buy's trading currency
     qty = native / price
     mk = p.market if p.market in {m.value for m in Market} else "NYSE"

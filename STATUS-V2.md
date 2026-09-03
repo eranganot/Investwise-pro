@@ -1,5 +1,15 @@
 # InvestWise Pro — STATUS V2: the open work
 
+> **SUPERSEDED.** The open-items list now lives in `EXECUTION_PLAN_2026-09-03_v6.md`,
+> rebuilt by re-validating every item against production. Twelve items listed below were
+> closed on 09-02 and more on 09-03. Kept for its cold-start notes and house rules only.
+>
+> **Do not read its NAV-leak section as current.** It says the `rebalance_to_objective`
+> leak is Postgres-only and loses ₪739.21. Both halves are wrong: it *mints* +₪739, and
+> CI #180 caught it on the **SQLite** job with PR 20 applied (`STATUS.md`, "The +739.2 ILS
+> leak is NOT fixed by this").
+
+
 _Written 2026-08-29 at commit `a06a182` (PR 16). This file is a **cold-start
 handoff**: it assumes the reader has none of the conversation that produced it._
 
