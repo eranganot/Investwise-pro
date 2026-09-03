@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 41 — the tax card counted losses it was not going to sell)._
+_Last updated: 2026-09-03 by Claude (PR 42 — the funding layer reads the book's target)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 41.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 42.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,87 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 42 — the funding layer was measuring against a target the rest of the app had left behind
+
+**Measured on production, 2026-09-03 at `d4ca292`.** Both cards on Today were
+funded by selling **VTI** — the Classic 60/40 core basket bought two days
+earlier — and both carried the same reason:
+
+```
+"cheapest way to raise it: Equities is the most overweight class
+ (86% against a 80% target) and VTI is among its least-taxed positions"
+```
+
+`/api/v1/mix`, at the same moment, on the same book:
+
+```
+target_allocation   {"Equities": 0.892, "Fixed Income": 0.108}
+current_allocation  {"Equities": 0.8625, ...}
+drift_percentage    {"Equities": -0.0295}
+rebalance_required  false
+```
+
+**Opposite signs, same book, same screen.** 80% is `OBJ_TARGET["Grow"]`, the
+objective table, which knows nothing about sleeves or a core. 89.2% is the book's
+own target — 73% from two sleeves plus 16.2% from the core — and it is what
+`/mix`, the rebalance card and the contradictions check all read. Equities at
+86.25% is six points over the first and three points **under** the second. The
+funding layer was selling equities to correct an overweight that did not exist,
+and reaching for the core to do it, because sleeves are excluded from trims and
+the core is not.
+
+**Three faults, and each survives the one before it being fixed.**
+
+1. `rank_trim_candidates`, `plan_funding` and `propose_funded_buy` read
+   `OBJ_TARGET[objective]` with no way for a caller to supply the book's target.
+   `funding_service.targets_for()` is now the one seam; all three take
+   `book_target`, and the three call sites in `recommendations.py` pass
+   `_book_target(...)["target"]`.
+2. The reason sentence claimed *"the most overweight class"* **unconditionally**.
+   It is reached whenever a candidate scores at all, and the score carries a
+   tax-friendliness term that stays positive on a book where nothing is over
+   anything. Fixing the target alone would have left the sentence intact.
+3. And it must be **material**. With the book target threaded in, BND came out
+   over by 0.06 points — **₪15.73**, far below `MIN_TRADE_ILS` — and inherited
+   the claim VTI had just been relieved of: *"Fixed Income is the most overweight
+   class (11% against a 11% target)"*, a sentence naming an overweight of zero.
+   The claim now requires the overweight to be worth at least one trade.
+
+**The merge, and why it is a merge.** `targets_for` overrides only the classes
+the book target names. Sleeves plus core describe Equities and Fixed Income and
+say nothing about Commodities — neither a 60/40 core nor two equity sleeves has
+an opinion on it. Replacing the table outright sets the Commodities target to
+zero, and `propose_funded_buy` refuses a buy into a class with no gap, so **both
+commodity idea cards would have vanished** — not because the plan rejected them
+but because the plan had never been asked. Pinned by
+`test_the_book_target_overrides_only_the_classes_it_names`.
+
+**What changes on the live book, simulated before shipping:**
+
+```
+Commodities buy gap   ₪2,552  (open, so the USO and COMT cards survive)
+VTI    "cheapest way to raise it, but it corrects no drift: Equities is at 87%
+        against a 89% target ... Selling it does not move you closer to your plan"
+BND    same shape, 11% against 11%
+```
+
+**What this PR deliberately does NOT do.** The cards still fund by selling VTI —
+`plan_funding`'s `book_has_budget` fallback is explicit that when nothing is
+overweight, the buy is funded from wherever it can be, and that was a deliberate
+decision with a comment on it. This PR makes the sentence true; **whether the app
+should sell the core to buy a class the plan does not model is a decision for
+Eran**, and it is on the plan's decision list rather than settled here.
+
+**Tests:** `tests/test_the_funding_layer_reads_the_books_target.py`, four cases,
+all four confirmed **failing against `d4ca292`** first.
+
+**Gate:** SQLite **1619 passed / 0 failed / 0 skipped**; Postgres **1619 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+Not financial advice.
 
 ---
 

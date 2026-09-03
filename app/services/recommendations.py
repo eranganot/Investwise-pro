@@ -953,6 +953,10 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
     plan = await get_plan(session, user)
     objective = plan.objective if plan else "Balanced"
     cap = effective_caps(plan)["concentration_cap"]
+    # The BOOK's target -- sleeves plus core -- not the objective table. Passed
+    # into every funding call below; see `funding_service.targets_for` for what
+    # reading the wrong one did to two live cards on 2026-09-03.
+    _btgt = (await _book_target(session, user, objective)).get("target")
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
                "asset_class": (p.meta or {}).get("asset_class")} for p in (rows or [])]
@@ -1036,6 +1040,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
         # swap if that is what it is.
         buy = _fund.propose_funded_buy(
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+            book_target=_btgt,
             ticker=tk, buying_class=cls, cash_ils=cash,
             # Every sleeve's tickers are off-limits as a funding source, not
             # just the one being bought. The plan holds those on purpose and one
@@ -1585,6 +1590,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     # the mix) and forces it to say which one it is.
                     _b = _fs.propose_funded_buy(
                         rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+                        book_target=btgt["target"],
                         ticker="VXUS", buying_class="Equities", cash_ils=_cash_ils,
                         requested_ils=_amt, exclude=_sleeve_names, market="NASDAQ",
                         allow_within_class_swap=True, ledger=_ledger)
@@ -1803,7 +1809,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _floor = _fs2.cash_floor_ils(nav, objective, plan)
         if nav and _cash_ils < _floor:
             _need = round(_floor - _cash_ils, 2)
-            _cands = _fs2.rank_trim_candidates(rows, snap, objective, cap)
+            _cands = _fs2.rank_trim_candidates(rows, snap, objective, cap,
+                                               book_target=btgt["target"])
             if _need >= _fs2.MIN_TRADE_ILS and _cands:
                 _c = _cands[0]
                 _sh = int(_need / _c["price_ils"]) if _c["price_ils"] else 0

@@ -108,19 +108,60 @@ def _position_rows(rows, snap) -> list[dict]:
     return out
 
 
+def targets_for(objective: str | None, book_target: dict | None = None) -> dict:
+    """THE TARGET MIX THE REST OF THE APP USES, when the caller can supply it.
+
+    `OBJ_TARGET` is the objective table: Grow is 80% Equities, and it knows
+    nothing about sleeves or a core. The book's own target is sleeves plus core
+    (`_book_target` in recommendations.py), and measuring drift against the wrong
+    one of the two can invert its sign.
+
+    Measured live on 2026-09-03: Equities at 86.25% is **6 points over** the
+    objective table and **3 points under** the book target of 89.2% (73% sleeves
+    + 16.2% core). `/mix` reported `rebalance_required: false` and a drift of
+    -2.95%, while the funding layer, reading the objective table, told two cards
+    that *"Equities is the most overweight class (86% against a 80% target)"*
+    and funded both by selling VTI -- the core basket bought the day before.
+    Two parts of the same screen, opposite signs, same book.
+
+    MERGED, not replaced. The book target is authoritative for the classes it
+    names and silent about the rest: sleeves plus core describe Equities and
+    Fixed Income and say nothing at all about Commodities, because neither a
+    60/40 core nor two equity sleeves has an opinion on it. Replacing the table
+    outright would set the Commodities target to zero, and `propose_funded_buy`
+    refuses a buy into a class with no gap -- so the two commodity idea cards on
+    Today would have vanished, not because the plan rejected them but because
+    the plan had never been asked. Overriding only the named keys fixes the sign
+    of the Equities drift and leaves the objective's view of a class the book
+    does not model.
+
+    Callers that know the book target pass it. Paths with no session to resolve
+    one keep the objective table unchanged.
+    """
+    base = dict(OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"]))
+    if book_target:
+        base.update({k: v for k, v in dict(book_target).items() if v is not None})
+    return base
+
+
 def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
-                         exclude: set[str] | None = None) -> list[dict]:
+                         exclude: set[str] | None = None,
+                         book_target: dict | None = None) -> list[dict]:
     """Holdings ranked by how poorly they fit the plan — worst fit sells first.
 
     Ordering is deliberate: sell what the plan says you're carrying too much of,
     not whatever happens to be up the most. Each candidate carries the reason so
     the card can explain itself.
+
+    ``book_target`` is the sleeves-plus-core target; see `targets_for`. Without
+    it this measures against the objective table, which on a book running sleeves
+    is a different number and sometimes a different sign.
     """
     exclude = {t.upper() for t in (exclude or set())}
     nav = snap.get("nav") or 0.0
     if not nav:
         return []
-    target = OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"])
+    target = targets_for(objective, book_target)
     mix: dict[str, float] = {}
     positions = _position_rows(rows, snap)
     for p in positions:
@@ -154,9 +195,33 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
             # asset class: the 97% it named did not move by a single point. It
             # also said "sleeve" meaning ASSET CLASS, on a screen where sleeve
             # now means a strategy sleeve.
-            reason = (f"cheapest way to raise it: {cls} is the most overweight class "
-                      f"({mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} target) "
-                      f"and {p['ticker']} is among its least-taxed positions")
+            #
+            # AND IT MAY ONLY SAY "OVERWEIGHT" WHEN THE CLASS IS OVER. This
+            # sentence was unconditional, so it fired on the tax_friendliness
+            # term alone. Measured live on 2026-09-03: two cards funded by
+            # selling VTI carried the reason *"Equities is the most overweight
+            # class (86% against a 80% target)"* while `/mix` was reporting
+            # `rebalance_required: false` and Equities 3 points UNDER its 89.2%
+            # book target. Reading the objective table was half of that; saying
+            # "overweight" with `class_over` at zero is the other half, and it
+            # survives the target fix on its own if left alone.
+            #
+            # And MATERIAL, by the app's own unit. A class over by less than
+            # MIN_TRADE_ILS is not something a sale can correct -- there is no
+            # trade that small -- and at display precision it prints as "Fixed
+            # Income is the most overweight class (11% against a 11% target)",
+            # a sentence naming an overweight of zero. Measured on the live book
+            # once the book target was threaded in: BND was over by 0.06 points,
+            # ILS 15.73.
+            if class_over * nav >= MIN_TRADE_ILS:
+                reason = (f"cheapest way to raise it: {cls} is the most overweight class "
+                          f"({mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} target) "
+                          f"and {p['ticker']} is among its least-taxed positions")
+            else:
+                reason = (f"cheapest way to raise it, but it corrects no drift: {cls} is at "
+                          f"{mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} "
+                          f"target and {p['ticker']} is among its least-taxed positions. "
+                          f"Selling it does not move you closer to your plan")
         out.append({**p, "score": round(score, 2), "reason": reason,
                     "asset_class": cls,
                     "gain_pct": round(gain_pct, 1),
@@ -169,7 +234,8 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  amount_ils: float, *, cash_ils: float = 0.0,
                  exclude: set[str] | None = None,
                  reserved: dict | None = None, cash_used: float = 0.0,
-                 buying_class: str | None = None) -> dict:
+                 buying_class: str | None = None,
+                 book_target: dict | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
@@ -240,7 +306,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         # three times. On a three-position book that is a plan to liquidate 90%
         # of it, which is what surfaced the moment funding started raising the
         # amount actually asked for. One budget per class, drawn down once.
-        target = OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"])
+        target = targets_for(objective, book_target)
         class_mix: dict[str, float] = {}
         for p in _position_rows(rows, snap):
             class_mix[p["asset_class"]] = class_mix.get(p["asset_class"], 0.0) + p["weight"]
@@ -251,7 +317,8 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                            + sum(max(0.0, p["weight"] - cap) * nav
                                  for p in _position_rows(rows, snap))) >= MIN_TRADE_ILS
 
-        for cand in rank_trim_candidates(rows, snap, objective, cap, exclude):
+        for cand in rank_trim_candidates(rows, snap, objective, cap, exclude,
+                                         book_target=book_target):
             if remaining_net < MIN_TRADE_ILS:
                 break
             price_ils = cand["price_ils"] or 0.0
@@ -483,7 +550,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                        exclude: set[str] | None = None,
                        market: str = "NYSE",
                        allow_within_class_swap: bool = False,
-                       ledger: "FundingLedger | None" = None) -> FundedBuy | None:
+                       ledger: "FundingLedger | None" = None,
+                       book_target: dict | None = None) -> FundedBuy | None:
     """Size, fund, simulate and narrate a purchase — or return None.
 
     Returning None is the point as often as returning a card is. A purchase the
@@ -512,7 +580,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     mix = {c: v / invested for c, v in value_by_class.items()}
     ticker_weight = sum(p["weight"] for p in positions if p["ticker"] == tk)
 
-    targets = OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"])
+    targets = targets_for(objective, book_target)
     class_target = float(targets.get(buying_class, 0.0) or 0.0)
 
     # What the PLAN wants here, and separately the most this NAME may take.
@@ -533,7 +601,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     _res = dict(ledger.shares) if ledger is not None else None
     _used = ledger.cash_ils if ledger is not None else 0.0
     fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils,
-                        exclude=ex, reserved=_res, cash_used=_used)
+                        exclude=ex, reserved=_res, cash_used=_used,
+                        book_target=book_target)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
     if amount < MIN_TRADE_ILS:
         return None
@@ -541,7 +610,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         # Re-plan at the size the book can actually pay for, so the funding legs
         # describe the trade being proposed rather than one that was rejected.
         fund = plan_funding(rows, snap, plan, objective, cap, amount,
-                            cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used)
+                            cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used,
+                            book_target=book_target)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
         if amount < MIN_TRADE_ILS:
             return None
