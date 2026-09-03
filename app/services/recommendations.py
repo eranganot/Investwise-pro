@@ -164,6 +164,43 @@ def _drift_severity(current: float, target: float) -> str:
     return "MEDIUM"
 
 
+async def _funding_exclusions(session, user, btgt: dict | None) -> set[str]:
+    """Tickers no Today card may sell to fund a purchase.
+
+    Sleeves were the whole of this set. The core was not, and on 2026-09-03 the
+    consequence was on the screen: with the book exactly on its target and
+    nothing overweight, `plan_funding`'s fallback funded a commodity idea by
+    proposing to sell **6.7347 BND -- ILS 1,465 of a ILS 2,263 position, 65% of
+    it** -- which would have taken Fixed Income from 10.8% to 3.8% against an 11%
+    target. The card said, correctly after PR 42, that this "corrects no drift".
+    Saying so is not the same as declining to do it.
+
+    PR 37 settled that a core is a strategy too, and PR 41 already applied that
+    to the tax-harvest exclusion. This applies the same rule to funding, which is
+    the last place that treated the core as spare change. The core is not
+    frozen: `core_to_basket` (PR 39) exists precisely to trade it, sized by one
+    plan, and that is the path that may touch it.
+
+    Failures are logged and degrade to the sleeves alone rather than to nothing:
+    a missing core basket must not silently widen what is sellable.
+    """
+    names: set[str] = set()
+    try:
+        from app.services import sleeve_service as _sv
+        names |= await _sv.sleeve_tickers(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("sleeve tickers unavailable; card funding will not exclude them",
+                       exc_info=True)
+    try:
+        from app.services.strategies import core_weights as _core_weights
+        names |= {(t or "").upper()
+                  for t in (_core_weights((btgt or {}).get("core_strategy_id")) or {})}
+    except Exception:  # noqa: BLE001
+        logger.warning("core basket unavailable; card funding will not exclude it",
+                       exc_info=True)
+    return names
+
+
 async def _book_target(session, user, objective: str) -> dict:
     """THE target mix for the WHOLE book, sleeves included. One answer.
 
@@ -956,7 +993,8 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
     # The BOOK's target -- sleeves plus core -- not the objective table. Passed
     # into every funding call below; see `funding_service.targets_for` for what
     # reading the wrong one did to two live cards on 2026-09-03.
-    _btgt = (await _book_target(session, user, objective)).get("target")
+    _btgt_full = await _book_target(session, user, objective)
+    _btgt = _btgt_full.get("target")
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
                "asset_class": (p.meta or {}).get("asset_class")} for p in (rows or [])]
@@ -969,15 +1007,10 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
     cash = await get_cash(session, user)
     held = {(getattr(p, "ticker", "") or "").upper(): p for p in (rows or [])}
 
-    # Every strategy sleeve's tickers, off-limits as a funding source for any of
-    # these cards. Fetched once rather than per candidate.
-    try:
-        from app.services import sleeve_service as _sv
-        sleeve_names = await _sv.sleeve_tickers(session, user)
-    except Exception:  # noqa: BLE001
-        logger.warning("sleeve tickers unavailable; funding will not exclude them",
-                       exc_info=True)
-        sleeve_names = set()
+    # Every strategy sleeve's tickers AND the core basket, off-limits as a
+    # funding source for any of these cards. Fetched once rather than per
+    # candidate. See `_funding_exclusions` for why the core is in here.
+    sleeve_names = await _funding_exclusions(session, user, _btgt_full)
 
     for s in payload.get("sessions", []):
         if s.get("outcome") != "DISPLAYED" or len(out) >= 3:
@@ -1149,16 +1182,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _cash_ils = await _get_cash(session, user)
     except Exception:  # noqa: BLE001
         _cash_ils = 0.0
-    # Sleeve holdings are never a funding source for a Today card. The plan holds
-    # them on purpose; C3 established this for sleeve funding and every card that
-    # can sell has to honour it too.
-    try:
-        from app.services import sleeve_service as _sv
-        _sleeve_names = await _sv.sleeve_tickers(session, user)
-    except Exception:  # noqa: BLE001
-        logger.warning("sleeve tickers unavailable; card funding will not exclude them",
-                       exc_info=True)
-        _sleeve_names = set()
+    # Resolved here, before anything reads it: the funding exclusions need the
+    # core basket, and the tax block below needs the same set.
+    btgt = await _book_target(session, user, objective)
+
+    # Sleeve holdings AND the core basket are never a funding source for a Today
+    # card. The plan holds both on purpose; C3 established it for sleeves, PR 37
+    # established that a core is a strategy too, and every card that can sell has
+    # to honour both. See `_funding_exclusions`.
+    _sleeve_names = await _funding_exclusions(session, user, btgt)
     # ONE inventory for every funded card in this build. Each card is planned
     # against what earlier cards have already committed to selling, so no two
     # cards spend the same shares -- and a card whose first choice of funding is
@@ -1200,11 +1232,6 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 f("Shares to sell", "shares = trim / price",
                   substituted=f"{trim:,.0f} / {price:,.2f}", result=str(shares))])
 
-    # Resolved BEFORE the tax block, because the harvest exclusion needs the
-    # core basket and not only the sleeves. PR 37 settled that a core is a
-    # strategy too; the exclusion below predates it.
-    btgt = await _book_target(session, user, objective)
-
     # 2) Tax-loss harvesting
     tx = tax_opportunities(pdicts)
     harvest = [o for o in tx["opportunities"] if o["trigger"] == "CAPITAL_LOSS_HARVESTING"]
@@ -1223,30 +1250,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # book can run two now, and an exclusion set built from one of them
         # leaves the other harvestable -- the same two-agents-disagreeing bug,
         # just on whichever sleeve was not applied most recently.
-        try:
-            from app.services import sleeve_service as sv
-            # `plan_sleeves` is the only source. The fallback that used to sit
-            # here read `plans.strategy` + `plans.strategy_sleeve_pct`, which by
-            # 2026-08-25 said "btm_swing_dip at 15%" on a book whose sleeve row
-            # said 38.4% -- so the protection it was meant to preserve would
-            # have been computed from a number 23 points stale.
-            _sleeve = await sv.sleeve_tickers(session, user)
-        except Exception:  # noqa: BLE001
-            _sleeve = set()
-        # THE CORE IS A STRATEGY TOO (PR 37). This exclusion knew about sleeves
-        # only. Measured live on 2026-09-03, the day after the core realign: the
-        # card offered to sell VTI and BND -- the Classic 60/40 basket the
-        # realign had just bought -- to bank a tax loss. Accepting it would have
-        # undone the realign and taken `measured_pct_of_book` back down from 97.
-        # The sentence already written above applies unchanged: a tax saving is
-        # not a reason to sell your strategy.
-        try:
-            from app.services.strategies import core_weights as _core_weights
-            _core_basket = {(t or "").upper()
-                            for t in (_core_weights(btgt.get("core_strategy_id")) or {})}
-        except Exception:  # noqa: BLE001
-            _core_basket = set()
-        _protected = set(_sleeve) | _core_basket
+        # ONE exclusion set, shared with card funding (`_funding_exclusions`).
+        # It was two: this block resolved sleeves itself and PR 41 bolted the
+        # core on beside it, while funding still knew only about sleeves. Two
+        # lists of what the plan holds on purpose is how they end up disagreeing
+        # -- which is exactly what happened between PR 41 and PR 43, where the
+        # tax card would not touch BND and a funding leg proposed selling 65% of
+        # it on the same screen.
+        _protected = set(_sleeve_names)
         _held_for_strategy = sorted({t for t in losers if (t or "").upper() in _protected})
         losers = [t for t in losers if (t or "").upper() not in _protected]
 

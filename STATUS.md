@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 43 — the call sites PR 42 missed)._
+_Last updated: 2026-09-03 by Claude (PR 44 — the core is not spare change)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 43.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 44.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,68 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 44 — the core is not spare change
+
+**Decided by Eran, 2026-09-03**, on the card PR 43's smoke had just made honest:
+
+```
+Consider COMT (Broad commodities) - ₪1,465
+How it's funded:  Sell 6.7347 BND (~₪1,465)
+reason:           "cheapest way to raise it, but it corrects no drift:
+                   Fixed Income is at 11% against a 11% target ...
+                   Selling it does not move you closer to your plan"
+```
+
+₪1,465 of a ₪2,263 position — **65% of the bond leg of the core** — which would
+take Fixed Income from 10.8% to 3.8% against an 11% target. The sentence was
+true. **Saying it is not the same as declining to do it.**
+
+The book is exactly on its target and nothing is overweight, so
+`plan_funding`'s documented `book_has_budget` fallback funded the buy from
+whatever it could reach. Sleeves were off-limits (C3). The core was not.
+
+**One list, not two.** Sleeves were the whole exclusion set. PR 41 bolted the
+core onto the *tax card's* copy of that idea and left funding's copy alone, so
+for two deploys the same screen refused to harvest BND and offered to sell 65%
+of it. `_funding_exclusions(session, user, btgt)` is now the single source, used
+by `_war_room_recs`, `build_recommendations` and the tax block, and it degrades
+to the sleeves alone on failure rather than to nothing — a missing core basket
+must not silently widen what is sellable.
+
+**The core is not frozen.** `core_to_basket` (PR 39) trades it, sized by one
+plan, and that remains the path allowed to touch it. What is now impossible is
+the core being sold as a side effect of buying something else.
+
+**Effect on Today, and the smoke expects it:** every holding is either a sleeve
+(SOXL, TQQQ) or the core basket (VTI, BND), and spendable cash is zero — ₪618.65
+against a 3% floor of ₪628. So nothing is fundable and **Today shows no buy
+cards at all.** That is the honest state of a fully-invested book sitting on its
+target: there is no trade the plan is asking for. Cards return the moment a class
+drifts, a name breaks its cap, or new money arrives.
+
+**Tests:** `tests/test_the_core_is_not_a_funding_source.py`, both confirmed
+failing against `b7d369f` first.
+
+* The behavioural one: `_funding_exclusions` covers the core basket.
+* The structural one, which matters more: an AST walk asserting that every
+  `exclude=` handed to `propose_funded_buy` / `plan_funding` /
+  `rank_trim_candidates` is either a forwarded parameter or a name bound from
+  `_funding_exclusions`. Against `b7d369f` it names both offending sites. A
+  second list of what the plan holds on purpose is not a second opinion; it is
+  the bug this PR closes, waiting for a book that distinguishes them.
+
+Note the first draft of that guard banned `sleeve_tickers` outright and was
+wrong: `_core_plan` and the core-ceiling card use it to decide what a sleeve
+*claims* versus what the core holds, which is a different question. The guard
+pins the funding path only.
+
+**Gate:** SQLite **1623 passed / 0 failed / 0 skipped**; Postgres **1623 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+Not financial advice.
 
 ---
 
