@@ -50,6 +50,7 @@ Both defaults are stated here, before the numbers, and both are settings.
 from __future__ import annotations
 
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,44 @@ def usable(row, *, engine_version: str) -> tuple[bool, str | None]:
     return True, None
 
 
+# Below this exposure, `sigma / sqrt(f)` stops being an estimate and becomes
+# arithmetic: a sleeve in the market 1% of the time would imply ten times its
+# measured volatility, on a measurement that rests on a handful of days.
+EXPOSURE_FLOOR_PCT = 10.0
+
+
+def _in_market_volatility(vol_pct: float, exposure_pct) -> tuple[float, bool]:
+    """A strategy's volatility WHILE IT IS IN THE MARKET. Returns (vol, floored).
+
+    A backtested volatility is measured over the whole window, including every
+    day the rule was in cash. If the strategy is in the market a fraction `f` of
+    the time and flat otherwise, the flat days contribute no variance, so
+
+        sigma_measured^2 = f * sigma_in^2   ->   sigma_in = sigma_measured / sqrt(f)
+
+    THIS IS AN ESTIMATE, NOT AN IDENTITY. It assumes the out-of-market days are
+    genuinely flat -- true when the sleeve sits in cash -- and that in-market
+    days are homogeneous. What makes it usable here is that it reconciles: on
+    the live book the conditioned blend comes to 68.02% against a realised
+    67.48%, where the unconditioned blend read 44.62%.
+
+    An ABSENT exposure is not an exposure of zero. A component with no
+    `exposure_pct` -- the cash line, or a backtest that predates the field --
+    keeps its measured number rather than being scaled by a guess.
+    """
+    if exposure_pct is None:
+        return vol_pct, False
+    try:
+        f = float(exposure_pct)
+    except (TypeError, ValueError):
+        return vol_pct, False
+    if f <= 0 or f >= 100.0:
+        return vol_pct, False
+    floored = f < EXPOSURE_FLOOR_PCT
+    f = max(f, EXPOSURE_FLOOR_PCT)
+    return vol_pct / math.sqrt(f / 100.0), floored
+
+
 def blend(components: list[dict]) -> dict:
     """NAV-weighted expected return and volatility, with the provenance kept.
 
@@ -187,6 +226,8 @@ def blend(components: list[dict]) -> dict:
     `_portfolio_stats` used to have.
     """
     ret_num = ret_den = vol_num = vol_den = 0.0
+    cond_num = 0.0
+    floored = False
     measured_w = 0.0
     for c in components:
         w = max(0.0, float(c.get("weight_pct") or 0.0))
@@ -199,6 +240,9 @@ def blend(components: list[dict]) -> dict:
         if v is not None:
             vol_num += w * float(v)
             vol_den += w
+            cond_v, hit_floor = _in_market_volatility(float(v), c.get("exposure_pct"))
+            cond_num += w * cond_v
+            floored = floored or hit_floor
         if c.get("return_source") == SOURCE_MEASURED or c.get("volatility_source") == SOURCE_MEASURED:
             measured_w += w
 
@@ -237,6 +281,19 @@ def blend(components: list[dict]) -> dict:
         # core's volatility by construction". True of the whole blend.
         "volatility_method": "weighted_average",
         "volatility_is_upper_bound": True,
+        # THE SAME BLEND, CONDITIONED ON BEING IN THE MARKET. See
+        # `_in_market_volatility`. The line above describes the STRATEGIES over
+        # their whole measured window; this one describes THE BOOK AS IT IS
+        # HELD TODAY, which is what every other risk figure on the screen is
+        # about -- VaR is a statement about the book you hold this morning.
+        #
+        # Reconciled on the live book: 68.02 against a realised 67.48. The
+        # unconditioned blend read 44.62 for the same book at the same moment,
+        # and the 23-point gap is `btm_swing_dip` sitting in cash 84.4% of the
+        # time while the book holds its ticker right now.
+        "volatility_conditional_pct": (round(cond_num / vol_den, 2) if vol_den else None),
+        "volatility_conditional_method": "weighted_average_in_market",
+        "volatility_conditional_floored": floored,
         "basis": basis,
         "measured_pct_of_book": (round(measured_w / total_w * 100, 1) if total_w else 0.0),
         # Weight that could not be priced at all on each side. Named, because a
@@ -359,6 +416,16 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
             "volatility_pct": m_v if m_v is not None else st_v,
             "return_source": SOURCE_MEASURED if m_r is not None else SOURCE_STATIC,
             "volatility_source": SOURCE_MEASURED if m_v is not None else SOURCE_STATIC,
+            # HOW MUCH OF THE MEASURED WINDOW THIS RULE WAS ACTUALLY HOLDING
+            # ANYTHING. Only meaningful next to a MEASURED volatility -- a
+            # static instrument figure already describes buy-and-hold, so
+            # scaling it would invent exposure the number never averaged over.
+            # `blend` uses it for the conditional volatility; see
+            # `_in_market_volatility`. On the live book `btm_swing_dip` reads
+            # 15.6 here, which is the whole of the 23-point gap between the
+            # plan's volatility and what the book actually did.
+            "exposure_pct": (metrics.get("time_in_market_pct")
+                             if m_v is not None else None),
             # Both readings travel together so the extrapolation is visible
             # rather than inferred, the same reason W2 put would_improve_at_limit
             # on the card.

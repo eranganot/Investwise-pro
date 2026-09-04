@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 55.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 55.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,69 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 55.1 — the book's volatility is about the book, not the strategies
+
+PR 55 found that `/plan` said 44.62% and the realised measurement said 67.48%, and that this
+was a **contradiction**: the plan's figure is a weighted average of component volatilities,
+which is an upper bound, and the realised figure was above it. This is why, and it is
+**measured rather than inferred** — the backtests already store `time_in_market_pct`.
+
+| sleeve | w% | backtest vol | in market | implied in-market vol |
+|---|---|---|---|---|
+| `btm_trend_soxl` (SOXL) | 35.09 | 83.95% | 73.4% | 97.99% |
+| `btm_swing_dip` (TQQQ) | 35.22 | 34.24% | **15.6%** | 86.69% |
+| `bal_6040` core | 26.77 | 11.59% | 100% | 11.59% |
+| cash | 2.92 | 0% | — | 0% |
+
+```
+blend of LONG-RUN  vols = 44.62%   <- what /plan reported
+blend of IN-MARKET vols = 68.02%   <- realised measured 67.48%
+```
+
+**Half a point.** `btm_swing_dip` holds TQQQ and sits in cash **84.4% of the time**, so its
+34.24% is a ten-year average made mostly of flat days. The book is holding TQQQ right now, so
+that sleeve has been contributing something near 87% volatility on a third of the book all
+along, and no screen said so.
+
+**The scaling, stated so it can be argued with.** If a strategy is in the market a fraction
+`f` of the time and flat otherwise, the flat days contribute no variance, so the variance
+measured over the whole window is `f·σ_in²` and **`σ_in = σ_measured / √f`**. It assumes
+out-of-market days are genuinely flat — true when the sleeve sits in cash — and that in-market
+days are homogeneous. The reconciliation above is the evidence it holds here. It is an
+estimate, not an identity, and the test fails if it drifts more than two points from the
+realised figure.
+
+**Both numbers are true and they answer different questions.** ~68% is what the book is doing
+today with its sleeves in the market; ~44.6% is what it will average over a year with
+`btm_swing_dip` flat most of it. **Eran's decision: the headline is today's exposure**, because
+that is what every other risk figure on the screen is about — VaR is a statement about the
+book you hold this morning. `/plan.portfolio_volatility_pct` now carries the conditional
+figure and `portfolio_volatility_pct_strategy_longrun` carries the other, labelled.
+
+**Guards on the edges, because `σ/√f` is sharp:**
+
+- An **absent** exposure is not an exposure of zero. A component with no `exposure_pct` — the
+  cash line, or a backtest predating the field — keeps its measured number rather than being
+  scaled by a guess.
+- A component that is in the market **100%** of the time is untouched; scaling the core's
+  11.59% would invent risk that is not there.
+- Below `EXPOSURE_FLOOR_PCT` (10%) the scaling is **floored**, and `volatility_conditional_floored`
+  says it bound. At 1% exposure the formula implies ten times the measured volatility on a
+  measurement resting on a handful of days — that is arithmetic, not evidence, and a silent
+  clamp is a lie the size of the difference.
+- Only a **measured** volatility is conditioned. A static instrument figure already describes
+  buy-and-hold, so scaling it would invent exposure the number never averaged over.
+
+**The observable proof.** `portfolio_risk_service` now passes the conditional blend as
+`assumed_volatility_pct`, so PR 55's contradiction check compares like with like — and
+`volatility_exceeds_assumption` should go **false** on the next deploy. That flag going quiet
+is the confirmation the conditioning was the missing piece; if it stays true, the scaling has
+stopped describing this book and the headline is wrong again.
+
+Gates: 1667 passed on SQLite, 1667 on PostgreSQL, `ruff check app tests` clean.
 
 ---
 

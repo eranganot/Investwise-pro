@@ -100,7 +100,17 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
         from app.services.measured_assumptions import book_assumptions
         _a = await book_assumptions(session, user)
         drift_pct = _a.get("expected_return_pct")
-        assumed_vol_pct = _a.get("volatility_pct")
+        # The CONDITIONAL blend, so the comparison below is like-for-like. The
+        # long-run figure describes the strategies over their whole window; the
+        # realised figure below describes the book over the last year with its
+        # sleeves in the market. Comparing those two is what produced a
+        # 23-point 'contradiction' that was really a category error. See
+        # PR 55.1 -- with this, 68.02 against 67.48 sits inside the bound and
+        # `volatility_exceeds_assumption` goes quiet, which is the observable
+        # proof the conditioning was the missing piece.
+        assumed_vol_pct = (_a.get("volatility_conditional_pct")
+                           if _a.get("volatility_conditional_pct") is not None
+                           else _a.get("volatility_pct"))
     except Exception:  # noqa: BLE001 - a risk report must not fail on the assumptions
         drift_pct = assumed_vol_pct = None
 

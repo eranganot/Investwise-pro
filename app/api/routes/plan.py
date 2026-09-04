@@ -96,7 +96,19 @@ def _portfolio_stats(rows, measured: dict | None = None) -> dict:
         if measured.get("expected_return_pct") is not None:
             out["expected_roi"] = round(float(measured["expected_return_pct"]), 2)
         if measured.get("volatility_pct") is not None:
-            out["volatility"] = round(float(measured["volatility_pct"]), 2)
+            # THE HEADLINE IS THE CONDITIONAL ONE, and the long-run figure keeps
+            # its own key beside it. Both are true and they answer different
+            # questions: ~68% is what the book is doing today with its sleeves
+            # in the market, ~44.6% is what it will average over a year with
+            # `btm_swing_dip` flat 84% of it. The headline is today's exposure
+            # because that is what every other risk figure on the screen is
+            # about -- VaR is a statement about the book you hold this morning,
+            # and the app was comparing the long-run number against a realised
+            # measurement of the short-run one. See PR 55 / PR 55.1.
+            _long_run = round(float(measured["volatility_pct"]), 2)
+            _cond = measured.get("volatility_conditional_pct")
+            out["volatility"] = round(float(_cond), 2) if _cond is not None else _long_run
+            out["volatility_strategy_longrun"] = _long_run
         out["assumption_basis"] = measured.get("basis", "static")
         out["measured_pct_of_book"] = measured.get("measured_pct_of_book")
         out["assumptions"] = measured
@@ -172,6 +184,8 @@ def _plan_dict(plan, stats: dict) -> dict:
     base["measured_pct_of_book"] = stats.get("measured_pct_of_book")
     base["portfolio_expected_roi_pct_static"] = stats.get("static_expected_roi")
     base["portfolio_volatility_pct"] = stats.get("volatility")
+    # The strategies' long-run character, kept beside the book's current one.
+    base["portfolio_volatility_pct_strategy_longrun"] = stats.get("volatility_strategy_longrun")
     base["portfolio_volatility_pct_static"] = stats.get("static_volatility")
     base["assumptions"] = stats.get("assumptions")
     roi = base.get("target_roi_pct")
