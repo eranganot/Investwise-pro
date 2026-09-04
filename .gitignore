@@ -29,3 +29,11 @@ node_modules/
 # reads this file if it exists. One line, no quotes. Never commit it -- the whole
 # point is that it is the copy that is NOT in the history.
 scripts/.agent-key*
+
+# Source tarballs. `git archive` snapshots made to move the tree between this
+# box and a sandbox: 1.7 MB each, byte-identical to a commit that is already in
+# the history, and they sat in `git status` for days as untracked noise -- the
+# exact hazard the node_modules rule above is written about. Regenerate rather
+# than keep one: `git archive --format=tar.gz -o iw-src.tgz HEAD`.
+*.tgz
+*.tar.gz
