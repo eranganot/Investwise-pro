@@ -13,17 +13,17 @@ COPY alembic.ini .
 COPY alembic ./alembic
 
 EXPOSE 8000
-# Migrations run where the database is reachable: inside the deploy.
+# REVERTED 2026-09-04. PR 47 put `alembic upgrade head &&` in front of uvicorn so
+# the migrations would run where the database is reachable. Against production it
+# did not complete, and the `&&` did exactly what it was written to do: the app
+# never started. Every endpoint returned 502 for two hours.
 #
-# Running alembic by hand against production failed twice -- once against the
-# sqlite URL in a local .env, once on DNS, because Railway's DATABASE_URL names
-# a private host that does not resolve from outside their network. That is why
-# `main.py` grew a hand-maintained list of ALTER TABLE ... IF NOT EXISTS
-# statements and why two migrations never reached production at all.
+# The migration ran clean twice against a production-shaped postgres:16 in the
+# sandbox -- create_all-built, never stamped -- so the sandbox is not a faithful
+# model of that database and the difference is still unidentified. It goes back
+# only once the deploy log says why.
 #
-# `sh -c` because the `&&` needs a shell: a failed migration must stop the boot
-# rather than start an app against a schema it does not have.
-#
-# Kept identical to `railway.json`'s startCommand, which overrides this one on
-# Railway; they are the same line so `docker run` behaves like the deploy.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Keeping the boot simple is not the same as fixing it: production's schema is
+# still maintained by create_all plus the ALTER TABLE list in main.py, which is
+# the problem PR 46 and PR 47 exist to close.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

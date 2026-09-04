@@ -1,34 +1,30 @@
-"""Nothing ran the migrations, and nothing could.
+"""What the deploy does about migrations, and what it does not.
 
-`railway.json` started uvicorn and only uvicorn. The Dockerfile did the same.
-So on every deploy since the first one, the only thing that shaped production's
-schema was `create_all` at boot -- plus a hand-maintained list of
-`ALTER TABLE ... IF NOT EXISTS` statements in `main.py`, whose own comment
-concedes the position:
+PR 47 put `alembic upgrade head &&` in front of uvicorn so the migrations would
+run in the one place the database is reachable from. Against production it did
+not complete, and the `&&` did exactly what it was written to do: the app never
+started. **Every endpoint returned 502 for two hours.** Railway's card said
+"Deployment successful", because that reflects build-and-deploy and not whether
+anything answers.
 
-    "This list IS the mechanism that keeps production's schema current, so a
-     migration that adds a column and does not appear here has not really
-     shipped."
+Reverted in PR 48. The three assertions that pinned the migration into the start
+command went with it -- a test that demands a behaviour production cannot survive
+is not a guard, it is a countdown. They come back with the fix, not before.
 
-That list exists because **alembic could not be run against production at all**.
-The comment records both attempts: once against the sqlite URL in a local
-`.env`, once on DNS, because Railway's `DATABASE_URL` names a private host that
-does not resolve from outside their network. The cost is recorded too --
-`strategy_backtests.benchmark_ticker` was added by migration 0015 on 2026-08-15,
-never mirrored into the list, and every read of that table failed for **ten
-days** while the app degraded silently to "no strategy has ever been measured".
+What is kept: `/health.schema_revision`. It was ruled out as the cause on the
+evidence -- `/`, `/docs`, `/openapi.json` and `/health/ready` all returned 502
+too, so the process was not listening at all and no request handler ran. And it
+is the field that will show whether the next attempt actually worked, so
+removing it would leave the retry as blind as the first try.
 
-The database is reachable from exactly one place: inside the deploy. So that is
-where the migrations now run, ahead of uvicorn, with `&&` so a failed migration
-stops the boot instead of starting an app against a schema it does not have.
-
-This is only safe because PR 46 made the chain runnable from nothing and proved
-it idempotent -- production has never been stamped, so the first run of this
-executes 0001 through 0020 against a database that `create_all` already built.
-
-`/health` now reports `schema_revision`, which is what makes the next step
-checkable rather than hopeful: `AUTO_CREATE_TABLES` and that DDL list stay in
-place until production says out loud which revision it is on.
+**Still true, and still the reason any of this was attempted:** nothing runs the
+migrations against production. Its schema is maintained by `create_all` at boot
+plus a hand-maintained list of `ALTER TABLE ... IF NOT EXISTS` statements in
+`main.py`, whose own comment concedes *"this list IS the mechanism that keeps
+production's schema current"*. That list exists because alembic could not be run
+against production from outside -- Railway's `DATABASE_URL` names a private host
+that does not resolve -- and it has already cost ten days of silently missing
+measurements when migration 0015 was never mirrored into it.
 
 Not financial advice.
 """
@@ -46,48 +42,66 @@ def _railway_start_command() -> str:
 
 
 def _dockerfile_cmd() -> str:
+    """The CMD as a plain command line.
+
+    Docker's exec form is a JSON array -- `CMD ["uvicorn", "app.main:app", ...]`
+    -- so the words are there but the SPACES are not, and a naive substring
+    match for "uvicorn app.main:app" fails on a file that is perfectly correct.
+    This test caught itself doing that during the PR 47 revert.
+    """
     for line in (REPO / "Dockerfile").read_text(encoding="utf-8").splitlines():
-        if line.startswith("CMD "):
-            return line
+        if not line.startswith("CMD "):
+            continue
+        body = line[len("CMD "):].strip()
+        if body.startswith("["):
+            try:
+                return " ".join(json.loads(body))
+            except json.JSONDecodeError:
+                return body
+        return body
     return ""
 
 
-def test_the_deploy_migrates_before_it_serves():
-    """And in that order: a schema is not something to fix after boot."""
-    cmd = _railway_start_command()
-    assert MIGRATE in cmd, (
-        f"railway.json starts the app without running the migrations, so the only "
-        f"thing shaping production's schema is create_all at boot:\n  {cmd}")
-    assert SERVE in cmd, f"railway.json no longer starts the app: {cmd!r}"
-    assert cmd.index(MIGRATE) < cmd.index(SERVE), (
-        f"the migrations run after the app starts serving:\n  {cmd}")
-
-
-def test_the_migration_must_stop_the_boot_if_it_fails():
-    """`&&`, not `;`. A failed migration is not something to serve through."""
-    cmd = _railway_start_command()
-    between = cmd[cmd.index(MIGRATE) + len(MIGRATE):cmd.index(SERVE)]
-    assert "&&" in between, (
-        f"the migration and the server are chained with something other than "
-        f"'&&', so the app would start against a schema the migration failed to "
-        f"apply:\n  {cmd}")
-
-
-def test_the_dockerfile_says_the_same_thing():
+def test_the_start_command_and_the_dockerfile_agree():
     """Railway's startCommand overrides CMD, so they drift silently.
 
-    `docker run` is how anyone reproduces a deploy locally; if it skips the
-    migrations it is not reproducing this one.
+    This one survives the revert and is the reason it was cheap: whatever the
+    boot does, `docker run` has to do the same, or nobody can reproduce a deploy
+    locally. PR 47 was reverted in both files together because of this test.
     """
+    start = _railway_start_command()
     cmd = _dockerfile_cmd()
-    assert MIGRATE in cmd, (
-        f"the Dockerfile CMD does not run the migrations, so a container started "
-        f"outside Railway behaves differently from the deploy:\n  {cmd}")
-    assert SERVE in cmd, f"the Dockerfile CMD no longer starts the app: {cmd!r}"
+    assert SERVE in start, f"railway.json does not start the app: {start!r}"
+    assert SERVE in cmd, f"the Dockerfile CMD does not start the app: {cmd!r}"
+    assert (MIGRATE in start) == (MIGRATE in cmd), (
+        f"one of them migrates and the other does not, so a container started "
+        f"outside Railway behaves differently from the deploy:\n"
+        f"  railway.json: {start}\n  Dockerfile:   {cmd}")
+
+
+def test_if_the_boot_migrates_it_must_stop_on_failure():
+    """Conditional on purpose: it guards the shape, not the decision.
+
+    If a future PR puts the migration back, it has to be chained with `&&` --
+    starting an app against a schema a migration failed to apply is worse than
+    not starting. That was never the part that broke; the migration itself was.
+    """
+    start = _railway_start_command()
+    if MIGRATE not in start:
+        return
+    between = start[start.index(MIGRATE) + len(MIGRATE):start.index(SERVE)]
+    assert "&&" in between, (
+        f"the migration and the server are chained with something other than "
+        f"'&&':\n  {start}")
 
 
 def test_health_reports_which_revision_the_database_is_on():
-    """`None` is the honest answer production has been giving all along."""
+    """`None` is the honest answer, and the one production gives.
+
+    Kept through the revert. It was ruled out as the cause of the outage -- every
+    endpoint 502'd, so no handler ran -- and it is how the next attempt gets
+    verified instead of hoped at.
+    """
     import os
 
     os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")

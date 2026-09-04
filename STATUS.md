@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-04 by Claude (PR 47 — the migrations run where the database is reachable)._
+_Last updated: 2026-09-04 by Claude (PR 48 — the revert; PR 47 took production down)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 47.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 48.** PR 47 is reverted; see below. Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,68 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 48 — the revert: production could not survive the boot migration
+
+**PR 47 took production down for two hours.** Every endpoint — `/`, `/docs`,
+`/openapi.json`, `/health`, `/health/ready` — returned
+`502 Application failed to respond`.
+
+`alembic upgrade head && uvicorn` means a failed migration stops the boot. The
+migration did not complete against production, and the `&&` did exactly what it
+was written to do. **The failure mode worked; the migration did not.**
+
+**Railway reported "Deployment successful."** That reflects build-and-deploy, not
+whether anything answers — Initialization, Build, Deploy and Post-deploy all
+green on a service returning 502 to every request. The ship script's own
+12-minute `/health` wait was the check that was right, and the dashboard was the
+one that misled. *Worth remembering the next time a deploy card is used as
+evidence.*
+
+**Ruled out on evidence, not by elimination:** the new `/health.schema_revision`
+field. If that query had been hanging, `/health` would stall while everything
+else served. `/`, `/docs`, `/openapi.json` and `/health/ready` returned 502 too,
+so the process was not listening and **no request handler ran at all**. The field
+is kept — it costs nothing while the migrations are not running, and it is how
+the next attempt gets verified rather than hoped at.
+
+**ROOT CAUSE: UNKNOWN.** Same treatment as the `+739` mint and the TEVA agorot
+test. What is established:
+
+* The chain runs clean **twice** against a production-shaped postgres:16 in the
+  sandbox — `create_all`-built, never stamped, no `alembic_version` row — landing
+  on `0020_solver_verdicts`. That was verified before PR 47 shipped and again
+  after.
+* So **the sandbox is not a faithful model of that database**, and the difference
+  is unidentified. Candidates, none ruled out: the real schema has been
+  hand-patched by `main.py`'s DDL list for months and differs from what
+  `create_all` produces; 0018's `drop_constraint` / `create_foreign_key` pair
+  meeting a constraint that already carries the target name; a lock; or alembic
+  not resolving `DATABASE_URL` the same way the app does inside that container.
+* **The deploy log is the only place the answer exists and it has not been read.**
+  No speculative fix, and no second attempt before it has been.
+
+**Tests: three removed, two kept.** The three that pinned the migration into the
+start command went with the revert — *a test that demands a behaviour production
+cannot survive is not a guard, it is a countdown.* Kept are the two that never
+depended on the decision: `railway.json` and the Dockerfile `CMD` must agree, and
+**if** the boot migrates it must chain with `&&` rather than `;`.
+
+That agreement test caught itself during the revert: Docker's exec form is a JSON
+array, so the words are present and the spaces are not, and a substring match for
+`uvicorn app.main:app` failed against a Dockerfile that was correct. It parses
+the array now.
+
+**Still true, and still why PR 46 and PR 47 exist.** Nothing runs the migrations
+against production. Its schema is maintained by `create_all` at boot plus the
+hand-maintained `ALTER TABLE ... IF NOT EXISTS` list in `main.py`, and that
+arrangement has already cost ten days of silently missing measurements when
+migration 0015 was never mirrored into it. The problem is unchanged; only the
+attempt is withdrawn.
+
+Not financial advice.
 
 ---
 
