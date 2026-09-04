@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 54.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 54.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,61 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 54.1 — two cards for one ₪972, and the wrong one could not do what it said
+
+**A defect PR 54 introduced, found on production `6044124` within minutes of it shipping.**
+I predicted the "raise ₪972" card and did not check what *else* renders an asset class.
+Putting a `Cash` key in the book target for the first time reached renderers that had never
+been asked to draw a class you cannot buy.
+
+**Card 1, correct** — `liquidity`, core scope: *"Raise ₪972 of cash — Sell 4 BND (~₪972) to
+rebuild your cash floor. cheapest way to raise it: Fixed Income is the most overweight class
+(11% against an 8% target) and BND is among its least-taxed positions."*
+
+**Card 2, wrong twice over** — `allocation`, book scope: *"Buy Cash — Buy about ₪971 of Cash
+to move toward 8%"*, `how: Buy Cash by ~₪971 — e.g. BIL`.
+
+1. **BIL is a T-bill ETF. Buying it spends cash.** The card's stated purpose is to raise the
+   cash weight. `CLASS_ETF["Cash"] = "BIL"` had sat in the source unreachable since it was
+   written, because no book target had ever carried a Cash key.
+2. **It cannot do what it claims even in principle.** Its apply spec is
+   `{"kind": "rebalance_to_objective", "asset_class": "Cash"}`, and `_rebalance_to` drops
+   cash rows from the classes it moves — with a comment ending *"Turning cash into securities
+   is a purchase and belongs to the funded-buy path."* Pressing Accept reshuffles Equities and
+   Fixed Income and moves the cash weight by **nothing**. That is the card-claim invariant.
+
+Both cards quote the same ₪972 because PR 54 made the floor equal the target, so two
+independent generators measure the same gap against the same number.
+
+**A second one, found in the sandbox while reproducing the first.**
+`_holding_verdict_recs` walked every row and rated the cash balance like a security: *"CASH
+screens well (fundamentals 80/100) and is only 1% of your book — adding on weakness is
+reasonable."* It has never reached production only because Yahoo returns no fundamentals for
+`CASH`, so the score is `None` and the loop skips it **by accident**. An accident is not a
+guard; the day the provider changes, it is a card telling you to buy more of your own bank
+balance.
+
+**The Cash target still reaches `AllocationEngine.compute`, and must** — it is what shrinks
+the investable legs. What is dropped is the CARD.
+
+**The first version of the test passed against the bug**, and that is worth recording.
+It asserted on `apply.asset_class`, and `_reconcile` had merged four legs into one card whose
+top-level class was `Equities`, with `Buy Cash (~₪4,271)` sitting inside `apply.legs` and
+`meta.merged_legs`. **A guard that reads only the summary of a merge does not guard the
+merge.** The shipped version walks the legs.
+
+RED gate taken with PR 54 in place and only these two guards removed, so the failure is the
+defect and not a missing column:
+
+```
+'Rebalance toward your target mix': ['legs: buy 4270.95', 'merged_legs: Buy Cash']
+'Buy more: CASH': 'CASH screens well (fundamentals 80/100)...'
+```
+
+Gates: 1655 passed on SQLite, 1655 on PostgreSQL, `ruff check app tests alembic` clean.
 
 ---
 

@@ -1378,6 +1378,31 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # three classes -- not suppressed, not filtered, simply never built. A card
     # that does not exist cannot be restored, and nothing said it was missing.
     for a in report.rebalance_actions:
+        # CASH IS NOT A CLASS THIS CARD MAY TRADE, for the same reason
+        # `_rebalance_to` excludes it from the classes it moves. PR 54 put a
+        # `Cash` key in the book target for the first time, and this renderer --
+        # which had never been asked to draw a class that is not investable --
+        # produced "Buy Cash ... e.g. BIL". Two things wrong with that card, live
+        # on 6044124:
+        #
+        #   * BIL is a T-bill ETF. BUYING IT SPENDS CASH. The card's stated
+        #     purpose is to raise the cash weight. `CLASS_ETF["Cash"]` had sat
+        #     unreachable since it was written, because no book target had ever
+        #     carried a Cash key.
+        #   * Its apply spec is {"kind": "rebalance_to_objective",
+        #     "asset_class": "Cash"}, and `_rebalance_to` drops cash rows from
+        #     `byc`. Pressing Accept reshuffles Equities and Fixed Income and
+        #     moves the cash weight by NOTHING -- a card claiming a change it
+        #     cannot produce.
+        #
+        # The Cash target still reaches `AllocationEngine.compute` above, and
+        # must: it is what shrinks the investable legs. What is dropped is the
+        # CARD, because raising cash already has an owner that does it properly
+        # -- the liquidity card names the ticker, sizes the lot and explains the
+        # tax choice, none of which this renderer can do for a class you cannot
+        # buy.
+        if a.asset_class == "Cash":
+            continue
         # WHERE THE TARGET CAME FROM, on the card. "77%" was the number that was
         # wrong for twelve days and nothing on the screen could have caught it.
         # "77% (64% your sleeves + 13% your core)" can be checked against the
@@ -2631,8 +2656,19 @@ def _holding_verdict_recs(rows, snap, cap: float, trimmed: set) -> list[dict]:
     if not nav:
         return out
     weights = snap["exposure_ticker"]
+    from app.services.intake_service import is_cash_position
     for p in rows:
         tk = p.ticker
+        # A cash balance is not a holding with a thesis. Without this the
+        # screener rates it like a security and offers "CASH screens well
+        # (fundamentals 80/100) ... adding on weakness is reasonable" -- seen in
+        # the sandbox, where the builtin provider answers for any symbol. It has
+        # not reached production because Yahoo returns no fundamentals for
+        # "CASH", so the score is None and the loop skips it by accident. An
+        # accident is not a guard, and the day the provider changes it is a card
+        # telling you to buy more of your own bank balance.
+        if is_cash_position(tk, p.meta if isinstance(p.meta, dict) else None):
+            continue
         f = _fundamentals(tk)
         score = _fund_score(f)
         if score is None:
