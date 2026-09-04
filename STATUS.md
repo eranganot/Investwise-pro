@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 46 — the schema can be built from nothing again)._
+_Last updated: 2026-09-04 by Claude (PR 47 — the migrations run where the database is reachable)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 46.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 47.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,79 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 47 — the migrations run where the database is reachable
+
+**Nothing ran them, and nothing could.** `railway.json` started uvicorn and only
+uvicorn; the Dockerfile said the same. So on every deploy since the first, the
+only thing shaping production's schema was `create_all` at boot plus a
+hand-maintained list of `ALTER TABLE ... IF NOT EXISTS` statements in
+`main.py` — whose own comment concedes the position:
+
+> *"This list IS the mechanism that keeps production's schema current, so a
+> migration that adds a column and does not appear here has not really shipped."*
+
+**That list exists because alembic could not be run against production at all.**
+The comment records both attempts: once against the sqlite URL in a local
+`.env`, once on DNS, because Railway's `DATABASE_URL` names a private host that
+does not resolve from outside their network. The cost is recorded in the same
+block — `strategy_backtests.benchmark_ticker` was added by migration 0015 on
+2026-08-15, never mirrored into the list, and every read of that table failed
+for **ten days** while the app degraded silently to *"no strategy has ever been
+measured"*.
+
+The database is reachable from exactly one place: **inside the deploy.** So the
+migrations now run there, ahead of uvicorn, chained with `&&` so a failed
+migration stops the boot rather than starting an app against a schema it does
+not have. `railway.json`'s `startCommand` is what Railway uses and the Dockerfile
+`CMD` is kept identical, so `docker run` reproduces the deploy instead of
+quietly skipping the step.
+
+### Proven end to end before shipping, on postgres:16
+
+```
+1. booted the app the way production boots  (create_all + the DDL list, no alembic)
+   /health -> schema_revision: None
+2. alembic_version table in that database   -> 0 rows.  Never stamped.
+3. ran the deploy's new migration step      -> alembic_version = 0020_solver_verdicts
+```
+
+Step 1 is the shape production is in right now. Step 3 is what the next deploy
+will do to it. This is only safe because PR 46 made the chain runnable from
+nothing and idempotent — the first run executes 0001 through 0020 against a
+database `create_all` already built, and every revision guards itself.
+
+### `/health` now answers the question
+
+`schema_revision` is the companion to `deployed_commit()`, added for the same
+reason that one was: the deploy's schema state could only be checked by eye, and
+here it could not be checked at all. **`null` is a real answer, and it is the one
+production gives today** — the migrations have never run against it. It never
+raises: a liveness probe that can fail on a side query is worse than the thing it
+reports.
+
+That field is what makes the *next* step checkable rather than hopeful.
+`AUTO_CREATE_TABLES` and the `main.py` DDL list are deliberately **left in place**
+for this deploy — they are the backstop while the migration step proves itself.
+Removing them is the PR after this one, and it should not happen until
+`/health` has said `0020_solver_verdicts` out loud.
+
+**Tests:** `tests/test_the_deploy_runs_the_migrations.py`, four cases, all
+confirmed failing against `cce75af` first — the migration runs, it runs
+*before* the server, it is chained with `&&` and not `;`, and the Dockerfile
+does not drift from `railway.json`.
+
+**Gate:** SQLite **1632 passed / 0 failed / 0 skipped**; Postgres **1632 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+**Smoke:** for once this one asserts something production could not previously
+say. `/health.schema_revision` must go from **absent** to **`0020_solver_verdicts`**.
+If it comes back `null`, the migration step did not run and the deploy log is
+the next thing to read.
+
+Not financial advice.
 
 ---
 

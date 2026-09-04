@@ -35,6 +35,35 @@ def deployed_commit() -> str:
     return "unknown"
 
 
+async def schema_revision() -> str | None:
+    """Which alembic revision this database is actually stamped at.
+
+    The companion to `deployed_commit()`, and for the same reason: the deploy's
+    schema state could only be checked by eye, and in this app it could not be
+    checked at all. Running alembic by hand against production failed twice --
+    once against the sqlite URL in a local `.env`, once on DNS, because
+    Railway's `DATABASE_URL` names a private host that does not resolve from
+    outside their network. The consequence is written across `main.py`: a
+    hand-maintained list of `ALTER TABLE ... IF NOT EXISTS` statements became
+    "the mechanism that keeps production's schema current", and twice a
+    migration added a column that never reached it -- `last_error` (0011) and
+    `benchmark_ticker` (0015), the second of which silently returned "no
+    strategy has ever been measured" for ten days.
+
+    Returning `None` is a real answer and the one production gave before this:
+    **the migrations have never run here.** It is not an error, so it never
+    raises -- a liveness probe that can fail on a side query is worse than the
+    thing it reports.
+    """
+    try:
+        async with engine.connect() as conn:
+            row = await conn.execute(text("SELECT version_num FROM alembic_version"))
+            value = row.scalar()
+            return str(value) if value else None
+    except Exception:  # noqa: BLE001 - no table, no database, no answer
+        return None
+
+
 @router.get("/health")
 async def health() -> dict:
     return {
@@ -43,6 +72,8 @@ async def health() -> dict:
         "version": settings.app_version,
         "commit": deployed_commit(),
         "environment": settings.environment,
+        # None means the migrations have never run against this database.
+        "schema_revision": await schema_revision(),
     }
 
 
