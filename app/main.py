@@ -53,6 +53,10 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS target_yield_period VARCHAR(12) DEFAULT 'yearly'",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS preferred_depth INTEGER",
+                    # Migration 0021. The deliberate cash reserve, as a
+                    # percentage of NAV. Mirrored here because THIS list is what
+                    # reaches production, not the migration.
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS cash_target_pct DOUBLE PRECISION",
                     # plans.strategy / strategy_sleeve_pct are DROPPED here, not
                     # added. They were the single-sleeve model and `plan_sleeves`
                     # replaced them; the last thing they said in production was

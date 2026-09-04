@@ -28,8 +28,26 @@ def test_cash_floor_scales_with_objective():
 
 
 def test_cash_floor_override_is_respected():
-    plan = SimpleNamespace(cash_floor_pct=0.2)
+    """The override now names a column `Plan` actually has.
+
+    This test used to build `SimpleNamespace(cash_floor_pct=0.2)` and assert
+    the override fired. It did -- against a fabricated object. `Plan` has never
+    had a `cash_floor_pct` column, so in production the `getattr` returned None
+    on every call and the objective table was the only answer this function
+    could give. The test was green for months and the branch never once ran.
+
+    A fixture that invents the field it is testing proves the branch, not the
+    behaviour. It now uses the real column, `cash_target_pct`, which is a
+    PERCENTAGE where this function returns a FRACTION -- 20.0 in, 0.2 out.
+    """
+    plan = SimpleNamespace(cash_target_pct=20.0)
     assert f.cash_floor_pct("Grow", plan) == 0.2
+
+    from app.models.tables import Plan
+    assert "cash_target_pct" in Plan.__table__.columns, (
+        "the override reads a column that does not exist, which is the whole "
+        "reason this test was rewritten")
+    assert "cash_floor_pct" not in Plan.__table__.columns
 
 
 def test_spendable_cash_is_above_the_floor_only():

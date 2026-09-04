@@ -36,10 +36,31 @@ MIN_TRADE_ILS = 250.0
 
 
 def cash_floor_pct(objective: str | None, plan=None) -> float:
-    override = getattr(plan, "cash_floor_pct", None) if plan is not None else None
-    if override is not None:
+    """The share of NAV that automatic funding may not spend below. A FRACTION.
+
+    THE FLOOR IS THE TARGET, and that is the point rather than a shortcut. A
+    reserve the machine is allowed to nibble into is not a reserve: on the live
+    book, `Grow` floors cash at 3% and the balance sat at 2.92%, so the app had
+    already spent the reserve down to its own limit and nothing on any screen
+    called that a decision. Setting `plans.cash_target_pct` to 7.5 means the
+    book is managed TOWARD 7.5% cash and routine cards may not fund themselves
+    out of it. Deploying it is then a deliberate act, which is what dry powder
+    is for -- and it is why `spendable_cash` correctly returns 0 once the book
+    is at target. Trims still fund buys; the reserve does not.
+
+    UNITS. `plans.cash_target_pct` is a PERCENTAGE (7.5), like every other
+    `_pct` column on that table. This returns a FRACTION, like `CASH_FLOOR_PCT`
+    and every caller here. The /100 happens once, here.
+
+    This replaces a `plan.cash_floor_pct` lookup that had read as configurable
+    for months and could never fire: `Plan` has never had that column, so
+    `getattr` returned None on every call and the objective table was the only
+    answer the function could give.
+    """
+    raw = getattr(plan, "cash_target_pct", None) if plan is not None else None
+    if raw is not None:
         try:
-            return max(0.0, min(0.5, float(override)))
+            return max(0.0, min(0.5, float(raw) / 100.0))
         except (TypeError, ValueError):
             pass
     return CASH_FLOOR_PCT.get(objective or "Balanced", _DEFAULT_FLOOR)

@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-04 by Claude (PR 49-53 — the deploy gate, the event loop, the migration retry, the risk report's currency)._
+_Last updated: 2026-09-04 by Claude (PR 49-54 — the deploy gate, the event loop, the migration retry, the risk report's currency, the cash reserve)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 53.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 54.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,73 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 54 — the book can hold cash on purpose
+
+**Eran's decision, 2026-09-04: target 7.5% cash as dry powder — *"so I'd be able to buy
+something if there is a good opportunity."*** This is the implementation, and the two
+judgement calls inside it are stated rather than buried.
+
+**What it replaces.** Cash was not in the book target at all, so its target was zero by
+omission — the same silent-zero trap `targets_for` was written to avoid one layer down.
+`/api/v1/mix` on `c93ceb9`: `target_allocation {"Equities": 0.892, "Fixed Income": 0.108}`,
+`current_allocation` carrying `"Cash": 0.0292`, drift `+0.0292`, `rebalance_required: false`.
+₪618.65 — twice `MIN_TRADE_ILS` — sat there because a class the target never modelled cannot
+drift.
+
+It was quietly worse than "no opinion": `CASH_FLOOR_PCT` floors a `Grow` book at 3%, so
+`spendable_cash` was already returning zero. **The app had spent the reserve down to its own
+limit and nothing on any screen called that a decision.**
+
+**Judgement call 1 — the reserve comes out of the CORE, never the sleeves.** `compose` builds
+the target as sleeves + core, core being the remainder. Making room by scaling everything by
+0.925 would silently manage a sleeve the user set at 38.4% of NAV to 35.5%, which is the
+defect `book_target`'s own docstring exists to record: *"The app was telling him to destroy a
+sleeve it had set itself."* So the reserve comes out of the part of the book he delegated,
+not the part he specified. On the live book: sleeves 73% untouched, remainder 27% → cash 7.5%
++ core 19.5%, and `bal_6040` at 60/40 across 19.5 gives Equities 11.7 / Fixed Income 7.8.
+
+| | weight |
+|---|---|
+| Equities (0.73 sleeves + 0.117 core) | 0.847 |
+| Fixed Income (core) | 0.078 |
+| Cash (the reserve) | 0.075 |
+| | **1.000** |
+
+**Judgement call 2 — the floor IS the target.** A reserve routine funding may nibble into is
+not a reserve. `cash_floor_pct` now reads `plans.cash_target_pct`, so cards may not fund
+themselves out of the powder and deploying it is a deliberate act. This is why
+`spendable_cash` correctly returns **0 at target**; trims still fund buys, the reserve does
+not. Two numbers if that is ever wrong.
+
+**A dead branch found on the way.** `cash_floor_pct` read `getattr(plan, "cash_floor_pct")`
+— a column `Plan` has never had — so it returned None on every call in production and the
+objective table was the only answer the function could give. Its test passed for months
+against a `SimpleNamespace` that fabricated the field: **a fixture that invents what it is
+testing proves the branch, not the behaviour.** Both now name the real column.
+
+**What this changes on screen, in the opposite direction from today.** Against the new target
+the book is 4.6 points UNDER on cash (≈₪972) and 2.9 points OVER on Fixed Income. Today says
+there is nothing to do; with the reserve it should say to raise about ₪972, mostly out of BND.
+That is what asking for dry powder means, and it is written here so it is a consequence
+someone chose rather than one that appeared.
+
+Storage: `plans.cash_target_pct`, a PERCENTAGE (7.5) like every other `_pct` column on that
+table, converted to a fraction exactly once in `book_target`. Nullable, and **null is not
+zero** — null means nobody has been asked, zero means someone chose none. Migration `0021`,
+guarded, and **mirrored into the `main.py` ALTER list**, which is what actually reaches
+production until the pre-deploy step is confirmed. Bounded at the API (`ge=0, le=50`) so a
+750 typed for 7.5 is a 422 rather than a clamp nobody sees.
+
+Gates: 1650 passed on SQLite, 1650 on PostgreSQL, `ruff check app tests alembic` clean.
+
+**This PR is also the decisive test of PR 52.** Migration `0021` is the first new revision
+since the pre-deploy step shipped. If that step runs, `/health.schema_revision` moves
+`0020_solver_verdicts → 0021_plan_cash_target`. If it does not, `create_all` and the ALTER
+mirror still add the column and the stamp stays at `0020` — the app works either way, and the
+field says which happened. The ship script asserts it.
 
 ---
 

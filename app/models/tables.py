@@ -317,6 +317,15 @@ class Plan(Base, PKMixin, TimestampMixin):
     target_yield_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     target_yield_period: Mapped[str] = mapped_column(String(12), default="yearly")
     preferred_depth: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Dry powder, as a PERCENTAGE like every other `_pct` column here: 7.5 means
+    # 7.5% of NAV held deliberately in cash so there is something to buy an
+    # opportunity with. NULL means nobody has decided, which is not the same as
+    # a deliberate zero -- `book_target` treats both as no reserve, but the UI
+    # can tell the two apart.
+    #
+    # Taken out of the CORE's share of the book and never out of the sleeves.
+    # See `book_target.compose`, where that decision is argued.
+    cash_target_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
     # one size can describe exactly one sleeve, so the moment a book could run
     # several they became a pointer to the most recently applied -- and a

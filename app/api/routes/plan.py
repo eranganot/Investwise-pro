@@ -2,7 +2,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
@@ -137,6 +137,10 @@ class PlanRequest(BaseModel):
     target_yield_pct: float | None = None
     target_yield_period: str | None = None
     preferred_depth: int | None = None
+    # Percent of NAV held deliberately in cash. Bounded here rather than only
+    # in `book_target`, so a 750 typed for 7.5 is a 422 at the boundary instead
+    # of a clamp nobody sees. 50 is the same ceiling `cash_floor_pct` enforces.
+    cash_target_pct: float | None = Field(default=None, ge=0.0, le=50.0)
 
 
 def _plan_dict(plan, stats: dict) -> dict:
@@ -146,6 +150,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
                 "target_roi_pct": None, "target_roi_period": "yearly",
                 "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
+                "cash_target_pct": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = _auto_target(nav, plan)
@@ -155,6 +160,8 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "target_roi_pct": plan.target_roi_pct, "target_roi_period": plan.target_roi_period or "yearly",
                 "target_yield_pct": plan.target_yield_pct, "target_yield_period": plan.target_yield_period or "yearly",
                 "preferred_depth": plan.preferred_depth,
+                # None means nobody has been asked, which is not a deliberate 0.
+                "cash_target_pct": getattr(plan, "cash_target_pct", None),
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]

@@ -50,6 +50,7 @@ otherwise be caught. So this module asserts the sum instead of papering it.
 from __future__ import annotations
 
 from app.services.allocation_mix import OBJ_TARGET, classify
+from app.services.plan_service import get_plan
 
 # A book target is a set of weights over asset classes. Rounding each class to
 # 4dp can leave the sum a hair off 1.0; anything bigger than this is a bug in
@@ -78,8 +79,19 @@ def sleeve_class_mix(sleeve_targets: dict[str, float]) -> dict[str, float]:
 
 
 def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | None,
-            objective: str) -> dict:
-    """The pure half, so the arithmetic can be tested without a database."""
+            objective: str, cash_pct: float = 0.0) -> dict:
+    """The pure half, so the arithmetic can be tested without a database.
+
+    `cash_pct` is a deliberate reserve as a FRACTION of NAV -- dry powder, so
+    there is something to buy an opportunity with. It comes out of the CORE's
+    remainder and never out of the sleeves. That is the design decision, not an
+    implementation detail: the sleeves are targets the user set one at a time,
+    and scaling them to make room would silently manage a 38.4%-of-NAV sleeve
+    to 35.5% -- the defect the docstring above is about.
+
+    Default 0.0, which reproduces the previous target exactly, so a book with
+    no reserve configured is managed exactly as it was.
+    """
     sleeves = sleeve_class_mix(sleeve_targets)
     sleeved = sum(sleeves.values())
 
@@ -95,6 +107,17 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
     # core_pct the same way; deriving it here rather than passing it in means
     # the two cannot drift, and the total cannot fail to be 1.0.
     core_share = max(0.0, 1.0 - sleeved)
+
+    # The reserve is taken HERE, before the core divides what is left, and it is
+    # CLAMPED to what the core actually has. Asking for 40% cash on a book whose
+    # sleeves already claim 73% cannot be honoured without shrinking them, so it
+    # is not honoured -- and `cash_clamped` says so, because a silent clamp is a
+    # lie the size of the difference.
+    want_cash = max(0.0, float(cash_pct or 0.0))
+    cash = min(want_cash, core_share)
+    clamped = want_cash > cash + 1e-9
+    core_share -= cash
+
     base = core_mix or OBJ_TARGET.get(objective) or OBJ_TARGET["Balanced"]
     base_sum = sum(base.values()) or 1.0
     core = {c: (w / base_sum) * core_share for c, w in base.items()}
@@ -102,6 +125,11 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
     target: dict[str, float] = dict(sleeves)
     for c, w in core.items():
         target[c] = target.get(c, 0.0) + w
+    if cash > 0:
+        # ADDED to whatever the core already holds in cash rather than
+        # replacing it: the reserve is a floor the user asked for, not a
+        # ceiling on what their core strategy may choose to hold.
+        target["Cash"] = target.get("Cash", 0.0) + cash
 
     total = sum(target.values())
     if abs(total - 1.0) > _SUM_TOLERANCE:                        # pragma: no cover
@@ -113,6 +141,8 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
         "core": _round_mix(core),
         "sleeved_pct": round(sleeved, 4),
         "core_pct": round(core_share, 4),
+        "cash_pct": round(cash, 4),
+        "cash_clamped": clamped,
     }
 
 
@@ -137,7 +167,20 @@ async def book_target(session, user, objective: str) -> dict:
             break
     core_mix = (entry or {}).get("target_allocation") or None
 
-    out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective)
+    # Stored as a PERCENTAGE on `plans`, like every other `_pct` column there
+    # (`target_roi_pct` is 30.0 for 30%). Converted to a fraction exactly once,
+    # here, so no other reader has to know which unit it is in.
+    cash_pct = 0.0
+    try:
+        plan = await get_plan(session, user)
+        raw = getattr(plan, "cash_target_pct", None) if plan is not None else None
+        if raw is not None:
+            cash_pct = max(0.0, min(100.0, float(raw))) / 100.0
+    except Exception:  # noqa: BLE001 - a book target must not fail on a plan read
+        cash_pct = 0.0
+
+    out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective,
+                  cash_pct=cash_pct)
     out["core_strategy_id"] = sid if core_mix else None
     out["core_strategy_name"] = (entry or {}).get("name") if core_mix else None
     # Named so a card can say which of the two it is quoting rather than
