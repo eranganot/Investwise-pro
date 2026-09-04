@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import acting_user
 from app.core.auth import Role, require_role
 from app.core.database import get_session
+from app.core.offload import offload
 from app.models.tables import User
 from app.schemas.intake import IntakePosition, PortfolioIntakeRequest
 from app.providers.registry import guarded_quote, market_provider
@@ -342,7 +343,7 @@ async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(ge
     from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
     from app.services.fx import to_major_units
     try:
-        _q = guarded_quote(req.ticker)
+        _q = await offload(guarded_quote, req.ticker)
         # THE 100x TRAP, at the one boundary that still had it. `to_major_units`
         # says "use at every boundary" in its own docstring and exactly one
         # boundary used it. Yahoo quotes Tel Aviv in AGOROT and says so in the

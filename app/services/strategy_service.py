@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.offload import offload
 from app.engines.allocation_engine import AllocationEngine
 from app.models.tables import User, money
 from app.providers.registry import guarded_quote
@@ -851,7 +852,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
             skipped.append({"ticker": tk, "reason": "not enough funded money left"})
             continue
         try:
-            q = guarded_quote(tk)
+            q = await offload(guarded_quote, tk)
         except Exception:  # noqa: BLE001
             q = None
         price = float(getattr(q, "price", 0) or 0) if q is not None else 0.0
@@ -932,7 +933,7 @@ async def _replace_book(session: AsyncSession, user: User, strategy_id: str, s: 
     priced = []
     for ticker, weight in s["basket"]:
         try:
-            price = float(guarded_quote(ticker).price)
+            price = float((await offload(guarded_quote, ticker)).price)
         except Exception:  # noqa: BLE001
             price = 0.0
         if price <= 0:

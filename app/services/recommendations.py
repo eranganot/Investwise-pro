@@ -3819,7 +3819,7 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
             skipped.append({"ticker": tk, "reason": "not enough cash left"})
             continue
         try:
-            q = guarded_quote(tk)
+            q = await _offload(guarded_quote, tk)
         except Exception:  # noqa: BLE001
             q = None
         if q is None or not q.price:
@@ -3878,7 +3878,7 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
 
     ticker = (spec.get("ticker") or "").upper()
     try:
-        q = guarded_quote(ticker)
+        q = await _offload(guarded_quote, ticker)
         price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
     except Exception:  # noqa: BLE001 - no live price: refuse before anything moves
         price, ccy = 0.0, "USD"
@@ -4059,7 +4059,7 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
     for leg in buys:
         tk = leg["ticker"]
         try:
-            q = guarded_quote(tk)
+            q = await _offload(guarded_quote, tk)
             px, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
         except Exception:  # noqa: BLE001
             px, ccy = 0.0, "USD"
@@ -4203,7 +4203,7 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     if not p or not buy_tk:
         return {"swapped": False}
     try:
-        q = guarded_quote(buy_tk)
+        q = await _offload(guarded_quote, buy_tk)
         price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
     except Exception:  # noqa: BLE001 - no live price: refuse before anything moves
         price, ccy = 0.0, "USD"

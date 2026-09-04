@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.core.offload import offload
 from app.models.tables import KVSetting, Position, money
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
@@ -241,13 +242,19 @@ async def refresh_all_positions(session, positions=None) -> dict:
         if tk not in quote_cache:
             q, used = None, None
             try:
-                q = guarded_quote(tk)
+                # This is the scheduled refresh, and it runs IN-PROCESS on the
+                # same loop that serves requests: a refresh over N positions
+                # used to hold the loop for N round trips, so the app went
+                # unresponsive on a timer rather than under load. The Yahoo
+                # fallback below is the same call by another name and gets the
+                # same treatment.
+                q = await offload(guarded_quote, tk)
                 used = primary.name
             except Exception:  # noqa: BLE001
                 q = None
             if q is None and yahoo is not None:
                 try:
-                    q = yahoo.get_quote(tk)
+                    q = await offload(yahoo.get_quote, tk)
                     used = yahoo.name
                 except Exception:  # noqa: BLE001
                     q = None

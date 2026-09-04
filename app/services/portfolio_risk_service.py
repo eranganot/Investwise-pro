@@ -6,6 +6,7 @@ import datetime as _dt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.offload import offload
 from app.engines.backtest_engine import BacktestEngine
 from app.engines.portfolio_risk import analyze, pct_returns
 from app.models.tables import User
@@ -37,7 +38,10 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
     for p in rows:
         value = float(p.quantity) * float(p.current_price or 0)
         try:
-            series = guarded_history(p.ticker, history_days)  # [(date, close), ...]
+            # One offload per holding, not one for the loop: each fetch is a
+            # separate cached upstream call, and releasing the loop between
+            # them is the whole point on a book with twenty names.
+            series = await offload(guarded_history, p.ticker, history_days)  # [(date, close), ...]
         except Exception:
             series = []
         if len(series) < 3:
@@ -52,7 +56,8 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
     cfg = get_settings()
     bench_map = None
     try:
-        bench_map = {d: c for d, c in guarded_history(cfg.benchmark_ticker, history_days)}
+        bench_map = {d: c for d, c in
+                     await offload(guarded_history, cfg.benchmark_ticker, history_days)}
     except Exception:
         bench_map = None
 

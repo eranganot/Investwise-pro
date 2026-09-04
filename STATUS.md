@@ -54,6 +54,66 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ---
 
+## PR 52 — the migration retry, as a pre-deploy step
+
+**Approved by Eran on the recommendation, with the root cause still UNKNOWN.** The deploy log
+that held the answer is gone, so this changes the MECHANISM rather than guessing at the cause,
+and it is designed so that every surviving hypothesis is contained rather than tested on
+production.
+
+**What was established after the revert, and inverts the original diagnosis:** the PR 47
+migration **ran to completion**. `/health` returned `schema_revision: "0020_solver_verdicts"`
+afterwards; nothing in `app/` writes `alembic_version` (health.py only reads it); and the
+reverted boot logs `Ensuring database schema (auto_create_tables=True)` with no alembic line.
+
+RULED OUT, each with the observation that killed it:
+
+| candidate | killed by |
+|---|---|
+| the `&&` chain itself | re-run exactly as deployed against an empty database: `sh -c 'alembic upgrade head && echo ...'` exits **0** and continues |
+| `alembic/env.py` importing the app | read it — imports only `app.core.config`, `app.models.base`, `app.models`; no `app.main`, no scheduler, disposes its engine |
+| the new `/health.schema_revision` field | `/`, `/docs`, `/openapi.json` and `/health/ready` **all** returned 502, so no handler ran at all |
+
+STILL OPEN, and not distinguishable without the lost log: alembic exited non-zero at
+interpreter teardown despite doing the work (an unraisable at shutdown does exactly that, and
+`&&` swallows the boot); or the process never exited, so the chain never advanced.
+
+**How each is contained:**
+
+- `preDeployCommand` runs the migration as **its own step with its own log**. The missing
+  artifact is precisely what ended the last investigation.
+- `preDeployTimeoutSeconds: 300` turns "the process never exited" from an unbounded hang into
+  a failed deploy at a known time.
+- `healthcheckPath` (PR 49) means a container that does not answer never takes traffic. A
+  repeat of PR 47 is now a **failed deploy with production still up**, not an outage.
+- The database is already stamped at `0020_solver_verdicts`, so `alembic upgrade head` is a
+  **no-op** on this run. The first attempt tests the mechanism against a database that needs
+  nothing done to it.
+
+**Rehearsed** against a production-shaped postgres:16 — schema built by `create_all` plus the
+`main.py` ALTER list, then stamped at head, which is the state PR 47 left production in:
+
+```
+$ sh -c 'alembic upgrade head && alembic current'
+0020_solver_verdicts (head)
+PRE-DEPLOY EXIT CODE=0
+```
+
+`alembic current` is chained after the upgrade so the log carries a positive statement of
+where the database ended up rather than only the absence of an error.
+
+**`AUTO_CREATE_TABLES=false` is deliberately NOT in this PR, and the ordering is the reason.**
+Today `create_all` plus the `main.py` ALTER list *is* what maintains production's schema.
+Turning it off in the same push that first tries the pre-deploy step would mean that if the
+step fails, production boots with nothing maintaining the schema at all — and, worse, two
+changes landing together makes the result unattributable. It goes in the push **after** a
+deploy log has shown the pre-deploy step running clean. Dockerfile hardening waits for the
+same reason: it changes the image, which adds a variable to a retry whose cause is unknown.
+
+Gates: 1639 passed on SQLite, 1639 on PostgreSQL, `ruff check app tests` clean.
+
+---
+
 ## PR 51 — the working tree stopped hiding things
 
 `git status` carried fifteen untracked entries, some of them for weeks. That is not

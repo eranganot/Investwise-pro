@@ -1,4 +1,12 @@
-"""Market data + research endpoints (Sections AE, AA)."""
+"""Market data + research endpoints (Sections AE, AA).
+
+Every provider call in this module goes through `offload`. `guarded_quote`,
+`guarded_fx` and `guarded_events` are plain `def` functions making SYNCHRONOUS
+network calls, and this app runs on one uvicorn worker: called straight from an
+`async def` they hold the event loop for the whole round trip, so one slow
+upstream is an outage for every other endpoint. Measured in-process with the
+provider held at 2.0s, `/health` came back in 2.01s.
+"""
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +14,7 @@ from app.agents.research_agent import ResearchAgent
 from app.api.deps import acting_user
 from app.core.config import get_settings
 from app.core.database import get_session
+from app.core.offload import offload
 from app.models.tables import User
 from app.providers.registry import guarded_fx, guarded_quote, provider_health
 from app.providers.resilience import CircuitOpenError, RateLimitedError
@@ -19,7 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["market"])
 @router.get("/market/quote")
 async def market_quote(ticker: str = Query(..., min_length=1)) -> dict:
     try:
-        return guarded_quote(ticker).model_dump()
+        return (await offload(guarded_quote, ticker)).model_dump()
     except RateLimitedError as exc:
         raise HTTPException(429, str(exc))
     except CircuitOpenError as exc:
@@ -28,7 +37,7 @@ async def market_quote(ticker: str = Query(..., min_length=1)) -> dict:
 
 @router.get("/fx/rate")
 async def fx_rate(base: str = "USD", quote: str = "ILS") -> dict:
-    return guarded_fx(base, quote).model_dump()
+    return (await offload(guarded_fx, base, quote)).model_dump()
 
 
 @router.get("/research/events")
@@ -37,7 +46,7 @@ async def research_events(
 ) -> dict:
     """Read-only market intelligence, annotated with how each event touches the
     user's actual holdings (which positions, how much is exposed, what to do)."""
-    events = ResearchAgent().scan()
+    events = await offload(ResearchAgent().scan)
     rows = await list_positions(session, user)
     st = market_status()
     return {"count": len(events), "has_portfolio": bool(rows),
