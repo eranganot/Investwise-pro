@@ -33,11 +33,29 @@ def test_independent_assets_have_low_correlation():
     assert indep < same
 
 
-def test_goal_probability_present_with_target():
+def test_goal_probability_present_with_target_and_a_stated_return():
+    """A target and a horizon are no longer enough. A stated drift is required.
+
+    This test used to pass `nav`, `target` and `years` and expect a
+    probability, and it got one -- built from the trailing mean of the history
+    it had just generated. On production that mean was 107.08%/yr, and five
+    years of it produced "Reach 102,973 in 5y - 96%" on a 21,208 ILS book.
+
+    The projection now takes `drift_pct`, and `None` means no projection rather
+    than a fallback to the trailing mean. Both halves are asserted here,
+    because the refusal is the part that would regress quietly.
+    """
     a = _series(3)
-    r = analyze(tickers=["A"], weights=[1], history_by_ticker={"A": a},
-                nav=100_000, target=120_000, years=5)
+    common = dict(tickers=["A"], weights=[1], history_by_ticker={"A": a},
+                  nav=100_000, target=120_000, years=5)
+
+    r = analyze(**common, drift_pct=8.0)
     assert r["goal"] and 0.0 <= r["goal"]["prob_reach"] <= 1.0
+    assert r["goal"]["drift_pct"] == 8.0
+
+    silent = analyze(**common)
+    assert silent["goal"] is None, silent["goal"]
+    assert silent["goal_omitted_reason"]
 
 
 def test_insufficient_history_is_handled():

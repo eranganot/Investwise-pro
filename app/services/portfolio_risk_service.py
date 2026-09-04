@@ -83,8 +83,30 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
     target = float(plan.target_amount) if plan and getattr(plan, "target_amount", None) else None
     years = _years_from_plan(plan)
 
+    # THE STATED FORWARD RETURN, which is what the goal projection is now built
+    # from. `analyze` used to derive it from the trailing 251 days -- 107.08%/yr
+    # on this book -- and push that five years through a GBM. `book_assumptions`
+    # already produces a forward number with provenance, a basis, a coverage
+    # percentage and a caveat that says in the user's own words that a measured
+    # CAGR is not a forecast. Nothing was reading it here.
+    #
+    # Its `volatility_pct` comes along too, NOT to be used as the volatility --
+    # the covariance figure is the right one and `analyze` keeps computing it --
+    # but so the two can be compared where both exist. `/plan` has no price
+    # history and giving it some would put N provider fetches on a hot endpoint;
+    # this call already has the covariance and already reads the plan.
+    drift_pct = assumed_vol_pct = None
+    try:
+        from app.services.measured_assumptions import book_assumptions
+        _a = await book_assumptions(session, user)
+        drift_pct = _a.get("expected_return_pct")
+        assumed_vol_pct = _a.get("volatility_pct")
+    except Exception:  # noqa: BLE001 - a risk report must not fail on the assumptions
+        drift_pct = assumed_vol_pct = None
+
     report = analyze(tickers=tickers, weights=weights, history_by_ticker=hist,
-                     benchmark_returns=bench_rets, nav=nav, target=target, years=years)
+                     benchmark_returns=bench_rets, nav=nav, target=target, years=years,
+                     drift_pct=drift_pct, assumed_volatility_pct=assumed_vol_pct)
     report["nav"] = round(nav, 2)
     report["benchmark"] = cfg.benchmark_ticker
     report["source"] = market_provider().name

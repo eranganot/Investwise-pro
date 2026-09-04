@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 54.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 55.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,102 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 55 — the forward numbers say what they are
+
+Two numbers the app presents as forecasts, neither of which stated its basis. Measured on
+production `6044124`, one book, one moment.
+
+### 1. The goal projection extrapolated the trailing year
+
+```
+POST /api/v1/portfolio/risk
+  annualized_return_pct   107.08
+  goal: {"prob_reach": 0.9604, "median_terminal": 1,407,623, "p90_terminal": 9,601,434}
+```
+
+`index.html:2890` renders the first of those as **"Reach ₪102,973 in 5y — 96%"**, on a
+**₪21,208** book. The drift was `port_rets.mean() * 252` — the last 251 trading days
+annualised — pushed five years through a GBM. A 3× leveraged NASDAQ-and-semiconductor book
+after a good year is the worst possible input for that, and the number it produced was the
+most confident thing on the screen.
+
+**The plan already held a stated forward return, with provenance and a caveat**:
+`expected_return_pct` 22.18, `return_basis` `measured_full`, 97.1% of the book measured, and
+a caveat reading *"A measured CAGR is what happened over one window, not what will happen."*
+Nothing read it. `analyze` now takes `drift_pct` and builds the projection from that and
+nothing else.
+
+**`None` means no projection, not a fallback.** The old fallback *was* the trailing mean, so
+keeping it as a fallback would preserve the defect and hide it better. The payload omits
+`goal` and says why in `goal_omitted_reason`. The trailing figure is still reported, as
+`trailing_return_pct` — a name that cannot be read as a forecast — because hiding it would
+trade one unstated basis for another.
+
+**The convention decision, which moves the answer more than the fix does.** `drift_pct` is a
+**CAGR**: `measured_assumptions` builds each component's return from `metrics["cagr_pct"]`
+(line 365) and its caveat calls it one. A CAGR is already geometric — the −½σ² drag is inside
+it — so it is compounded directly and the drag is **not** applied twice. Subtracting it anyway
+would have been the conservative-*looking* mistake: σ is 67.5%, so ½σ² is 22.8%, which would
+have cancelled the entire 22.18% assumption and put the median five-year outcome below today's
+NAV for arithmetic reasons rather than for anything measured. Asserted, not commented.
+
+What production will report after this ships:
+
+| | before | after |
+|---|---|---|
+| `prob_reach` | 0.9604 | **0.3683** |
+| `median_terminal` | ₪1,407,623 | **₪63,003** |
+| `p10_terminal` | ₪204,801 | **₪9,166** |
+| `p90_terminal` | ₪9,601,434 | **₪429,767** |
+
+### 2. The plan's volatility is not a portfolio volatility
+
+`measured_assumptions.blend` computes `Σ(w·σ) / Σw` — a NAV-weighted **average** of component
+volatilities. Reconciled exactly against the live components:
+
+```
+35.09% x 83.95 + 35.22% x 34.24 + 26.77% x 11.59 + 2.92% x 0.00 = 44.62
+```
+
+Expected return is linear, so blending returns that way is correct and 22.18 checks out the
+same way. **Volatility is not.** Portfolio volatility is `sqrt(w'Σw)`, and a weighted average
+of component volatilities equals it only when every pair is perfectly correlated — otherwise
+the average is strictly larger. It is an **upper bound**, not an estimate. The payload now
+says so: `volatility_method: "weighted_average"`, `volatility_is_upper_bound: true`.
+
+### 3. Which makes plan-vs-actual a contradiction, not a difference
+
+| | | |
+|---|---|---|
+| `/plan.portfolio_volatility_pct` | **44.62** | upper bound |
+| `/portfolio/risk.annualized_volatility_pct` | **67.48** | realised, real covariance |
+
+**The realised volatility exceeds the upper bound.** Under those component volatilities the
+book *cannot* be more volatile than 44.62; it measured 67.48. So at least one component
+understates what the book is doing — which is what you would expect when a sleeve's ten-year
+backtest includes every period it sat in cash, and the book is holding the leveraged names
+right now. Two honest measurements of two different questions, and nothing said which question
+was being answered.
+
+The reconciliation lands on the risk endpoint rather than `/plan`, because `/plan` has no price
+history and giving it some would put N provider fetches on a hot endpoint. The risk call
+already reads the plan and already computes the covariance, so it is the one place the two can
+be compared without paying for anything twice: `assumed_volatility_pct`,
+`volatility_exceeds_assumption`, and a `volatility_note` that states the bound argument.
+
+`book_assumptions`'s own docstring already reached for half of this, about the core: *"a
+per-ticker table has no covariance term — so it overstates the core's volatility by
+construction."* True of the whole blend.
+
+**One existing test asserted the behaviour removed here** and is rewritten rather than deleted:
+`test_goal_probability_present_with_target` passed `nav`, `target` and `years` and expected a
+probability — and got one, built from the trailing mean of the history it had just generated.
+It now asserts both halves, because the refusal is the part that would regress quietly.
+
+Gates: 1661 passed on SQLite, 1661 on PostgreSQL, `ruff check app tests` clean.
 
 ---
 

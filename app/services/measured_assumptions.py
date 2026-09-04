@@ -218,6 +218,25 @@ def blend(components: list[dict]) -> dict:
         "version": ASSUMPTIONS_VERSION,
         "expected_return_pct": (round(ret_num / ret_den, 2) if ret_den else None),
         "volatility_pct": (round(vol_num / vol_den, 2) if vol_den else None),
+        # WHAT THAT NUMBER IS, beside it. Only one of the two above is
+        # mathematically a portfolio figure. Expectation is linear, so a
+        # NAV-weighted average of component returns IS the book's expected
+        # return. Volatility is not: sqrt(w'Sw) equals sum(w.sigma) only when
+        # every pair is perfectly correlated, and is strictly smaller
+        # otherwise. So this is an UPPER BOUND on the volatility of any
+        # portfolio built from these components, not an estimate of it.
+        #
+        # It has been read as the book's volatility because nothing beside it
+        # said otherwise. On the live book it reads 44.62 while the realised
+        # figure from the real covariance is 67.48 -- above the bound, which is
+        # a contradiction rather than a difference of method and is now flagged
+        # where both numbers exist (`portfolio_risk.analyze`).
+        #
+        # The docstring above already reached for half of this, about the core:
+        # "a per-ticker table has no covariance term -- so it overstates the
+        # core's volatility by construction". True of the whole blend.
+        "volatility_method": "weighted_average",
+        "volatility_is_upper_bound": True,
         "basis": basis,
         "measured_pct_of_book": (round(measured_w / total_w * 100, 1) if total_w else 0.0),
         # Weight that could not be priced at all on each side. Named, because a
