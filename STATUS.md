@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-03 by Claude (PR 45 — intake prices are shekels, and say so)._
+_Last updated: 2026-09-03 by Claude (PR 46 — the schema can be built from nothing again)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 45.** Production served `4076ef1` (v22.1) up to this push — confirm with
+**HEAD is PR 46.** Production served `4076ef1` (v22.1) up to this push — confirm with
 `/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
@@ -50,6 +50,76 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 46 — the schema can be built from nothing again
+
+**Reproduced before it was fixed**, on postgres:16 against an empty database:
+
+```
+$ alembic upgrade head
+sqlalchemy.exc.ProgrammingError: DuplicateColumnError:
+  column "subject" of relation "transactions" already exists
+[SQL: ALTER TABLE transactions ADD COLUMN subject VARCHAR(255)]
+```
+
+**The cause was already written down in this repo six times.** 0013, 0014, 0015,
+0016, 0019 and 0020 each carry a comment saying it: `0001_initial` runs
+`Base.metadata.create_all`, so a fresh database is built from **today's** models
+and already has every column the later revisions add. Each of those revisions
+guards itself. `0018_transaction_ledger` shipped with **ten DDL statements and no
+guard**, and one unguarded revision is enough — alembic stops there and never
+reaches the rest.
+
+**A second break, which only the test found.** With the duplicate columns
+guarded, the chain still died on SQLite:
+
+```
+sqlite3.OperationalError: near "ALTER": syntax error
+[SQL: ALTER TABLE transactions ALTER COLUMN position_id DROP NOT NULL]
+```
+
+SQLite has no `ALTER COLUMN`. On a fresh database the column is **already**
+nullable — `create_all` built it from a model that has said so since this
+revision was written — so the statement was not only unsupported, it was
+unnecessary. It now asks first, and falls back to `batch_alter_table` where a
+real rebuild is needed.
+
+**Guarded per statement, not with one early return**, because the database this
+has to survive is not only the empty one. Production's schema was built by
+`create_all` on boot, so "has this column but not that index" is a realistic
+state and a whole-revision skip would step over the half that is missing.
+
+**Why nobody noticed.** `AUTO_CREATE_TABLES=true` in production is what made this
+survivable and also what made it invisible: the app builds its own schema on
+boot, so the migrations were never run and never found out they could not run.
+
+**Tests:** `tests/test_the_migration_chain_runs_from_nothing.py` — two cases,
+both confirmed failing against `bddba29` first. They run the real
+`alembic upgrade head` in a subprocess against a scratch SQLite file, nothing
+stubbed, and the second runs it **twice**, because a redeploy does. Verified
+separately on postgres:16: `upgrade head` twice from empty, landing on
+`0020_solver_verdicts (head)`.
+
+"The migrations work" is not something a reader can check by reading, which is
+why it is a test and not a note.
+
+**Next, and only in this order.** Flipping `AUTO_CREATE_TABLES` to false is the
+PR after this one — the whole point of the ordering is that the guards have to be
+live in production *before* the app stops building its own schema. Then the
+Dockerfile.
+
+**Gate:** SQLite **1628 passed / 0 failed / 0 skipped**; Postgres **1628 passed /
+0 failed / 0 skipped**; `ruff check app tests` clean.
+
+**Smoke:** read-only, and it proves nothing about this change on purpose.
+Production runs `create_all` on boot and does not run alembic, so there is no
+migration behaviour to observe there yet — that is exactly the problem the next
+PR closes. The tests are the proof; the smoke confirms the deploy is healthy and
+the book did not move.
+
+Not financial advice.
 
 ---
 
