@@ -1,14 +1,15 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-04 by Claude (PR 48 — the revert; PR 47 took production down)._
+_Last updated: 2026-09-04 by Claude (PR 49-51 — the deploy gate, the event loop, the working tree)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 48.** PR 47 is reverted; see below. Production served `4076ef1` (v22.1) up to this push — confirm with
-`/health` that it now serves the PR 40 SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
+**HEAD is PR 51.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
+by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
 
 **`measured_pct_of_book` is 97**, up from 78.9. The core card was pressed on 09-02 and the
@@ -53,6 +54,139 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ---
 
+## PR 51 — the working tree stopped hiding things
+
+`git status` carried fifteen untracked entries, some of them for weeks. That is not
+untidiness, it is the failure mode `.gitignore:17-22` is already written about: *"git status
+--short returned an EMPTY view while five files sat staged, which was very nearly reported as
+a clean tree."* A status listing nobody reads is a status that cannot warn anybody.
+
+**Tracked**, because they are the record of what was actually run against this book: ten
+one-off scripts under `scripts/` — `commit-t0`, `fix-t3`, `portfolio-restructure`,
+`ship-t0`–`ship-t3`, `ship-t6b`, `smoke/smoke-sleeves`, `verify-t03` — and
+`EXECUTION_PLAN_2026-08-29_v3.md`, which was the only plan in the series not tracked while
+V5 and V6 both were. All ten were scanned for credentials before tracking: no key, token or
+password literal, and `scripts/.agent-key` appears in none of them (it is read at runtime and
+git-ignored by `.gitignore:31`).
+
+**Ignored and deleted**: `iw-src.tgz` and `iw-src-sync.tgz`. Both are `git archive` snapshots
+made to move the tree to a sandbox — 1.7 MB each, byte-identical to commits already in the
+history, and worth nothing that `git archive` cannot reproduce in a second. `*.tgz` and
+`*.tar.gz` are now ignored.
+
+**Deliberately left untracked: `app/services/candidate_search.py` and
+`tests/test_candidate_search.py`.** That is an open decision (land or discard) and it is
+Eran's, not mine — see `EXECUTION_PLAN_2026-09-03_v6.md`. Recording it here so the two
+remaining `??` lines are an answer rather than a question: everything else in that listing
+has been resolved, so anything new that appears is genuinely new.
+
+---
+
+## PR 50 — one slow provider call was an outage for every other request
+
+**Root cause, PROVEN by reproduction on 2026-09-04 against `6f3cc4f`.** `guarded_quote`,
+`guarded_fx`, `guarded_history`, `guarded_events` and `ResearchAgent().scan()` are plain
+`def` functions that make **synchronous** network calls. Thirteen call sites invoked them
+directly from inside `async def`. On one uvicorn worker that holds the event loop for the
+whole upstream round trip, so while any one of them waits the app answers **nobody**.
+
+In-process, with the market provider held at 2.0 s:
+
+```
+ quote:  2.00s  HTTP 200
+health:  2.01s  HTTP 200
+BLOCKED: /health waited 2.01s behind a 2.0s provider call. The loop was not free.
+```
+
+**RULED OUT — "httpx's ASGITransport serialises requests, so this measures the harness."**
+Killed by a control run: the same 2.0 s wait placed behind `await asyncio.sleep` instead of
+`time.sleep`, same transport, same loop.
+
+```
+  awaited: slow  2.01s   /health  0.00s
+ blocking: slow  2.00s   /health  2.01s
+```
+
+The transport is concurrent. The loop was not. That control is kept in the suite as
+`test_the_harness_is_concurrent`, so a future httpx cannot turn the real test into a
+tautology that passes for the wrong reason.
+
+**Not a new fault, a missed sweep.** `app/core/offload.py` exists for exactly this and its
+docstring already carries the production measurement that motivated it — `/plan` alone
+0.38–0.52 s, `/plan` issued while `/recommendations` was in flight 2.09 / 2.22 / 3.05 s,
+finishing the instant the loop was released. #15 Phase B moved the **agents** off the loop
+and left the provider calls made straight from handlers and services.
+
+**Blast radius, and why it was silent.** It never produced a wrong number, only a stalled
+one, and a stall is indistinguishable from a slow upstream from the outside — which is
+precisely how the original was found by measurement rather than by report. The worst site
+was not an endpoint: `pricing_service.refresh_all_positions` is the **scheduled** refresh
+running in-process, so a refresh over N positions held the loop for N round trips and the
+app went unresponsive on a timer rather than under load.
+
+**Found by AST walk, not by grep.** The first sweep matched `scan` on the method name and
+produced four false positives — `LagEngine().scan(observations)` is arithmetic over a list
+already in memory and belongs on the loop. The guard now requires the receiver to be
+`ResearchAgent()`. Grep is what produced PR 42's non-fix; this class of change gets a tree
+walk.
+
+**Thread safety was already settled.** `recommendations.py` has offloaded `_buy_ideas` —
+which hits the same providers through the same circuit breakers — since #15 Phase B, so
+provider calls already run on worker threads in production.
+
+Fixed at all thirteen sites plus the Yahoo fallback in `pricing_service`, which the guard
+does not catch and is the same call by another name. Guarded by
+`tests/test_the_loop_stays_free_while_a_provider_answers.py`: two behavioural tests and an
+AST walk that fails with a file-and-line list. Gates: 1634 passed on SQLite and 1634 on
+PostgreSQL with this change alone; **1637 and 1637 with PR 49's three deploy tests in**,
+which is what a run after PR 49 lands will show. `ruff check app tests` clean throughout,
+and the PostgreSQL database was dropped and recreated before the run — a dirty one left by
+an interrupted session has produced 46 false failures on card-generation state before.
+
+---
+
+## PR 49 — a broken deploy could replace a working one, and did
+
+**The gap, stated plainly: nothing in the pipeline asked the new container whether it
+answers before the old one was retired.** PR 47 shipped a start command production could
+not survive; every endpoint returned 502 for two hours; and Railway's card read
+**"Deployment successful"** throughout, because that card reflects build-and-deploy, not
+whether anything responds. The only honest signal in the whole episode was the ship
+script's own `/health` wait — and by the time it spoke, the healthy container was gone.
+
+**Railway already had the gate and this service was not using it.** From their healthcheck
+reference: *"Railway will query the endpoint until it receives a successful response (any
+2xx status code). Only then will the new deployment be made active and the previous
+deployment inactive,"* and if it never passes, *"the deployment will be marked as failed
+after the timeout expires."* `healthcheckPath` and `healthcheckTimeout` are both real keys
+under `deploy`, verified against the live `railway.schema.json` on 2026-09-04.
+
+**So PR 47 would have failed its own deploy and left the working container serving.** The
+outage was a bad start command shipped through a pipeline with no gate; only the first half
+of that has been addressed until now.
+
+`healthcheckPath` is `/health/ready`, not `/health`. That distinction is the whole point and
+is asserted in the suite rather than assumed: `/health` answers 200 with no database at all,
+by design — `schema_revision()` swallows its own error because a liveness probe that fails
+on a side query is worse than the thing it reports. A probe that cannot fail cannot gate
+anything. `tests/test_a_broken_deploy_never_takes_traffic.py` pins three things: the key is
+set, the path is a route this app actually serves (a 404 is not a 2xx, so a typo would fail
+*every* deploy), and the path goes red when the database is unreachable. Gates: 1637 passed
+on SQLite, 1637 on PostgreSQL, `ruff check app tests` clean.
+
+`scripts/deploy/verify-deploy.ps1` is the second half, and the reason it is one file rather
+than a paragraph copied into each ship script: Railway's healthcheck cannot tell you *which*
+commit answered, because a healthcheck passing on the **previous** container looks identical
+from outside. The script waits for `/health.commit` to equal the SHA just pushed, then asks
+`/health/ready` and reports `schema_revision`. It throws rather than warns.
+
+**What this does not do:** it does not make the migration safe to retry. That root cause is
+still unknown and the deploy log that held the answer is gone. What changes is the cost of
+finding out — the next attempt fails its healthcheck and leaves production up, instead of
+taking it down for two hours.
+
+---
+
 ## PR 48 — the revert: production could not survive the boot migration
 
 **PR 47 took production down for two hours.** Every endpoint — `/`, `/docs`,
@@ -77,6 +211,24 @@ so the process was not listening and **no request handler ran at all**. The fiel
 is kept — it costs nothing while the migrations are not running, and it is how
 the next attempt gets verified rather than hoped at.
 
+**CORRECTION, 11:20 GMT+3 — the migration SUCCEEDED.** Written before this was
+known, this entry said the migration "did not complete". It did.
+
+```
+/health after the revert:
+  "commit": "6f3cc4f", "schema_revision": "0020_solver_verdicts"
+```
+
+Nothing in `app/` writes `alembic_version` — `health.py` only reads it — and the
+reverted boot does not run alembic (its log shows `Ensuring database schema
+(auto_create_tables=True)` and no alembic line). So **the only thing that can
+have stamped that row is PR 47's own migration step, and it ran to head.**
+
+That inverts the diagnosis. The migration is not the broken part. Production's
+schema is now stamped at `0020_solver_verdicts` for the first time ever, by the
+deploy that took the site down. What failed is what happened *after* it: the
+`&&` never reached uvicorn, or uvicorn never bound.
+
 **ROOT CAUSE: UNKNOWN.** Same treatment as the `+739` mint and the TEVA agorot
 test. What is established:
 
@@ -84,12 +236,23 @@ test. What is established:
   sandbox — `create_all`-built, never stamped, no `alembic_version` row — landing
   on `0020_solver_verdicts`. That was verified before PR 47 shipped and again
   after.
-* So **the sandbox is not a faithful model of that database**, and the difference
-  is unidentified. Candidates, none ruled out: the real schema has been
-  hand-patched by `main.py`'s DDL list for months and differs from what
-  `create_all` produces; 0018's `drop_constraint` / `create_foreign_key` pair
-  meeting a constraint that already carries the target name; a lock; or alembic
-  not resolving `DATABASE_URL` the same way the app does inside that container.
+* **RULED OUT — the migration failing.** Production is stamped at head, so it
+  ran and finished. Every candidate about *what the migration might have hit*
+  (a hand-patched schema, 0018's constraint pair, a lock) is dead with it.
+* **RULED OUT — `/health.schema_revision` hanging.** `/`, `/docs`,
+  `/openapi.json` and `/health/ready` returned 502 too, so no handler ran.
+* **RULED OUT — the shell chain itself.** Re-run in the sandbox as the deploy
+  ran it: `sh -c 'alembic upgrade head && echo ...'` on an empty database exits
+  **0** and the chain continues. `alembic upgrade head; echo $?` also gives 0.
+* **STILL OPEN**, and one of these: alembic exited non-zero at teardown despite
+  having done the work (an unraisable at interpreter shutdown would do it, and
+  `&&` would then swallow the boot); or the process did not exit at all and the
+  chain simply never advanced; or Railway does not run `startCommand` through a
+  shell that honours `&&`. The first two are indistinguishable from outside and
+  the third is checkable in one line of their docs.
+* **The failed container's deploy log is still the only artifact that separates
+  them**, and that deployment has been replaced. If Railway has kept it under
+  HISTORY for commit `d2dc681`, it decides this in thirty seconds.
 * **The deploy log is the only place the answer exists and it has not been read.**
   No speculative fix, and no second attempt before it has been.
 
