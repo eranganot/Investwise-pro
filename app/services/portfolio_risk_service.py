@@ -11,6 +11,7 @@ from app.engines.backtest_engine import BacktestEngine
 from app.engines.portfolio_risk import analyze, pct_returns
 from app.models.tables import User
 from app.providers.registry import guarded_history, market_provider
+from app.services.fx import position_value_ils
 from app.services.intake_service import list_positions
 from app.services.plan_service import get_plan
 
@@ -36,7 +37,13 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
 
     tickers, weights, nav, maps = [], [], 0.0, {}
     for p in rows:
-        value = float(p.quantity) * float(p.current_price or 0)
+        # `position_value_ils`, not `quantity * price`. This was the sixth call
+        # site of a formula whose own docstring says "the formula is not the
+        # hard part; agreeing on it is" -- and it was the one that dropped the
+        # rate, so the report valued a shekel book in dollars. Reconciled
+        # against production 2026-09-04: NAV 7,437.82 against 21,207.78, which
+        # is exactly the sum of the rows with the rate left off.
+        value = await offload(position_value_ils, p)
         try:
             # One offload per holding, not one for the loop: each fetch is a
             # separate cached upstream call, and releasing the loop between

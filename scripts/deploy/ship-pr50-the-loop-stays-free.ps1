@@ -163,8 +163,12 @@ if (-not (Test-Path $keyPath)) {
   $ev = Invoke-RestMethod -Uri "$base/api/v1/research/events" -Headers $apiHeaders -TimeoutSec 30
   Write-Host ("  /research/events -> {0} event(s)" -f $ev.count)
 
-  $risk = Invoke-RestMethod -Uri "$base/api/v1/portfolio/risk" -Headers $apiHeaders -TimeoutSec 60
-  Write-Host ("  /portfolio/risk -> ok={0}" -f $risk.ok)
+  # POST, not GET. Shipped as a GET in PR 50 and threw 405 on the first run,
+  # which aborted the smoke before the concurrency check below ever ran. The
+  # deploy itself was already verified by then, so nothing was at risk - but a
+  # smoke that stops early is a smoke that reports less than it claims.
+  $risk = Invoke-RestMethod -Uri "$base/api/v1/portfolio/risk" -Method Post -Headers $apiHeaders -Body '{}' -ContentType 'application/json' -TimeoutSec 60
+  Write-Host ("  /portfolio/risk -> ok={0}  nav {1:N2} ILS" -f $risk.ok, $risk.nav)
 }
 
 # --------------------------------------------------- the thing this PR is for

@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-04 by Claude (PR 49-51 — the deploy gate, the event loop, the working tree)._
+_Last updated: 2026-09-04 by Claude (PR 49-53 — the deploy gate, the event loop, the migration retry, the risk report's currency)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 51.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 53.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,74 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## PR 53 — the risk report was denominated in dollars
+
+**Found while pulling live numbers to answer the open volatility decision, which is the
+decision it turns out to have been corrupting.** `POST /api/v1/portfolio/risk` returned
+`"nav": 7437.82` on a book `/api/v1/portfolio` values at **₪21,207.78**, at the same moment,
+on commit `6f3cc4f`.
+
+**Root cause, PROVEN by arithmetic reconciliation rather than inferred.** `portfolio_risk`
+sized every holding as `quantity x current_price` and stopped. `current_price` is in the
+position's TRADING currency. Drop the rate and add the same five rows:
+
+| | quantity | price | unconverted | as `/portfolio` values it |
+|---|---|---|---|---|
+| TQQQ | 34.3489 | 72.03 USD | 2,474.15 | 7,470.20 |
+| SOXL | 23.0906 | 106.74 USD | 2,464.69 | 7,441.64 |
+| VTI | 2.9716 | 380.93 USD | 1,131.87 | 3,417.76 |
+| BND | 10.4040 | 71.93 USD | 748.36 | 2,259.52 |
+| CASH | 618.6500 | 1.00 **ILS** | 618.65 | 618.65 |
+| | | | **7,437.72** | **21,207.78** |
+
+The report said **7,437.82**. The ten agorot are the displayed prices rounding. That is an
+identity, not a resemblance.
+
+**Blast radius — four consequences, in ascending order of how much they matter:**
+
+1. `var_95_1d_ils` is `var95 * nav`, so the shekel loss on screen read **₪480** against a
+   real 6.45% of ₪21,207.78, which is **₪1,368**.
+2. The Monte Carlo starts at `nav`, so `median_terminal`, `p10_terminal` and `p90_terminal`
+   were all scaled by 0.35.
+3. `prob_reach` compares that scaled distribution against the plan's **real** shekel target.
+   It is the one number the error made *pessimistic*, and it is the one the UI renders as a
+   percentage (`index.html:2890`).
+4. **The weights were wrong for cash, and only for cash.** Dropping the rate is a common
+   factor across the four USD names, so their weights relative to one another survived it.
+   CASH is already in shekels, so it was scaled up by a rate it never needed: **8.3% of the
+   risk book against 2.9% of the real one.** Cash has no volatility, so an over-weighted cash
+   line drags portfolio volatility and beta *down*. **The endpoint was understating the risk
+   it exists to measure** — which means the 63.85% volatility reading, already 2.5x the
+   book's own 25% cap, was the optimistic version.
+
+**Why it was silent.** Every figure it produces is internally consistent; the only external
+cross-check is NAV, and `report["nav"]` is not displayed beside the portfolio NAV on any
+screen.
+
+**The fix is a call, not a formula.** `fx.position_value_ils` already exists, and its
+docstring already anticipated this: *"Five call sites computed
+`quantity * current_price * fx_rate(...)` inline. The formula is not the hard part; agreeing
+on it is. A money invariant that measures the book with a different expression from the one
+the user is shown is not an invariant."* This was the sixth call site and the one that
+disagreed. It is now offloaded as well, per PR 50 — `fx_rate` reaches `guarded_fx`
+underneath.
+
+**Found and NOT fixed here**, because PR 50's guard has a blind spot this exposed: fourteen
+`async def` sites call `fx_rate` / `fx_rate_with_status` directly, which reaches the same
+blocking provider one level down. The AST guard matches `guarded_*` by name and does not
+follow the wrapper. Lower stakes than PR 50 — the USD/ILS rate is usually served from the
+breaker's cache, so the blocking window is small — but it is the same fault, in money-moving
+code, and it deserves its own gated PR rather than a rider on this one.
+
+**Also in this PR:** `scripts/deploy/ship-pr50-the-loop-stays-free.ps1` called
+`/portfolio/risk` as a GET. It is a POST route. The first run threw 405 there and aborted the
+smoke before the concurrency check ran — the deploy itself was already verified by then, so
+nothing was at risk, but a smoke that stops early reports less than it claims.
+
+Gates: 1641 passed on SQLite, 1641 on PostgreSQL, `ruff check app tests` clean.
 
 ---
 
