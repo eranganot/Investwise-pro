@@ -85,6 +85,17 @@ def build_war_room(observations, portfolio_tickers=None, settings=None, *,
 
     for det in lag.scan(observations):
         t: list[dict] = []
+        # RESEARCH ALWAYS SPEAKS, including to say it has nothing. `AGENTS`
+        # advertises this name to `/war-room` as the cast list, so a silent
+        # Research line is a promise the transcript does not keep -- and PR 58
+        # nearly introduced exactly that. With the invented events removed
+        # `research` is empty on any deploy with no economic provider, which is
+        # every deploy, and this branch simply stopped appending: the defect the
+        # PR exists to remove, reintroduced by removing it.
+        #
+        # "Nothing to report, and here is why" is a finding. Silence is
+        # indistinguishable from "nobody asked" -- the state the constraint
+        # lines further down were added to end.
         if research:
             ev = research[0]
             t.append({"agent": "Research", "role": "Market Intelligence (read-only)",
@@ -92,6 +103,13 @@ def build_war_room(observations, portfolio_tickers=None, settings=None, *,
                               f"(relevance {ev.relevance_score}/100), affecting "
                               f"{', '.join(ev.affected_assets)}.",
                       "detail": {"events": [e.model_dump() for e in research[:3]]}})
+        else:
+            t.append({"agent": "Research", "role": "Market Intelligence (read-only)",
+                      "says": "No market-intelligence source is configured, so I "
+                              "have nothing to add. Until PR 58 there were four "
+                              "hardcoded events here, presented as though they "
+                              "had happened.",
+                      "detail": {"events": [], "source": "none"}})
         t.append({"agent": "Alpha", "role": "Strategist · Lag",
                   "says": f"Found a Depth-{det.depth} "
                           f"{'backbone (high-conviction)' if det.depth == 3 else 'surface'} signal on "

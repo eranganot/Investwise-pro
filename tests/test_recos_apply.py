@@ -7,12 +7,21 @@ from app.services.plan_service import plan_settings
 from types import SimpleNamespace
 
 
-def test_plan_settings_carries_objective_and_caps():
+def test_plan_settings_carries_the_caps_and_the_depth():
+    """And NOT the objective, which nothing ever read.
+
+    `Settings.objective` was written here and consumed nowhere: every reader
+    takes `plan.objective` off the plan itself. This test used to assert the
+    round-trip, which made a dead field look load-bearing -- the assertion was
+    the only evidence the wire existed. Removed with the field in PR 58.
+    """
     plan = SimpleNamespace(risk_tolerance="Low", preferred_depth=2, objective="Income")
     s = plan_settings(plan)
-    assert s.objective == "Income"
     assert s.preferred_depth == 2
     assert s.concentration_cap == 0.15  # Low
+    assert not hasattr(s, "objective"), (
+        "Settings.objective is back. If something now reads it, wire it and "
+        "say where; if not, it is a comment describing a wire nobody ran.")
 
 
 def test_behind_goal_recs_and_lower_target_apply():

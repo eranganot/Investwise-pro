@@ -111,23 +111,46 @@ class BuiltinFXProvider(FXProvider):
 
 
 class BuiltinEconomicDataProvider(EconomicDataProvider):
+    """No events, because this adapter has no source of them.
+
+    IT USED TO RETURN FOUR, hardcoded, and they were the most confidently
+    presented thing on the screen: *"US CPI release above consensus; rate-path
+    implications."* *"USD/ILS broke a multi-week range."* Invented, unchanged
+    since the day they were typed, carrying severity scores of 95 and 80.
+
+    What made them harmful is everything TRUE that was wrapped around them.
+    `market_impact.annotate` named the user's actual holdings in each one and
+    computed the actual shekel exposure -- "touches 36% of your portfolio
+    (₪7,634)" -- `_playbook` turned each into advice (*"Consider hedging the
+    currency or rebalancing toward ILS assets"*), and the card printed
+    `last_refreshed` above it. That field comes from `market_status()`: the
+    PRICE refresh clock. So a frozen list wore a moving timestamp and read as
+    market intelligence that had updated minutes ago.
+
+    Every layer was honest by itself. The exposure arithmetic is right, the FX
+    normalisation is right, the playbook is a defensible mapping from event type
+    to action. They were composed on top of four sentences that were not true,
+    and the composition is what reached the user.
+
+    `economic_provider()` has never had an alternative -- it returns this class
+    unconditionally -- so this feature has never once been real.
+
+    THE FIX IS TO RETURN NOTHING, not to label the fiction. The frozen FX table
+    above survives being labelled because it has a job: some number must value a
+    dollar holding, and a stale one with a loud warning beats a crash. There is
+    no equivalent argument here. Nothing needs an economic event to exist, so
+    the honest count is zero and `/research/events` says so in the payload
+    rather than leaving the card to invent an explanation.
+
+    Wiring a real provider brings the panel back unchanged: `annotate`,
+    `_playbook` and the exposure maths are untouched and are the part worth
+    keeping. See STATUS.md PR 58.
+    """
+
     name = "builtin"
 
     def get_events(self) -> list[EconomicEvent]:
-        return [
-            EconomicEvent(event_type="REGULATORY_SURTAX_UPDATE",
-                          description="Israeli surtax threshold guidance revised for the tax year.",
-                          affected_assets=["TASE:TA35", "ILS:USD"], horizon="MEDIUM", severity=95),
-            EconomicEvent(event_type="MACRO_CPI_PRINT",
-                          description="US CPI release above consensus; rate-path implications.",
-                          affected_assets=["NYSE:SPY", "USD:ILS"], horizon="SHORT", severity=80),
-            EconomicEvent(event_type="EARNINGS",
-                          description="TA-35 constituent earnings cluster this week.",
-                          affected_assets=["TASE:TA35"], horizon="SHORT", severity=70),
-            EconomicEvent(event_type="FX_MOVE",
-                          description="USD/ILS broke a multi-week range; asset-location impact.",
-                          affected_assets=["ILS:USD"], horizon="MEDIUM", severity=65),
-        ]
+        return []
 
 
 class BuiltinBrokerProvider(BrokerProvider):

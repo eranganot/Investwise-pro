@@ -16,11 +16,11 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.offload import offload
 from app.models.tables import User
-from app.providers.registry import guarded_fx, guarded_quote, provider_health
+from app.providers.registry import (economic_provider, guarded_fx, guarded_quote,
+                                    provider_health)
 from app.providers.resilience import CircuitOpenError, RateLimitedError
 from app.services.intake_service import list_positions
 from app.services.market_impact import annotate
-from app.services.market_state import status as market_status
 
 router = APIRouter(prefix="/api/v1", tags=["market"])
 
@@ -48,10 +48,24 @@ async def research_events(
     user's actual holdings (which positions, how much is exposed, what to do)."""
     events = await offload(ResearchAgent().scan)
     rows = await list_positions(session, user)
-    st = market_status()
+
+    # `last_refreshed` USED TO BE HERE, and it came from `market_status()` --
+    # the PRICE refresh clock. The events it sat above were four hardcoded
+    # sentences unchanged since the day they were typed, so the card read
+    # "Updates hourly - last refreshed 4 minutes ago" over a frozen list. A
+    # timestamp borrowed from a different subject is not a small inaccuracy: it
+    # is the thing that made the fiction read as reporting. PR 58.
+    #
+    # `source` / `live` / `source_note` replace it, because the reader's real
+    # question is not when this refreshed but whether anything is behind it.
+    # `annotate` and the exposure arithmetic are untouched and stay ready for a
+    # real provider.
+    src = economic_provider().name
     return {"count": len(events), "has_portfolio": bool(rows),
-            "last_refreshed": st["last_refreshed"],
-            "refresh_interval_minutes": st["refresh_interval_minutes"],
+            "source": src, "live": src != "builtin",
+            "source_note": ("No market-intelligence source is configured, so "
+                            "there is nothing to report here."
+                            if src == "builtin" else None),
             "events": annotate(events, rows)}
 
 

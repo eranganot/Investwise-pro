@@ -35,8 +35,20 @@ def test_scenario_via_api():
 
 
 def test_research_events_via_api():
+    """Zero events, and the payload says why rather than leaving the card to guess.
+
+    This asserted `count >= 1` and passed for as long as the provider invented
+    four events. PR 58 removed them, so the assertion that matters is no longer
+    the count -- it is that the endpoint explains an empty answer instead of
+    returning a bare zero the UI has to interpret.
+    """
     with TestClient(app) as c:
-        assert c.get("/api/v1/research/events").json()["count"] >= 1
+        r = c.get("/api/v1/research/events").json()
+    assert r["count"] == 0
+    assert r["live"] is False and r["source"] == "builtin"
+    assert r["source_note"], "an empty panel with no explanation reads as a failure"
+    assert "last_refreshed" not in r, (
+        "the price-refresh clock is back on the events payload")
 
 
 # --- RBAC enforcement (isolated mini-app, auth forced on) ---

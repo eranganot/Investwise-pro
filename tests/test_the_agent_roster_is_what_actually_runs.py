@@ -237,47 +237,63 @@ def test_the_objective_reaches_the_screener_but_still_changes_nothing():
 # back into silence.
 # --------------------------------------------------------------------------
 
-def test_whats_moving_is_still_served_by_a_fixture_with_four_rows():
-    """Pinned as a DEFECT. Passing means the bug is still there.
+def test_whats_moving_reports_nothing_rather_than_a_fixture():
+    """This test used to be pinned as a DEFECT: passing meant the bug was there.
 
-    `registry.economic_provider()` returns BuiltinEconomicDataProvider
-    unconditionally -- no settings branch, and app/providers/live.py has no
-    economic provider to switch to. So the Explore page's "What's moving" list
-    cannot show a fifth item today no matter what happens in the market, which
-    is the literal answer to "I'm not getting enough cards from What's moving".
+    It asserted `len(events) == 4` -- that "What's moving" was still four
+    hardcoded rows -- because the map found the defect before anyone was ready
+    to fix it, and a defect nobody has written down is one that gets
+    rediscovered. PR 58 fixed it, so the assertion inverts: the honest count is
+    zero, and the card says why.
+
+    The unconditional-provider check stays. It is still true, and it is still
+    the reason: no settings branch, and `app/providers/live.py` has a market
+    provider and an FX provider and no economic provider at all. When one is
+    wired in, this test should fail and send the author to docs/AGENTS.md.
     """
     from app.providers.builtin import BuiltinEconomicDataProvider
     from app.providers.registry import economic_provider
 
     assert isinstance(economic_provider(), BuiltinEconomicDataProvider), (
-        "a live economic provider is now wired in -- item 5's root cause may be "
-        "fixed. Update docs/AGENTS.md and this test.")
+        "a live economic provider is now wired in. Update docs/AGENTS.md and "
+        "this test -- the panel can carry real events again.")
 
     events = BuiltinEconomicDataProvider().get_events()
-    assert len(events) == 4, (
-        f"the fixture now has {len(events)} rows, not 4. The count is quoted in "
-        "docs/AGENTS.md as the reason the section looks thin.")
-
-    src = inspect.getsource(economic_provider)
-    assert "settings" not in src and "get_settings" not in src, (
-        "economic_provider now branches on configuration. That is the fix; "
-        "record it in docs/AGENTS.md.")
+    assert events == [], (
+        f"the builtin provider invents {len(events)} events again. It has no "
+        "source, so the honest count is zero; see STATUS.md PR 58.")
 
 
-def test_the_research_agent_emits_one_event_per_fixture_row():
-    """No filtering, no dedupe -- so nothing downstream is thinning the list.
+def test_the_research_agent_passes_through_whatever_the_provider_gives_it(monkeypatch):
+    """It filters nothing, so an empty panel is the provider's answer, not its own.
 
-    Worth pinning separately: if the section ever looks thin for a DIFFERENT
-    reason, this test says whether the agent is the one dropping rows.
+    This used to assert four events out of a four-row fixture. The point was
+    never the number: it was that if the section ever looked thin, this test
+    said whether the AGENT was thinning it. That still holds with the fixture
+    gone -- an empty list here means the provider had nothing, not that the
+    agent dropped it.
     """
     from app.agents.research_agent import ResearchAgent
+    from app.providers.base import EconomicEvent
 
     events = ResearchAgent().scan()
-    assert len(events) == 4, (
-        f"ResearchAgent emitted {len(events)} events from a 4-row fixture -- "
-        "something is now filtering them")
-    assert [e.relevance_score for e in events] == sorted(
-        (e.relevance_score for e in events), reverse=True), "no longer sorted"
+    assert events == [], (
+        f"ResearchAgent emitted {len(events)} events with no provider wired in")
+
+    # One in, one out -- checked by giving it some, rather than by reading the
+    # source for things that look like filters. The first version of this
+    # assertion grepped for "[:" and tripped over the sha1 slice in the event
+    # id, which is the difference between testing behaviour and testing prose.
+    stub = [EconomicEvent(event_type="EARNINGS", description="stub",
+                          affected_assets=["X"], horizon="SHORT", severity=n)
+            for n in (10, 90, 50)]
+    monkeypatch.setattr("app.agents.research_agent.guarded_events", lambda: stub)
+
+    out = ResearchAgent().scan()
+    assert len(out) == len(stub), (
+        f"{len(stub)} events in, {len(out)} out -- the agent is thinning the "
+        "list, so an empty panel stops being evidence about the provider")
+    assert [e.relevance_score for e in out] == [90, 50, 10], "relevance ordering is gone"
 
 
 @pytest.mark.parametrize("claim", [

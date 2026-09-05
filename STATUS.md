@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-05 by Claude (PR 57 — C8: the app stopped building its own schema, and the container stopped running as root)._
+_Last updated: 2026-09-05 by Claude (PR 58 — the honesty track: the screen stopped reporting things that did not happen)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 57.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 58.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -126,6 +126,103 @@ sleeve swapped to it at the same 36.05%, and then the broker trade.
 One caveat on the evidence: 2016-2026 contains one sustained bear market. A dip-buying rule that
 trails in a bull decade is paying for insurance that mostly was not needed; whether that premium
 is worth keeping is a judgement the backtest does not make.
+
+---
+
+## 📦 Product backlog — parked deliberately, 2026-09-05
+
+Eran chose to carry ops items 1-3, the actionable-cards work and the overlay decision (B2), and
+to park everything below. **Parked is not forgotten and not "someday"**: each row says what would
+un-park it, so the next reader is not re-deriving the reasoning from scratch.
+
+| item | why it is parked | what un-parks it |
+|---|---|---|
+| **Broker integration** (`BROKER_INTEGRATION_PLAN.md`) | 7 weeks as "next initiative", unstarted while 45+ commits shipped past it. It was assumed to block the actionable-cards work; **investigated 2026-09-05, and it does not** — the app already mutates the tracked book for 15 apply kinds, each ending "no brokerage order was placed", so that work proceeds without it. | A decision to place real orders rather than mirror them in the tracked book. |
+| **`candidate_search` land-or-discard** (T6b) | 196 lines, 16 tests passing, ruff clean, **zero callers**, untracked since 2026-08-25. Not broken — unreached. | A caller. Landing it tracked-but-dead repeats the `settings.objective` shape PR 58 removed. |
+| **B1 — what `/plan` should show for volatility** | The app now states the gap honestly and asserts neither cause (PR 56). The real fix needs the backtest to STORE in-market volatility at nightly refresh, and any plan-vs-realised comparison to match windows first. | Someone wanting one number instead of two labelled ones. |
+| **Pixel QA — P0 safety batch** (`qa/QA-2026-08-10-p0-safety.md`) | 3 weeks old with **nineteen PRs shipped on top**, so its pre-flight notes describe an app that no longer exists. | A re-scope. Running it as written would test the wrong build; voiding it is a one-minute decision. |
+| **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
+| **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
+| **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 58 — the screen stopped reporting things that did not happen
+
+Three claims went in. Two held. One was mine and was wrong, and the correction is
+recorded here rather than quietly dropped.
+
+### 1. "What's moving" reported four events that never happened — HELD
+
+`BuiltinEconomicDataProvider` returned four hardcoded sentences, unchanged since the day they
+were typed: *"US CPI release above consensus; rate-path implications."* (severity 80),
+*"USD/ILS broke a multi-week range."*, *"Israeli surtax threshold guidance revised."* (severity
+95), *"TA-35 constituent earnings cluster this week."*
+
+**What made them harmful is everything true that was wrapped around them.** `market_impact.annotate`
+named the reader's actual holdings in each one and computed the actual shekel exposure — *"touches
+36% of your portfolio (₪7,634)"*. `_playbook` turned each into advice — *"Consider hedging the
+currency or rebalancing toward ILS assets"*. And the card printed `last_refreshed` above it, which
+comes from `market_status()`: **the price refresh clock**. So a frozen list wore a moving timestamp
+and read as market intelligence that had updated four minutes ago.
+
+Every layer is honest by itself. The exposure arithmetic is right, the FX normalisation is right,
+the playbook is a defensible mapping from event type to action. They were composed on top of four
+sentences that were not true, and the composition is what reached the user.
+
+**Credit where it is due: `docs/AGENTS.md` already found all of this**, including the borrowed
+clock, and `test_the_agent_roster_is_what_actually_runs.py` pinned it as a defect with the comment
+*"Passing means the bug is still there."* PR 58 is the fix for a defect that was already written
+down — which is the argument for writing them down.
+
+**The fix is to return nothing, not to label the fiction.** The frozen FX table survives being
+labelled because it has a job: some number must value a dollar holding, and a stale one with a loud
+warning beats a crash. Nothing needs an economic event to exist. `get_events()` returns `[]`, the
+borrowed clock is gone, and the payload carries `source` / `live` / `source_note` instead. The card
+says *"No market-intelligence source is configured, so there is nothing to report here."*
+`economic_provider()` now warns once per process the way `fx_provider()` does.
+
+`annotate`, `_playbook` and the exposure maths are **untouched**. They are the part worth keeping;
+wire a real provider and the whole panel comes back.
+
+**The bug this PR nearly introduced by fixing it.** With events gone, `research` is empty on every
+deploy, and the war room's Research line — which was inside `if research:` — simply stopped
+appending. `AGENTS` advertises "Research" to `/war-room` as the cast list, so the transcript would
+have named a speaker who never speaks: *the same defect, one layer down, created by removing it.*
+Research now always speaks, and says it has nothing and why. Caught by an existing test
+(`test_war_room_produces_agent_transcripts` asserts the first three speakers), which is the whole
+argument for asserting on sequence rather than membership.
+
+### 2. `Settings.objective` was a wiring diagram for a wire nobody ran — HELD
+
+Written by `plan_settings`, carrying the comment *"plan objective (Grow/Balanced/Preserve/Income)
+the agents optimize toward"*, and read by **no agent**. Every reader goes to `plan.objective`
+directly: `recommendations.py:991/1178/3730`, `strategy_service.py:515/630`. The only thing that
+ever touched the settings copy was a test asserting it round-tripped — and that assertion was the
+only evidence the wire existed, which is what made a dead field look load-bearing.
+
+Field, write and assertion all removed. A field whose comment describes behaviour it does not have
+is worse than no field.
+
+### 3. `war_room.AGENTS` names seven agents that do not exist — **DID NOT HOLD**
+
+**This claim was mine and it was wrong.** All seven names are emitted in transcripts built by the
+real pipeline, and five of them unconditionally. I had read a true observation in
+`docs/AGENTS.md` — *"`war_room.py:18` declares SEVEN agents, five classes exist under `app/agents/`,
+and the overlap is TWO"* — and drawn a false conclusion from it. Those are two different taxonomies:
+`app/agents/` holds five decision-making modules, while the war room's names are pipeline **roles**,
+most of which are engines. Whether calling an engine an "agent" in a "chat transcript" is itself
+overclaiming is a fair argument, and a separate one; the list is not fabricated.
+
+`test_every_war_room_agent_is_one_that_actually_speaks` now pins it in both directions — no name
+advertised that never speaks, no speaker missing from the cast — so the question gets checked
+rather than remembered.
+
+Gates: 1686 SQLite, 1686 PostgreSQL on a dropped and recreated database, ruff clean. Five of the
+seven new assertions were confirmed RED against the pre-PR-58 tree. Five existing tests asserted
+the old behaviour and were **rewritten rather than deleted**, each keeping the property that
+mattered: the research agent's evidence contract now runs against a stub instead of the fixture,
+and the "is the agent thinning the list?" check still works with nothing to thin.
 
 ---
 

@@ -52,6 +52,12 @@ def plan_settings(plan):
               "ruin_probability_cap": caps["ruin_probability_cap"]}
     if plan is not None and getattr(plan, "preferred_depth", None):
         update["preferred_depth"] = plan.preferred_depth
-    if plan is not None and getattr(plan, "objective", None):
-        update["objective"] = plan.objective
+    # `update["objective"] = plan.objective` used to be here, and
+    # `Settings.objective` carried the comment "the plan objective the agents
+    # optimize toward". No agent ever read it. Every reader goes to
+    # `plan.objective` directly -- recommendations.py:991/1178/3730,
+    # strategy_service.py:515/630 -- and the only thing that touched the
+    # settings copy was a test asserting it round-tripped. A field whose
+    # comment describes behaviour it does not have is worse than no field: it
+    # is a wiring diagram for a wire that was never run. PR 58.
     return base.model_copy(update=update)

@@ -61,6 +61,20 @@ def fx_provider() -> FXProvider:
 
 @lru_cache
 def economic_provider() -> EconomicDataProvider:
+    """The economic-event source, saying out loud that there isn't one.
+
+    This has never had an alternative -- no setting selects it, no other class
+    implements `EconomicDataProvider`. Until PR 58 it returned four invented
+    events that `market_impact` then annotated with the user's real holdings
+    and real exposure, under the price-refresh clock. It now returns none, and
+    the absence is announced the same way `fx_provider` announces the frozen
+    table: once per process, in the logs, rather than left to be inferred from
+    an empty card.
+    """
+    logging.getLogger("investwise.providers").warning(
+        "No economic-data provider is configured -> BuiltinEconomicDataProvider, "
+        "which returns NO events. 'What's moving' will be empty and will say so. "
+        "It previously returned four hardcoded events; see STATUS.md PR 58.")
     return BuiltinEconomicDataProvider()
 
 

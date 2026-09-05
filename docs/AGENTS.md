@@ -74,23 +74,31 @@ produce cards, and does not know what you own. The *exposure* and *what to do*
 lines on the Explore card are added afterwards by `annotate(...)` in the route
 (`market.py:46`), not by the agent.
 
-> **⚠ Its data source is a fixture with four rows.**
-> `registry.py:63-64` returns `BuiltinEconomicDataProvider()` **unconditionally**.
-> There is no settings switch and no live alternative — `app/providers/live.py`
-> has a market provider and an FX provider and no economic provider at all.
-> `builtin.py:113-130` returns the same four hardcoded events on every call, on
-> every deployment, forever.
+> **✅ FIXED IN PR 58. It has no data source, and now says so.**
+> This section used to read: *"Its data source is a fixture with four rows."*
+> `registry.py` returned `BuiltinEconomicDataProvider()` unconditionally — no
+> settings switch, no live alternative, `app/providers/live.py` having a market
+> provider and an FX provider and no economic provider at all — and `builtin.py`
+> returned the same four hardcoded events on every call, on every deployment,
+> forever.
 >
-> The Explore card captions that list *"🕒 Updates hourly · last refreshed
-> {n} minutes ago"* (`index.html:2791`). That timestamp is
-> `market_status()["last_refreshed"]` — **the price refresh clock**
-> (`market.py:44`), which has nothing to do with the events above it. So a list
-> that has never changed is captioned with a clock that is genuinely ticking.
+> Worse, the Explore card captioned them *"🕒 Updates hourly · last refreshed
+> {n} minutes ago"*, and that timestamp was `market_status()["last_refreshed"]`
+> — **the price refresh clock**, which had nothing to do with the events above
+> it. A list that had never changed wore a clock that was genuinely ticking. And
+> `market_impact.annotate` wrapped each one in the reader's real holdings, real
+> shekel exposure and a *"What to do"* list.
 >
-> This is the same failure PR 22 fixed on the history chart: a caption that
-> vouches for a number tells the reader the checking has already been done. It
-> is also the direct answer to *"I'm not getting enough from What's moving"* —
-> you are getting exactly four items because four is all there are.
+> That was the same failure PR 22 fixed on the history chart: a caption that
+> vouches for a number tells the reader the checking has already been done.
+>
+> PR 58 made `get_events()` return `[]`, removed the borrowed clock, and put
+> `source` / `live` / `source_note` on the payload instead. The card now says
+> *"No market-intelligence source is configured"*. The war-room Research line
+> says the same rather than falling silent — a cast list that names a speaker
+> who never speaks is the same defect one layer down. `annotate`, `_playbook`
+> and the exposure arithmetic are untouched and are the part worth keeping: wire
+> a real provider and the whole panel comes back.
 
 ---
 

@@ -2941,7 +2941,17 @@ async function loadExplore(){
   }catch(e){}
   // news — each event annotated with how it hits YOUR holdings + what to do
   try{const n=await(await fetch("/api/v1/research/events")).json();
-    const cap=`<div class="mk" style="margin-bottom:8px">🕒 Updates hourly${n.last_refreshed?` · last refreshed ${ago(n.last_refreshed)}`:""}</div>`;
+    // PR 58. This used to print "🕒 Updates hourly · last refreshed <n> minutes
+    // ago" over four hardcoded events, and that clock came from the PRICE
+    // refresh, not from anything about the events. The events are gone; so is
+    // the borrowed clock. An empty panel that says why beats a full one that
+    // cannot be checked.
+    // NOT an early return: the glossary renders after this block, and taking
+    // the function out here would have emptied it whenever the panel is empty.
+    if(!n.events||!n.events.length){
+      $("news").innerHTML=`<div class="muted">${n.source_note||"Nothing to report."}</div>`;
+    } else {
+    const cap=n.live?`<div class="mk" style="margin-bottom:8px">Source: ${n.source}</div>`:"";
     $("news").innerHTML=cap+n.events.map(e=>{
       const acts=(e.actions||[]).map(a=>`<li>${a}</li>`).join("");
       const exp=e.exposure_pct?` <span class="mk">· touches ${e.exposure_pct}% of your portfolio (${ils(e.exposure_ils)})</span>`:"";
@@ -2949,6 +2959,7 @@ async function loadExplore(){
       return `<div class="ev"><div><b>${titled}</b> <span class="mk">· ${e.expected_time_horizon.toLowerCase()} · relevance ${e.relevance_score}</span></div>
         <div class="${e.direction==='info'?'muted':''}" style="margin-top:3px">${e.impact}${exp}</div>
         ${acts?`<div class="newsact"><b>What to do:</b><ol>${acts}</ol></div>`:""}</div>`;}).join("");
+    }
   }catch(e){$("news").innerHTML=`<div class="muted">—</div>`;}
   // glossary
   const G=[["Depth 1/2/3","How 'structural' a signal is — Depth 1 is surface hype, Depth 3 is the backbone."],
