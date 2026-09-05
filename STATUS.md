@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-05 by Claude (PR 56 + 56.1 — the ops track, PR 55.1 withdrawn, and the call site the withdrawal missed)._
+_Last updated: 2026-09-05 by Claude (PR 57 — C8: the app stopped building its own schema, and the container stopped running as root)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 56.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 57.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -126,6 +126,95 @@ sleeve swapped to it at the same 36.05%, and then the broker trade.
 One caveat on the evidence: 2016-2026 contains one sustained bear market. A dip-buying rule that
 trails in a bull decade is paying for insurance that mostly was not needed; whether that premium
 is worth keeping is a judgement the backtest does not make.
+
+---
+
+## PR 57 — C8: the schema has one author, and the container is not root
+
+Two halves of the same idea: stop the deploy doing things nobody asked it to do.
+
+### 1. `AUTO_CREATE_TABLES` defaults to false
+
+**What it was doing.** At boot the app ran `create_all` from today's models plus a
+23-statement `ALTER TABLE ... IF NOT EXISTS` list in `main.py`. For most of this repo's life that
+list was not a convenience beside the migrations — **it was the mechanism**, and
+`test_startup_ddl_covers_migrations.py` exists because it twice failed to keep up (0011's
+`last_error`, 0015's `benchmark_ticker`, the second of which degraded silently for ten days).
+
+**Why it can go now.** PR 52 moved `alembic upgrade head` into Railway's `preDeployCommand`, and
+PR 54 proved it runs: `/health.schema_revision` moved `0020_solver_verdicts` → `0021_plan_cash_target`
+across that deploy, and nothing in `app/` writes `alembic_version`. With migrations running for
+real, the boot-time builder is no longer a safety net — it is a way for a migration that did not
+run to be papered over from the models while the deploy reports healthy and `alembic_version` sits
+behind. **The fallback's danger was always that it is silent.**
+
+**Measured before flipping it, not argued.** Two databases on postgres:16 — one built by `alembic
+upgrade head` on a virgin database, one by `create_all` plus the 23 startup statements:
+
+| | alembic only | create_all + startup DDL |
+|---|---|---|
+| columns | 272 | 272 |
+| indexes | 72 | 72 |
+| constraints | 46 | 45 |
+| column defaults | identical | identical |
+
+The single constraint difference is `alembic_version`'s own primary key, which the second database
+does not have because it has no `alembic_version` table. **Nothing is lost by turning it off.**
+
+**Off by default, not off by env var.** An env var someone has to remember to set is precisely the
+failure mode this removes, and the ops table above carries four-week-old items of exactly that
+shape. `tests/conftest.py` turns it on explicitly, and a fresh clone builds its schema the way
+production does — `alembic upgrade head`, which `test_the_migration_chain_runs_from_nothing.py`
+already proves works from an empty file.
+
+**Made observable.** `/health` gained `builds_own_schema`. `schema_revision` says where the
+migrations got to; it cannot say whether something *else* is also writing the schema, and a
+revision at head while `create_all` runs at boot cannot distinguish "the migrations built this"
+from "the models did, and the migrations came along". The production warning became an `error`,
+and no longer says "prefer Alembic migrations" — that read as advice about a choice, and there is
+no longer a choice.
+
+**The new guard runs the other way round.** `test_startup_ddl_covers_migrations.py` checks every
+migration is mirrored into the startup list. C8 inverts which one is authoritative, so
+`test_the_migrations_are_the_only_thing_that_builds_the_schema.py` checks the reverse: every
+`ADD COLUMN` in the startup list is a column `alembic upgrade head` actually builds. Get that
+backwards and the failure is silent in the worst way — the app comes up, every table exists, and
+one column that only the startup list knew about is missing from a database the repo cannot
+reproduce. It carries a guard on itself, too: the parser reads a literal block out of `main.py`,
+so an assertion that the block still yields at least five statements stops a refactor turning the
+whole check vacuously green.
+
+### 2. The container
+
+| | before | after |
+|---|---|---|
+| `.dockerignore` | **did not exist** | 60 lines; `.env`, `.git`, `scripts/`, tarballs, tests |
+| user | root | `appuser`, uid 10001, created after the COPYs |
+| base image | `python:3.12-slim` (moving) | `python:3.12.14-slim-bookworm` |
+| `HEALTHCHECK` | none | stdlib urllib against `/health/ready` |
+
+**On the missing `.dockerignore`, precisely.** The Dockerfile COPYs only `app/`, `alembic/`,
+`alembic.ini` and `requirements.txt`, so `scripts/.agent-key` never reached a layer. Build *context*
+is not the image — and that distinction is the whole reason this was easy to leave undone. But the
+context was the entire working tree, uploaded to the builder and cached, and one `COPY . .` written
+in a hurry is the whole distance between "not in the image" and "in a layer, forever". The key is
+named explicitly as well as covered by `scripts/`, so narrowing that line later cannot silently
+re-admit it.
+
+`USER` comes after the COPYs deliberately: the application files stay root-owned and
+world-readable, so the process can read them and cannot rewrite them. `alembic upgrade head` runs
+in this same image as the pre-deploy step and needs no write access either — it writes to the
+database.
+
+**Untested by build, and bounded.** There is no Docker daemon in these gates, so the image was not
+built here. `tests/test_the_container_is_not_root_and_ships_no_secrets.py` pins the properties
+statically instead. The risk is bounded by PR 49: an image that fails to build never deploys, and
+one that builds but cannot serve `/health/ready` never takes traffic — the previous deployment
+keeps serving in both cases.
+
+Gates: 1679 SQLite, 1679 PostgreSQL on a dropped and recreated database, ruff clean. Five of the
+nine new assertions were confirmed RED against the pre-C8 tree; the other four are structural pins
+that pass on both sides, including the column-coverage check that makes the flip safe.
 
 ---
 

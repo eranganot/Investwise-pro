@@ -74,6 +74,15 @@ async def health() -> dict:
         "environment": settings.environment,
         # None means the migrations have never run against this database.
         "schema_revision": await schema_revision(),
+        # C8 / PR 57. `schema_revision` says where the migrations got to; this
+        # says whether anything ELSE is also writing the schema. Both matter,
+        # and only together: a revision at head while the app also runs
+        # `create_all` at boot cannot distinguish "the migrations built this"
+        # from "the models did, and the migrations are along for the ride".
+        # False is the correct answer in production. Exposed rather than merely
+        # logged because a log line is something you have to go and look for,
+        # and this one would only be interesting on the day nobody looked.
+        "builds_own_schema": settings.auto_create_tables,
     }
 
 

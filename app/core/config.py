@@ -24,7 +24,33 @@ class Settings(BaseSettings):
     app_version: str = "22.1"
     environment: str = "development"
     debug: bool = True
-    auto_create_tables: bool = True
+    # DEFAULT OFF SINCE C8 / PR 57. This flag builds the schema from today's
+    # models at boot -- `create_all` plus the `ALTER TABLE ... IF NOT EXISTS`
+    # list in `main.py` -- and for most of this app's life it was not a
+    # convenience beside the migrations, it WAS the mechanism that reached
+    # production. PR 46/47/52 existed to end that, and PR 52 ended it:
+    # `alembic upgrade head` runs as Railway's pre-deploy step, proven by PR 54
+    # moving `/health.schema_revision` from 0020 to 0021 when nothing in `app/`
+    # writes `alembic_version`.
+    #
+    # Leaving it on after that is worse than useless. A migration that failed to
+    # add a column would be silently patched at boot by a `create_all` built
+    # from the models, and the deploy would look healthy while `alembic_version`
+    # sat behind -- a production schema nobody could reproduce from the repo.
+    # The fallback's danger was always that it is silent.
+    #
+    # Measured before flipping it: a database built by `alembic upgrade head`
+    # alone and one built by `create_all` plus the 23-statement startup list are
+    # IDENTICAL -- 272 columns, 72 indexes, 45 constraints, identical defaults,
+    # on postgres:16. The only difference is alembic's own `alembic_version`
+    # table. Nothing is lost by turning it off.
+    #
+    # Off by DEFAULT rather than off via an env var, because an env var someone
+    # must remember to set is the failure mode this removes -- and the ops board
+    # already carries four-week-old items that are exactly that shape. The test
+    # suite turns it on explicitly (`tests/conftest.py`), and a fresh clone
+    # builds its schema the way production does: `alembic upgrade head`.
+    auto_create_tables: bool = False
 
     # Database (async Postgres)
     database_url: str = (

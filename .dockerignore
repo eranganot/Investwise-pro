@@ -1,0 +1,74 @@
+# There was no .dockerignore at all until C8 / PR 57, so every build uploaded
+# the whole working tree as context -- including .git, the two source tarballs
+# (iw-src.tgz, plans.tgz), the local .env and, most of the point, scripts/ with
+# the agent key in it.
+#
+# The Dockerfile only COPYs app/, alembic/, alembic.ini and requirements.txt, so
+# none of that reached the image. Build CONTEXT is not the image, and that
+# distinction is the whole reason this was easy to leave undone. But the context
+# is uploaded to the builder, cached, and shipped to Railway, and one edited
+# COPY line -- `COPY . .` in a hurry -- is all that stands between "not in the
+# image" and "in the image, in a layer, forever". This file makes that mistake
+# cost nothing.
+
+# Secrets and local configuration. First, deliberately.
+.env
+.env.*
+!.env.example
+scripts/.agent-key
+scripts/.agent-key*
+*.pem
+*.key
+
+# Version control and its history
+.git
+.gitignore
+.github
+
+# Python build and cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+
+# Archives that have no business in a build context
+*.tgz
+*.tar.gz
+*.zip
+
+# Operator material: runbooks, ship scripts, QA notes, plans. None of it runs
+# in the container, and scripts/ is where the agent key lives.
+scripts/
+qa/
+docs/
+_to_delete/
+*.md
+!README.md
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Tests do not ship. The image runs the app; the gates run before the push.
+tests/

@@ -163,7 +163,19 @@ async def lifespan(app: FastAPI):
                         pass
     if settings.environment == "production":
         if settings.auto_create_tables:
-            logger.warning("auto_create_tables is ON in production - prefer Alembic migrations.")
+            # ERROR, not warning, now that C8/PR 57 has made the default off.
+            # Reaching this line in production means someone set
+            # AUTO_CREATE_TABLES=true against a database whose schema the
+            # pre-deploy `alembic upgrade head` already owns -- so a migration
+            # that silently failed would be papered over from the models and the
+            # deploy would look healthy with `alembic_version` left behind. The
+            # old text said "prefer Alembic migrations", which reads as advice
+            # about a choice. There is no longer a choice.
+            logger.error(
+                "auto_create_tables is ON in production. The schema is owned by "
+                "the pre-deploy 'alembic upgrade head' in railway.json; building "
+                "it from the models at boot can hide a migration that did not "
+                "run. Unset AUTO_CREATE_TABLES.")
         if not settings.api_key:
             logger.warning("API_KEY is not set in production - write endpoints are unauthenticated.")
     if settings.enable_scheduler:
