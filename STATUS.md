@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-05 by Claude (PR 56 — the ops track, and PR 55.1 withdrawn one deploy after it shipped)._
+_Last updated: 2026-09-05 by Claude (PR 56 + 56.1 — the ops track, PR 55.1 withdrawn, and the call site the withdrawal missed)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 56.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 56.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -126,6 +126,52 @@ sleeve swapped to it at the same 36.05%, and then the broker trade.
 One caveat on the evidence: 2016-2026 contains one sustained bear market. A dip-buying rule that
 trails in a bull decade is paying for insurance that mostly was not needed; whether that premium
 is worth keeping is a judgement the backtest does not make.
+
+---
+
+## PR 56.1 — the withdrawal missed a call site, and production said so
+
+**Found by the deploy check, not by a test.** PR 56's step 5 asked production whether
+`portfolio_volatility_pct_strategy_longrun` was gone. It was not. Everything else about the
+withdrawal had landed on `f0e570c` — the plan headline read 45.4 (the blend) rather than ~68,
+`volatility_window` was present, and `volatility_exceeds_assumption` had correctly gone loud again.
+
+**Root cause, reproduced rather than argued.** PR 55.1 published the figure at **two** sites under
+**two names**:
+
+| site | key |
+|---|---|
+| `_portfolio_stats` (the producer) | `volatility_strategy_longrun` |
+| `_plan_dict:186` (the API mapper) | `portfolio_volatility_pct_strategy_longrun` |
+
+PR 56 removed the producer. `stats.get("volatility_strategy_longrun")` then returned `None`, and
+line 186 assigned it unconditionally, so `/plan` went on carrying the retracted number's *name*
+with a null value. Reproduced locally by calling `_plan_dict` directly: `KEY PRESENT: True`,
+`VALUE: None`, headline `45.4`.
+
+**Ruled out, each by the observation that killed it:**
+
+| candidate | killed by |
+|---|---|
+| The deploy did not land | Same output: headline 45.4 not 68, `volatility_window` present, flag flipped to true — all three are PR 56 behaviour. |
+| The deploy check itself is wrong | The local reproduction: the key really is in the dict. PowerShell's `PSObject.Properties[...]` returns an entry for a present-but-null property, which is exactly right. |
+| Something else emits it | `grep` across `app/`: exactly one site, `plan.py:186`. |
+
+**Blast radius: one null key on `/plan`, for one deploy, with no reader.** Nothing in
+`app/static_app/` references either name. Nothing sizes a trade from it. The harm is
+epistemic rather than numeric — a key that only ever holds null reads as *"we measure this and it
+came back empty"*, which is precisely the claim PR 56 existed to withdraw.
+
+**Why it was silent, and this is the part worth keeping.** PR 56's own test asserted
+`"volatility_strategy_longrun" not in out` — on the **stats dict**, one layer *below* the rename.
+A test beneath the API boundary cannot see a key the API layer adds. Same shape as **PR 43**, where
+PR 42's fix survived at a second call site. `test_the_plan_payload_itself_carries_no_trace_of_the_withdrawn_number`
+now asserts on the payload `_plan_dict` actually returns, and it matches on `"longrun" in k or
+"conditional" in k` across the whole payload rather than on one spelling — so the next retraction
+cannot leave a differently named survivor behind.
+
+Gates: 1670 SQLite, 1670 PostgreSQL on a dropped and recreated database, ruff clean. The new
+assertion was confirmed RED against the shipped `f0e570c` bytes before the fix went in.
 
 ---
 

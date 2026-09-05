@@ -182,8 +182,13 @@ def _plan_dict(plan, stats: dict) -> dict:
     base["measured_pct_of_book"] = stats.get("measured_pct_of_book")
     base["portfolio_expected_roi_pct_static"] = stats.get("static_expected_roi")
     base["portfolio_volatility_pct"] = stats.get("volatility")
-    # The strategies' long-run character, kept beside the book's current one.
-    base["portfolio_volatility_pct_strategy_longrun"] = stats.get("volatility_strategy_longrun")
+    # PR 55.1 also added `portfolio_volatility_pct_strategy_longrun` HERE, under
+    # a different name from the one it used in `_portfolio_stats`. PR 56 removed
+    # the producer and missed this mapper, so the payload went on carrying the
+    # retracted number's NAME with a null value -- the same shape as PR 43, a
+    # second call site surviving the fix to the first. A key that only ever
+    # holds null is worse than an absent one: it reads as "we measure this and
+    # it came back empty". Removed. See STATUS.md B1 / PR 56.1.
     base["portfolio_volatility_pct_static"] = stats.get("static_volatility")
     base["assumptions"] = stats.get("assumptions")
     roi = base.get("target_roi_pct")

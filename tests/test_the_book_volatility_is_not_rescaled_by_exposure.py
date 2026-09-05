@@ -147,6 +147,45 @@ def test_the_plan_screen_publishes_the_blend_and_nothing_beside_it():
     assert "volatility_strategy_longrun" not in out, out
 
 
+def test_the_plan_payload_itself_carries_no_trace_of_the_withdrawn_number():
+    """THE LAYER THE FIRST VERSION OF THIS TEST COULD NOT SEE.
+
+    PR 55.1 added the figure at two sites under two names: `_portfolio_stats`
+    produced `volatility_strategy_longrun`, and `_plan_dict` republished it as
+    `portfolio_volatility_pct_strategy_longrun`. PR 56 removed the producer and
+    the test above passed, because the test above reads the stats dict -- one
+    layer below the rename. Production then answered with the key still on it,
+    holding null.
+
+    So this asserts on the payload the API actually returns. A key that only
+    ever holds null is worse than an absent one: it reads as a measurement that
+    came back empty. And the assertion is written against the whole payload
+    rather than that one name, so the next retraction cannot leave a differently
+    spelled survivor behind.
+    """
+    from types import SimpleNamespace
+
+    from app.api.routes.plan import _plan_dict, _portfolio_stats
+
+    rows = [SimpleNamespace(ticker="VTI", quantity=10, current_price=100.0,
+                            market="US", meta={"asset_class": "Equities"})]
+    stats = _portfolio_stats(rows, {"volatility_pct": 44.62,
+                                    "volatility_conditional_pct": 68.02,
+                                    "expected_return_pct": 22.18, "basis": "mixed"})
+    plan = SimpleNamespace(id=1, objective="growth", risk_tolerance="aggressive",
+                           currency="ILS", target_amount=100000.0,
+                           target_date="2031-01-01", horizon_years=5,
+                           target_roi_pct=30.0, target_roi_period="yearly",
+                           target_yield_pct=None, target_yield_period=None,
+                           preferred_depth=None, cash_target_pct=None)
+
+    payload = _plan_dict(plan, stats)
+
+    leaked = [k for k in payload if "longrun" in k or "conditional" in k]
+    assert leaked == [], f"the withdrawn number is still named on /plan: {leaked}"
+    assert payload["portfolio_volatility_pct"] == 44.62, payload
+
+
 @pytest.mark.parametrize("sleeve_id", ["btm_swing_dip", "btm_trend_soxl"])
 def test_a_sleeve_that_is_off_still_holds_something(sleeve_id):
     """THE FACT THAT KILLED THE FORMULA, pinned where it lives.
