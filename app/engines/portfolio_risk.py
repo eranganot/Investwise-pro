@@ -59,8 +59,10 @@ def analyze(*, tickers: list[str], weights: list[float],
 
     `assumed_volatility_pct` is the plan's blended assumption, carried through
     so the two numbers can be compared in the one place both exist. See
-    `volatility_exceeds_assumption` below -- their disagreement is a
-    contradiction rather than a difference, and the payload can say so.
+    `volatility_exceeds_assumption` below: the assumption is an upper bound, so
+    a realised figure above it is a fact worth surfacing -- but the note names
+    the candidate explanations rather than asserting one, because a first
+    attempt at asserting one shipped wrong (PR 55.1, withdrawn).
 
     Trailing figures are still reported. `annualized_return_pct` keeps its name
     and value, and `trailing_return_pct` is the same number under a name that
@@ -173,6 +175,18 @@ def analyze(*, tickers: list[str], weights: list[float],
         # portfolio built from those components. A realised volatility above it
         # is not a difference of method; it means at least one component
         # understates what the book is actually doing.
+        #
+        # WHAT THE NOTE MAY AND MAY NOT SAY. The bound argument above is sound.
+        # The reason the bound is breached is NOT established, and PR 55.1
+        # shipped one explanation -- that the component volatilities are
+        # diluted by days out of the market, correctable by sigma/sqrt(f) --
+        # which measurement then refuted: the sleeves hold their BASE when the
+        # rule is off, not cash, so out-of-market days run at 22.46%, not zero.
+        # The two figures also cover different windows (ten-year strategy
+        # backtests against 251 trading days here), which is a second candidate
+        # nothing has separated from the first. So the note lists both and
+        # asserts neither. A number the screen cannot explain is a smaller
+        # problem than an explanation the screen invents.
         assumed = float(assumed_volatility_pct)
         out["assumed_volatility_pct"] = round(assumed, 2)
         out["volatility_exceeds_assumption"] = bool(port_vol * 100 > assumed)
@@ -181,7 +195,12 @@ def analyze(*, tickers: list[str], weights: list[float],
                 f"Realised volatility {port_vol * 100:.2f}% is above the plan's "
                 f"assumption of {assumed:.2f}%. That assumption is a NAV-weighted "
                 f"average of component volatilities, which is an upper bound on "
-                f"the volatility of any portfolio built from them -- so this is a "
-                f"contradiction, not a difference of method. At least one "
-                f"component understates what the book is doing.")
+                f"the volatility of any portfolio built from them, so the two "
+                f"cannot both describe the same book over the same period. Two "
+                f"things differ and neither has been ruled out: the assumption "
+                f"is measured over each strategy's full backtest window while "
+                f"this figure covers the last year, and the strategies' measured "
+                f"volatilities average over periods when their rules held a "
+                f"different instrument than the book holds today. Treat the "
+                f"realised figure as the one about the book you hold now.")
     return out

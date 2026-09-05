@@ -96,19 +96,17 @@ def _portfolio_stats(rows, measured: dict | None = None) -> dict:
         if measured.get("expected_return_pct") is not None:
             out["expected_roi"] = round(float(measured["expected_return_pct"]), 2)
         if measured.get("volatility_pct") is not None:
-            # THE HEADLINE IS THE CONDITIONAL ONE, and the long-run figure keeps
-            # its own key beside it. Both are true and they answer different
-            # questions: ~68% is what the book is doing today with its sleeves
-            # in the market, ~44.6% is what it will average over a year with
-            # `btm_swing_dip` flat 84% of it. The headline is today's exposure
-            # because that is what every other risk figure on the screen is
-            # about -- VaR is a statement about the book you hold this morning,
-            # and the app was comparing the long-run number against a realised
-            # measurement of the short-run one. See PR 55 / PR 55.1.
-            _long_run = round(float(measured["volatility_pct"]), 2)
-            _cond = measured.get("volatility_conditional_pct")
-            out["volatility"] = round(float(_cond), 2) if _cond is not None else _long_run
-            out["volatility_strategy_longrun"] = _long_run
+            # ONE VOLATILITY, the blend of what the strategies measured over
+            # their own windows. PR 55.1 briefly made the headline a
+            # sigma/sqrt(f) "in-market" rescaling of this and kept the blend
+            # beside it under `volatility_strategy_longrun`; both keys are gone
+            # because the rescaling was wrong. It assumed a sleeve sits flat
+            # when its rule is off, and these sleeves hold their base instead --
+            # measured, the off days run at 22.46% volatility, not zero. See
+            # STATUS.md B1. Until something is measured that this endpoint can
+            # actually stand behind, it reports the blend and `/portfolio/risk`
+            # reports the realised figure, each labelled.
+            out["volatility"] = round(float(measured["volatility_pct"]), 2)
         out["assumption_basis"] = measured.get("basis", "static")
         out["measured_pct_of_book"] = measured.get("measured_pct_of_book")
         out["assumptions"] = measured

@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-04 by Claude (PR 49-54 — the deploy gate, the event loop, the migration retry, the risk report's currency, the cash reserve)._
+_Last updated: 2026-09-05 by Claude (PR 56 — the ops track, and PR 55.1 withdrawn one deploy after it shipped)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 55.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 56.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -51,6 +51,172 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+
+---
+
+## 🔖 Backlog — carried, with the evidence so it need not be re-derived
+
+### B1. PR 55.1's `sigma/sqrt(f)` scaling was WRONG — **WITHDRAWN in PR 56.** Evidence kept.
+
+**Closed as a defect; open as a question.** The scaling is gone from the code and pinned out by
+`tests/test_the_book_volatility_is_not_rescaled_by_exposure.py`. What is *not* answered is what
+the plan screen should show instead, so the measurement below stays on the board.
+
+**Defect, not a decision.** PR 55.1 conditions each sleeve's volatility on its exposure using
+`sigma_in = sigma_measured / sqrt(f)`, which requires the out-of-market days to be **flat**.
+They are not. `strategy_backtest._weights_or_off` says so in its own docstring: *"a swing rule
+is an OVERLAY -- it decides between the aggressive instrument and the core holding, not
+between the aggressive instrument and being out of the market."* The sleeves hold their
+**base**, never cash.
+
+Measured directly on 2016-09-06 → 2026-09-04 (2,514 sessions, adjusted closes):
+
+| sleeve | in market | measured vol | **true** in-market vol | out-of-market vol | PR 55.1's formula | error |
+|---|---|---|---|---|---|---|
+| `btm_swing_dip` (TQQQ/QQQ) | 15.6% | 33.91% | **67.97%** | 22.46% | 85.96% | **+17.99** |
+| `btm_trend_soxl` (SOXL/SMH) | 74.0% | 83.50% | **93.95%** | 40.97% | 97.05% | **+3.10** |
+
+The variance decomposition checks out (`f·σ_in² + (1−f)·σ_out²` = 33.84% against 33.91%
+measured), so this is not ambiguous.
+
+**Why it has not shown up on screen.** The blend lands at **67.43%** against a realised
+**67.48%** — 0.05 apart. It reconciled *for the wrong reason*, and I took the reconciliation as
+proof. On a book whose sleeves genuinely sat in cash, or with different exposures, it would be
+visibly wrong.
+
+**A second thing PR 55 over-claimed.** The plan's blend is built from **ten-year** backtests and
+the realised figure from the **last 251 days**. Blending the *true* in-market vols gives 60.01%
+— below the realised 67.48%, which a weighted average cannot be. The gap is the window, not the
+exposure. So "the realised volatility exceeds the upper bound" was a real observation with two
+causes, and PR 55 named only one.
+
+**The fix is not a better formula, and PR 56 did not write one.** The backtest should *store*
+in-market volatility at nightly refresh, where the price history already is, instead of `/plan`
+deriving it from metadata that cannot support the derivation. And any plan-vs-realised comparison
+has to match windows first. Until both exist, `/plan` reports the strategies' full-window blend
+labelled `volatility_window`, `/portfolio/risk` reports what the book did, and the note on the
+gap names both candidate causes without asserting either.
+
+### B2. Retire `btm_swing_dip`'s overlay and hold QQQ — DECIDED, then held for later
+
+Eran chose this on 2026-09-04 and then parked execution. The measurement is recorded here so
+the decision does not have to be re-made. Same window, same engine:
+
+| variant | CAGR | volatility | max DD | in TQQQ | trades/yr | ₪10,000 → |
+|---|---|---|---|---|---|---|
+| hold TQQQ, do nothing | **40.25%** | 66.74% | 81.66% | 100% | 0.1 | 294,462 |
+| hold QQQ, do nothing | 20.73% | 22.56% | 35.12% | 0% | 0.1 | 65,789 |
+| the rule, signalled on QQQ | 18.07% | 33.97% | 40.55% | 15.1% | 44.6 | 52,650 |
+| **the rule as shipped** | **17.19%** | 34.35% | 40.55% | 15.6% | 45.4 | **48,855** |
+
+**Leverage decay was not the cause** — TQQQ held blindly doubled its own base. **Being out of
+the market during the compounding was.** The overlay turned a 40.25% instrument into 17.19%,
+below simply holding QQQ, while carrying a *deeper* drawdown (40.55% vs 35.12%). Gross of costs
+it makes 24.11%, so ~7 points a year go to the 45 round-trips — and even gross it trails holding
+TQQQ by 16.
+
+**What execution needs, and why it is not one API call.** `DELETE /plan/sleeves/btm_swing_dip`
+retires the whole sleeve, which is more than was decided: its 36.05% claim would collapse into
+the core, the core's share would go 27% → ~55%, and the book target would swing from 7.8% Fixed
+Income to ~22% — the app would start asking to sell equities into BND. "Retire the overlay, hold
+the base" means keep the position and drop the rule, and **nothing in the catalogue holds a bare
+index**. It needs a `btm_qqq_hold` entry (buy-and-hold QQQ, no `base` key — it *is* one), the
+sleeve swapped to it at the same 36.05%, and then the broker trade.
+
+One caveat on the evidence: 2016-2026 contains one sustained bear market. A dip-buying rule that
+trails in a bull decade is paying for insurance that mostly was not needed; whether that premium
+is worth keeping is a judgement the backtest does not make.
+
+---
+
+## PR 56 — the ops track, and the withdrawal of PR 55.1
+
+Two things in one PR because they share nothing except the date, and splitting them would have
+meant two deploys of the same day's work. The honest label for the second half is a **retraction**.
+
+### 1. PR 55.1 is withdrawn, one deploy after it shipped
+
+**What it claimed.** PR 55 showed `/plan.portfolio_volatility_pct` (44.62) sitting 23 points below
+the realised `/portfolio/risk.annualized_volatility_pct` (67.48), and showed that this breaches a
+bound: a NAV-weighted average of component volatilities is an upper bound on any portfolio built
+from them, since `sqrt(w'Sw) <= sum(w.sigma)`. PR 55.1 then said *why*: each sleeve's backtested
+volatility averages over days the rule was out of the market, so with an in-market fraction `f`
+and flat days otherwise, `sigma_in = sigma_measured / sqrt(f)`. It put the rescaled figure in the
+`/plan` headline, kept the blend beside it, and fed the rescaled one to the risk report so the
+comparison would be like-for-like.
+
+**Why it was accepted.** It reconciled. 68.02 against a realised 67.48 — half a point.
+
+**Why that was not evidence.** The scaling needs the out-of-market days to be *flat*, and they are
+not. `strategy_backtest._weights_or_off` hands the sleeve its `base` when the rule is off, and says
+so in its own docstring: *"a swing rule is an OVERLAY -- it decides between the aggressive
+instrument and the core holding, not between the aggressive instrument and being out of the
+market."* Neither live sleeve declares `risk_off`. Measured on the shipped engine over
+2016-09-06 → 2026-09-04 (2,514 sessions, adjusted closes):
+
+| sleeve | in market | measured vol | **true** in-market vol | out-of-market vol | the formula said | error |
+|---|---|---|---|---|---|---|
+| `btm_swing_dip` (TQQQ/QQQ) | 15.6% | 33.91% | **67.97%** | **22.46%** | 85.96% | **+17.99** |
+| `btm_trend_soxl` (SOXL/SMH) | 74.0% | 83.50% | **93.95%** | 40.97% | 97.05% | **+3.10** |
+
+The variance decomposition closes (`f·σ_in² + (1−f)·σ_out²` = 33.84% against 33.91% measured), so
+this is not a matter of interpretation. **The half-point agreement came from two errors of opposite
+sign cancelling** — which is the specific reason this defect was worse than an ordinary one: it
+manufactured its own confirmation.
+
+**Not replaced with a corrected version, because a corrected one does not reconcile either.**
+Blending the *true* in-market figures gives 60.01% against the realised 67.48% — below the
+portfolio it is supposed to bound, which is impossible for a weighted average of the same
+components over the same period. So a second difference is doing work and PR 55 named only one:
+the components are **ten-year** backtests and the realised figure is **251 days**. Two numbers over
+different windows need not obey a bound derived for one.
+
+**What shipped instead.** `volatility_conditional_pct` / `_method` / `_floored`,
+`EXPOSURE_FLOOR_PCT` and `_in_market_volatility` are removed. `/plan` publishes one volatility
+again — the blend — and `volatility_strategy_longrun` is gone with the number that displaced it.
+The blend now carries `volatility_window: "strategy backtests, full measured window"`, which is the
+label whose absence let a ten-year average be compared against a 251-day measurement as though they
+were rivals. `exposure_pct` **stays** on each component, re-commented as reported and not used to
+scale anything: it is a true and useful fact about a sleeve, and the analysis that retired the
+formula is worth being able to redo. `portfolio_risk.analyze` no longer calls the gap a
+"contradiction"; it states the bound, names both candidates, and says which figure describes the
+book held today.
+
+**Blast radius while it was live: one deploy, and cosmetic.** `_portfolio_stats` feeds eight
+screens, so the plan headline read 68.02 where it now reads 44.62. Nothing sized a trade from it —
+`book_target.compose()` and the funding layer use weights and NAV, not this figure — and
+`/portfolio/risk` computed its own covariance throughout, so VaR, beta and the goal projection were
+never touched.
+
+**Pinned by `tests/test_the_book_volatility_is_not_rescaled_by_exposure.py`** (9 tests). Five fail
+against the reconstructed PR 55.1 code — the withdrawn keys, the floor constant, the `/plan`
+headline, the window label and the note's wording. Four are structural pins that pass on both
+sides and are there to make the *next* attempt notice: each live sleeve declares a `base` and no
+`risk_off`, `_weights_or_off` returns that base rather than an empty book, and `exposure_pct`
+scales nothing. A future strategy that genuinely sits in cash will declare `risk_off`, and those
+tests will tell whoever adds it that the arithmetic differs for that one.
+
+### 2. Ops — the four items that have been on the board four weeks
+
+None of this is code the app runs. It is the part of the board that only Eran can close, written
+down so it stops being re-derived every fortnight.
+
+**`scripts/ops/ops-check.ps1`** — 14 read-only checks, each reporting `DONE` / `TODO` / `MANUAL` /
+`UNKNOWN`, across branch protection (via an optional `$env:GITHUB_TOKEN`), the agent key, the VAPID
+pin, `DATABASE_PUBLIC_URL`, the three rotations, and the deploy invariants that PR 49/52 installed.
+It changes nothing and needs no secrets to run; the checks that cannot be answered without one say
+`UNKNOWN` rather than guessing.
+
+**`scripts/ops/OPS_RUNBOOK.md`** — the same items in the order they should be done, with branch
+protection first because it is two minutes and the only one that *prevents* a class of incident
+rather than reducing exposure to one. It records the fact that makes it urgent: `git push origin
+main` deploys to production, so there is currently no step between a local commit and the live
+site. The Postgres password rotation is explicitly recommended **not now** — it is the one item
+whose failure mode is an outage, and it should not be done in the same week as a deploy-gate change.
+
+**Untracked code, left untracked deliberately.** `app/services/candidate_search.py` and
+`tests/test_candidate_search.py` (T6b) are still uncommitted and are **not** part of this PR; the
+untracked-files row in the ops table above stands.
 
 ---
 
