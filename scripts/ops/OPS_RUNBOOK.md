@@ -115,3 +115,38 @@ working deploy from an outage" was an ops problem that cost two hours:
 When an item is done, re-run `ops-check.ps1` and let the output be the record. Do not tick
 anything off in a document that nothing verifies — that is how this list came to contain items
 that were already finished.
+
+
+---
+
+## Branch protection will not enforce on this repository (2026-09-06)
+
+This was the first item on the list, described as two minutes. It is not available.
+
+GitHub's Rulesets page says it plainly on this repo: *"Your rulesets won't be enforced on this
+private repository until you move to GitHub Team organization account."* Protected branches on a
+PRIVATE repository need a paid plan. The ruleset can be created and will look armed; it will not
+fire. That is worse than nothing, because it reads as done.
+
+**Two real options.**
+
+1. **GitHub Pro**, about $4/month, which makes the ruleset actually enforce. Configure it as
+   *Restrict deletions* + *Block force pushes* only — **not** "Require a pull request before
+   merging", which would break every ship script in `scripts/deploy/`, since they all end in
+   `git push origin main`.
+
+2. **The local hook**, which is free and works today:
+
+   ```
+   cp scripts/ops/pre-push .git/hooks/pre-push
+   chmod +x .git/hooks/pre-push        # Git Bash
+   ```
+
+   Verified against a throwaway origin: a normal push is allowed, `--force` is refused, a branch
+   delete is refused. It is NOT equivalent to server-side protection — it runs only on machines
+   where it is installed, and `git push --no-verify` steps straight past it. Worth having anyway:
+   one person pushes to this repo, and the incident it prevents (a rewritten `main` replacing what
+   is deployed) is one you would commit by accident, not on purpose.
+
+`ops-check.ps1` reports this item as MANUAL rather than TODO for that reason. A check that stays
+red for something you cannot do is a check you learn to ignore.

@@ -1,0 +1,46 @@
+#!/bin/sh
+# pre-push -- refuse a force-push or a deletion of main, locally.
+#
+# GitHub will not enforce a ruleset on a PRIVATE repository on this plan: the
+# Rulesets page says so itself ("your rulesets won't be enforced on this private
+# repository until you move to a GitHub Team organization account"). So the
+# protection that matters -- nobody rewrites or deletes the branch that IS the
+# deploy -- has to live where the push starts.
+#
+# This is NOT equivalent to server-side protection. It runs only on machines
+# where it is installed, and `git push --no-verify` walks straight past it. It
+# is worth having anyway: there is exactly one person pushing to this repo, and
+# the failure it prevents -- a rewritten main replacing what is deployed -- is
+# one you would commit by accident, not on purpose. A guard you can deliberately
+# step over still stops the accident, which is the whole class of incident here.
+#
+# Install:  cp scripts/ops/pre-push .git/hooks/pre-push
+#           chmod +x .git/hooks/pre-push
+#
+# Verified 2026-09-06 against a throwaway origin: a normal push is allowed, a
+# --force push is refused, and a branch delete is refused.
+
+ZERO=0000000000000000000000000000000000000000
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/main" ] || continue
+
+  if [ "$local_sha" = "$ZERO" ]; then
+    echo "pre-push: refusing to DELETE main." >&2
+    echo "  main is what production deploys from." >&2
+    exit 1
+  fi
+
+  # A first push has no remote sha to compare against.
+  [ "$remote_sha" = "$ZERO" ] && continue
+
+  if ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+    echo "pre-push: refusing a NON-FAST-FORWARD push to main." >&2
+    echo "  $remote_sha is not an ancestor of $local_sha, so this rewrites" >&2
+    echo "  history that is already deployed. If you really mean it, you" >&2
+    echo "  know how to pass --no-verify -- and now you have said so." >&2
+    exit 1
+  fi
+done
+
+exit 0

@@ -247,6 +247,60 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
     return out
 
 
+async def retire_strategy_rules(session: AsyncSession, user: User,
+                                strategy_id: str) -> list[dict]:
+    """Deactivate the standing rules a departing strategy armed.
+
+    `_arm_sleeve_caps` already retires the sleeve CAP for a ticker no sleeve
+    wants, and its docstring says why: a row removed without re-levelling leaves
+    a ceiling on a position now held for some other reason. The stop and the
+    take-profit had no such path -- not because anyone decided they should
+    survive, but because they could not be IDENTIFIED. `discipline_rules` emitted
+    them without a `strategy_id`, `apply` passes that field straight through, and
+    they landed in the database with NULL. Nothing could say which sleeve they
+    belonged to, so nothing could retire them. Fixed in the same PR that added
+    this (59.1); `signal_rules` already stamped its own.
+
+    OWNERSHIP IS MARKED, NOT ASSUMED -- the same rule `_arm_sleeve_caps` learned
+    the hard way. Only a rule stamped with THIS strategy id is touched. A stop
+    the user set by hand on the same ticker carries NULL and is none of our
+    business, and a rule armed by a DIFFERENT sleeve that happens to share the
+    ticker keeps its own owner's stamp.
+
+    RETIRED, NOT DELETED: `active = False`, history kept, so the Rules screen can
+    still show what was armed and when it stopped.
+
+    Rules armed BEFORE the stamp existed carry NULL and cannot be attributed
+    retroactively. They are not guessed at -- this returns them separately as
+    `unattributable` so the caller can name them rather than silently leaving
+    them armed or silently killing a rule the user set themselves.
+    """
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+
+    rows = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.active.is_(True)))).all()
+
+    retired, unattributable = [], []
+    wanted = set(sleeve_targets(strategy_id) or {})
+    for r in rows:
+        sid = r.strategy_id
+        if sid == strategy_id:
+            r.active = False
+            r.triggered = False
+            retired.append({"ticker": r.ticker, "rule_type": r.rule_type,
+                            "level": float(r.level or 0.0), "action": "retired"})
+        elif sid is None and (r.ticker or "").upper() in {t.upper() for t in wanted}:
+            # Predates the stamp, or hand-set. Named, never touched.
+            unattributable.append({"ticker": r.ticker, "rule_type": r.rule_type,
+                                   "level": float(r.level or 0.0),
+                                   "action": "left armed - no owner recorded"})
+    await session.flush()
+    return retired + unattributable
+
+
 async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                          sleeve_pct: float | None = None) -> dict:
     """Apply a strategy. For the rule-based family this ADDS a sleeve (C2).
@@ -381,10 +435,15 @@ async def retire_sleeve(session: AsyncSession, user: User, strategy_id: str) -> 
     removed = await sv.remove(session, user, strategy_id)
     if not removed.get("ok"):
         return removed
+    # Rules BEFORE caps: `_arm_sleeve_caps` commits, and a stop left armed by a
+    # commit that succeeded is exactly the ceiling-with-nothing-behind-it this
+    # function was written to prevent, one rule type over. PR 59.1.
+    rules = await retire_strategy_rules(session, user, strategy_id)
     caps = await _arm_sleeve_caps(session, user)
 
     return {**removed, "sleeve_caps": caps,
             "retired_caps": [c["ticker"] for c in caps if c["action"] == "retired"],
+            "retired_rules": rules,
             "broker_note": BROKER_NOTE}
 
 
@@ -455,10 +514,16 @@ async def swap_sleeve(session: AsyncSession, user: User, *,
         # keeps the reason `validate` gave rather than inventing a new one.
         return {**added, "swap_aborted": True, "from_id": from_id, "to_id": to_id}
 
+    # The departing strategy's standing rules go with it. Its stop and
+    # take-profit were sized from ITS measured volatility and drawdown; left
+    # armed after a swap they are levels derived from a rule the book no longer
+    # runs, sitting on a ticker no sleeve wants. PR 59.1.
+    rules = await retire_strategy_rules(session, user, from_id)
     caps = await _arm_sleeve_caps(session, user)
     after = await sv.list_sleeves(session, user)
     return {
         "ok": True, "swapped": True, "from_id": from_id, "to_id": to_id,
+        "retired_rules": rules,
         "sleeve_pct": pct,
         "from_tickers": sorted(sleeve_targets(from_id, pct)),
         "to_tickers": sorted(sleeve_targets(to_id, pct)),

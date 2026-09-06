@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-05 by Claude (PR 59 — B2: a rule can be retired without dropping the position)._
+_Last updated: 2026-09-06 by Claude (PR 59.1 — the rules a retired sleeve leaves behind)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 59.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 59.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -144,6 +144,62 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 59.1 — a retired sleeve left its stops behind, and nothing could tell they were its
+
+**Found on the live book, the day after PR 59 shipped.** The B2 swap ran and did what it claimed:
+33.09% moved from `btm_swing_dip` to `btm_qqq_hold`, nothing was bought or sold, the TQQQ
+`max_weight` cap went `active: False`, and the SOXL cap re-levelled 40.0 → 33.9 (correcting a stale
+hand-set value on the way). Then `/api/v1/rules` showed this:
+
+| ticker | rule | level | active | strategy_id |
+|---|---|---|---|---|
+| TQQQ | `max_weight` | 39.0 | **False** | `sleeve` |
+| TQQQ | `take_profit` | 41.0 | **True** | *(none)* |
+| TQQQ | `trailing_stop` | 20.0 | **True** | *(none)* |
+| TQQQ | `stop_loss` | 65.7 | **True** | *(none)* |
+
+**Root cause.** `_arm_sleeve_caps` retires a cap for a ticker no sleeve wants, and its own docstring
+says why — *"a row removed without re-levelling the caps leaves a ceiling on the book with nothing
+behind it"*. The stop and the take-profit had no equivalent path, and not because anyone decided
+they should outlive the sleeve: **they could not be identified.** `discipline_rules` emitted them
+with no `strategy_id`, the apply path passes that field straight through, and they landed in the
+database as NULL. Nothing could say which sleeve armed them, so nothing could retire them.
+`signal_rules` had stamped its own all along; only the discipline path did not.
+
+**The notes settled which was which** — attribution by evidence rather than by level arithmetic:
+
+| level | note | verdict |
+|---|---|---|
+| 41.0 | *"Swing: Dip-Buy in an Uptrend: bank a 41% gain…"* | the retired strategy's. Disarmed. |
+| 20.0 | *"From uptrend alert (protect gains, 20% trail)"* | an alert, not a sleeve. Kept. |
+| 65.7 | *"Caps downside ~15% below today's 77.30."* | the holdings suggester. Kept. |
+
+Two of the three had nothing to do with the sleeve, which is the case for refusing to guess:
+retiring "every active rule on a ticker no sleeve wants" would have disarmed both — and the book
+still **holds** TQQQ, so those two are protecting a live position.
+
+**What ships.** `discipline_rules` stamps `strategy_id`. `retire_strategy_rules` deactivates rules
+carrying the departing id, wired into **both** `swap_sleeve` and `retire_sleeve`, and running
+*before* `_arm_sleeve_caps` because that function commits. Ownership is **marked, not assumed** —
+the same lesson `_arm_sleeve_caps` records learning the hard way — so only a stamped rule is
+touched, and a rule with no owner on an affected ticker is **named and left alone**, returned as
+`left armed - no owner recorded`.
+
+**It cannot clean up rules armed before the stamp**, including the three above, and does not
+pretend to. Those carry NULL and guessing at them is the failure this PR is about.
+
+Also in: `scripts/ops/pre-push`, a hook that refuses a force-push or a deletion of `main` (verified
+against a throwaway origin: normal push allowed, `--force` refused, delete refused). It exists
+because **GitHub will not enforce a ruleset on a private repository on this plan** — the Rulesets
+page says so itself — so the two correct boxes were configured against a rule that would never
+fire. The hook is not equivalent: it runs only where installed and `--no-verify` walks past it. It
+stops the accident, which is the whole class of incident here.
+
+Gates: 1706 SQLite, 1706 PostgreSQL on a dropped and recreated database, ruff clean. Three of the
+three new assertions confirmed RED against the pre-fix tree.
 
 ---
 

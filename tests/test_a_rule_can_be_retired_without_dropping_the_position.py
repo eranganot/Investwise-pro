@@ -275,3 +275,120 @@ async def test_swapping_something_you_do_not_run_is_refused(own_session):
         out = await _with_user(own_session, _go)
 
     assert out["ok"] is False and "not a sleeve" in out["error"], out
+
+
+@pytest.mark.asyncio
+async def test_the_departing_strategys_standing_rules_go_with_it(own_session):
+    """PR 59.1. Found on Eran's live book, the day after PR 59 shipped.
+
+    `_arm_sleeve_caps` retires the sleeve CAP for a ticker no sleeve wants any
+    more -- its docstring says why, and the swap did it correctly: the TQQQ
+    `max_weight` went inactive. The stop and the take-profit stayed armed.
+
+    Not because anyone decided they should. Because they could not be
+    IDENTIFIED: `discipline_rules` emitted them with no `strategy_id`, `apply`
+    passes that field straight through, and they landed in the database with
+    NULL. Nothing could say which sleeve armed them, so nothing could retire
+    them. Observed live -- a 41.0 take-profit sitting on TQQQ, whose own note
+    read "Swing: Dip-Buy in an Uptrend: bank a 41% gain", armed against a
+    position no sleeve wanted any more.
+    """
+    from app.services import sleeve_service as sv
+    from app.services import strategy_catalog
+    from app.services.rules_service import create_rule, list_rules
+    from app.services.strategy_service import swap_sleeve
+
+    with TestClient(m.app) as c:
+        _seed(c)
+
+        async def _go(s, user):
+            await sv.add_or_resize(s, user, "btm_swing_dip", 36.05)
+            # Armed the way accepting the discipline card arms them.
+            measured = {"ok": True, "metrics": {"volatility_pct": 34.24,
+                                                "max_drawdown_pct": 40.55}}
+            for spec in strategy_catalog.discipline_rules("btm_swing_dip", measured):
+                await create_rule(s, user, ticker=spec["ticker"],
+                                  rule_type=spec["rule_type"], mode=spec["mode"],
+                                  level=spec["level"], note=spec.get("note"),
+                                  strategy_id=spec.get("strategy_id"))
+            # And one the user set themselves: no owner, same ticker.
+            await create_rule(s, user, ticker="TQQQ", rule_type="stop_loss",
+                              mode="pct", level=65.7, note="mine")
+            before = await list_rules(s, user)
+
+            out = await swap_sleeve(s, user, from_id="btm_swing_dip",
+                                    to_id="btm_qqq_hold")
+            after = await list_rules(s, user)
+            return out, before, after
+
+        out, before, after = await _with_user(own_session, _go)
+
+    armed_before = {(r["rule_type"], r["ticker"]) for r in before if r.get("active")}
+    assert ("take_profit", "TQQQ") in armed_before, before
+
+    still_armed = {(r["rule_type"], r["ticker"]) for r in after if r.get("active")}
+    assert ("take_profit", "TQQQ") not in still_armed, (
+        "the retired strategy's take-profit is still armed on a ticker no sleeve "
+        "wants. That is the ceiling-with-nothing-behind-it shape, one rule type "
+        "over from the cap that _arm_sleeve_caps already handles.")
+    assert ("trailing_stop", "TQQQ") not in still_armed, after
+
+    # MARKED, NOT ASSUMED. The hand-set stop shares the ticker and carries no
+    # owner; disarming it would be the app deleting a rule the user wrote.
+    assert ("stop_loss", "TQQQ") in still_armed, (
+        "a hand-set rule was retired. Only rules stamped with the departing "
+        "strategy may be touched -- the same lesson _arm_sleeve_caps learned.")
+
+    retired = [r for r in out["retired_rules"] if r["action"] == "retired"]
+    assert {r["rule_type"] for r in retired} == {"take_profit", "trailing_stop"}, out
+
+
+@pytest.mark.asyncio
+async def test_a_rule_with_no_owner_is_named_rather_than_guessed_at(own_session):
+    """Rules armed before the stamp existed cannot be attributed retroactively.
+
+    Eran's book had three on TQQQ, and their notes decided each one: a 41.0
+    take-profit reading "Swing: Dip-Buy in an Uptrend" (the retired strategy's),
+    a 20.0 trailing stop "From uptrend alert", and a 65.7 stop-loss "Caps
+    downside ~15% below today's 77.30" -- a level `discipline_rules` never
+    emits. Guessing would have disarmed two rules that had nothing to do with
+    the sleeve; saying nothing would have left the first armed. So they are
+    reported and left alone.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.rules_service import create_rule
+    from app.services.strategy_service import swap_sleeve
+
+    with TestClient(m.app) as c:
+        _seed(c)
+
+        async def _go(s, user):
+            await sv.add_or_resize(s, user, "btm_swing_dip", 36.05)
+            await create_rule(s, user, ticker="TQQQ", rule_type="take_profit",
+                              mode="pct", level=41.0, note="predates the stamp")
+            return await swap_sleeve(s, user, from_id="btm_swing_dip",
+                                     to_id="btm_qqq_hold")
+
+        out = await _with_user(own_session, _go)
+
+    orphans = [r for r in out["retired_rules"] if r["action"].startswith("left armed")]
+    assert [(r["ticker"], r["rule_type"]) for r in orphans] == [("TQQQ", "take_profit")], out
+
+
+def test_discipline_rules_carry_the_strategy_that_asked_for_them():
+    """The stamp itself. Its absence is the whole defect above.
+
+    `signal_rules` already carried one; only the discipline path did not, so
+    stops and take-profits were the only sleeve-armed rules that could not be
+    traced back to a sleeve.
+    """
+    from app.services import strategy_catalog
+
+    measured = {"ok": True, "metrics": {"volatility_pct": 34.24,
+                                        "max_drawdown_pct": 40.55}}
+    specs = strategy_catalog.discipline_rules("btm_swing_dip", measured)
+    assert specs, "no discipline rules to check"
+    for spec in specs:
+        assert spec.get("strategy_id") == "btm_swing_dip", (
+            f"{spec['rule_type']} on {spec['ticker']} carries no owner, so "
+            f"nothing can retire it when the sleeve goes: {spec}")

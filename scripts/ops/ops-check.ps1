@@ -47,8 +47,24 @@ Write-Host ''
 
 # ---------------------------------------------------------------- 1. branch
 Write-Host '1. branch protection on main' -ForegroundColor Cyan
+# NOT AVAILABLE ON THIS REPOSITORY, and reported as MANUAL rather than TODO for
+# that reason. GitHub's own Rulesets page says it: "your rulesets won't be
+# enforced on this private repository until you move to GitHub Team organization
+# account". Protected branches on a PRIVATE repo need a paid plan. A ruleset can
+# be created and will look armed; it will not fire.
+#
+# A check that stays red for something you cannot do is a check you learn to
+# ignore, and this one sat at the top of the list described as "two minutes".
+# The local hook is the thing that actually works today.
+$hookPath = Join-Path $Repo '.git\hooks\pre-push'
+if (Test-Path $hookPath) {
+  Item 'branch' 'main cannot be force-pushed or deleted' 'DONE' 'the pre-push hook is installed (GitHub rulesets do not enforce on a private repo on this plan)'
+} else {
+  Item 'branch' 'main cannot be force-pushed or deleted' 'MANUAL' 'GitHub will not enforce a ruleset on a private repo on this plan, and the local hook is not installed'  'cp scripts\ops\pre-push .git\hooks\pre-push  (then chmod +x in Git Bash). Or upgrade to GitHub Pro and configure Restrict deletions + Block force pushes - NOT require-a-PR, which would break every ship script.'
+}
+
 if (-not $env:GITHUB_TOKEN) {
-  Item 'branch' 'main is protected' 'UNKNOWN' 'no GITHUB_TOKEN in this shell, so the API cannot be asked'  'set $env:GITHUB_TOKEN, or check github.com/eranganot/Investwise-pro/settings/branches'
+  Item 'branch' 'github-side protection (informational)' 'UNKNOWN' 'no GITHUB_TOKEN in this shell, so the API cannot be asked'  'set $env:GITHUB_TOKEN if you want this checked; it cannot be enforced on this plan either way'
 } else {
   $h = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; 'User-Agent' = 'iw-ops-check';
           Accept = 'application/vnd.github+json' }
@@ -58,12 +74,12 @@ if (-not $env:GITHUB_TOKEN) {
     if ($p.required_pull_request_reviews) { $bits += 'PR review required' }
     if ($p.required_status_checks)        { $bits += 'status checks required' }
     if ($p.allow_force_pushes.enabled -eq $false) { $bits += 'force-push blocked' }
-    Item 'branch' 'main is protected' 'DONE' ($bits -join ', ')
+    Item 'branch' 'github-side protection (informational)' 'DONE' ($bits -join ', ')
   } catch {
     if ("$_" -match '404') {
-      Item 'branch' 'main is protected' 'TODO' 'the API says no protection rule exists'  'Settings > Branches > Add rule for main. Two minutes, zero risk, and the only ops item that prevents a class of incident rather than reducing an exposure.'
+      Item 'branch' 'github-side protection (informational)' 'MANUAL' 'no protection rule exists, and one would not be enforced on a private repo on this plan'  'see scripts\ops\OPS_RUNBOOK.md - the local pre-push hook is what works today; GitHub Pro is what makes a ruleset real.'
     } else {
-      Item 'branch' 'main is protected' 'UNKNOWN' "$_"
+      Item 'branch' 'github-side protection (informational)' 'UNKNOWN' "$_"
     }
   }
 }

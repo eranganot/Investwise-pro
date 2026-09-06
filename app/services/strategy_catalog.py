@@ -403,6 +403,15 @@ def discipline_rules(strategy_id: str, measured: dict | None = None) -> list[dic
     out = []
     for tk in aggressive:
         out.append({
+            # STAMPED WITH THE STRATEGY THAT ASKED FOR IT. These used to go out
+            # unattributed, and `apply` passes `strategy_id` straight through --
+            # so the rule landed in the database with NULL and nothing could
+            # ever tell which sleeve it belonged to. `_arm_sleeve_caps` retires
+            # a cap for a ticker no sleeve wants any more, precisely so a
+            # ceiling is not left behind a removed sleeve; the stop and the
+            # take-profit had no such path, because they could not be
+            # identified. PR 59.1.
+            "strategy_id": strategy_id,
             "ticker": tk, "rule_type": "trailing_stop", "mode": "pct", "level": trail,
             "note": (f"{entry['name']}: {trail:.0f}% trailing stop, ~1/3 of the "
                      f"strategy's measured {float(vol):.0f}% volatility"),
@@ -415,6 +424,7 @@ def discipline_rules(strategy_id: str, measured: dict | None = None) -> list[dic
         tp = max(20.0, min(80.0, round(float(vol) * 1.2)))
         for tk in aggressive:
             out.append({
+                "strategy_id": strategy_id,
                 "ticker": tk, "rule_type": "take_profit", "mode": "pct", "level": tp,
                 "note": (f"{entry['name']}: bank a {tp:.0f}% gain. This basket's "
                          f"measured worst drawdown is {float(dd):.0f}%, so a round "
