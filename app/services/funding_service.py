@@ -167,7 +167,8 @@ def targets_for(objective: str | None, book_target: dict | None = None) -> dict:
 
 def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                          exclude: set[str] | None = None,
-                         book_target: dict | None = None) -> list[dict]:
+                         book_target: dict | None = None,
+                         prefer: set[str] | None = None) -> list[dict]:
     """Holdings ranked by how poorly they fit the plan — worst fit sells first.
 
     Ordering is deliberate: sell what the plan says you're carrying too much of,
@@ -177,8 +178,25 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
     ``book_target`` is the sleeves-plus-core target; see `targets_for`. Without
     it this measures against the objective table, which on a book running sleeves
     is a different number and sometimes a different sign.
+
+    ``prefer`` NAMES THE POSITION THE TRADE IS ACTUALLY CONVERTING, and it ranks
+    ahead of everything.
+
+    This ordering is about fit and tax, which is right when funding a purchase
+    out of whatever the book can best spare. It is wrong when the purchase IS a
+    conversion of one specific holding: funding a QQQ sleeve out of a book
+    holding TQQQ, the ranking picked VTI ₪2,925 alongside TQQQ ₪4,145, because
+    Equities was the most overweight class and VTI carried the smaller gain. Both
+    sentences were true and the plan was still wrong — it sold core money doing
+    its job to start a sleeve whose funding was sitting right there in the
+    leveraged position the sleeve replaces. Measured on the live book, PR 61.1.
+
+    A preferred candidate is never dropped for scoring zero, and carries its own
+    reason, because "least-taxed position in the most overweight class" does not
+    describe why it was chosen.
     """
     exclude = {t.upper() for t in (exclude or set())}
+    prefer = {t.upper() for t in (prefer or set())} - exclude
     nav = snap.get("nav") or 0.0
     if not nav:
         return []
@@ -201,9 +219,19 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
         # triggers CGT. Prefer the tax-cheaper sale, all else being equal.
         tax_friendliness = 1.0 if gain_pct < 0 else max(0.0, 1.0 - min(gain_pct, 100.0) / 100.0)
         score = (name_over * 400.0) + (class_over * 100.0) + (tax_friendliness * 10.0)
-        if score <= 0:
+        preferred = p["ticker"] in prefer
+        if preferred:
+            # Above every fit-and-tax term by construction: name_over maxes out
+            # around 400 and class_over around 100, so this cannot be outranked
+            # by a book that happens to be very overweight somewhere else.
+            score += 10_000.0
+        elif score <= 0:
             continue
-        if name_over > 0:
+        if preferred:
+            reason = (f"{p['ticker']} is the position this move converts — the sleeve "
+                      f"you are funding is the index it was leveraging, so this is the "
+                      f"trade itself rather than a way to pay for it")
+        elif name_over > 0:
             reason = (f"{p['ticker']} is {p['weight']:.0%} of the book, above your "
                       f"{cap:.0%} single-name cap")
         else:
@@ -244,7 +272,7 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                           f"target and {p['ticker']} is among its least-taxed positions. "
                           f"Selling it does not move you closer to your plan")
         out.append({**p, "score": round(score, 2), "reason": reason,
-                    "asset_class": cls,
+                    "asset_class": cls, "preferred": preferred,
                     "gain_pct": round(gain_pct, 1),
                     "trimmable_ils": round(max(name_over, class_over) * nav, 2)})
     out.sort(key=lambda x: x["score"], reverse=True)
@@ -256,7 +284,8 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  exclude: set[str] | None = None,
                  reserved: dict | None = None, cash_used: float = 0.0,
                  buying_class: str | None = None,
-                 book_target: dict | None = None) -> dict:
+                 book_target: dict | None = None,
+                 prefer: set[str] | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
@@ -339,7 +368,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                                  for p in _position_rows(rows, snap))) >= MIN_TRADE_ILS
 
         for cand in rank_trim_candidates(rows, snap, objective, cap, exclude,
-                                         book_target=book_target):
+                                         book_target=book_target, prefer=prefer):
             if remaining_net < MIN_TRADE_ILS:
                 break
             price_ils = cand["price_ils"] or 0.0
@@ -348,7 +377,13 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             cls = cand.get("asset_class")
             name_allow = max(0.0, cand["weight"] - cap) * nav
             allow = max(name_allow, class_budget.get(cls, 0.0))
-            same_class = bool(buying_class) and cls == buying_class
+            # A preferred candidate is eligible on its own terms for the same
+            # reason `buying_class` is: a step-back swap converts one Equities
+            # position into another, so the class weight does not move and the
+            # overweight budget has nothing to protect. Without this the
+            # underweight-class `continue` below could drop the very position
+            # the trade is about.
+            same_class = (bool(buying_class) and cls == buying_class) or cand.get("preferred")
             if same_class:
                 # The proceeds buy this class back, so the class weight is
                 # unchanged and the overweight budget has nothing to protect.

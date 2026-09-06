@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-06 by Claude (PR 61 — the card that finishes the move, and the first rule for it was wrong)._
+_Last updated: 2026-09-06 by Claude (PR 61.1 — the card was right and the funding plan was wrong)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 61.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 61.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -142,8 +142,72 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **B1 — what `/plan` should show for volatility** | The app now states the gap honestly and asserts neither cause (PR 56). The real fix needs the backtest to STORE in-market volatility at nightly refresh, and any plan-vs-realised comparison to match windows first. | Someone wanting one number instead of two labelled ones. |
 | **Pixel QA — P0 safety batch** (`qa/QA-2026-08-10-p0-safety.md`) | 3 weeks old with **nineteen PRs shipped on top**, so its pre-flight notes describe an app that no longer exists. | A re-scope. Running it as written would test the wrong build; voiding it is a one-minute decision. |
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
+| **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 61.1 — the card was right and the funding plan was wrong
+
+Eran, minutes after PR 61 deployed: *"the second card is still guidance only and not
+actionable!!"*
+
+`/health` served `446ceaa`, so this was not a stale deploy. Asking production for the plan
+behind that card is the whole diagnosis:
+
+```
+SELL VTI   2,925.31  | cheapest way to raise it: Equities is the most overweight class
+                       (81% against an 80% target) and VTI is among its least-taxed positions
+SELL TQQQ  4,145.14  | ... and TQQQ is among its least-taxed positions
+from_cash    179.88
+```
+
+**The funder was not selling TQQQ alone.** VTI does not step back to QQQ, so PR 61's rule
+correctly refused — to do something that would have been wrong anyway: selling ₪2,925 of
+core money doing its job to start a sleeve whose funding was sitting in the leveraged
+position the sleeve replaces. The card was the messenger.
+
+**The defect is that funding is ranked on fit and tax.** That is the right question when
+paying for a purchase out of whatever the book can best spare, and the wrong one when the
+purchase IS a conversion. `rank_trim_candidates` scores `name_over × 400 + class_over × 100
++ tax_friendliness × 10`; with Equities barely over and TQQQ carrying the larger gain, VTI
+simply scores higher. Every sentence in those two reasons is true.
+
+**And my reproduction is what hid it.** PR 61's fixture put TQQQ at 59% of the book, which
+trips the 25% single-name cap, so `name_over` dominated and TQQQ was picked alone. The live
+plan runs `risk_tolerance: High` — `concentration_cap` **0.40** — and TQQQ sits at ~35%,
+*under* its cap. That one number is the difference between a ranking that picks the right
+leg by luck and one that does not. The new fixture pins the risk tolerance for exactly this
+reason, and reproduces the production legs to the shekel:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| funding legs | `VTI 3,420.00` + `TQQQ 3,884.37` | `TQQQ` only |
+| the card | guidance, `apply.kind: none` | actionable, `fund_sleeve` |
+
+**The fix is in the funder, not the card.** `rank_trim_candidates` and `plan_funding` gain
+`prefer`: a set of tickers that rank ahead of every fit-and-tax term (+10,000, where
+`name_over` maxes near 400), are never dropped for scoring zero, are eligible on their own
+terms for the same reason `buying_class` is — a step-back swap converts one Equities
+position into another, so the class weight does not move and the overweight budget has
+nothing to protect — and carry their own reason, because *"least-taxed position in the most
+overweight class"* does not describe why that position was chosen. `_fund_sleeve` fills the
+set with exactly the holdings for which `strategy_catalog.steps_back_to(held, sleeve_ticker)`
+holds.
+
+**One rule, two callers.** `steps_back_to` now decides both whether the card may act and
+which position the funder sells, so the card can no longer be offered a plan it has to
+refuse. Splitting that judgement across two functions is what produced this.
+
+Gates: 1723 SQLite, 1723 PostgreSQL on a dropped and recreated database, ruff clean. Both
+new tests confirmed RED against `446ceaa`.
+
+**The lesson worth keeping, and it is now three in a row.** PR 60.1 shipped a dead deferral
+because the test asserted the layer below the bug. PR 61's first rule was caught by an
+existing test, not mine. This one was caught by Eran, in production, because my fixture
+differed from his book in a single setting I never thought to copy. A reproduction is not a
+reproduction until the setting that decides the branch is in it.
 
 ---
 

@@ -231,3 +231,97 @@ def test_the_preview_never_writes():
     b = fs.index("_execute_funded_sleeve", a)
     assert "return" in fs[a:b], (
         "dry_run no longer returns before the executor; the preview would trade")
+
+
+# --------------------------------------------------------------------------- #
+# PR 61.1 -- the card was right and the FUNDING PLAN was wrong
+#
+# Eran, looking at Today after PR 61 deployed: "the second card is still guidance
+# only and not actionable!!"
+#
+# `/health` served 446ceaa, so PR 61 was live. Asking production for the plan
+# behind that card showed why it refused:
+#
+#     SELL VTI   2,925.31  | Equities is the most overweight class (81% vs 80%)
+#                            and VTI is among its least-taxed positions
+#     SELL TQQQ  4,145.14  | ... and TQQQ is among its least-taxed positions
+#     from_cash    179.88
+#
+# VTI does not step back to QQQ, so the card correctly declined -- to do something
+# that would have been wrong anyway: selling core money doing its job to start a
+# sleeve whose funding was sitting in the leveraged position the sleeve replaces.
+#
+# MY REPRODUCTION WAS THE FLAW. In the synthetic book above TQQQ is 59% of the
+# book and trips the 25% single-name cap, so the ranking picked it alone. On the
+# real book it is ~34% and the ranking falls through to class-overweight plus
+# tax, where VTI ranks cheaper. The card's rule was never tested against a book
+# where the funder had a choice.
+# --------------------------------------------------------------------------- #
+LIVE = [   # the live book's shape: Equities marginally over, VTI the least-taxed
+    ("SOXL", 7422.0, 0.20, "Equities"),
+    ("TQQQ", 7476.0, 0.30, "Equities"),
+    ("VTI",  3420.0, 0.05, "Equities"),
+    ("BND",  2337.0, 0.02, "Fixed Income"),
+]
+
+
+def _live_book(c):
+    positions = []
+    for tk, ils, gain, cls in LIVE:
+        px = ils / 100.0
+        positions.append({"ticker": tk, "market": "TASE", "asset_class": cls, "depth": 3,
+                          "spot_price": px, "listing_price": px, "quantity": 100.0,
+                          "cost_basis": px / (1.0 + gain),
+                          "expected_return_pct": 8, "volatility_pct": 20})
+    c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": positions})
+    c.post("/api/v1/portfolio/cash", json={"amount_ils": 619.0})
+    # THE RISK TOLERANCE IS PART OF THE REPRODUCTION, not decoration. Live: High,
+    # whose `concentration_cap` is 0.40 (`plan_service.RISK_CAPS`). TQQQ at ~35%
+    # of the book is UNDER that, so `name_over` is zero and the ranking falls
+    # through to class-overweight plus tax -- which is where VTI, carrying the
+    # smaller gain, outranks it. Under the Medium default (0.25) TQQQ trips its
+    # own cap and is picked first regardless, which is exactly why the first
+    # version of this file could not see the bug.
+    c.put("/api/v1/plan", json={"objective": "Grow", "risk_tolerance": "High",
+                                "cash_target_pct": 7.5})
+    c.post(f"/api/v1/strategies/{SOXL_TREND}/apply?sleeve_pct=33.91")
+    c.post(f"/api/v1/strategies/{QQQ_HOLD}/apply?sleeve_pct=33.09")
+
+
+def test_the_funder_sells_the_position_the_move_converts():
+    """TQQQ first, and VTI not at all.
+
+    The sleeve needs about 7,000 and TQQQ alone holds 7,476 of it. A plan that
+    reaches past it for core VTI is not cheaper, it is a different trade.
+    """
+    with TestClient(m.app) as c:
+        _live_book(c)
+        prev = c.post(f"/api/v1/strategies/{QQQ_HOLD}/load-basket",
+                      json={"mode": "fund", "dry_run": True}).json()
+        assert prev.get("ok"), prev
+        sells = {s["ticker"]: s["value_ils"] for s in prev["funding"]["sells"]}
+
+        assert "TQQQ" in sells, sells
+        assert "VTI" not in sells, (
+            f"the funder reached past TQQQ for core VTI: {sells}")
+        assert "BND" not in sells, sells
+        assert "SOXL" not in sells, "the other sleeve is not a piggy bank"
+        # And it says why it picked that one.
+        leg = [s for s in prev["funding"]["sells"] if s["ticker"] == "TQQQ"][0]
+        assert "converts" in leg["reason"], leg["reason"]
+
+
+def test_and_so_the_card_can_act_on_the_live_book():
+    """The two halves are one rule: `steps_back_to` decides both.
+
+    The card may act only on a plan whose every leg steps back to the sleeve, and
+    the funder now builds exactly that plan when the book allows it. Before this,
+    the card was offered a plan it had to refuse.
+    """
+    with TestClient(m.app) as c:
+        _live_book(c)
+        card = _cold_card(c)
+        assert card, "no cold-start card for the unfunded QQQ sleeve"
+        assert (card.get("apply") or {}).get("kind") == "fund_sleeve", (
+            f"still guidance on the live book's shape: {card.get('apply')}")
+        assert card["meta"]["from"] == ["TQQQ"], card["meta"]

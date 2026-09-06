@@ -688,9 +688,25 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     # move and there is nothing for the budget to protect. It is why a 64%
     # target sat at 15% held while funding abstained -- see plan_funding.
     buying_class = _buying_class([{"ticker": tk} for tk in targets])
+    # THE POSITION THIS MOVE CONVERTS, SOLD FIRST.
+    #
+    # Funding is ranked on fit and tax, which is the right question when paying
+    # for a purchase out of whatever the book can best spare, and the wrong one
+    # when the purchase IS a conversion. Live on 2026-09-06, funding a 33% QQQ
+    # sleeve on a book holding TQQQ: the ranking chose VTI 2,925 alongside TQQQ
+    # 4,145, because Equities was the most overweight class and VTI carried the
+    # smaller gain. Both true, and the plan still sold core money doing its job
+    # while the sleeve's funding sat in the leveraged position the sleeve
+    # replaces. `steps_back_to` is the same relationship the Today card uses to
+    # decide it may act in one tap -- one rule, two callers, so the card cannot
+    # be offered on a plan the funder would not build. PR 61.1.
+    from app.services import strategy_catalog as _cat
+    prefer = {tk for tk in held
+              if tk not in exclude
+              and any(_cat.steps_back_to(tk, want) for want in targets)}
     fund = plan_funding(rows, snap, plan, objective, cap, amount,
                         cash_ils=cash_ils, exclude=exclude,
-                        buying_class=buying_class)
+                        buying_class=buying_class, prefer=prefer)
 
     # Abstain rather than half-execute: a partially funded sleeve is a position
     # nobody chose, at a size nobody chose. Judged in points of NAV, not shekels
