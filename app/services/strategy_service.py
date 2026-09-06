@@ -195,10 +195,12 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
 
     sleeves = await sv.list_sleeves(session, user)
     targets = await sv.all_sleeve_targets(session, user)
+    _live = await sv.live_sleeve_targets(session, user)
     # Which sleeves want each ticker, so a summed cap can say where it came from.
     contributors: dict[str, list[str]] = {}
     for s in sleeves:
-        for tk in (sleeve_targets(s.strategy_id, s.sleeve_pct) or {}):
+        for tk in (sleeve_targets(s.strategy_id, s.sleeve_pct,
+                                  live=sv._live_for(_live, s.strategy_id)) or {}):
             contributors.setdefault(tk.upper(), []).append(s.strategy_id)
 
     existing = {(r.ticker or "").upper(): r for r in (await session.scalars(
@@ -284,7 +286,16 @@ async def retire_strategy_rules(session: AsyncSession, user: User,
                                   TradingRule.active.is_(True)))).all()
 
     retired, unattributable = [], []
-    wanted = set(sleeve_targets(strategy_id) or {})
+    # THE UNION OF BOTH LEGS, not today's. A sleeve arms caps while it runs, and
+    # since PR 63 the leg it targets follows its signal -- so a swing sleeve that
+    # has flipped once has armed a cap on the aggressive instrument AND on the
+    # base. Retiring it with only today's leg in hand would leave the other one
+    # armed with no owner, which is the exact failure PR 59.1 exists to prevent.
+    from app.services import sleeve_service as _sv_live
+    _sig = _sv_live._live_for(await _sv_live.live_sleeve_targets(session, user),
+                              strategy_id)
+    wanted = set(sleeve_targets(strategy_id) or {}) | set(
+        sleeve_targets(strategy_id, live=_sig) or {})
     for r in rows:
         sid = r.strategy_id
         if sid == strategy_id:
@@ -521,12 +532,18 @@ async def swap_sleeve(session: AsyncSession, user: User, *,
     rules = await retire_strategy_rules(session, user, from_id)
     caps = await _arm_sleeve_caps(session, user)
     after = await sv.list_sleeves(session, user)
+    _live_sw = await sv.live_sleeve_targets(session, user)
+    _live_from = sv._live_for(_live_sw, from_id)
+    _live_to = sv._live_for(_live_sw, to_id)
     return {
         "ok": True, "swapped": True, "from_id": from_id, "to_id": to_id,
         "retired_rules": rules,
         "sleeve_pct": pct,
-        "from_tickers": sorted(sleeve_targets(from_id, pct)),
-        "to_tickers": sorted(sleeve_targets(to_id, pct)),
+        # What each sleeve actually targets, signal included -- the swap note is
+        # read as "you held these, you now hold those", and the catalogue's
+        # static leg is not what a swing sleeve was holding if its rule was off.
+        "from_tickers": sorted(sleeve_targets(from_id, pct, live=_live_from)),
+        "to_tickers": sorted(sleeve_targets(to_id, pct, live=_live_to)),
         "sleeve_caps": caps,
         "retired_caps": [c["ticker"] for c in caps if c["action"] == "retired"],
         "allocated_pct": sv.total_pct(after), "core_pct": sv.remainder_pct(after),
@@ -537,25 +554,59 @@ async def swap_sleeve(session: AsyncSession, user: User, *,
 # --------------------------------------------------------------------------- #
 # Which tickers ARE the sleeve
 # --------------------------------------------------------------------------- #
-def sleeve_targets(strategy_id: str, sleeve_pct: float | None = None) -> dict[str, float]:
+def sleeve_targets(strategy_id: str, sleeve_pct: float | None = None,
+                   *, live: dict | None = None) -> dict[str, float]:
     """Target weight of NAV per ticker for the part that must actually be bought.
 
     For a rule-based strategy the sleeve is the *aggressive* leg — the core
     (``base``) is what the rest of the book already is, so funding it would mean
     selling your holdings to buy an index fund you never asked for. For a static
     basket every leg is the target, because there the basket IS the portfolio.
+
+    ``live`` IS WHAT THE RULE CURRENTLY WANTS, AND IT WINS.
+
+    Eran, 2026-09-06, on a swing sleeve sitting in TQQQ while its rule said to
+    step back: *"the swing should be a card that replace the TQQQ with QQQ
+    automatically."* Until now this function could not express that. It read the
+    catalogue's STATIC weights, so a sleeve's target was the aggressive
+    instrument on every day of the year — including the ~85% of days
+    ``btm_swing_dip`` is out of its setup. The Plan tab, every drift card, the
+    funding engine and the armed caps all described a position the rule was not
+    asking for, and nothing in the app could tell the difference between "the
+    rule wants TQQQ" and "the rule has never been consulted".
+
+    So when a stored signal exists, its target replaces the catalogue's leg
+    outright — including when that target IS the base. The docstring above says
+    funding the base means "buying an index fund you never asked for"; that is
+    true of the catalogue default and false here, because you asked for it by
+    choosing a strategy whose spec says the money sits in the base between
+    setups. ``strategy_catalog`` says so in its own words: *"``base`` is the core
+    holding, not cash. A swing setup is live perhaps 10-15% of the time."*
+
+    Pure and synchronous on purpose. The stored signal is loaded once per request
+    by ``sleeve_service.live_sleeve_targets`` and passed down, rather than making
+    this async and dragging a session through ``card_scope.scope_for`` — which is
+    documented as pure "so the mapping is testable without a book".
+
+    Falls back to the catalogue when there is no stored signal. It does NOT fall
+    back on a STALE one: see ``live_sleeve_targets`` for why reverting to the
+    catalogue is the dangerous direction.
     """
     entry = strategy_catalog.get(strategy_id)
     if entry is not None:
-        weights = entry.get("weights") or {}
-        base = entry.get("base") or {}
-        aggressive = {tk: w for tk, w in weights.items() if tk not in base}
-        if not aggressive:                       # nothing to fund beyond the core
-            return {}
         pct = sleeve_pct if sleeve_pct is not None else entry.get("sleeve_pct")
         frac = 1.0 if pct is None else max(0.0, min(1.0, float(pct) / 100.0))
-        total_w = sum(aggressive.values()) or 1.0
-        return {tk: (w / total_w) * frac for tk, w in aggressive.items()}
+
+        want = {str(tk).upper(): float(w)
+                for tk, w in (live or {}).items() if float(w or 0) > 0}
+        if not want:
+            weights = entry.get("weights") or {}
+            base = entry.get("base") or {}
+            want = {tk: float(w) for tk, w in weights.items() if tk not in base}
+        if not want:                             # nothing to fund beyond the core
+            return {}
+        total_w = sum(want.values()) or 1.0
+        return {tk: (w / total_w) * frac for tk, w in want.items()}
     s = cat.get(strategy_id)
     if not s:
         return {}
@@ -646,7 +697,11 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,
                        *, total: float | None, sleeve_pct: float | None,
                        dry_run: bool) -> dict:
-    targets = sleeve_targets(strategy_id, sleeve_pct)
+    from app.services import sleeve_service as _sv_sig
+    targets = sleeve_targets(
+        strategy_id, sleeve_pct,
+        live=_sv_sig._live_for(await _sv_sig.live_sleeve_targets(session, user),
+                               strategy_id))
     if not targets:
         return {"ok": False, "mode": FUND, "strategy_id": strategy_id,
                 "error": "this strategy has no sleeve to fund — its basket is the core itself"}
@@ -803,9 +858,12 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
     # NOT named `_buying_class`: that is already the module-level alias for
     # `buying_class_of`, and shadowing it here made every later call in this
     # function a "str object is not callable" -- 18 tests, one letter apart.
+    _live_caps = await sv.live_sleeve_targets(session, user)
     _all_targets: dict[str, float] = {}
     for _s in sleeves:
-        for _tk, _w in (sleeve_targets(_s.strategy_id, _s.sleeve_pct) or {}).items():
+        for _tk, _w in (sleeve_targets(_s.strategy_id, _s.sleeve_pct,
+                                       live=sv._live_for(_live_caps, _s.strategy_id))
+                        or {}).items():
             _all_targets[_tk.upper()] = _all_targets.get(_tk.upper(), 0.0) + float(_w)
     _sleeve_class = _buying_class([{"ticker": tk} for tk in _all_targets])
 
@@ -824,7 +882,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
     for row in ordered:
         sid = row.strategy_id
         pct = float(row.sleeve_pct or 0.0)
-        targets = sleeve_targets(sid, pct)
+        targets = sleeve_targets(sid, pct, live=sv._live_for(_live_caps, sid))
         entry = {"strategy_id": sid, "sleeve_pct": pct,
                  "name": (strategy_catalog.get(sid) or {}).get("name", sid)}
         if not targets:

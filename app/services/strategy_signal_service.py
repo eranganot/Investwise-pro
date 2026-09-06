@@ -285,19 +285,38 @@ async def _pending_one(session: AsyncSession, user: User, sid: str) -> list[dict
         "why": entry.get("rule") or strategy_catalog.rule_summary(entry),
         "impact": ("This is the discipline you chose firing. Acting late is the main "
                    "reason a rule underperforms its own backtest."),
-        # Guidance, deliberately. The first version carried
+        # STILL GUIDANCE, AND THE REASON HAS CHANGED. The first version carried
         # {"kind": "set_plan", "strategy": sid}, but that handler reads
         # spec["fields"] -- so Accept would have called upsert_plan() with
         # nothing, changed no holding, and still reported success. Claiming an
         # edit that did not happen is the exact failure the actionable/guidance
-        # split was introduced to kill. Moving a sleeve honestly means sizing
-        # and funding real trades; until that exists this card says what to do
-        # and admits the app is not doing it.
+        # split was introduced to kill.
+        #
+        # The old comment went on: "Moving a sleeve honestly means sizing and
+        # funding real trades; until that exists this card says what to do and
+        # admits the app is not doing it." SINCE PR 63 THAT EXISTS. The sleeve's
+        # target follows this signal, so the drift and cold-start cards size the
+        # move against the leg the rule now wants, and PR 61's `steps_back_to`
+        # rule lets Accept perform it in one tap when the money comes from the
+        # instrument being stepped back from.
+        #
+        # This card stays guidance because it is the NEWS, not the trade -- one
+        # card announcing a flip and another performing it is the honest split.
+        #
+        # THE "not moving anything for you" LINE STAYS, and I nearly removed it.
+        # It reads as stale once the target follows the signal, so the first
+        # version of this change replaced it -- and two existing tests caught
+        # that, because the sentence is still true OF THIS CARD: nothing moves
+        # until something is tapped, and no brokerage order is ever placed. What
+        # was missing is not a correction but a pointer, so the pointer is added
+        # and the promise is kept.
         "apply": {"kind": "none", "strategy": sid},
         "how": [
             f"Signal derived from closes up to {row.as_of}.",
             "The app is not moving anything for you — place the change at your broker "
             "and mirror it in Holdings.",
+            "Your sleeve's target has already moved to match, so the funding card on "
+            "Today can size and apply the tracked-book side in one tap.",
             "Mark as done once you have acted; Ignore records that you declined.",
         ],
     }]

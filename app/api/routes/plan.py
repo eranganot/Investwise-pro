@@ -263,6 +263,16 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
         _sleeves.append({**d, "held_pct": o.get("held_pct"),
                          "held_ils": o.get("held_ils"),
                          "gap_pct": o.get("gap_pct"),
+                         # WHICH LEG, AND WHEN IT WAS DECIDED. Since PR 63
+                         # `tickers` follows the rule's stored signal rather than
+                         # the catalogue's static weights, so a screen showing
+                         # QQQ where the catalogue says TQQQ must be able to say
+                         # why. Without these two the payload cannot distinguish
+                         # "the rule stepped back on 09-05" from a default nobody
+                         # produced -- which is the distinction PR 63 exists to
+                         # make possible.
+                         "following_signal": o.get("following_signal"),
+                         "signal_as_of": o.get("signal_as_of"),
                          "tickers": o.get("tickers")})
     return {
         "sleeves": _sleeves,

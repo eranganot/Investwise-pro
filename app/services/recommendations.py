@@ -1992,10 +1992,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # is the P1 duplicate-cap bug in card form, which is why the caps are
         # summed too -- same primitive, same reason.
         _targets = await _sv.all_sleeve_targets(session, user)
+        # The leg each rule currently wants -- one read, shared with the loop
+        # below, so the card and `all_sleeve_targets` cannot disagree about
+        # which instrument a sleeve is asking for. PR 63.
+        _live_sig = await _sv.live_sleeve_targets(session, user)
         # Which sleeves want each ticker, so Accept can route to the right place.
         _wanted_by: dict[str, list[str]] = {}
         for _s in await _sv.list_sleeves(session, user):
-            for _t in (sleeve_targets(_s.strategy_id, _s.sleeve_pct) or {}):
+            for _t in (sleeve_targets(_s.strategy_id, _s.sleeve_pct,
+                                      live=_sv._live_for(_live_sig, _s.strategy_id)) or {}):
                 _wanted_by.setdefault(_t.upper(), []).append(_s.strategy_id)
         if _targets and nav:
             _weights = snap.get("exposure_ticker") or {}

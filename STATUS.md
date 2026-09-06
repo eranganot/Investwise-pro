@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 62.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 63.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -145,6 +145,87 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 63 — a sleeve's target was the catalogue's, on every day of the year
+
+Eran, 2026-09-06: *"the swing should be a card that replace the TQQQ with QQQ automatically"*, and
+on the design fork: *"I agree (a) is right."*
+
+`sleeve_targets` read the catalogue's static `weights` minus `base` and stopped there. So
+`btm_swing_dip` targeted **TQQQ** whether or not its rule was in a setup — including the ~85% of
+the year it is not. The catalogue's own docstring says what that means: *"`base` is the core
+holding, not cash. A swing setup is live perhaps 10-15% of the time."* For most of the year the
+Plan tab, every drift card, the funding engine and the armed caps described a position the rule
+was not asking for, and **nothing in the app could tell "the rule wants TQQQ" apart from "the rule
+has never been consulted"**.
+
+### The fork, and why (a)
+
+| | when the rule is off | on Eran's book |
+|---|---|---|
+| **(a) — chosen** | the sleeve targets its **base** | TQQQ → QQQ |
+| (b) | the sleeve targets nothing; the money returns to the core | TQQQ → VTI + BND |
+
+(b) is cheaper and reads well — *"capital sits in the core between setups"* is the catalogue's own
+phrase — but his core is Classic 60/40, so it would sell the position into bonds. The strategy
+says the money parks in QQQ; (b) parks it somewhere else.
+
+**(a) overturns a docstring, and the overturned sentence is worth keeping in view.**
+`sleeve_targets` said funding the base would mean *"selling your holdings to buy an index fund you
+never asked for"*. True of the catalogue default; false here. You asked for it by choosing a
+strategy whose spec parks the money in the base between setups.
+
+### One read, passed down
+
+`sleeve_service.live_sleeve_targets` loads the stored `StrategySignalState` once per request and
+hands it to the still-pure, still-synchronous `sleeve_targets(..., live=...)`. The alternative —
+making that function async — drags a session through `card_scope.scope_for`, which is documented as
+pure *"so the mapping is testable without a book"*.
+
+Threaded through every consumer, because a primitive that means one thing in six places and
+another in a seventh is how PR 60 got two cards wanting the same ₪7,476: `all_sleeve_targets`,
+`sleeve_occupancy`, `_fund_sleeve`, `_arm_sleeve_caps`, `sleeve_cap_plan`, `swap_sleeve`,
+`card_scope` and the Today drift loop. `strategy.py`'s apply-preview keeps the catalogue — it
+previews a strategy that is not applied yet, so there is no signal to follow.
+
+`retire_strategy_rules` now takes the **union** of both legs. A sleeve that has flipped once has
+armed a cap on the aggressive instrument *and* on the base; retiring it with only today's leg in
+hand would leave the other armed with no owner, which is the exact failure PR 59.1 exists to
+prevent.
+
+### No staleness gate, deliberately
+
+The obvious guard — ignore a target older than N days, fall back to the catalogue — **fails in the
+dangerous direction**. The catalogue default is always the leveraged leg, so a dead evaluator would
+turn *"the rule says hold QQQ"* back into *"the sleeve wants TQQQ"*, and the app would recommend
+its way into a 3x fund on the strength of no signal at all. The last thing the rule actually said
+is strictly more informative than a default asserting a signal nobody produced. The age travels
+with the answer instead: `/plan/sleeves` now carries `following_signal` and `signal_as_of` per
+sleeve, so a stale evaluation is visible rather than silently overruled.
+
+### The card that nearly told a lie, and the test that stopped it
+
+The pending-signal card said *"The app is not moving anything for you — place the change at your
+broker and mirror it in Holdings."* With the target now following the signal that reads as stale,
+so the first version of this change replaced the line. **Two existing tests failed**
+(`test_the_signal_card_does_not_claim_the_app_will_act` and
+`test_a_pending_flip_becomes_one_card_that_says_no_order_is_placed`) and they were right: the
+sentence is still true *of that card*. Nothing moves until something is tapped and no brokerage
+order is ever placed. What was missing was not a correction but a pointer, so the promise is kept
+and a line is added saying the funding card on Today can now size and apply the tracked-book side.
+
+### What it adds up to
+
+Once the sleeve targets QQQ and holds none of it, TQQQ is a position no sleeve claims — and PR 61's
+`steps_back_to` rule makes selling it to buy QQQ actionable in one tap, funded from that exact
+position by PR 61.1. The three PRs are one behaviour: **the rule steps back, the target follows,
+and the card finishes the move.**
+
+`tests/test_the_sleeve_holds_what_the_rule_wants.py` — 10 tests, 8 confirmed RED against `6dc3c8d`.
+
+Gates: 1742 SQLite, 1742 PostgreSQL on a dropped and recreated database, ruff clean.
 
 ---
 

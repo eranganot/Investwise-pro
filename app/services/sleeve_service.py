@@ -155,6 +155,47 @@ def validate(sleeves, *, strategy_id: str, sleeve_pct: float,
 # --------------------------------------------------------------------------- #
 # What the sleeves collectively want to hold
 # --------------------------------------------------------------------------- #
+async def live_sleeve_targets(session: AsyncSession, user: User) -> dict[str, dict]:
+    """strategy_id -> the target its rule currently wants, from the stored signal.
+
+    One read per request, passed down to the pure ``sleeve_targets`` rather than
+    making that function async. Everything that asks "what does this sleeve want
+    to hold" then gets the same answer, which is the whole point: before PR 63
+    the Plan tab, the drift cards, the funding engine and the armed caps all read
+    the catalogue's static weights, and so all described the aggressive
+    instrument on every day of the year -- including the ~85% of days a swing
+    rule is out of its setup.
+
+    NO STALENESS GATE, and that is a decision rather than an omission. The
+    obvious guard -- ignore a target older than N days, fall back to the
+    catalogue -- fails in the dangerous direction: the catalogue default is
+    always the LEVERAGED leg, so a dead evaluator would quietly turn "the rule
+    says hold QQQ" back into "the sleeve wants TQQQ", and the app would start
+    recommending its way into a 3x fund on the strength of no signal at all. The
+    last thing the rule actually said is strictly more informative than a default
+    that asserts a signal nobody produced. The age travels with the answer
+    instead -- ``sleeve_occupancy`` reports ``signal_as_of`` -- so a stale
+    evaluation is visible rather than silently overruled.
+
+    ``strategy_signal_service.evaluate`` already refuses to STORE a target
+    derived from closes more than ``MAX_FEED_AGE_DAYS`` old, so nothing here can
+    be built on a stale price. What can go stale is the evaluation itself, and
+    that is exactly what ``as_of`` says.
+    """
+    from app.models.tables import StrategySignalState
+
+    rows = (await session.execute(
+        select(StrategySignalState).where(StrategySignalState.subject == user.email)
+    )).scalars().all()
+    return {r.strategy_id: {"target": dict(r.target or {}), "as_of": r.as_of or ""}
+            for r in rows}
+
+
+def _live_for(live: dict | None, strategy_id: str) -> dict | None:
+    """The stored target for one sleeve, or None. Keeps the call sites one line."""
+    return ((live or {}).get(strategy_id) or {}).get("target") or None
+
+
 async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, float]:
     """Every sleeve's target weights, SUMMED PER TICKER across the whole book.
 
@@ -175,9 +216,11 @@ async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, flo
     # a pure catalog lookup with no session of its own.
     from app.services.strategy_service import sleeve_targets
 
+    live = await live_sleeve_targets(session, user)
     out: dict[str, float] = {}
     for s in await list_sleeves(session, user):
-        for tk, w in (sleeve_targets(s.strategy_id, s.sleeve_pct) or {}).items():
+        for tk, w in (sleeve_targets(s.strategy_id, s.sleeve_pct,
+                                     live=_live_for(live, s.strategy_id)) or {}).items():
             tk = tk.upper()
             out[tk] = out.get(tk, 0.0) + float(w)
     return out
@@ -217,10 +260,13 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
     held = _held_ils(rows, snap)
 
     sleeves = await list_sleeves(session, user)
+    live = await live_sleeve_targets(session, user)
     out = []
     counted: set[str] = set()
     for s in sleeves:
-        targets = sleeve_targets(s.strategy_id, s.sleeve_pct) or {}
+        _sig = (live or {}).get(s.strategy_id) or {}
+        targets = sleeve_targets(s.strategy_id, s.sleeve_pct,
+                                 live=_live_for(live, s.strategy_id)) or {}
         held_ils = sum(held.get(tk.upper(), 0.0) for tk in targets)
         counted |= {tk.upper() for tk in targets}
         target_pct = round(float(s.sleeve_pct or 0.0), 4)
@@ -228,6 +274,14 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
         out.append({
             "strategy_id": s.strategy_id,
             "target_pct": target_pct,
+            # WHICH LEG, AND HOW OLD THE ANSWER IS. `tickers` below now follows
+            # the rule rather than the catalogue, so the screen must be able to
+            # say whether that came from a signal and when it was taken --
+            # otherwise "your sleeve holds QQQ" is indistinguishable from a
+            # default nobody produced. See `live_sleeve_targets` on why there is
+            # no staleness gate.
+            "following_signal": bool(_sig.get("target")),
+            "signal_as_of": _sig.get("as_of") or None,
             "held_ils": round(held_ils, 2),
             "held_pct": held_pct,
             # BOTH SIDES IN PERCENT. This read `target_pct - held_pct`, and

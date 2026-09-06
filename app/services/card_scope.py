@@ -160,6 +160,10 @@ async def annotate(session, user, recs: list[dict]) -> list[dict]:
 
     from app.services.strategy_service import sleeve_targets
 
+    # The LEG the rule currently wants, so a card about QQQ on a swing sleeve is
+    # scoped to that sleeve rather than flattened to "book".
+    _live = await sv.live_sleeve_targets(session, user)
+
     ticker_owner: dict[str, str] = {}
     sleeve_names: dict[str, str] = {}
     sleeve_pcts: dict[str, float] = {}
@@ -169,7 +173,8 @@ async def annotate(session, user, recs: list[dict]) -> list[dict]:
         sleeve_pcts[s.strategy_id] = float(s.sleeve_pct or 0.0)
         entry = scat.get(s.strategy_id)
         sleeve_names[s.strategy_id] = (entry or {}).get("name") or s.strategy_id
-        for tk in (sleeve_targets(s.strategy_id, s.sleeve_pct) or {}):
+        for tk in (sleeve_targets(s.strategy_id, s.sleeve_pct,
+                                  live=sv._live_for(_live, s.strategy_id)) or {}):
             # First sleeve to claim a ticker owns it for labelling purposes.
             # Two sleeves sharing a ticker is legal and `all_sleeve_targets`
             # sums them; for a LABEL there is no honest way to name both, so
