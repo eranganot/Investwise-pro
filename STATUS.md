@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 63.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 64.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -145,6 +145,80 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 64 — the cash target became soft, and the floor became a number
+
+Eran, 2026-09-06:
+
+> *"it should be a soft target. meaning if there is a good/valueble/interesting holding that I must
+> buy you can use the cash to do it --> but if you recommend me to use my cash for this investment
+> you should explain why I should go below the 7.5%. the hard minimum cash I should hold is 150"*
+
+**This reverses a decision the code stated outright**, and the reversed argument is kept in the file
+rather than deleted. `cash_floor_pct`'s docstring said:
+
+> *"THE FLOOR IS THE TARGET, and that is the point rather than a shortcut. A reserve the machine is
+> allowed to nibble into is not a reserve: on the live book, `Grow` floors cash at 3% and the balance
+> sat at 2.92%, so the app had already spent the reserve down to its own limit and nothing on any
+> screen called that a decision."*
+
+That was written against a real failure and the failure has not gone away — which is exactly why the
+change is narrow rather than a repeal.
+
+### Two numbers where there was one
+
+| | value | who may cross it |
+|---|---|---|
+| **target** | `plans.cash_target_pct` = 7.5% (or the objective table) | nobody routine — every ordinary card still stops here, unchanged |
+| **hard floor** | **₪150**, absolute | nothing, ever |
+
+`CASH_HARD_FLOOR_ILS` is in shekels rather than a share of NAV on purpose: a percentage scales with
+the book, which is right for a target and wrong for a floor. `cash_soft_floor_ils` takes the **max**
+of the two, because on a small book 7.5% can be under ₪150 and a percentage must not quietly
+overrule an absolute.
+
+### The reason is a precondition, not a convention
+
+`plan_funding(..., allow_reserve=True)` is **refused without a non-empty `reserve_reason`**. Same
+shape as `describe_funding`'s required `buying_class`, and for the same reason recorded there: *"a
+missing argument is now a TypeError at the call site instead of a missing sentence in production
+prose."* A boolean on its own would let a future call site opt in and forget to explain, which is the
+whole of what Eran asked for.
+
+The card then says it in four parts — how much of the reserve, where cash lands against the target,
+that the floor is untouched, and his own why:
+
+> *"This spends ₪850 of your cash reserve, taking cash to 1.3% against your 7.5% target (₪150 left,
+> hard floor ₪150 untouched). Worth it because TSEM ranks 88/100 on the Grow screen — strong
+> momentum; cheap on earnings, and nothing in the book was overweight enough to trim for it."*
+
+`reserve_reason` is cleared on the payload unless the reserve was actually spent, so the sentence
+cannot be printed with nothing behind it.
+
+### The bar is structural, not a score threshold
+
+The obvious design — let a buy idea above score N reach the reserve — needs a number, and **any
+number here is one I invented for someone else's money**. Instead the buy-idea card plans the
+ordinary way first and retries against the reserve only when trims and spendable cash could not pay
+for the purchase **at all**. The app never decides a name is worth the reserve; it puts the score,
+the ranking reasons and the resulting cash percentage on the card and Eran taps or does not.
+
+Bounded by two things already in place: `_MAX_BUY_IDEA_CARDS = 2`, and the funding ledger's
+`cash_used`, so two cards in one build cannot each plan against the same reserve.
+
+### Debt, named rather than left implicit
+
+`cash_floor_pct` / `cash_floor_ils` now return the **target**, and their names say floor. They are
+payload keys the UI reads, so renaming the concept end to end is a separate change. The docstring
+says what the function means today and quotes what it used to mean; the rename is the outstanding
+part.
+
+`tests/test_the_cash_target_is_soft_and_the_floor_is_not.py` — 12 tests, 8 confirmed RED against
+`6dc3c8d`.
+
+Gates: 1754 SQLite, 1754 PostgreSQL on a dropped and recreated database, ruff clean.
 
 ---
 

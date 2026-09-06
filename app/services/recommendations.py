@@ -3356,21 +3356,51 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
         cls = idea.get("sector_class") or classify(tk, None, idea.get("asset_class"))
         if not cls:
             continue
-        buy = _fund.propose_funded_buy(
-            rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
-            ticker=tk, buying_class=cls, cash_ils=cash_ils,
-            exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
-            ledger=ledger, book_target=book_target)
-        if buy is None:
-            # Not a failure and not worth logging as one. The plan does not want
-            # this purchase right now, and the honest response is silence.
-            continue
-
         name = str(idea.get("name") or "").strip()
         label = f"{tk} ({name})" if name and name != tk else tk
         reasons = [str(r) for r in (idea.get("reasons") or [])][:3]
         gaps = [str(g) for g in (idea.get("data_gaps") or [])]
         score = idea.get("score")
+
+        buy = _fund.propose_funded_buy(
+            rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+            ticker=tk, buying_class=cls, cash_ils=cash_ils,
+            exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
+            ledger=ledger, book_target=book_target)
+
+        # THE RESERVE IS A LAST RESORT, NOT A FIRST ONE. Eran, 2026-09-06: the
+        # cash target is soft, "if there is a good/valueble/interesting holding
+        # that I must buy you can use the cash to do it".
+        #
+        # The bar is deliberately NOT a score threshold. Any number I picked
+        # would be one I invented for someone else's money, and the old
+        # `cash_floor_pct` docstring already records what happens when the
+        # reserve becomes routinely spendable -- the book sat at 2.92% against
+        # its own 3% limit and no screen called that a decision. So the rule is
+        # structural instead: try the ordinary plan first, and reach for the
+        # reserve only when trims and spendable cash could not pay for it at
+        # all. The app never decides the name is worth the reserve; it puts the
+        # score, the ranking reasons and the resulting cash percentage on the
+        # card and Eran taps or does not.
+        #
+        # The ledger carries `cash_used` across cards in one build, so two ideas
+        # cannot each plan against the same reserve.
+        if buy is None and cash_ils > _fund.CASH_HARD_FLOOR_ILS:
+            _why = (f"{tk} ranks {('%.0f' % float(score)) if score is not None else 'well'}"
+                    f"/100 on the {objective or 'Balanced'} screen"
+                    + (f" — {'; '.join(reasons).lower()}" if reasons else "")
+                    + ", and nothing in the book was overweight enough to trim for it")
+            buy = _fund.propose_funded_buy(
+                rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
+                ticker=tk, buying_class=cls, cash_ils=cash_ils,
+                exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
+                ledger=ledger, book_target=book_target,
+                allow_reserve=True, reserve_reason=_why)
+
+        if buy is None:
+            # Not a failure and not worth logging as one. The plan does not want
+            # this purchase right now, and the honest response is silence.
+            continue
 
         why = f"It ranks {('%.0f' % float(score)) if score is not None else 'well'}/100 on the "
         why += f"{objective or 'Balanced'} screen of the candidate universe"

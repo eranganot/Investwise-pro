@@ -34,19 +34,48 @@ _DEFAULT_FLOOR = 0.05
 # Don't propose a trade too small to be worth the friction.
 MIN_TRADE_ILS = 250.0
 
+# THE LINE NOTHING MAY CROSS, in shekels rather than a share of NAV.
+#
+# Eran, 2026-09-06: *"it should be a soft target... the hard minimum cash I
+# should hold is 150."* A percentage floor scales with the book, which is right
+# for a TARGET and wrong for a floor: the point of a hard minimum is that it
+# does not move when the market does. 150 is his number, absolute, and it wins
+# over the percentage whenever the percentage is smaller.
+CASH_HARD_FLOOR_ILS = 150.0
+
 
 def cash_floor_pct(objective: str | None, plan=None) -> float:
-    """The share of NAV that automatic funding may not spend below. A FRACTION.
+    """The book's cash TARGET, as a share of NAV. A FRACTION.
 
-    THE FLOOR IS THE TARGET, and that is the point rather than a shortcut. A
-    reserve the machine is allowed to nibble into is not a reserve: on the live
-    book, `Grow` floors cash at 3% and the balance sat at 2.92%, so the app had
-    already spent the reserve down to its own limit and nothing on any screen
-    called that a decision. Setting `plans.cash_target_pct` to 7.5 means the
-    book is managed TOWARD 7.5% cash and routine cards may not fund themselves
-    out of it. Deploying it is then a deliberate act, which is what dry powder
-    is for -- and it is why `spendable_cash` correctly returns 0 once the book
-    is at target. Trims still fund buys; the reserve does not.
+    THE NAME IS OLDER THAN THE MEANING, and the meaning changed on 2026-09-06.
+    This used to be a floor and its docstring argued for that at length:
+
+        "THE FLOOR IS THE TARGET, and that is the point rather than a shortcut.
+         A reserve the machine is allowed to nibble into is not a reserve: on
+         the live book, `Grow` floors cash at 3% and the balance sat at 2.92%,
+         so the app had already spent the reserve down to its own limit and
+         nothing on any screen called that a decision."
+
+    That reasoning still holds against the failure it was written for -- routine
+    cards quietly eating the reserve -- and it is kept here rather than deleted,
+    because the failure has not gone away. What Eran changed is narrower:
+
+        "it should be a soft target. meaning if there is a good/valueble/
+         interesting holding that I must buy you can use the cash to do it -->
+         but if you recommend me to use my cash for this investment you should
+         explain why I should go below the 7.5%. the hard minimum cash I should
+         hold is 150."
+
+    So there are now TWO numbers where there was one. This function returns the
+    SOFT one -- what the book is managed toward, and what every routine card
+    still stops at. ``CASH_HARD_FLOOR_ILS`` is the other, and nothing crosses it.
+    A card may spend between them only by naming a reason: ``plan_funding``
+    refuses ``allow_reserve`` without a ``reserve_reason``, so "explain why" is
+    a precondition in the code rather than a habit in the prose.
+
+    The name stays for now because ``cash_floor_ils`` / ``cash_floor_pct`` are
+    payload keys the UI reads. Renaming the concept end to end is a separate
+    change and is noted in STATUS as debt.
 
     UNITS. `plans.cash_target_pct` is a PERCENTAGE (7.5), like every other
     `_pct` column on that table. This returns a FRACTION, like `CASH_FLOOR_PCT`
@@ -70,9 +99,30 @@ def cash_floor_ils(nav: float, objective: str | None, plan=None) -> float:
     return max(0.0, float(nav or 0.0)) * cash_floor_pct(objective, plan)
 
 
-def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None) -> float:
-    """Cash above the floor — what a purchase may actually draw on."""
-    return max(0.0, float(cash_ils or 0.0) - cash_floor_ils(nav, objective, plan))
+def cash_soft_floor_ils(nav: float, objective: str | None, plan=None) -> float:
+    """The line routine funding stops at: the cash target, never below the hard floor.
+
+    ``max`` of the two, not the percentage alone. On a small book 7.5% of NAV can
+    be less than 150, and a target that dips under the hard minimum would let the
+    ordinary path spend into it without anyone opting in.
+    """
+    return max(cash_floor_ils(nav, objective, plan), CASH_HARD_FLOOR_ILS)
+
+
+def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None,
+                   *, allow_reserve: bool = False) -> float:
+    """Cash a purchase may draw on.
+
+    Default: down to the cash TARGET, which is what every routine card gets and
+    is exactly the behaviour that existed before the target became soft.
+
+    ``allow_reserve=True``: down to ``CASH_HARD_FLOOR_ILS`` instead. Reserved for
+    a card that has a specific holding and a reason to name -- ``plan_funding``
+    will not honour it without one.
+    """
+    floor = (CASH_HARD_FLOOR_ILS if allow_reserve
+             else cash_soft_floor_ils(nav, objective, plan))
+    return max(0.0, float(cash_ils or 0.0) - floor)
 
 
 def class_gap_ils(nav: float, mix: dict, cls: str, class_target: float) -> float:
@@ -285,7 +335,9 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  reserved: dict | None = None, cash_used: float = 0.0,
                  buying_class: str | None = None,
                  book_target: dict | None = None,
-                 prefer: set[str] | None = None) -> dict:
+                 prefer: set[str] | None = None,
+                 allow_reserve: bool = False,
+                 reserve_reason: str | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
@@ -322,11 +374,33 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     """
     nav = snap.get("nav") or 0.0
     amount_ils = max(0.0, float(amount_ils or 0.0))
+
+    # A REASON IS A PRECONDITION, NOT A CONVENTION. Eran's instruction was that
+    # the cash target may be crossed for something worth buying "but if you
+    # recommend me to use my cash for this investment you should explain why I
+    # should go below the 7.5%". A boolean alone would let a future call site
+    # opt in and forget the sentence, so the opt-in is refused without one --
+    # the same shape as `describe_funding`'s required `buying_class`, and for
+    # the same reason: a missing argument is better than a missing sentence.
+    reserve_reason = (reserve_reason or "").strip() or None
+    allow_reserve = bool(allow_reserve and reserve_reason)
+
     # `reserved` / `cash_used` are what EARLIER cards in this same build have
     # already committed to selling and spending. Without them each card plans
     # against the whole book and three cards spend the same shares twice.
-    avail = max(0.0, spendable_cash(cash_ils, nav, objective, plan) - float(cash_used or 0.0))
+    avail = max(0.0, spendable_cash(cash_ils, nav, objective, plan,
+                                    allow_reserve=allow_reserve)
+                - float(cash_used or 0.0))
     from_cash = min(avail, amount_ils)
+
+    # How much of that came from BELOW the target, so the card can say it and
+    # `describe_funding` can explain it. Measured against the balance this card
+    # actually sees -- `cash_used` is what earlier cards in the same build have
+    # already spoken for.
+    _soft = cash_soft_floor_ils(nav, objective, plan)
+    _before = max(0.0, float(cash_ils or 0.0) - float(cash_used or 0.0))
+    _after = max(0.0, _before - from_cash)
+    reserve_used = round(max(0.0, min(_soft, _before) - _after), 2)
 
     # What still has to be raised, measured in money that can actually be SPENT.
     #
@@ -487,6 +561,13 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         "shortfall_ils": round(max(0.0, amount_ils - max(0.0, funded)), 2),
         "cash_floor_ils": round(cash_floor_ils(nav, objective, plan), 2),
         "cash_floor_pct": cash_floor_pct(objective, plan),
+        # THE SOFT/HARD SPLIT, on the payload, because a card that spends into
+        # the reserve has to be able to show the reader where it landed.
+        "cash_hard_floor_ils": CASH_HARD_FLOOR_ILS,
+        "reserve_used_ils": reserve_used,
+        "reserve_reason": reserve_reason if reserve_used else None,
+        "cash_after_ils": round(_after, 2),
+        "cash_after_pct": round(_after / nav, 4) if nav else 0.0,
         # Named, so the card can say which trade this is and how much of the
         # book it turns over. A 49-point repositioning is a legitimate thing to
         # ask for and not a thing to do quietly.
@@ -535,6 +616,26 @@ def describe_funding(fund: dict, buying_class: str | None) -> str:
     line = "Fund it with " + " and ".join(bits) + "."
     if fund.get("tax_ils"):
         line += f" Estimated tax on the sale: ₪{fund['tax_ils']:,.0f}."
+
+    # SPENDING THE RESERVE IS SAID OUT LOUD, WITH THE REASON THAT BOUGHT IT.
+    #
+    # Eran, 2026-09-06: "if you recommend me to use my cash for this investment
+    # you should explain why I should go below the 7.5%". Three facts and his
+    # own why, in that order -- how much of the reserve, where cash lands, and
+    # that the hard floor is untouched. The reason is the CALLER'S: `plan_funding`
+    # will not set `reserve_used_ils` without one, so this sentence cannot be
+    # printed with nothing behind it.
+    _res = float(fund.get("reserve_used_ils") or 0.0)
+    if _res >= 1.0:
+        _why = fund.get("reserve_reason") or ""
+        _pct = float(fund.get("cash_after_pct") or 0.0)
+        _floor = float(fund.get("cash_hard_floor_ils") or 0.0)
+        line += (f" This spends ₪{_res:,.0f} of your cash reserve, taking cash to "
+                 f"{_pct:.1%} against your {float(fund.get('cash_floor_pct') or 0.0):.1%} "
+                 f"target (₪{float(fund.get('cash_after_ils') or 0.0):,.0f} left, "
+                 f"hard floor ₪{_floor:,.0f} untouched).")
+        if _why:
+            line += f" Worth it because {_why}" + ("" if _why.endswith(".") else ".")
 
     # The honesty clause. Selling equities to buy equities is a legitimate
     # trade -- swapping international and dividend exposure for factor exposure
@@ -607,7 +708,9 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                        market: str = "NYSE",
                        allow_within_class_swap: bool = False,
                        ledger: "FundingLedger | None" = None,
-                       book_target: dict | None = None) -> FundedBuy | None:
+                       book_target: dict | None = None,
+                       allow_reserve: bool = False,
+                       reserve_reason: str | None = None) -> FundedBuy | None:
     """Size, fund, simulate and narrate a purchase — or return None.
 
     Returning None is the point as often as returning a card is. A purchase the
@@ -658,7 +761,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     _used = ledger.cash_ils if ledger is not None else 0.0
     fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils,
                         exclude=ex, reserved=_res, cash_used=_used,
-                        book_target=book_target)
+                        book_target=book_target, allow_reserve=allow_reserve,
+                        reserve_reason=reserve_reason)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
     if amount < MIN_TRADE_ILS:
         return None
@@ -667,7 +771,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         # describe the trade being proposed rather than one that was rejected.
         fund = plan_funding(rows, snap, plan, objective, cap, amount,
                             cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used,
-                            book_target=book_target)
+                            book_target=book_target, allow_reserve=allow_reserve,
+                            reserve_reason=reserve_reason)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
         if amount < MIN_TRADE_ILS:
             return None
