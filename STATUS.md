@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-06 by Claude (PR 60.1 — the deferral shipped dead, and finding out why found something worse)._
+_Last updated: 2026-09-06 by Claude (PR 61 — the card that finishes the move, and the first rule for it was wrong)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 60.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 61.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -144,6 +144,97 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 61 — the card that finishes the move, and the first rule for it was wrong
+
+Eran, looking at Today after the B2 swap: *"the swing should be a card that replace the TQQQ with
+QQQ automatically."*
+
+PR 60 stopped the **core** card offering to liquidate the ₪7,476 of TQQQ that no sleeve claims any
+more. This is the other half — the card that offers to complete the move — and it turns on one
+question the file had already answered in the negative:
+
+> "one tap taking a book from nothing to a fifth in a 3x fund is a different decision from topping
+> up. That one routes to 'Fund this sleeve'."
+
+That objection is right. It is also not a description of every cold sleeve, and after a swap it
+describes the opposite of what is happening.
+
+**The first rule I wrote was wrong, and the suite caught it.** I made the card actionable when every
+funding leg was cash or a holding **no sleeve claims**. Full SQLite run:
+`test_sleeves_mean_what_they_say.py::test_k_an_empty_sleeve_card_cannot_be_buried_by_accept` — **1
+failed, 1718 passed**. On that fixture the rule would have taken a book from nothing to **10% SOXL
+by selling an ordinary V position**: precisely the decision the guidance split exists to keep out of
+one tap. Being *unclaimed* is not the same as being *earmarked*, and I had tested the wrong one.
+
+**The rule that survives is the relationship, not the owner and not the size.** Actionable only when
+every position being sold is a leveraged instrument whose **base is this sleeve's ticker** — a new
+`strategy_catalog.steps_back_to(aggressive, base)`, read straight off the specs:
+
+| sold | sleeve | `steps_back_to` | card |
+|---|---|---|---|
+| TQQQ | QQQ | yes — three rules hold TQQQ over a QQQ core | **actionable** |
+| SOXL | SMH | yes | actionable |
+| V | SOXL | no — V is not an overlay instrument | guidance |
+| QQQ | TQQQ | **no** — the helper is asymmetric on purpose | guidance |
+
+The asymmetry is the whole point. Selling the 3x fund to hold the index it was leveraging is a
+**downgrade of an exposure the book already has**, under a rule that is no longer running. The
+reverse is the move the objection was written about.
+
+Still guidance when a leg belongs to another sleeve (the piggy-bank exclusion `_fund_sleeve` already
+enforces) or when there is a shortfall (a position at a size nobody chose, which that function
+abstains over rather than half-install).
+
+**Priced through the same function the button runs.** The card computes
+`load_basket(..., mode="fund", dry_run=True)` inside `_agent_tx`, and quotes
+`min(amount_ils, funded_ils)` — what the executor actually spends. That is the `_core_plan`
+discipline, which exists because a card once said *"sell 4,324"* and Accept sold **12,139**.
+Measured on the reproduction of Eran's book: card `est_amount` **₪15,671.01**, Accept moved
+**₪15,670.96**, sleeve went 0% → 33.3%, and the card stopped firing because the sleeve is no longer
+cold.
+
+**And the guidance branch stopped pointing at a tab.** It now carries the funding engine's own
+refusal, which was already written to be printable: *"You asked for a 40% sleeve (₪44,520). The most
+this book can fund right now is 0% — ₪44,520 short… Lower the sleeve to about 0%, or add cash."* A
+card that says which number to change beats one that says which tab to open.
+
+`tests/test_the_card_finishes_the_move_it_recommended.py` — 9 tests, 6 confirmed RED against the
+pre-change tree (the other 3 assert invariants that already held).
+
+Gates: 1717 SQLite (+4 `caplog` errors that are an artefact of `-p no:logging`, green with the
+plugin on), 1721 PostgreSQL on a dropped and recreated database, `ruff check app tests alembic`
+clean.
+
+**Ops note, same day: the first ship attempt died on a stale index lock, and the lock was mine.**
+Not a running git process -- a ZERO-BYTE file stamped 14:37, owned by the Linux sandbox user backing
+my shell into the repo, twenty-three minutes before the 15:00 run. At 14:37 that shell ran `git
+status --short` while inserting this entry; git writes the index lock to refresh the index and then
+unlinks it, and that shell is not permitted to delete files inside the folder, so the unlink failed
+and the lock survived. It printed as a `warning:` on a command that still exited 0, which is why I
+read the line as being about the two temp files removed on the same line. Every later git WRITE --
+three `git add` calls and the commit -- then refused.
+
+Ruled out: a live git process (0 bytes, 23 minutes stale, owned by the sandbox user rather than
+Eran's account); an interrupted command of Eran's (nothing of his ran at 14:37); a permissions fault
+on the repo (`git --no-optional-locks status` read fine, and ruff plus 1737 tests ran off the same
+tree).
+
+**And it had happened before.** The 08-31 repo-hygiene row above records "a `_to_delete/` folder
+holding stale `.git/index.lock` files moved out of `.git/`" -- the same fault, worked around by
+moving the files rather than diagnosed. That is the whole cost of a warning on a zero-exit command.
+
+Fix: read-only git in that shell now uses `git --no-optional-locks`, which never takes the lock.
+`scripts/deploy/resume-pr61-after-the-stale-lock.ps1` clears a stale file -- refusing if it is
+non-empty or under two minutes old, so it can never delete a live one -- and re-hashes all four
+changed files against what the gates passed on before skipping to the commit.
+
+**The lesson worth keeping.** Two PRs in a row, the thing that caught my mistake was not the test I
+wrote for the feature — it was an existing test asserting an invariant I had stopped thinking about.
+PR 58 was the war-room speaker sequence; this was the guidance split. A rule that is "obviously
+right" about the case in front of you is worth running against the case that made the rule exist.
 
 ---
 

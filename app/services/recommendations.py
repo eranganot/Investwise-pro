@@ -2010,13 +2010,119 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 _amount = abs(_gap) / 100.0 * nav
                 _cold = not _held and _gap > 0
                 if _cold:
+                    # CAN THIS BE DONE WITH MONEY THAT IS ALREADY EARMARKED?
+                    #
+                    # The original objection stands and is quoted below: one tap
+                    # taking a book from nothing to a fifth in a 3x fund is not
+                    # topping up a drift. But it does not describe every cold
+                    # sleeve. After a swap, the money for the new sleeve is
+                    # already in the book, sitting in the instrument the old rule
+                    # held -- PR 60 made the core defer exactly that position to
+                    # this card. Refusing to act then is not caution, it is the
+                    # app declining to finish a move it already recommended.
+                    #
+                    # THE FIRST ATTEMPT AT THAT TEST WAS WRONG, and the suite
+                    # caught it. It asked only whether the money was UNCLAIMED
+                    # by another sleeve, and `test_k_an_empty_sleeve_card_
+                    # cannot_be_buried_by_accept` showed what that misses: on
+                    # that fixture it would have taken a book from nothing to
+                    # 10% in SOXL by selling an ordinary V position -- the exact
+                    # decision the split exists to keep out of one tap. Being
+                    # unclaimed is not the same as being earmarked.
+                    #
+                    # So the test is the RELATIONSHIP: actionable only when every
+                    # position being sold is a leveraged instrument that THIS
+                    # SLEEVE'S TICKER IS THE BASE OF -- `strategy_catalog.
+                    # steps_back_to`, read off the specs, asymmetric on purpose.
+                    # Selling TQQQ to hold QQQ qualifies; selling V to start SOXL
+                    # does not, and neither does the reverse of the first. The
+                    # exposure was already in the book at a higher multiple under
+                    # a rule that is no longer running, so this is a downgrade of
+                    # something you have, not the start of something you do not.
+                    #
+                    # Still guidance when a leg belongs to another sleeve (the
+                    # piggy-bank failure `_fund_sleeve` already excludes) or when
+                    # there is a shortfall (a position at a size nobody chose,
+                    # which that function abstains over rather than half-fund).
+                    #
+                    # Priced through the same `load_basket` the button runs, in
+                    # dry-run, so the card cannot show one plan and Accept
+                    # execute another -- the `_core_plan` discipline. Wrapped in
+                    # a savepoint because a failed agent must not abort the
+                    # request's transaction on PostgreSQL.
+                    _sids = _wanted_by.get(_tk) or []
+                    _sid = _sids[0] if len(_sids) == 1 else None
+                    _prev = None
+                    if _sid:
+                        try:
+                            async with _agent_tx(session):
+                                from app.services.strategy_service import load_basket
+                                _prev = await load_basket(session, user, _sid,
+                                                          mode="fund", dry_run=True)
+                        except Exception:  # noqa: BLE001 - a preview must not kill Today
+                            _prev = None
+
+                    from app.services import strategy_catalog as _cat
+                    from app.services.funding_service import MIN_TRADE_ILS as _MIN_TR
+
+                    _fund = (_prev or {}).get("funding") or {}
+                    _claimed_tk = {str(t).upper() for t in await _sv.sleeve_tickers(session, user)}
+                    _srcs = [str(x.get("ticker") or "").upper()
+                             for x in (_fund.get("sells") or [])]
+                    _shortfall = float(_fund.get("shortfall_ils") or 0.0)
+                    _downgrade = bool(_srcs) and all(
+                        t and t not in _claimed_tk and _cat.steps_back_to(t, _tk)
+                        for t in _srcs)
+                    _can_act = bool(_prev and _prev.get("ok")
+                                    and not _prev.get("nothing_to_do")
+                                    and _downgrade and _shortfall < _MIN_TR)
+
+                    if _can_act:
+                        # SIZED FROM THE PREVIEW, not from the drift gap. The
+                        # executor spends `min(want, funded_ils)`, and a card
+                        # that quotes anything else is the "sell 4,324 / sold
+                        # 12,139" failure with different numbers.
+                        _moves = round(min(float(_prev.get("amount_ils") or 0.0),
+                                           float(_fund.get("funded_ils") or 0.0)), 2)
+                        _from = ", ".join(sorted(set(_srcs)))
+                        _cash_leg = float(_fund.get("from_cash_ils") or 0.0)
+                        recs.append({
+                            "id": _rid("sleeve_coldstart", _tk), "dimension": "strategy",
+                            "severity": "MEDIUM",
+                            "title": f"Finish the move: sell {_from}, hold {_tk}",
+                            "why": (f"Your plan says {_target_pct:.0f}% of the book in {_tk} "
+                                    f"and you hold none of it, while {_from} is still in the "
+                                    f"book from the rule you retired. {_tk} is what that rule "
+                                    f"stepped back to, so this is the same exposure without "
+                                    f"the leverage — not a new position."),
+                            "action": (f"Sell {_ils(_moves)} of {_from} and buy {_tk} with the "
+                                       f"proceeds"
+                                       + (f", plus {_ils(_cash_leg)} of cash above your floor"
+                                          if _cash_leg >= _MIN_TR else "") + "."),
+                            "impact": (f"Takes the {_tk} sleeve from nothing to about "
+                                       f"{_target_pct:.0f}%. Every funding leg and its estimated "
+                                       f"tax is named before anything happens. Tracked book "
+                                       f"updated — no brokerage order was placed."),
+                            "how": [f"Accept sells {_from} and buys {_tk} in one funded pass",
+                                    "The same plan the Plan tab's “Fund this sleeve” runs",
+                                    "No brokerage order is placed"],
+                            "est_amount": _moves,
+                            "persistent": True,
+                            "apply": {"kind": "fund_sleeve", "strategy_id": _sid},
+                            "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
+                                     "actual_pct": round(_actual_pct, 1), "cold_start": True,
+                                     "from": sorted(set(_srcs)), "steps_back": True},
+                        })
+                        continue
+
                     recs.append({
                         "id": _rid("sleeve_coldstart", _tk), "dimension": "strategy",
                         "severity": "MEDIUM",
                         "title": f"You chose a {_target_pct:.0f}% {_tk} sleeve and hold none of it",
                         "why": (f"Your plan says {_target_pct:.0f}% of the book in {_tk}; "
                                 f"you hold nothing. That is not drift -- the sleeve has "
-                                f"never been funded."),
+                                f"never been funded."
+                                + (f" {_prev.get('reason')}" if (_prev or {}).get("reason") else "")),
                         "action": ("Use \u201cFund this sleeve\u201d on the Plan tab. It shows "
                                    "which positions would be sold, for how much, and the "
                                    "estimated tax, before anything happens."),

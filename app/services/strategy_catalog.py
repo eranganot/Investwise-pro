@@ -202,6 +202,36 @@ def ids() -> list[str]:
     return [e["id"] for e in CATALOG]
 
 
+def steps_back_to(aggressive_ticker: str, base_ticker: str) -> bool:
+    """True when some rule here holds ``aggressive_ticker`` and steps back to
+    ``base_ticker`` when its signal is off.
+
+    This is the "retire the overlay, hold the base" relationship, read straight
+    off the specs rather than off a user's history: TQQQ steps back to QQQ,
+    SOXL steps back to SMH. It is asymmetric on purpose -- QQQ does not step
+    back to TQQQ -- because the point is that the move is a DOWNGRADE of an
+    exposure the book already has, not the start of a new one.
+
+    Used by the cold-start sleeve card to decide whether it may act in one tap.
+    That card is guidance by default for a stated reason: one tap taking a book
+    from nothing to a fifth in a 3x fund is not topping up a drift. Selling the
+    3x fund to buy the index it was leveraging is the one funding move that
+    objection does not describe -- the exposure was already there, at a higher
+    multiple, under a rule that is no longer running.
+    """
+    a = (aggressive_ticker or "").strip().upper()
+    b = (base_ticker or "").strip().upper()
+    if not a or not b or a == b:
+        return False
+    for e in CATALOG:
+        base = {str(t).upper() for t in (e.get("base") or {})}
+        if not base or b not in base:
+            continue
+        if a in {str(t).upper() for t in (e.get("weights") or {})} - base:
+            return True
+    return False
+
+
 # --- Presentation ----------------------------------------------------------
 #
 # The Plan renderer was written for static baskets: it reads `risk_tolerance`,
