@@ -56,12 +56,25 @@ SLEEVE_COUNT_VERSION = "t6b2"
 # they currently agree, which is the coupling that actually matters.
 NOISE_FLOOR_PCT = 0.25
 
-# Backstops, not preferences. Seven is the whole `backtestable()` pool today, so
-# MAX_SLEEVES only ever binds if that pool grows -- and if it binds, the search
-# stopped because it ran out of candidates, which is not convergence.
-MAX_SLEEVES = 7
+# Backstops, not preferences. This used to read "Seven is the whole
+# `backtestable()` pool today, so MAX_SLEEVES only ever binds if that pool
+# grows" -- and then the pool grew to eight (`btm_qqq_hold`, B2), which is
+# exactly the condition the sentence described and nothing noticed. A comment
+# that states a fact about another module's size is a comment with an expiry
+# date, so the number below is now derived rather than typed, and the test
+# asserts the derivation instead of the digit.
+#
+# If this backstop is what stops the search, the search ran out of candidates
+# rather than converging -- and `sleeve_count` reports that distinction rather
+# than letting a limit read as a finding.
+def _pool_size() -> int:
+    from app.services import strategy_catalog
+    return len(strategy_catalog.ids())
+
+
+MAX_SLEEVES = _pool_size()
 # Each measure is one simulation over ten years of daily closes. A greedy pass
-# over seven candidates is at most 7+6+5+4+3+2+1 = 28; 60 leaves room for a
+# over eight candidates is at most 8+7+6+5+4+3+2+1 = 36; 60 leaves room for a
 # larger pool without letting a runaway loop turn an explicit button into a
 # ten-minute wait.
 MAX_MEASURES = 60

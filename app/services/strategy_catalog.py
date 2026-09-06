@@ -129,6 +129,55 @@ CATALOG: list[dict] = [
                     "lookback_days": 252, "risk_off": "BIL",
                     "sweep_param": "lookback_days", "sweep_values": [126, 189, 252, 315]},
     },
+    {
+        # THE BASE, WITH NO RULE ON TOP. Added 2026-09-05 for B2.
+        #
+        # Every other entry here is a rule; this one deliberately is not, and it
+        # exists because the catalogue had no way to express "hold the index".
+        # Retiring an overlay therefore had no destination: `DELETE
+        # /plan/sleeves/btm_swing_dip` retires the whole SLEEVE, collapsing its
+        # 36% into the core, taking the core from 27% to ~55% and swinging the
+        # book's Fixed Income target from 7.8% to ~22% -- so the app would start
+        # asking to sell equities into BND. That is not what "drop the rule,
+        # keep the position" means, and the absence of this entry is the only
+        # reason the two were the same operation.
+        #
+        # WHY IT WAS NEEDED, measured on the shipped engine over 2016-09-06 to
+        # 2026-09-04 (2,514 sessions, adjusted closes):
+        #
+        #   hold TQQQ, do nothing        40.25%/yr   vol 66.74%   maxDD 81.66%
+        #   hold QQQ, do nothing         20.73%/yr   vol 22.56%   maxDD 35.12%
+        #   btm_swing_dip as shipped     17.19%/yr   vol 34.35%   maxDD 40.55%
+        #
+        # The overlay turned a 40.25% instrument into 17.19% -- below simply
+        # holding the base -- while carrying a DEEPER drawdown than the base and
+        # paying ~7 points a year to 45 round-trips. Leverage decay was not the
+        # cause; being out of the market during the compounding was. Full
+        # working in STATUS.md B2.
+        #
+        # NO `base` KEY, and that is the definition rather than an omission: a
+        # base is where a rule goes when it is off, and there is no rule. It is
+        # also what makes the whole sleeve fundable -- `sleeve_targets` funds
+        # `weights` minus `base`, so an entry that listed QQQ in both would ask
+        # the app to fund nothing.
+        #
+        # `_target_weights` needs no new engine support: a spec with no overlay
+        # already falls through to `kind = "buy_hold"` and returns constant
+        # weights, so this is measured by the same code path as everything else.
+        "id": "btm_qqq_hold",
+        "name": "Hold the Nasdaq index",
+        "risk": "Medium",
+        "sleeve_pct": 30,
+        "horizon": "Years; nothing to check",
+        "description": ("Holds QQQ and does nothing else. No signal, no exits, no "
+                        "trades after the first one. It is here so that retiring a "
+                        "rule has somewhere to land -- keeping the position while "
+                        "dropping the rule that was steering it -- and so that any "
+                        "overlay in this catalogue can be measured against simply "
+                        "holding what it trades."),
+        "weights": _QQQ_CORE,
+        "overlay": {"kind": "buy_hold"},
+    },
 ]
 
 _BY_ID = {s["id"]: s for s in CATALOG}

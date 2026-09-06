@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-05 by Claude (PR 58 — the honesty track: the screen stopped reporting things that did not happen)._
+_Last updated: 2026-09-05 by Claude (PR 59 — B2: a rule can be retired without dropping the position)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 58.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 59.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -144,6 +144,79 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 59 — B2: retiring a rule and retiring an allocation stop being the same button
+
+Eran decided this on 2026-09-04 and parked execution; B2 held the measurement so the decision would
+not have to be re-made. Executing it turned out to need two things the app did not have.
+
+### What the measurement said
+
+Shipped engine, 2016-09-06 → 2026-09-04, 2,514 sessions, adjusted closes:
+
+| variant | CAGR | volatility | max DD | in TQQQ | trades/yr | ₪10,000 → |
+|---|---|---|---|---|---|---|
+| hold TQQQ, do nothing | **40.25%** | 66.74% | 81.66% | 100% | 0.1 | 294,462 |
+| hold QQQ, do nothing | 20.73% | 22.56% | 35.12% | 0% | 0.1 | 65,789 |
+| **`btm_swing_dip` as shipped** | **17.19%** | 34.35% | 40.55% | 15.6% | 45.4 | **48,855** |
+
+The overlay turned a 40.25% instrument into 17.19% — **below simply holding the base** — while
+carrying a *deeper* drawdown than the base (40.55% against 35.12%) and paying roughly 7 points a
+year to 45 round-trips. Gross of costs it makes 24.11%, so even before fees it trails holding TQQQ
+by 16 points. **Leverage decay was not the cause. Being out of the market during the compounding
+was.**
+
+### Why "drop the rule, keep the position" was not expressible
+
+`DELETE /plan/sleeves/btm_swing_dip` retires the whole **sleeve**. On this book that is 36.05%
+collapsing into the core, the core going 27% → ~55%, and the book's Fixed Income target swinging
+7.8% → ~22% — after which the app starts asking to sell equities into BND. Dropping a *rule* and
+dropping an *allocation* were one operation, and only one of them was ever wanted.
+
+**`btm_qqq_hold`** — the catalogue had no way to say "hold the index". Every other entry is a rule,
+so a retired overlay had nowhere to land. It declares **no `base`**, which is the definition rather
+than an omission: a base is where a rule goes when it is off, and there is no rule. It is also what
+makes the sleeve fundable at all — `sleeve_targets` funds `weights` minus `base`, so an entry
+naming QQQ in both would ask the app to fund nothing and the sleeve would sit permanently empty.
+The engine needed no new support: a spec with no overlay already falls through to `buy_hold`, so it
+is measured by the same code path as everything else, and `backtestable()` picks it up for the
+nightly refresh and the solver automatically.
+
+**`swap_sleeve`** — one operation that moves the size across. The order is forced: `validate`
+measures the new sleeve against the *free* share of the book while the old one still occupies its
+own, so adding first would put this book at 109% and be refused. Done as two API calls it leaves a
+window in which the book is under-allocated and the core oversized — harmless for seconds, except
+that anything reading the book in that window (a refresh, a card, the 06:15 job) sees an allocation
+nobody chose. Caps re-level **once, at the end**, for the reason `retire_sleeve` already documents:
+a row removed without re-levelling leaves a live `max_weight` on a position now held for some other
+reason, and re-levelling between the halves would arm caps against a book that exists for one
+statement.
+
+It also checks the destination is a real strategy, which `validate` never did — it only ever asked
+about size and duplication, so a typo'd id would have been accepted as a sleeve for a strategy that
+does not exist, sized, capped and funded against nothing. The refusal comes **before** the removal,
+so a typo cannot cost you the sleeve you had.
+
+**Nothing is bought or sold.** The swap changes what the app steers toward, not what is held.
+Afterwards TQQQ is a holding no sleeve wants and QQQ is unfunded, and the existing cards already
+say both. Asserting otherwise would be the failure `test_card_claims` exists to catch, so a test
+pins it directly.
+
+### A stale comment the change surfaced
+
+`sleeve_count.py` read *"Seven is the whole `backtestable()` pool today, so `MAX_SLEEVES` only ever
+binds if that pool grows"* — with `MAX_SLEEVES = 7` typed beneath it. The pool became eight, which
+is exactly the condition that sentence described, and nothing would have noticed: `MAX_SLEEVES`
+would have started binding, and a search that stops because it hit a backstop reads as a search
+that converged — the distinction the whole module exists to report. The number is now derived from
+the catalogue and the test asserts the derivation rather than the digit.
+
+Gates: 1703 SQLite, 1703 PostgreSQL on a dropped and recreated database, ruff clean. Eight of the
+nine new assertions were confirmed RED against the pre-PR-59 tree; the ninth is the derived-ceiling
+check, which passes on both sides by construction and fails only when the two diverge — which is
+the whole point of it.
 
 ---
 

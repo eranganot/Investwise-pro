@@ -388,6 +388,87 @@ async def retire_sleeve(session: AsyncSession, user: User, strategy_id: str) -> 
             "broker_note": BROKER_NOTE}
 
 
+async def swap_sleeve(session: AsyncSession, user: User, *,
+                      from_id: str, to_id: str) -> dict:
+    """Replace one sleeve with another at the SAME size, in one operation.
+
+    B2 is the reason this exists. Eran's decision was "retire the overlay, hold
+    the base" -- drop the rule steering `btm_swing_dip`, keep the 36% position --
+    and the app had no way to express it. `retire_sleeve` retires the whole
+    SLEEVE: the 36% collapses into the core, the core goes 27% -> ~55%, and the
+    book's Fixed Income target swings 7.8% -> ~22%, so the app starts asking to
+    sell equities into BND. Dropping a rule and dropping an allocation were the
+    same operation, and only one of them was ever wanted.
+
+    ORDER IS NOT COSMETIC. `validate` measures the new sleeve against the free
+    share of the book, and the old sleeve still occupies its own. Adding first
+    would put this book at 109% and be refused; removing first frees exactly the
+    space the replacement needs. Doing it as two API calls leaves a window where
+    the book is under-allocated and the core is oversized -- harmless for a few
+    seconds, except that anything reading the book in that window (a refresh, a
+    card, the 06:15 job) sees an allocation nobody chose. One function, one
+    flush.
+
+    CAPS RE-LEVEL ONCE, AT THE END, for the reason `retire_sleeve`'s docstring
+    gives: a row removed without re-levelling leaves a live `max_weight` on a
+    position now held for some other reason -- a ceiling with nothing behind it.
+    Re-levelling between the two halves would arm caps against a book that
+    exists for one statement.
+
+    **NOTHING IS BOUGHT OR SOLD.** This changes what the app steers toward, not
+    what you hold. After it, the old sleeve's ticker is a holding no sleeve
+    wants and the new one's is unfunded -- both of which the existing cards
+    already know how to say. Claiming otherwise here would be the exact failure
+    `test_card_claims` exists to catch.
+    """
+    from app.services import sleeve_service as sv
+
+    from_id = (from_id or "").strip()
+    to_id = (to_id or "").strip()
+
+    # Checked HERE and not in `validate`, which only ever asked about size and
+    # duplication -- so a typo'd id would have been accepted as a sleeve for a
+    # strategy that does not exist, sized, capped and funded against nothing.
+    if strategy_catalog.get(to_id) is None and not cat.get(to_id):
+        return {"ok": False, "error": f"'{to_id}' is not a strategy in the catalogue"}
+
+    sleeves = await sv.list_sleeves(session, user)
+    src = next((x for x in sleeves if x.strategy_id == from_id), None)
+    if src is None:
+        return {"ok": False, "error": f"'{from_id}' is not a sleeve on this book"}
+    if any(x.strategy_id == to_id for x in sleeves):
+        # A merge, not a swap: two sizes for one strategy, and no honest way to
+        # pick which survives. The caller can resize then retire, deliberately.
+        return {"ok": False, "error": f"'{to_id}' is already a sleeve on this book",
+                "reason": ("swapping into it would merge two sleeves at two sizes. "
+                           "Resize that one and retire this one instead, so the "
+                           "size you end up with is one you chose.")}
+
+    pct = float(src.sleeve_pct or 0.0)
+    removed = await sv.remove(session, user, from_id)
+    if not removed.get("ok"):
+        return removed
+    added = await sv.add_or_resize(session, user, to_id, pct)
+    if not added.get("ok"):
+        # `remove` only flushed; nothing is committed yet, so the caller's
+        # rollback puts the old sleeve back. Returning the refusal unchanged
+        # keeps the reason `validate` gave rather than inventing a new one.
+        return {**added, "swap_aborted": True, "from_id": from_id, "to_id": to_id}
+
+    caps = await _arm_sleeve_caps(session, user)
+    after = await sv.list_sleeves(session, user)
+    return {
+        "ok": True, "swapped": True, "from_id": from_id, "to_id": to_id,
+        "sleeve_pct": pct,
+        "from_tickers": sorted(sleeve_targets(from_id, pct)),
+        "to_tickers": sorted(sleeve_targets(to_id, pct)),
+        "sleeve_caps": caps,
+        "retired_caps": [c["ticker"] for c in caps if c["action"] == "retired"],
+        "allocated_pct": sv.total_pct(after), "core_pct": sv.remainder_pct(after),
+        "broker_note": BROKER_NOTE,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Which tickers ARE the sleeve
 # --------------------------------------------------------------------------- #

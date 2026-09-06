@@ -327,6 +327,34 @@ async def remove_my_sleeve(strategy_id: str,
     return await retire_sleeve(session, user, strategy_id)
 
 
+@router.post("/plan/sleeves/{strategy_id}/swap",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def swap_my_sleeve(strategy_id: str, to: str,
+                         session: AsyncSession = Depends(get_session),
+                         user: User = Depends(acting_user)) -> dict:
+    """Swap this sleeve for another strategy at the SAME size.
+
+    "Retire the overlay, hold the base" needed this. DELETE retires the whole
+    sleeve, which drops the ALLOCATION as well as the rule -- on this book that
+    is 36% collapsing into the core and the Fixed Income target swinging from
+    7.8% to ~22%. Dropping a rule and dropping an allocation were one operation
+    and only one of them was ever wanted.
+
+    Done as one call rather than DELETE-then-POST because the order is forced
+    (adding first would exceed 100% and be refused) and because the two-step
+    leaves a window in which the book is under-allocated and the core oversized.
+    Anything reading the book in that window -- a refresh, a card, the 06:15 job
+    -- would see an allocation nobody chose.
+
+    Nothing is bought or sold. The sleeve's ticker changes; the shares do not.
+    Afterwards the old ticker is a holding no sleeve wants and the new one is
+    unfunded, and the existing cards say both.
+    """
+    from app.services.strategy_service import swap_sleeve
+
+    return await swap_sleeve(session, user, from_id=strategy_id, to_id=to)
+
+
 @router.get("/plan/core/options")
 async def core_options(session: AsyncSession = Depends(get_session),
                        user: User = Depends(acting_user)) -> dict:
