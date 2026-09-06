@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.models.tables import BrokerConnection, User
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import Market
+from app.services.fx import to_major_units
 from app.services.intake_service import (
     ensure_account,
     ensure_entity,
@@ -29,12 +30,27 @@ _MARKETS = {m.value for m in Market}
 
 
 def _to_intake(bp) -> IntakePosition:
+    """A broker row as an intake row, in the currency's MAJOR unit.
+
+    `BrokerPosition` has carried a `currency` field since it was written and this
+    function threw it away, so a Tel Aviv holding arriving from an aggregator in
+    agorot was booked at a hundred times its price -- and its cost basis with it,
+    which is worse, because a wrong basis is a wrong CGT estimate on every card
+    that quotes one afterwards.
+
+    The third of the four writers V6's PR D named; `pricing_service` and (since
+    PR 45) `add_holding` were already doing this. A normalisation each consumer
+    has to remember is one a new consumer silently opts out of, which is why
+    `to_major_units` says "use at every boundary" -- this is a boundary.
+    """
     market = bp.market if bp.market in _MARKETS else "OTHER"
-    price = bp.current_price or bp.cost_basis or 1.0
+    price, _ccy = to_major_units(bp.current_price or bp.cost_basis or 1.0,
+                                 getattr(bp, "currency", None))
+    basis, _ = to_major_units(bp.cost_basis, getattr(bp, "currency", None))
     return IntakePosition(
         ticker=bp.ticker, market=Market(market), depth=1,
         spot_price=max(price, 0.0001), listing_price=max(price, 0.0001),
-        quantity=bp.quantity, cost_basis=bp.cost_basis,
+        quantity=bp.quantity, cost_basis=basis,
         asset_class=bp.asset_class,
     )
 

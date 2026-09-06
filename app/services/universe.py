@@ -1,11 +1,38 @@
 """Candidate universe for the Opportunity (screener) agent.
 
 A curated, liquid set the screener ranks across: large-cap US stocks (sector-
-diversified), broad/sector ETFs, Tel-Aviv (TASE) names, plus every commodity in
-the commodity catalog. Kept deliberately bounded (~70 names) so a live provider
-can fetch fundamentals for the whole set within the resilience budget.
+diversified), broad/sector ETFs, Tel-Aviv (TASE) listings, Israeli companies
+listed in the US, plus every commodity in the commodity catalog. Kept
+deliberately bounded so a live provider can fetch fundamentals for the whole set
+within the resilience budget.
 
 Each entry: ticker, name, market, asset_class, kind (stock | etf | commodity).
+
+**THE TEL AVIV SECTION USED TO BE A LABEL WITH NOTHING BEHIND IT.** Until PR 62
+this docstring said "Tel-Aviv (TASE) names" and the list underneath was headed
+``# ---- Tel-Aviv (TASE) names (Yahoo .TA suffix) ----`` -- and every one of its
+seven entries was ``"market": "NASDAQ"`` or ``"NYSE"`` with no ``.TA`` suffix.
+They were the US ADRs of Israeli companies. So the app could not recommend a
+single instrument that trades in Tel Aviv, on a book denominated in shekels and
+taxed under Israeli CGT, while its own source said otherwise.
+
+Everything else was already built for it and had been for weeks:
+``MARKET_CCY["TASE"] = "ILS"``, the ``.TA`` symbol path, the ILA/agorot
+minor-unit detection and the 100x row repair. Only the candidate list was
+missing, which is the part that decides what can ever be suggested.
+
+**What is here and what is not.** TASE *shares* are fully served -- all 17 below
+returned price, currency ILA, sector, P/E and 60 sessions of history through this
+app's own provider on 2026-09-06. TASE *funds* are not: an Israeli index tracker
+trades under a numeric symbol (1159250.TA, 1146836.TA) and the provider returns
+Not Found for every one tried. ``TA35.TA`` resolves as the INDEX, which is not
+investable. So there is no shekel-denominated ETF here and the class fallbacks in
+``recommendations.CLASS_ETF`` stay US-listed. That is a provider limit, in the
+backlog with its un-park condition, not an omission.
+
+TEVA, NICE and ESLT are listed here in Tel Aviv and no longer also as US ADRs:
+one company should not occupy two slots in one ranking. CHKP, WIX, MNDY and GLOB
+have no TASE line in this set and stay where they trade.
 """
 from __future__ import annotations
 
@@ -71,12 +98,41 @@ ETFS: list[dict] = [
     {"ticker": "VNQ", "name": "US Real Estate", "market": "NYSE", "kind": "etf"},
 ]
 
-# ---- Tel-Aviv (TASE) names (Yahoo .TA suffix) ----
+# ---- Tel-Aviv (TASE) listings -- priced in ILS, quoted by the provider in
+# ---- agorot ("ILA"), normalised at the boundary by `fx.to_major_units`.
+#
+# Sector spread is deliberate: a ranking over six banks is a sector bet wearing a
+# country's name. Verified live 2026-09-06 through this app's own provider --
+# every entry returned sector, P/E and 60 sessions of history.
 TASE_STOCKS: list[dict] = [
-    {"ticker": "TEVA", "name": "Teva Pharmaceutical", "market": "NYSE", "kind": "stock"},
-    {"ticker": "NICE", "name": "NICE Ltd", "market": "NASDAQ", "kind": "stock"},
+    {"ticker": "LUMI.TA", "name": "Bank Leumi", "market": "TASE", "kind": "stock"},
+    {"ticker": "POLI.TA", "name": "Bank Hapoalim", "market": "TASE", "kind": "stock"},
+    {"ticker": "MZTF.TA", "name": "Mizrahi Tefahot Bank", "market": "TASE", "kind": "stock"},
+    {"ticker": "DSCT.TA", "name": "Israel Discount Bank", "market": "TASE", "kind": "stock"},
+    {"ticker": "PHOE.TA", "name": "Phoenix Financial", "market": "TASE", "kind": "stock"},
+    {"ticker": "HARL.TA", "name": "Harel Insurance", "market": "TASE", "kind": "stock"},
+    {"ticker": "ICL.TA", "name": "ICL Group", "market": "TASE", "kind": "stock"},
+    {"ticker": "TSEM.TA", "name": "Tower Semiconductor", "market": "TASE", "kind": "stock"},
+    {"ticker": "NVMI.TA", "name": "Nova", "market": "TASE", "kind": "stock"},
+    {"ticker": "CAMT.TA", "name": "Camtek", "market": "TASE", "kind": "stock"},
+    {"ticker": "NICE.TA", "name": "NICE Ltd", "market": "TASE", "kind": "stock"},
+    {"ticker": "ESLT.TA", "name": "Elbit Systems", "market": "TASE", "kind": "stock"},
+    {"ticker": "TEVA.TA", "name": "Teva Pharmaceutical", "market": "TASE", "kind": "stock"},
+    {"ticker": "BEZQ.TA", "name": "Bezeq", "market": "TASE", "kind": "stock"},
+    {"ticker": "AZRG.TA", "name": "Azrieli Group", "market": "TASE", "kind": "stock"},
+    {"ticker": "ORA.TA", "name": "Ormat Technologies", "market": "TASE", "kind": "stock"},
+    {"ticker": "ELAL.TA", "name": "El Al Israel Airlines", "market": "TASE", "kind": "stock"},
+]
+
+# ---- Israeli companies listed in the US (ADRs), kept as themselves ----
+#
+# These are a different instrument from the Tel Aviv line above: a different
+# currency, a different tax treatment, and for a shekel book an unhedged USD
+# exposure. The three whose TASE listing is now in this set -- TEVA, NICE and
+# ESLT -- were removed from here rather than duplicated, because one company
+# holding two slots in one ranking is a thumb on the scale.
+US_LISTED_ISRAELI: list[dict] = [
     {"ticker": "CHKP", "name": "Check Point Software", "market": "NASDAQ", "kind": "stock"},
-    {"ticker": "ESLT", "name": "Elbit Systems", "market": "NASDAQ", "kind": "stock"},
     {"ticker": "WIX", "name": "Wix.com", "market": "NASDAQ", "kind": "stock"},
     {"ticker": "MNDY", "name": "Monday.com", "market": "NASDAQ", "kind": "stock"},
     {"ticker": "GLOB", "name": "Globant", "market": "NYSE", "kind": "stock"},
@@ -121,7 +177,7 @@ def bond_candidates() -> list[dict]:
 def full_universe(include_commodities: bool = True, include_bonds: bool = True) -> list[dict]:
     """The complete candidate list with asset_class filled in (deduped by ticker)."""
     rows: list[dict] = []
-    for grp in (US_STOCKS, ETFS, TASE_STOCKS):
+    for grp in (US_STOCKS, ETFS, TASE_STOCKS, US_LISTED_ISRAELI):
         for r in grp:
             rows.append({**r, "asset_class": _asset_class(r["kind"])})
     if include_commodities:

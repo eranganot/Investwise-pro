@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 61.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 62.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -145,6 +145,73 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 62 — the Tel Aviv section was a label with nothing behind it
+
+Eran, 2026-09-06: *"the app can (and should) recommend me assets from TASE"*, and then
+*"let's start with the Israeli companies for now, add the Israeli indexes to the backlog."*
+
+**It could not, and the source said it could.** `universe.py:74` carried a section headed
+``# ---- Tel-Aviv (TASE) names (Yahoo .TA suffix) ----`` and a module docstring promising
+"Tel-Aviv (TASE) names". Every one of its seven entries was `"market": "NASDAQ"` or
+`"NYSE"` with no `.TA` suffix — the **US ADRs** of Israeli companies. `equity_universe()` is
+the only list the screener (`screener_agent.py:146`) and the signal service
+(`signal_service.py:152`) rank, so not one shekel-denominated instrument could ever be
+proposed, on a book denominated in shekels and taxed under Israeli CGT. Every suggestion the
+app has ever made carried an unhedged USD exposure it never named.
+
+**Everything else had been built for weeks.** `MARKET_CCY["TASE"] = "ILS"` (`fx.py:33`), the
+`.TA` symbol path (`live.py:50`), the ILA/agorot minor-unit detection and the 100x row
+repair (`fx.py:45-47`, `pricing_service.py:293`). Only the candidate list was missing, which
+is the part that decides what can ever be suggested.
+
+**Verified live through this app's own provider, 2026-09-06.** All 17 entries returned
+price, currency `ILA`, sector, P/E and 60 sessions of history: LUMI, POLI, MZTF, DSCT, PHOE,
+HARL, ICL, TSEM, NVMI, CAMT, NICE.TA, ESLT.TA, TEVA.TA, BEZQ, AZRG, ORA, ELAL — six sectors,
+because a ranking over six banks is a sector bet wearing a country's name.
+
+TEVA, NICE and ESLT moved to Tel Aviv rather than being duplicated: both listings are real
+and genuinely different instruments, but one company holding two slots in one ranking is a
+thumb on the scale. CHKP, WIX, MNDY and GLOB have no TASE line here and stay where they trade.
+
+### And adding them fires a gun V6 saw loaded
+
+V6's PR D called the unnormalised price writers *"a loaded gun, not a firing one, because no
+broker sync runs today and no CSV import is scheduled"*. **Putting Tel Aviv in the universe
+is what schedules it**, so the writer is fixed in the same PR rather than after the first
+wrong purchase.
+
+`_apply_buy_funded` read `float(q.price)` and the raw currency code, then computed
+`qty = budget / fx_rate(ccy) / price`. For LUMI.TA that is **7916 agorot used as a shekel
+price** — a hundredth of the shares bought — against an FX code, `ILA`, that no provider
+knows, so `fx_rate` errors and falls back rather than converting. Two wrongs that do not
+cancel. `to_major_units` says *"use at every boundary"* in its own docstring; PR 45 fixed
+`add_holding` and this boundary was left because nothing in the universe could reach it.
+
+`broker_sync._to_intake` is the same fault on the aggregator path, and it threw away a
+`currency` field `BrokerPosition` has carried since it was written — **including on the cost
+basis**, which is worse, because a wrong basis is a wrong CGT estimate on every card that
+quotes one afterwards. Both halves are fixed here; that closes the second and third of the
+four writers V6's PR D named.
+
+### What is NOT here, and why
+
+Israeli **index funds**. A TASE tracker trades under a numeric symbol (`1159250.TA`,
+`1146836.TA`) and the provider returns Not Found for every one tried; `TA35.TA` resolves as
+the **index**, which cannot be bought. So there is no shekel-denominated ETF in this set and
+`recommendations.CLASS_ETF` stays US-listed — a test asserts both, because a row claiming
+otherwise would be this same defect in the other direction. Parked in the product backlog
+with its un-park condition: a price provider that serves TASE fund symbols.
+
+`tests/test_the_universe_reaches_tel_aviv.py` — 9 tests, 5 confirmed RED against `446ceaa`.
+One of them, `test_no_entry_claims_a_market_its_symbol_contradicts`, asserts the *shape* of
+the original defect over every row rather than the ones I touched: nothing structural
+prevented a NASDAQ ticker being filed under TASE, so nothing structural prevented it coming
+back.
+
+Gates: 1732 SQLite, 1732 PostgreSQL on a dropped and recreated database, ruff clean.
 
 ---
 

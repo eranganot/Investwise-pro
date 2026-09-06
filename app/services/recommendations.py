@@ -4026,13 +4026,25 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     """
     from app.providers.registry import guarded_quote
     from app.schemas.state_machine import Market
-    from app.services.fx import fx_rate
+    from app.services.fx import fx_rate, to_major_units
     from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     ticker = (spec.get("ticker") or "").upper()
     try:
         q = await _offload(guarded_quote, ticker)
-        price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
+        # THE 100x TRAP, at the boundary that buys. `to_major_units` says "use at
+        # every boundary" in its own docstring; PR 45 fixed `add_holding` and this
+        # one was left because nothing in the candidate universe could reach it.
+        # PR 62 put Tel Aviv listings in that universe, which is what turns this
+        # from a loaded gun into a firing one -- V6 called it exactly that.
+        #
+        # Yahoo quotes Tel Aviv in AGOROT and says so in the CURRENCY CODE, not
+        # the price: LUMI.TA comes back as 7916.0 with currency ILA, meaning
+        # 79.16 ILS. Unnormalised, `qty = native / price` buys a hundredth of the
+        # shares, and `fx_rate("ILA")` is a code no provider knows -- it errors
+        # and falls back rather than converting. Two wrongs that do not cancel.
+        price, ccy = to_major_units(float(q.price),
+                                    (getattr(q, "currency", None) or "USD"))
     except Exception:  # noqa: BLE001 - no live price: refuse before anything moves
         price, ccy = 0.0, "USD"
     if price <= 0:
