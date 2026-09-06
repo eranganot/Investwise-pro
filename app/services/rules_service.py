@@ -703,6 +703,55 @@ async def _conflicting_rule(session: AsyncSession, user: User, ticker: str,
     return (await session.scalars(q)).first()
 
 
+async def name_caps(session: AsyncSession, user: User) -> dict[str, float]:
+    """Ticker -> its own ``max_weight`` cap, as a FRACTION of NAV.
+
+    THE CAP THAT ALERTED AND NEVER CONSTRAINED. A ``max_weight`` rule has always
+    fired a card once a position was already over it, and played no part in
+    deciding how much to buy or what to trim -- so the app would size a purchase
+    straight through the limit and then tell you it had been breached.
+
+    Measured on a reproduction, 2026-09-06: NVDA at 10% of the book with a
+    hand-set 12% cap, Equities under its Grow target so the buy was legitimate.
+    `propose_funded_buy` sized **4,500**, taking NVDA to **40.0%** -- bounded
+    only by the plan-wide `concentration_cap`, 28 points past the cap the user
+    had set. On the sell side the same position at 20% against its 12% cap
+    ranked BELOW an overweight BND, carrying the reason "corrects no drift",
+    because `rank_trim_candidates` measured `weight - cap` against the plan-wide
+    number too.
+
+    V5 and V6 called this "a hand-set cap plays no part in what gets trimmed".
+    It is both sides, and the buy side is the one that can create the breach.
+
+    UNITS. ``trading_rules.level`` is a PERCENTAGE for this rule type --
+    `_evaluate` compares it to `weight_pct` directly. Every consumer of caps in
+    `funding_service` works in FRACTIONS, like `concentration_cap`. The /100
+    happens once, here.
+
+    Only ACTIVE rules. A disabled cap is a cap the user turned off, and a
+    constraint that outlives its own switch is worse than no constraint.
+    """
+    rows = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.rule_type == "max_weight",
+                                  TradingRule.active.is_(True)))).all()
+    out: dict[str, float] = {}
+    for r in rows:
+        tk = (r.ticker or "").upper()
+        try:
+            lvl = float(r.level or 0.0) / 100.0
+        except (TypeError, ValueError):
+            continue
+        if not tk or lvl <= 0:
+            continue
+        # TWO CAPS ON ONE TICKER: the tighter one wins. `_ONE_PER_TICKER`
+        # already makes this unreachable through the normal paths, and a
+        # constraint that silently picks the looser of two limits is the wrong
+        # way to be wrong if it ever becomes reachable again.
+        out[tk] = min(out[tk], lvl) if tk in out else lvl
+    return out
+
+
 async def list_rules(session: AsyncSession, user: User) -> list[dict]:
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email)

@@ -990,6 +990,15 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
     plan = await get_plan(session, user)
     objective = plan.objective if plan else "Balanced"
     cap = effective_caps(plan)["concentration_cap"]
+    # The caps the user set on individual names, so an approved signal cannot
+    # size a buy through one. Same read as the Today builder does for the other
+    # card producers; this path has its own session. PR 65.
+    try:
+        from app.services.rules_service import name_caps as _nc
+        _name_caps = await _nc(session, user)
+    except Exception:  # noqa: BLE001 - a missing cap must not silence the war room
+        logger.warning("per-ticker caps unavailable for war-room cards", exc_info=True)
+        _name_caps = {}
     # The BOOK's target -- sleeves plus core -- not the objective table. Passed
     # into every funding call below; see `funding_service.targets_for` for what
     # reading the wrong one did to two live cards on 2026-09-03.
@@ -1073,7 +1082,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
         # swap if that is what it is.
         buy = _fund.propose_funded_buy(
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
-            book_target=_btgt,
+            book_target=_btgt, name_caps=_name_caps,
             ticker=tk, buying_class=cls, cash_ils=cash,
             # Every sleeve's tickers are off-limits as a funding source, not
             # just the one being bought. The plan holds those on purpose and one
@@ -1175,6 +1184,28 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     nav = snap["nav"]
     plan = await get_plan(session, user)
     cap = effective_caps(plan)["concentration_cap"]
+    # THE CAPS THE USER SET, ONE READ, HANDED TO EVERY CARD THAT SIZES A TRADE.
+    #
+    # A `max_weight` rule has always fired a card once a position was ALREADY
+    # over it, and played no part in deciding how much to buy or what to trim.
+    # Measured 2026-09-06: NVDA at 10% of the book with a hand-set 12% cap and
+    # Equities under its Grow target, so the buy was otherwise legitimate --
+    # the funder sized 4,500 and took NVDA to 40.0%, stopping only at the
+    # plan-wide cap, 28 points past the user's own limit. The rule then fired a
+    # card telling him the cap had been breached. A cap that alerts after the
+    # trade it could have prevented is not a cap. PR 65.
+    #
+    # Read here, at the top, because the geographic card at ~1650 sizes a buy
+    # too -- the first version of this loaded it beside the screener and left
+    # that one reading the plan-wide cap alone. One read rather than one per
+    # producer, for the reason `_ledger` exists: three cards asking the same
+    # question separately is how they come to disagree about the answer.
+    _name_caps: dict[str, float] = {}
+    try:
+        from app.services.rules_service import name_caps as _nc
+        _name_caps = await _nc(session, user)
+    except Exception:  # noqa: BLE001 - a missing cap must not take Today down
+        logger.warning("per-ticker caps unavailable this build", exc_info=True)
     objective = plan.objective if plan else "Balanced"
     recs: list[dict] = []
     try:
@@ -1640,7 +1671,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                         book_target=btgt["target"],
                         ticker="VXUS", buying_class="Equities", cash_ils=_cash_ils,
                         requested_ils=_amt, exclude=_sleeve_names, market="NASDAQ",
-                        allow_within_class_swap=True, ledger=_ledger)
+                        allow_within_class_swap=True, ledger=_ledger,
+                        name_caps=_name_caps)
                     if _b is not None:
                         _f = _b.fund
                         _act = (f"Buy {_ils(_b.amount_ils)} of VXUS (global ex-US equities) to "
@@ -1799,9 +1831,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("buy_ideas")
 
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
-                               btgt["target"])
+                               btgt["target"], _name_caps)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
-                           _sleeve_names, _ledger, btgt["target"])
+                           _sleeve_names, _ledger, btgt["target"], _name_caps)
 
     # THE SCREENER GETS A SURFACE. Ranked names become fundable cards here, and
     # deliberately LAST among the buying cards: the shared `_ledger` has already
@@ -1819,7 +1851,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _named = {str(r.get("meta", {}).get("chosen") or "") for r in recs}
     _named |= {str(r.get("meta", {}).get("ticker") or "") for r in recs}
     recs += await _offload(_buy_idea_recs, _ideas, rows, snap, plan, objective, cap,
-                           _cash_ils, _sleeve_names, _ledger, _named, btgt["target"])
+                           _cash_ils, _sleeve_names, _ledger, _named, btgt["target"],
+                           _name_caps)
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -2994,7 +3027,8 @@ def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
 
 
 def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
-                        book_mix: dict | None = None) -> list[dict]:
+                        book_mix: dict | None = None,
+                        name_caps: dict | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     After a stop-loss fires and you accept it, the proceeds land in cash and the
@@ -3079,7 +3113,9 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             for p in held:
                 if remaining < _fund.MIN_TRADE_ILS:
                     break
-                room = _fund.name_room_ils(nav, weights.get(p.ticker, 0.0), cap)
+                room = _fund.name_room_ils(
+                    nav, weights.get(p.ticker, 0.0),
+                    _fund.effective_name_cap(cap, p.ticker, name_caps))
                 amt = round(min(per, room, remaining), 2)
                 if amt < _fund.MIN_TRADE_ILS:
                     continue
@@ -3129,7 +3165,9 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         best = None
         for cls, gap_ils, tw in gaps:
             for p in (held_by_class.get(cls) or []):
-                room = _fund.name_room_ils(nav, weights.get(p.ticker, 0.0), cap)
+                room = _fund.name_room_ils(
+                    nav, weights.get(p.ticker, 0.0),
+                    _fund.effective_name_cap(cap, p.ticker, name_caps))
                 amt = round(min(remaining, room), 2)
                 if amt >= _fund.MIN_TRADE_ILS and (best is None or amt > best["amount_ils"]):
                     best = {"ticker": p.ticker, "amount_ils": amt, "asset_class": cls,
@@ -3153,7 +3191,9 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             if remaining < _fund.MIN_TRADE_ILS:
                 break
             already = x["amount_ils"]
-            room = _fund.name_room_ils(nav, weights.get(x["ticker"], 0.0), cap) - already
+            room = _fund.name_room_ils(
+                nav, weights.get(x["ticker"], 0.0),
+                _fund.effective_name_cap(cap, x["ticker"], name_caps)) - already
             extra = round(min(remaining, max(0.0, room)), 2)
             if extra < _fund.MIN_TRADE_ILS:
                 continue
@@ -3290,7 +3330,8 @@ _MAX_BUY_IDEA_CARDS = 2
 
 def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
                    sleeve_names=None, ledger=None, already_named=None,
-                   book_target: dict | None = None) -> list[dict]:
+                   book_target: dict | None = None,
+                   name_caps: dict | None = None) -> list[dict]:
     """Turn the screener's ranked names into fundable cards on Today.
 
     THE SCREENER HAD NO SURFACE. `buy_ideas` has been in the /recommendations
@@ -3366,7 +3407,7 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=tk, buying_class=cls, cash_ils=cash_ils,
             exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
-            ledger=ledger, book_target=book_target)
+            ledger=ledger, book_target=book_target, name_caps=name_caps)
 
         # THE RESERVE IS A LAST RESORT, NOT A FIRST ONE. Eran, 2026-09-06: the
         # cash target is soft, "if there is a good/valueble/interesting holding
@@ -3394,7 +3435,7 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
                 rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
                 ticker=tk, buying_class=cls, cash_ils=cash_ils,
                 exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
-                ledger=ledger, book_target=book_target,
+                ledger=ledger, book_target=book_target, name_caps=name_caps,
                 allow_reserve=True, reserve_reason=_why)
 
         if buy is None:
@@ -3448,7 +3489,8 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
 
 
 def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
-                    sleeve_names=None, ledger=None, book_mix: dict | None = None) -> list[dict]:
+                    sleeve_names=None, ledger=None, book_mix: dict | None = None,
+                    name_caps: dict | None = None) -> list[dict]:
     """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
     out: list[dict] = []
     sleeve_names = sleeve_names or set()
@@ -3504,7 +3546,7 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=pick_tk, buying_class="Commodities", cash_ils=cash_ils,
             requested_ils=gap_ils, exclude=sleeve_names, market="NYSE", ledger=ledger,
-            book_target=book_mix)
+            book_target=book_mix, name_caps=name_caps)
         if buy is not None:
             fund = buy.fund
             affordable = buy.amount_ils

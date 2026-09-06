@@ -7,7 +7,7 @@ _Seeded from git history + prior transcripts._
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 64.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 65.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -145,6 +145,81 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 65 — V5's "PR C" was two claims, and one of them was wrong
+
+The row has been carried since V5 on 2026-09-02 and re-verified into V6 and V7 as *"the veto and the
+cap that nothing reads"*, the oldest untouched item on the board. Both halves were finally measured
+against the running code, and they did not survive equally.
+
+### Claim A — "nothing on the live path stops a card buying into an overweight class"
+
+**False.** `AllocationAgent.review_buy` really is reachable only from `pipeline.py:102` /
+`POST /decision-feed/generate` — `grep -rn review_buy app/` still returns the definition and that one
+caller. But the live card path does not need it, because `propose_funded_buy` enforces a **stricter**
+rule of its own. Measured 2026-09-06 on a book 100% in Equities against a Grow target:
+
+```
+buy into Equities      -> REFUSED (None)
+buy into Fixed Income  -> card for 1,500
+```
+
+`review_buy` asks one question: *is this class overweight*. `propose_funded_buy` asks three — does
+the trade move the class **toward** its target, is it a within-class swap that must be **labelled**
+as one, and does **total book drift** get worse. The weaker check is the one sitting on the quieter
+path.
+
+So the fix is not the one three plans have proposed. Wiring `review_buy` into Today would add a
+second, laxer implementation of a rule already enforced — the exact shape this codebase has spent
+PRs removing (`settings.objective`, the duplicate `max_weight` producers, `_core_plan`'s one sizing
+and two callers). `review_buy` stays where it is, guarding `/decision-feed/generate`, and the
+guarantee the live path gives is now **pinned by a test** so it cannot regress into being true.
+
+### Claim B — "a hand-set cap plays no part in what gets trimmed"
+
+**True, and it is worse than trimming.** It played no part in **buying** either, and the buy is what
+creates the breach.
+
+Measured on a book with NVDA at 10%, a hand-set 12% `max_weight` rule, and Equities *under* its Grow
+target so the purchase was otherwise legitimate:
+
+| | before | after |
+|---|---|---|
+| sized buy | **₪4,500**, NVDA lands at **40.0%** | **₪300**, NVDA lands at **12.0%** |
+| the same position at 20%, ranked for trimming | 3rd, *"corrects no drift"* | **1st**, *"NVDA is 20% of the book, above your own cap on it of 12%"* |
+
+Bounded only by the plan-wide `concentration_cap` — twenty-eight points past the limit the user set —
+and the `max_weight` rule then fired a card telling him the cap had been breached. **A cap that
+alerts after the trade it could have prevented is not a cap.**
+
+### The fix
+
+`rules_service.name_caps(session, user)` loads ticker → cap as a **fraction** from active
+`max_weight` rules (the column is a percentage for this rule type; the `/100` happens once, there).
+`funding_service.effective_name_cap(cap, ticker, name_caps)` returns the **tighter** of the plan-wide
+cap and the ticker's own — neither may relax the other — and it is read by `name_room_ils` on the buy
+side, by `name_over` and the `name_allow` budget on the sell side, and by the three redeploy sizings.
+
+Threaded like `prefer` (PR 61.1) and `live` (PR 63): one read at the top of the builder, handed to
+every producer. It goes at the **top** deliberately — the first version loaded it beside the screener
+and left the geographic card at ~1650 still reading the plan-wide cap alone.
+
+Only **active** rules. A disabled cap is a cap the user switched off, and a constraint that outlives
+its own switch is worse than no constraint.
+
+`tests/test_a_cap_you_set_bounds_the_trade.py` — 8 tests, 3 confirmed RED against `8292c89`. The
+other five pin Claim A's guarantee and the loader's units, which is the point: they pass today and
+their job is to keep passing.
+
+Gates: 1762 SQLite, 1762 PostgreSQL on a dropped and recreated database, ruff clean.
+
+**The lesson worth keeping.** This row survived three re-verification passes — V5 wrote it, V6
+re-checked it and kept it, V7 called it the oldest untouched item — and half of it was wrong the
+whole time. Each pass confirmed that `review_buy` has one caller, which is true, and inferred from
+that what the live path does, which is not the same thing. `grep` proves where a function is called;
+only running the other path proves what it does instead.
 
 ---
 

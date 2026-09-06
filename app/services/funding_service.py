@@ -137,11 +137,27 @@ def class_gap_ils(nav: float, mix: dict, cls: str, class_target: float) -> float
     return round(float(nav) * gap, 2)
 
 
+def effective_name_cap(cap: float, ticker: str, name_caps: dict | None = None) -> float:
+    """The tighter of the plan-wide cap and this ticker's own ``max_weight`` rule.
+
+    The tighter one, always. A hand-set cap is a limit the user chose for that
+    position; the plan-wide one is a limit the objective implies for every
+    position. Neither may be relaxed by the other, so the binding constraint is
+    the minimum -- and a book with no rule on a ticker behaves exactly as before.
+    """
+    base = float(cap) if cap is not None else 1.0
+    own = (name_caps or {}).get((ticker or "").upper())
+    return min(base, float(own)) if own is not None else base
+
+
 def name_room_ils(nav: float, ticker_weight: float, cap: float) -> float:
     """How much of ONE NAME can be added before the concentration cap bites.
 
     A ceiling, never a statement of intent. Room under the cap is not a reason to
     buy — it is only the most you may buy once something else has given a reason.
+
+    ``cap`` is the EFFECTIVE cap for this ticker -- see `effective_name_cap`.
+    Callers pass the plan-wide number only when the book has no rule on the name.
     """
     if not nav or cap is None:
         return 0.0
@@ -218,7 +234,8 @@ def targets_for(objective: str | None, book_target: dict | None = None) -> dict:
 def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                          exclude: set[str] | None = None,
                          book_target: dict | None = None,
-                         prefer: set[str] | None = None) -> list[dict]:
+                         prefer: set[str] | None = None,
+                         name_caps: dict | None = None) -> list[dict]:
     """Holdings ranked by how poorly they fit the plan — worst fit sells first.
 
     Ordering is deliberate: sell what the plan says you're carrying too much of,
@@ -262,7 +279,13 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
             continue
         cls = p["asset_class"]
         class_over = max(0.0, mix.get(cls, 0.0) - target.get(cls, 0.0))
-        name_over = max(0.0, p["weight"] - cap)
+        # A POSITION IS OVER ITS OWN CAP BEFORE IT IS OVER THE PLAN'S. Measured
+        # 2026-09-06: NVDA at 20% of the book against a hand-set 12% cap ranked
+        # BELOW an overweight BND and carried the reason "corrects no drift",
+        # because this measured `weight - concentration_cap` and the plan-wide
+        # number was 40%. The cap the user set was not in the arithmetic at all.
+        _cap_here = effective_name_cap(cap, p["ticker"], name_caps)
+        name_over = max(0.0, p["weight"] - _cap_here)
         gain_pct = ((p["price"] - p["cost_basis"]) / p["cost_basis"] * 100.0
                     if p["cost_basis"] else 0.0)
         # Trimming a loser realizes a deductible loss; trimming a big winner
@@ -282,8 +305,11 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                       f"you are funding is the index it was leveraging, so this is the "
                       f"trade itself rather than a way to pay for it")
         elif name_over > 0:
-            reason = (f"{p['ticker']} is {p['weight']:.0%} of the book, above your "
-                      f"{cap:.0%} single-name cap")
+            _own = (name_caps or {}).get(p["ticker"])
+            _whose = ("your own cap on it" if _own is not None and _own <= cap
+                      else "your single-name cap")
+            reason = (f"{p['ticker']} is {p['weight']:.0%} of the book, above "
+                      f"{_whose} of {_cap_here:.0%}")
         else:
             # This says why THIS position was picked to sell. It is NOT a claim
             # that selling it corrects the overweight.
@@ -337,7 +363,8 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  book_target: dict | None = None,
                  prefer: set[str] | None = None,
                  allow_reserve: bool = False,
-                 reserve_reason: str | None = None) -> dict:
+                 reserve_reason: str | None = None,
+                 name_caps: dict | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
@@ -442,14 +469,16 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                                  for p in _position_rows(rows, snap))) >= MIN_TRADE_ILS
 
         for cand in rank_trim_candidates(rows, snap, objective, cap, exclude,
-                                         book_target=book_target, prefer=prefer):
+                                         book_target=book_target, prefer=prefer,
+                                         name_caps=name_caps):
             if remaining_net < MIN_TRADE_ILS:
                 break
             price_ils = cand["price_ils"] or 0.0
             if price_ils <= 0:
                 continue
             cls = cand.get("asset_class")
-            name_allow = max(0.0, cand["weight"] - cap) * nav
+            name_allow = max(0.0, cand["weight"]
+                             - effective_name_cap(cap, cand["ticker"], name_caps)) * nav
             allow = max(name_allow, class_budget.get(cls, 0.0))
             # A preferred candidate is eligible on its own terms for the same
             # reason `buying_class` is: a step-back swap converts one Equities
@@ -710,7 +739,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                        ledger: "FundingLedger | None" = None,
                        book_target: dict | None = None,
                        allow_reserve: bool = False,
-                       reserve_reason: str | None = None) -> FundedBuy | None:
+                       reserve_reason: str | None = None,
+                       name_caps: dict | None = None) -> FundedBuy | None:
     """Size, fund, simulate and narrate a purchase — or return None.
 
     Returning None is the point as often as returning a card is. A purchase the
@@ -743,8 +773,18 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     class_target = float(targets.get(buying_class, 0.0) or 0.0)
 
     # What the PLAN wants here, and separately the most this NAME may take.
+    #
+    # THE MOST THIS NAME MAY TAKE IS THE TIGHTER OF TWO CAPS. This read the
+    # plan-wide `concentration_cap` alone, so a hand-set `max_weight` rule -- a
+    # limit the user set on that specific position -- did not bound the purchase
+    # at all. Measured 2026-09-06 on a book with NVDA at 10% and a 12% cap, with
+    # Equities under its Grow target so the buy was otherwise legitimate: this
+    # sized 4,500 and took NVDA to 40.0%, stopping only at the plan-wide cap,
+    # 28 points past the user's own limit -- and the rule then fired a card
+    # telling him the cap had been breached. A cap that alerts after the trade
+    # it could have prevented is not a cap.
     gap = class_gap_ils(nav, mix, buying_class, class_target)
-    room = name_room_ils(nav, ticker_weight, cap)
+    room = name_room_ils(nav, ticker_weight, effective_name_cap(cap, tk, name_caps))
     want = min(gap, room) if gap >= MIN_TRADE_ILS else room
     if gap < MIN_TRADE_ILS and not allow_within_class_swap:
         # The class is at or over target. Absent an explicit opt-in there is no
@@ -762,7 +802,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils,
                         exclude=ex, reserved=_res, cash_used=_used,
                         book_target=book_target, allow_reserve=allow_reserve,
-                        reserve_reason=reserve_reason)
+                        reserve_reason=reserve_reason, name_caps=name_caps)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
     if amount < MIN_TRADE_ILS:
         return None
@@ -772,7 +812,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         fund = plan_funding(rows, snap, plan, objective, cap, amount,
                             cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used,
                             book_target=book_target, allow_reserve=allow_reserve,
-                            reserve_reason=reserve_reason)
+                            reserve_reason=reserve_reason, name_caps=name_caps)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
         if amount < MIN_TRADE_ILS:
             return None
