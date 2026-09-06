@@ -110,3 +110,57 @@ def test_the_headline_amount_is_the_money_that_moves():
     assert '_moved = max(_sold' in window, (
         "the core card's headline is sized from the buy leg again")
     assert '_to_cash' in window, "the card no longer names the leftover cash"
+
+
+# --------------------------------------------------------------------------- #
+# PR 60.1 -- the deferral shipped dead, and finding out why found something worse
+# --------------------------------------------------------------------------- #
+def test_occupancy_reports_a_gap_in_one_unit():
+    """`target_pct - held_pct` subtracted a percent from a fraction.
+
+    `target_pct` is 0-100 (33.9 means 33.9%). `held_pct` is a FRACTION (0.3509),
+    a convention the UI documents at index.html:1579. So a sleeve holding 35.09%
+    of the book against a 33.9% target reported `gap_pct: +33.54` -- reading as
+    "a third of the book under-funded" when it is 1.2 points OVER. Wrong by the
+    whole held fraction, and always in the direction of "you hold nothing".
+    """
+    import inspect
+
+    from app.services import sleeve_service as sv
+
+    target_pct = round(33.9, 4)
+    held_pct = round(7686.0 / 21900.0, 4)
+    gap = round(target_pct - held_pct * 100.0, 4)
+
+    assert gap < 0, f"a sleeve held above its target must report a negative gap, got {gap}"
+    assert abs(gap - (33.9 - 35.09)) < 0.05, gap
+
+    src = inspect.getsource(sv.sleeve_occupancy)
+    assert "target_pct - held_pct * 100.0" in src, (
+        "gap_pct is subtracting a fraction from a percent again")
+
+
+def test_the_core_reads_the_key_occupancy_actually_emits():
+    """`sleeve_occupancy` has never emitted `sleeve_pct`. Two loops read it.
+
+    One is mine, and it is why PR 60's deferral shipped dead -- `unfunded_ils`
+    came to 0.00 on a book with a 33% sleeve holding nothing, so the core went
+    on offering to sell TQQQ. The deploy check caught it in production.
+
+    The other predates this work and is worse: `want_pct` fell to 0.0 for every
+    sleeve, so `held > 0` was the test and the core was handed the sleeves'
+    ENTIRE held value as "overshoot" -- SOXL's whole ₪7,686 position on the live
+    book. `core_realign` promises it "will not trim a sleeve BELOW its own
+    target"; that guarantee was vacuous. It never bit only because the funding
+    path engages when buys exceed sells plus cash, which this book never hit.
+    """
+    import inspect
+
+    from app.services import recommendations
+
+    src = inspect.getsource(recommendations._core_plan)
+    assert 's.get("sleeve_pct")' not in src, (
+        "_core_plan is reading a key sleeve_occupancy does not emit; every "
+        "sleeve reads as 0% target")
+    assert src.count('s.get("target_pct")') == 2, (
+        "both the overshoot loop and the unfunded loop must read target_pct")

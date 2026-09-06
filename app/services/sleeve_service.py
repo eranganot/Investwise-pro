@@ -230,7 +230,15 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
             "target_pct": target_pct,
             "held_ils": round(held_ils, 2),
             "held_pct": held_pct,
-            "gap_pct": round(target_pct - held_pct, 4),
+            # BOTH SIDES IN PERCENT. This read `target_pct - held_pct`, and
+            # those are not the same unit: `target_pct` is 0-100 (33.09 means
+            # 33.09%) while `held_pct` is a FRACTION (0.3509), a convention the
+            # UI documents at index.html:1579. So a sleeve at 33.9% target
+            # holding 35.09% of the book reported a gap of +33.54 -- an
+            # under-funding of a third of the book -- when it is actually 1.2
+            # points OVER. The number was wrong by the whole held fraction, and
+            # always in the direction of "you hold nothing". PR 60.1.
+            "gap_pct": round(target_pct - held_pct * 100.0, 4),
             "tickers": sorted(tk.upper() for tk in targets),
         })
 

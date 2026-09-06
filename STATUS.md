@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-06 by Claude (PR 60 — two cards wanted the same ₪7,476)._
+_Last updated: 2026-09-06 by Claude (PR 60.1 — the deferral shipped dead, and finding out why found something worse)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 60.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 60.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -144,6 +144,56 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 60.1 — the deferral shipped dead, and finding out why found something worse
+
+PR 60's step 5 asked production and printed **"STILL SELLING TQQQ. The deferral did not take."** The
+headline fix and the cash line had landed — the card now read *"Rebalance about ₪7,476"* with *"About
+₪7,041 of the proceeds would stay as cash"* — but the deferral itself never fired.
+
+**My bug.** `sleeve_occupancy` emits `target_pct`. I read `sleeve_pct`, which is not a key on that
+dict, so `float(s.get("sleeve_pct") or 0.0)` was `0.0` for every sleeve, `unfunded_ils` came to
+**0.00** on a book with a 33% sleeve holding nothing, and the deferral was skipped. Green tests, dead
+feature — the tests asserted `plan_realign`'s behaviour given a `deferred` list, and never that
+`_core_plan` produced one.
+
+**The one it led me to is worse, and it predates this work.** The loop directly above mine makes the
+same mistake:
+
+```python
+want_pct = float(s.get("sleeve_pct") or 0.0)     # always 0.0
+if held_pct > want_pct:
+    over += (held_pct - want_pct) / 100.0 * nav  # so: the sleeve's ENTIRE holding
+```
+
+`over` is `sleeve_over_ils` — the money `core_realign` is allowed to reclaim from the sleeves. Its
+docstring promises *"It will not trim a sleeve BELOW its own target. The sleeves' sizes are a
+decision the user made on the Plan tab; this may reclaim what is over that decision and may not
+overrule it."* With `want_pct` pinned at zero, **every shekel in every sleeve counted as overshoot** —
+measured on the live book, SOXL's whole ₪7,686 position. The guarantee was vacuous.
+
+It has never bitten because that funding path only engages when the buys exceed sells plus spendable
+cash, which this book has not hit. On an under-funded core it would have sold a whole sleeve.
+
+**And `gap_pct` was in two units at once.** `target_pct` is 0-100; `held_pct` is a fraction — a
+convention the UI documents at `index.html:1579`. `gap_pct` was `target_pct - held_pct`, so a sleeve
+at a 33.9% target holding 35.09% of the book reported `+33.54`: reading as *a third of the book
+under-funded* when it is **1.2 points over**. Wrong by the whole held fraction, and always in the
+direction of "you hold nothing".
+
+| | before | after |
+|---|---|---|
+| `unfunded_ils` (deferral) | 0.00 | ₪7,247 |
+| `sleeve_over_ils` | 7,684.71 (SOXL's whole position) | 0.00 |
+| `gap_pct` for SOXL | +33.54 | −1.19 |
+
+Gates: 1712 SQLite, 1712 PostgreSQL on a dropped and recreated database, ruff clean.
+
+**The lesson worth keeping.** The deploy check found this, not the suite. A step 5 that asks
+production what it is actually saying is worth more than a green test that asserts the layer below
+the bug — twice now: PR 56.1's leftover key, and this.
 
 ---
 

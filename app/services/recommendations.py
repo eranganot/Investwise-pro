@@ -4051,7 +4051,17 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     over = 0.0
     for s in (occ.get("sleeves") or []):
         held_pct = float(s.get("held_pct") or 0.0) * 100.0   # held_pct is a fraction
-        want_pct = float(s.get("sleeve_pct") or 0.0)
+        # `target_pct`, NOT `sleeve_pct`. `sleeve_occupancy` has never emitted a
+        # `sleeve_pct` key, so this read 0.0 for every sleeve -- which made the
+        # comparison `held > 0` and handed the core the sleeves' ENTIRE held
+        # value as "overshoot". On the live book that offered SOXL's whole
+        # ₪7,686 position. `core_realign` promises in its own docstring that it
+        # "will not trim a sleeve BELOW its own target... may reclaim what is
+        # over that decision and may never overrule it", and this made that
+        # guarantee vacuous. It never bit because the funding path only engages
+        # when the buys exceed sells plus cash; on an under-funded core it would
+        # have sold a whole sleeve. PR 60.1.
+        want_pct = float(s.get("target_pct") or 0.0)
         if held_pct > want_pct:
             over += (held_pct - want_pct) / 100.0 * nav
     if sleeve_val:
@@ -4079,7 +4089,13 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     deferred: list[dict] = []
     unfunded_ils = 0.0
     for s in (occ.get("sleeves") or []):
-        gap = float(s.get("sleeve_pct") or 0.0) - float(s.get("held_pct") or 0.0) * 100.0
+        # Same key mistake as the loop above, and it is why PR 60 shipped with
+        # the deferral silently dead: unfunded_ils came to 0.00 on a book with a
+        # 33% sleeve holding nothing, so the core went on offering to sell TQQQ.
+        # The deploy check caught it -- "STILL SELLING TQQQ" -- which is the
+        # argument for a step 5 that asks production rather than trusting green
+        # tests. PR 60.1.
+        gap = float(s.get("target_pct") or 0.0) - float(s.get("held_pct") or 0.0) * 100.0
         if gap > 0:
             unfunded_ils += gap / 100.0 * nav
     if unfunded_ils >= core_realign.MIN_LEG_ILS:
