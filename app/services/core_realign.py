@@ -68,7 +68,8 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
                  held: dict[str, float], cash_ils: float, cash_floor_ils: float,
                  sleeve_over_ils: float = 0.0, cgt_rate: float = 0.0,
                  gain_frac: dict[str, float] | None = None,
-                 allow_sleeve_trim: bool = True) -> dict:
+                 allow_sleeve_trim: bool = True,
+                 deferred: list[dict] | None = None) -> dict:
     """What it would take to bring the core back to the basket it names.
 
     ``held`` is the CORE REGION only -- what no sleeve claims and is not cash,
@@ -182,11 +183,28 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
         "ok": bool(legs),
         "reason": (SHORT_OF_FUNDS if shortfall >= MIN_LEG_ILS else None),
         "legs": legs,
+        # Holdings the caller took OUT of the core region before calling, with
+        # the reason. Reported so the card can say what it is deliberately not
+        # touching -- silence there reads as "the app did not notice", which is
+        # how two cards came to propose different destinations for one position.
+        "deferred": list(deferred or []),
         "sells_ils": _round2(sum(s["ils"] for s in sells)),
         "sleeve_trim_ils": _round2(sleeve_leg["ils"] if sleeve_leg else 0.0),
         "cash_used_ils": _round2(min(spendable, max(0.0, need - raised))),
         "buys_ils": _round2(sum(b["funded_ils"] for b in buys)),
         "tax_ils": _round2(tax),
+        # WHERE THE REST OF THE PROCEEDS GO, named because they go somewhere.
+        # Rule 1 sells a non-basket holding IN FULL, and the buys are only what
+        # the legs are short -- so a big full exit against a small gap leaves
+        # most of the proceeds sitting in cash. Observed on the live book: sells
+        # 7,476, buys 422, and ~7,040 becoming cash with no line on the card
+        # saying so, under a headline that read "Rebalance about 422". The
+        # card-claim invariant is not only about legs that execute; a
+        # CONSEQUENCE of the legs this size is a change the reader has to be
+        # told about. PR 60.
+        "to_cash_ils": _round2(max(0.0, sum(s["ils"] for s in sells)
+                                   + (sleeve_leg["ils"] if sleeve_leg else 0.0)
+                                   - tax - sum(b["funded_ils"] for b in buys))),
         "shortfall_ils": shortfall,
         "want_ils": {t: _round2(v) for t, v in sorted(want.items())},
         "have_ils": {t: _round2(v) for t, v in sorted(have.items())},
@@ -220,6 +238,12 @@ def describe(plan: dict) -> list[str]:
             out.append(f"Buy {leg['ticker']} — about {amt}{tail}")
     if (plan.get("tax_ils") or 0) > 0:
         out.append(f"Estimated tax on the sales: about ₪{round(plan['tax_ils']):,}")
+    if (plan.get("to_cash_ils") or 0) >= MIN_LEG_ILS:
+        out.append(f"About ₪{round(plan['to_cash_ils']):,} of the proceeds would stay "
+                   f"as cash — the basket's legs do not need it")
+    for d in plan.get("deferred") or []:
+        out.append(f"{d['ticker']} — about ₪{round(d['ils']):,} is NOT sold here: "
+                   f"{d['why']}")
     if (plan.get("shortfall_ils") or 0) >= MIN_LEG_ILS:
         out.append(f"About ₪{round(plan['shortfall_ils']):,} would still be unfunded — "
                    f"that needs new money, and this will say so again next time")

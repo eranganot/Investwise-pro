@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-06 by Claude (PR 59.1 — the rules a retired sleeve leaves behind)._
+_Last updated: 2026-09-06 by Claude (PR 60 — two cards wanted the same ₪7,476)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-03
 
-**HEAD is PR 59.1.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 60.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -144,6 +144,74 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Set `cash_target_pct`** | PR 54 built the field and the card; nobody has set a number, so ₪618 is still "drift" rather than a decision. | Eran naming a percentage, or deciding zero is right. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 60 — two cards wanted the same ₪7,476, and the headline understated one by 17x
+
+Eran, looking at Today after the B2 swap: *"I don't understand these cards... why is TQQQ part of
+the core and not the sleeves?"*
+
+Two cards were on screen at once:
+
+* **"Bring your core back to Classic 60/40"** — *Sell all TQQQ, about ₪7,476 (not in the core's
+  basket). Buy VTI, about ₪422.* Headlined **"Rebalance about ₪422 inside your own book."**
+* **"You chose a 33% QQQ sleeve and hold none of it"** — *Closing it means moving about ₪7,238
+  into QQQ.*
+
+**Same money, two destinations, neither card aware of the other.**
+
+### Why TQQQ was "in the core"
+
+The core is the **remainder** — `PlanSleeve`'s docstring says it: *"the core is the implicit
+remainder, not a row."* PR 59 swapped `btm_swing_dip` for `btm_qqq_hold`, so nothing claimed TQQQ
+any more, so it fell into the core region, so rule 1 of `plan_realign` said *not in the core's
+basket, sell it in full*. Every step correct and the conclusion wrong: "retire the overlay, hold
+the base" means the money goes to **QQQ**, not to VTI and cash.
+
+The collision was real, not theoretical. `_fund_sleeve` builds `exclude = set(targets) |
+sleeve_tickers(...)` — only tickers a sleeve **currently** claims. TQQQ was no longer one, so the
+sleeve's own funding plan was free to sell exactly the same position.
+
+### The headline was wrong by 17x
+
+```python
+_moved = float(_plan.get("buys_ils") or 0.0)   # = 422
+"action": f"Rebalance about {_ils(_moved)} inside your own book — no new money."
+```
+
+`buys_ils` is only what the basket's legs are *short*. Step 1 sold ₪7,476. Every individual leg was
+honest — `describe()` listed them — but the sentence on top of them was not, and `est_amount` feeds
+the mute, re-fire and merge logic, so the card was sized as a small one.
+
+**And nothing said where the rest went.** Sells ₪7,476, buys ₪422, tax ₪14 — about **₪7,040**
+becoming cash, roughly a third of the book, with no line on the card. `describe()` was written as
+the card-claim invariant in one function and listed every LEG; a *consequence* of the legs, at that
+size, is a change the reader has to be told about too.
+
+Reproduced exactly before fixing: `sells 7476.0, buys 422.4, tax 14.02, to_cash 7039.58` — the same
+three numbers that were on his screen.
+
+### What ships
+
+* `to_cash_ils` on the plan, and a `describe()` line naming it.
+* `deferred` on the plan: holdings the caller pulled out of the core region, **with the reason**, so
+  the card says what it is deliberately not touching. Silence there reads as "the app did not
+  notice", which is how two cards came to propose two destinations for one position.
+* `_core_plan` reserves unclaimed non-basket holdings while any sleeve is under-funded. The tie
+  breaks toward the sleeve because a sleeve size is a decision made on the Plan tab and the core is
+  what is left over. Reserved **whole**, not sliced: the funding plan decides how much it needs, and
+  a core card selling part of it first is the pre-emption being removed. A basket leg is never
+  deferred — that is core money doing its job.
+* The headline reports the money that moves, and names the leftover cash.
+
+Gates: 1710 SQLite, 1710 PostgreSQL on a dropped and recreated database, ruff clean. Three of the
+four new assertions confirmed RED against the pre-fix tree.
+
+**Still open, and it is the rest of item 4:** the sleeve's target does not follow its signal, so a
+swing card cannot be actionable yet, and there is no single card that says *"move ₪7,476 from TQQQ
+to QQQ"* in one tap. This PR stops the app proposing the wrong destination; it does not yet propose
+the right one in one action.
 
 ---
 

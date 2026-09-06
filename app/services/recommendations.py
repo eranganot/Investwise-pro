@@ -1549,7 +1549,15 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     if _extra:
                         _bits.append(f"{_extra} is in it and not in the basket")
                     _short = float(_plan.get("shortfall_ils") or 0.0)
-                    _moved = float(_plan.get("buys_ils") or 0.0)
+                    # THE MONEY THAT MOVES, not the buy leg. This read
+                    # `buys_ils`, so a card whose step 1 sold 7,476 of TQQQ was
+                    # headlined "Rebalance about 422" -- the buys were all the
+                    # basket's legs were short. Understating a trade by 17x is
+                    # the card-claim invariant failing at the headline while
+                    # every individual leg stayed honest. PR 60.
+                    _sold = float(_plan.get("sells_ils") or 0.0)
+                    _to_cash = float(_plan.get("to_cash_ils") or 0.0)
+                    _moved = max(_sold, float(_plan.get("buys_ils") or 0.0))
                     recs.append({
                         "id": _rid("corebasket", _core_id),
                         "dimension": "allocation",
@@ -1564,6 +1572,9 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                                    f"no new money."),
                         "impact": (f"Puts the core back on {_cname}, so its measured return and "
                                    f"volatility start pricing {_core_pct:.0%} of your book."
+                                   + (f" About {_ils(_to_cash)} of the proceeds would sit in "
+                                      f"cash — the basket does not need it."
+                                      if _to_cash >= _REFIRE_FLOOR_ILS else "")
                                    + (f" About {_ils(_short)} would still be unfunded."
                                       if _short >= _REFIRE_FLOOR_ILS else "")),
                         # EVERY LEG, BEFORE THE BUTTON. These lines come from the
@@ -4047,13 +4058,49 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         tot = sum(sleeve_val.values())
         gain["__sleeves__"] = sum(gain.get(t, 0.0) * v for t, v in sleeve_val.items()) / tot
 
+    # AN UNFUNDED SLEEVE HAS FIRST CLAIM ON UNCLAIMED MONEY.
+    #
+    # The core is the REMAINDER -- everything no sleeve claims -- so the moment a
+    # sleeve is retired or swapped, its old instrument falls in here and rule 1
+    # of `plan_realign` says "not in the core's basket, sell it in full". On the
+    # live book that produced a card offering to sell 7,476 of TQQQ into VTI and
+    # cash, while a second card said the 33% QQQ sleeve was unfunded and needed
+    # 7,238. Two cards, two destinations, one position -- and `_fund_sleeve`
+    # excludes only tickers a sleeve CURRENTLY claims, so its funding plan would
+    # have sold the same TQQQ.
+    #
+    # That is the duplicate-card shape PR 54.1 fixed one layer up, and the tie
+    # breaks toward the sleeve: a sleeve size is a decision the user made on the
+    # Plan tab, while the core is what is left over. Reserved WHOLE rather than
+    # sliced -- the funding plan decides how much it actually needs, and a core
+    # card that sells part of it first is exactly the pre-emption being removed.
+    #
+    # A basket leg is never deferred: that is core money doing its job.
+    deferred: list[dict] = []
+    unfunded_ils = 0.0
+    for s in (occ.get("sleeves") or []):
+        gap = float(s.get("sleeve_pct") or 0.0) - float(s.get("held_pct") or 0.0) * 100.0
+        if gap > 0:
+            unfunded_ils += gap / 100.0 * nav
+    if unfunded_ils >= core_realign.MIN_LEG_ILS:
+        for tk in sorted(held):
+            if tk in {t.upper() for t in basket}:
+                continue
+            deferred.append({
+                "ticker": tk, "ils": round(held[tk], 2),
+                "why": (f"your sleeves are about ₪{unfunded_ils:,.0f} short of the "
+                        f"sizes you set, and this is money no sleeve claims — "
+                        f"funding a sleeve with it is a decision you already made")})
+        for d in deferred:
+            held.pop(d["ticker"], None)
+
     from app.core.config import get_settings
     plan_row = await get_plan(session, user)   # module-level import; one loader
     out = core_realign.plan_realign(
         basket=basket, core_pct=core_pct, nav=nav, held=held,
         cash_ils=cash_ils, cash_floor_ils=cash_floor_ils(nav, objective, plan_row),
         sleeve_over_ils=over, cgt_rate=float(get_settings().cgt_rate),
-        gain_frac=gain)
+        gain_frac=gain, deferred=deferred)
     out["core_strategy_id"] = core_id
     out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
     out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}
