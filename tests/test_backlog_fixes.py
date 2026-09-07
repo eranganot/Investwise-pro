@@ -62,11 +62,19 @@ def test_the_trim_threshold_is_the_apps_own_minimum():
 
 
 def test_the_index_carries_an_ils_value_not_a_native_one():
-    """The trim threshold is in shekels, so the value it reads must be too."""
+    """The trim threshold is in shekels, so the value it reads must be too.
+
+    PR 66 moved the body into `_positions_index_and_nav` -- the cap card needs
+    the NAV the index was measured against, and loading the book twice to get it
+    is how two numbers on one screen come to disagree. The guard follows the
+    body, and also pins the delegation so the pair cannot drift into two answers.
+    """
     import inspect
-    src = inspect.getsource(rs._positions_index)
+    src = inspect.getsource(rs._positions_index_and_nav)
     assert '"value_ils"' in src
     assert "snap.get(\"nav\")" in src, "value must come from the FX-normalised snapshot"
+    assert "_positions_index_and_nav(session, user)" in inspect.getsource(rs._positions_index), (
+        "_positions_index built its own index again instead of delegating")
 
 
 # --------------------------------------------------------------------------- #

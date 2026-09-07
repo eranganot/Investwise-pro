@@ -88,17 +88,78 @@ _SEV = {"stop_loss": "CRITICAL", "trailing_stop": "CRITICAL", "max_weight": "HIG
 #
 # 2.5% of the level, floored at half a point, so a 20% cap re-arms at 19.5% and
 # a 500 price alert re-arms at 487.50.
+def cap_trim_ils(level: float, weight_pct: float, value_ils: float) -> float:
+    """What trimming back to the cap would actually sell, in shekels.
+
+    Zero when the position is at or under its cap. One function so the firing
+    test, the re-arm test and `execution_plan` cannot disagree about whether
+    there is a trade behind a breach -- they did, and the disagreement is what
+    put two cards on Eran's screen that could not be acted on.
+    """
+    lvl = abs(float(level or 0.0))
+    w = float(weight_pct or 0.0)
+    if w <= 0 or w <= lvl:
+        return 0.0
+    return max(0.0, float(value_ils or 0.0)) * ((w - lvl) / w)
+
+
+def cap_breach_is_material(level: float, weight_pct: float, value_ils: float) -> bool:
+    """A cap breach is a breach when there is a trade behind it.
+
+    Eran, 2026-09-06, on two cards he could not act on: *"why do I still getting
+    guidance cards? all these cards should be actionable"*. Measured on the live
+    book the same minute:
+
+        SOXL  38.002% against a 38% cap  ->  0.44 shekels to trim
+        QQQ   37.004% against a 37% cap  ->  0.87 shekels to trim
+
+    Both fired, both latched, and both rendered a card whose own `how` said
+    "There's no single obvious trade here, so the app won't guess one." The
+    Rules tab showed it in as many words: *"Triggered - 37.0% of book vs a 37%
+    cap"*.
+
+    **The cause is structural, not a rounding accident.** `_arm_sleeve_caps`
+    arms a cap at EXACTLY the sleeve's target, `_fund_sleeve` funds the sleeve
+    to EXACTLY that target, and this rule fired on `weight >= level` -- at
+    equality. So every correctly funded sleeve tripped its own cap the moment it
+    was funded. QQQ's card exists because PR 61 worked: the sleeve was funded to
+    37% and the cap armed at 37% fired on it.
+
+    MIN_TRADE_ILS rather than a new tolerance band, because the app already has
+    a number for "not worth the friction" and it governs every other sizing
+    decision here. A second threshold invented for this one rule would be a
+    second answer to a question already answered. `execution_plan` has applied
+    exactly this test since the MSFT case -- one layer too late, where it could
+    only downgrade the card instead of preventing it.
+
+    ``value_ils`` of 0 means the caller does not know the position's value; the
+    old behaviour stands rather than silencing a rule on missing data.
+    """
+    if not value_ils:
+        return True
+    from app.services.funding_service import MIN_TRADE_ILS
+    return cap_trim_ils(level, weight_pct, value_ils) >= MIN_TRADE_ILS
+
+
 def rearm_threshold(level: float) -> float:
     """The value a standing condition must clear to re-arm, in the rule's unit."""
     lvl = abs(float(level))
     return lvl - max(0.5, lvl * 0.025)
 
 
-def clears_with_margin(rule, cur: float, weight: float) -> bool:
+def clears_with_margin(rule, cur: float, weight: float, value_ils: float = 0.0) -> bool:
     """True when the condition is not merely false, but false by a margin."""
     rt = getattr(rule, "rule_type", None)
     lvl = abs(float(getattr(rule, "level", 0) or 0))
     if rt == "max_weight":
+        # OR IMMATERIAL, or the two rules Eran saw could never clear. The band
+        # exists to stop a position flapping across its cap; it cannot also be
+        # the only way out, because a sleeve funded to exactly its own cap sits
+        # 0.002 points over it and would have to fall 2.5% -- SOXL to 37.05% --
+        # before the card went away. A breach with no trade behind it is not a
+        # breach to begin with, so it re-arms.
+        if not cap_breach_is_material(lvl, float(weight), value_ils):
+            return True
         return float(weight) <= rearm_threshold(lvl)
     if rt == "price_above":
         return float(cur) <= rearm_threshold(lvl)
@@ -116,6 +177,16 @@ def _now():
 # Position lookup
 # --------------------------------------------------------------------------- #
 async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]:
+    idx, _nav = await _positions_index_and_nav(session, user)
+    return idx
+
+
+async def _positions_index_and_nav(session: AsyncSession, user: User) -> tuple[dict, float]:
+    """The index, plus the NAV it was measured against.
+
+    Two callers need the NAV: the cap card has to say what a trim leaves cash at,
+    and it may not recompute the book to find out. One snapshot, one answer.
+    """
     positions = await load_positions(session, user)
     snap = compute_snapshot(positions) if positions else {"nav": 0, "exposure_ticker": {}}
     weights = snap.get("exposure_ticker") or {}
@@ -134,10 +205,14 @@ async def _positions_index(session: AsyncSession, user: User) -> dict[str, dict]
                    "cost": float(p.get("cost_basis") or 0),
                    "qty": float(p.get("quantity") or 0),
                    "weight_pct": round(_w * 100, 1),
+                   # Carried so the cap card can value its own trim through the
+                   # SAME `_sale_value_ils` Accept runs, rather than a second
+                   # arithmetic that could disagree about FX or tax.
+                   "market": p.get("market"), "meta": p.get("meta") or {},
                    # FX-normalised, from the snapshot -- price x quantity would be
                    # the position's native currency.
                    "value_ils": _w * float(snap.get("nav") or 0.0)}
-    return out
+    return out, float(snap.get("nav") or 0.0)
 
 
 async def purge_orphan_rules(session: AsyncSession, user: User,
@@ -236,7 +311,8 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
 # --------------------------------------------------------------------------- #
 # Evaluation
 # --------------------------------------------------------------------------- #
-def _evaluate(rule: TradingRule, cur: float, cost: float, weight: float) -> tuple[bool, str, str, float | None]:
+def _evaluate(rule: TradingRule, cur: float, cost: float, weight: float,
+              value_ils: float = 0.0) -> tuple[bool, str, str, float | None]:
     """Return (hit, title, action, target)."""
     rt, mode, L, tk = rule.rule_type, rule.mode, rule.level, rule.ticker
     if cur <= 0:
@@ -263,7 +339,11 @@ def _evaluate(rule: TradingRule, cur: float, cost: float, weight: float) -> tupl
         return (cur <= target and target > 0, f"🟢 {tk} hit your buy level",
                 f"Consider adding to {tk} — now {cur:.2f}, your dip level {target:.2f}.", target)
     if rt == "max_weight":
-        return (weight >= L, f"⚖️ {tk} is {weight:.0f}% of your portfolio",
+        # `>=` FIRED AT EQUALITY, which is exactly where a funded sleeve sits.
+        # The materiality test subsumes that and the near-equality case with it:
+        # see `cap_breach_is_material`.
+        return (weight >= L and cap_breach_is_material(L, weight, value_ils),
+                f"⚖️ {tk} is {weight:.0f}% of your portfolio",
                 f"Consider trimming {tk} back toward your {L:.0f}% cap.", L)
     return (False, "", "", None)
 
@@ -376,7 +456,7 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
         cur, cost, w = pos["price"], pos["cost"], pos["weight_pct"]
         if r.rule_type == "trailing_stop" and cur > 0:
             r.peak_price = max(r.peak_price or cur, cur)
-        hit, title, action, target = _evaluate(r, cur, cost, w)
+        hit, title, action, target = _evaluate(r, cur, cost, w, pos.get("value_ils") or 0.0)
         if hit and not r.triggered:
             r.triggered = True
             r.last_triggered_at = _now()
@@ -398,7 +478,7 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
                           "actionable": bool(_plan)})
         elif (not hit and r.triggered
                 and r.rule_type in ("price_above", "price_below", "max_weight")
-                and clears_with_margin(r, cur, w)):
+                and clears_with_margin(r, cur, w, pos.get("value_ils") or 0.0)):
             # Standing conditions re-arm the moment they stop being true.
             #
             # max_weight was missing here, and it is the one that matters most:
@@ -549,17 +629,55 @@ async def evaluate_all(session: AsyncSession) -> dict:
 # --------------------------------------------------------------------------- #
 # Recommendations surfacing (triggered rules -> 'What to do now')
 # --------------------------------------------------------------------------- #
+def _cash_landing(cash_after: float, nav: float, target_frac: float) -> str:
+    """What the proceeds mean once they are cash. The "and then what" line.
+
+    Two honest endings and no invented third. Above the target, the money is
+    money the book wants deployed and another card is built to size that; below
+    it, it is the reserve doing its job. Proposing a specific replacement buy
+    here would be a second sizing decision inside a card that already has one --
+    the shape PR 60 fixed when two cards wanted the same 7,476.
+    """
+    if nav <= 0:
+        return "The proceeds stay in cash until you decide where they go."
+    pct = cash_after / nav
+    if target_frac and pct > target_frac:
+        return (f"That takes cash to {pct:.1%} against your {target_frac:.1%} target — "
+                f"above it, so the “Put your cash to work” card will size where it goes.")
+    if target_frac:
+        return (f"That takes cash to {pct:.1%} against your {target_frac:.1%} target — "
+                f"still at or under it, so it stays as dry powder.")
+    return f"That takes cash to {pct:.1%} of the book."
+
+
 async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True),
                                   TradingRule.triggered.is_(True)))).all()
-    idx = await _positions_index(session, user) if rules else {}
+    idx, _nav = (await _positions_index_and_nav(session, user)) if rules else ({}, 0.0)
+    # WHERE THE MONEY LANDS. A trim credits cash; a card that does not say what
+    # that leaves cash at has answered "how much to sell" and not "and then
+    # what". Eran, 2026-09-06: "it doesn't tell me what do do instead (buy
+    # something else or keep it in cash)". Read once, outside the loop.
+    _cash_ils, _cash_target = 0.0, 0.0
+    if rules:
+        try:
+            from app.services.funding_service import cash_floor_pct
+            from app.services.intake_service import get_cash
+            from app.services.plan_service import get_plan
+            _plan = await get_plan(session, user)
+            _cash_ils = float(await get_cash(session, user) or 0.0)
+            _cash_target = float(cash_floor_pct(
+                getattr(_plan, "objective", None), _plan) or 0.0)
+        except Exception:  # noqa: BLE001 - the trade is the card; the sentence is not
+            logger.warning("cash context unavailable for rule cards", exc_info=True)
     out = []
     _cleared = False
     for r in rules:
         pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0}
-        hit, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"])
+        hit, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"],
+                                           pos.get("value_ils") or 0.0)
 
         # A standing condition that is no longer true must not still have a card.
         #
@@ -581,19 +699,36 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
         # sitting on its own boundary crosses it all day. Hence: drop the card
         # immediately, re-arm the alert only on a real move.
         if not hit and r.rule_type in ("price_above", "price_below", "max_weight"):
-            if clears_with_margin(r, pos["price"], pos["weight_pct"]):
+            if clears_with_margin(r, pos["price"], pos["weight_pct"],
+                                  pos.get("value_ils") or 0.0):
                 r.triggered = False
                 _cleared = True
             continue
         plan = execution_plan(r, pos)
         price = float(pos.get("price") or 0)
         if plan:
-            shares, value = plan["shares"], plan["shares"] * price
+            shares = plan["shares"]
             verb = "Sell all" if plan["kind"] == "sell_position" else "Trim"
+            # IN SHEKELS, NET OF TAX, THROUGH THE FUNCTION ACCEPT RUNS.
+            #
+            # This was `shares * price` -- the position's NATIVE currency, with
+            # no FX and no tax, rendered without a symbol on a screen where every
+            # other number is shekels. On SOXL at $117.28 a six-share trim reads
+            # "~737" while Accept credits about 2,700 to cash. Same defect as
+            # `_rebalance_to`'s "sell 4,324" against a 12,139 execution, one
+            # order of magnitude quieter.
+            from app.services.recommendations import _sale_value_ils
+            gross, tax = _sale_value_ils(shares, price, float(pos.get("cost") or 0.0),
+                                         pos.get("market"), pos.get("meta"))
+            net = max(0.0, gross - tax)
             action = (f"{verb} {shares:g} {r.ticker} at {price:,.2f} "
-                      f"(~{value:,.0f}) — the rule you set.")
+                      f"— about ₪{gross:,.0f}, the rule you set.")
             how = [f"Accept executes this: {verb.lower()} {shares:g} {r.ticker} in your "
                    "InvestWise book and credits the net-of-tax proceeds to cash.",
+                   (f"About ₪{net:,.0f} lands in cash"
+                    + (f" after an estimated ₪{tax:,.0f} of tax" if tax >= 1 else "")
+                    + "."),
+                   _cash_landing(_cash_ils + net, _nav, _cash_target),
                    "No brokerage order is placed — mirror the trade at your broker.",
                    "Ignore leaves the position alone and logs that you declined."]
         else:

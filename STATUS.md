@@ -1,13 +1,13 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-06 by Claude (PR 61.1 — the card was right and the funding plan was wrong)._
+_Last updated: 2026-09-07 by Claude (weekly status review; HEAD is PR 65 `853c51d`)._
 _Seeded from git history + prior transcripts._
 
 ---
 
-## 📍 Where this repo actually is — 2026-09-03
+## 📍 Where this repo actually is — 2026-09-07
 
-**HEAD is PR 65.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is PR 66.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -39,18 +39,18 @@ are what shipped and why, and they are the best record of the reasoning. Detail 
 | `scripts/.agent-key.previous` not gitignored | **Fixed** — `.gitignore:31`, `scripts/.agent-key*`. |
 | `STATUS-V2.md` invisible to a fresh clone | **Fixed** — it and `STATUS-ARCHIVE.md` are tracked. |
 | **Press the core card** — the 09-02 top item | **Done 09-02.** `measured_pct_of_book` 78.9 → **97**; `/mix` Fixed Income drift `0.0`, `rebalance_required: false`; the book holds VTI and BND, V is gone; no `core_to_basket` card remains. The **₪565 funding decision closed with it**. |
+| **Decide what the ₪618.65 in cash is for** — the 09-03 top item | **Decided and shipped in PR 64 (09-06).** Eran's answer: cash is a **soft target** (7.5%, or the objective table) with an **absolute hard floor of ₪150** (`CASH_HARD_FLOOR_ILS`). `plan_funding(allow_reserve=True)` is a TypeError without a `reserve_reason`, so a card cannot spend the reserve without printing why. This is the fastest an ops item on this board has ever closed — four days. |
 
 ### 🔴 Ops actions (Eran only) — with age
 _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-09-03 | new | **Decide what the ₪618.65 in cash is for.** 2.95% of the book against a 0% target, and the only drift left after the realign. Deploy it, or set a deliberate cash floor and stop calling it drift. |
-| 2026-08-03 | **4 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
-| 2026-08-03 | **4 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest open item on the board. |
-| 2026-07-13 | **7 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while 45+ commits shipped past it. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **3 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **nineteen PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
-| 2026-08-31 | carried | **20 untracked files**, including real code — `app/services/candidate_search.py` and its tests (land it or discard it), `EXECUTION_PLAN_2026-08-29_v3.md`, `apply-pr26.ps1` and 14 `scripts/`. Plus `iw-src.tgz` and `plans.tgz`, and a `_to_delete/` folder holding stale `.git/index.lock` files moved out of `.git/` — all safe to delete. |
+| 2026-08-03 | **5 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
+| 2026-08-03 | **5 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
+| 2026-07-13 | **8 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **4 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **thirty-eight PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | **1 week** | **Untracked code: down from 20 files to 2.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. |
 
 ---
 
@@ -145,6 +145,92 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 66 — a cap that fires on a sleeve it just funded, and a card that can't say how much
+
+Eran, 2026-09-06, on two cards: *"why do I still getting guidance cards? all these cards should be
+actionable"*, and then, precisely: *"1. it doesn't tell me what to do (how much to sell) 2. it doesn't
+tell me what do do instead (buy something else or keep it in cash) 3. it doesn't do the action for
+me — it's only a guidance"*.
+
+He was right that something was wrong, and the thing that was wrong is not the missing button.
+
+### What the numbers said
+
+Measured on the live book the same minute:
+
+```
+SOXL  38.002% against a 38% cap  ->  0.44 shekels to trim
+QQQ   37.004% against a 37% cap  ->  0.87 shekels to trim
+```
+
+Both fired, both latched, and both rendered a card whose own `how` read *"There's no single obvious
+trade here, so the app won't guess one."* The Rules tab said it in as many words: **"Triggered ·
+37.0% of book vs a 37% cap"**. The cards were guidance because there was **nothing to trade**.
+
+### The cause is structural, and it is ours
+
+1. `_arm_sleeve_caps` arms a `max_weight` cap at **exactly** the sleeve's target. Both rules carry
+   `_cap_note`'s wording, so both are sleeve-armed.
+2. `_fund_sleeve` funds the sleeve to **exactly** that target.
+3. `_evaluate` fired on `weight >= level` — **at equality**.
+
+So every correctly funded sleeve tripped its own cap the moment it was funded. **QQQ's card exists
+because PR 61 worked**: Eran tapped "Finish the move", the sleeve funded to 37%, and the cap armed at
+37% fired on it.
+
+Then `execution_plan` refused to name a trade — twice over, since `weight_pct` is rounded to one
+decimal so `38.0 <= 38.0`, and its own `MIN_TRADE_ILS` guard would have refused ₪0.44 anyway. And
+`clears_with_margin` wanted SOXL down at **37.05%** before it would re-arm: a nag with no exit, which
+is the exact phrase the previous re-arm fix used about the last one.
+
+### The fix, in three parts
+
+**A cap breach is a breach when there is a trade behind it.** `MIN_TRADE_ILS`, not a new tolerance
+band — the app already has a number for "not worth the friction" and it governs every other sizing
+decision here. `execution_plan` has applied this test since the MSFT case, one layer too late, where
+it could only downgrade the card instead of preventing it. `cap_trim_ils` is now the single answer
+the firing test, the re-arm test and `execution_plan` all read.
+
+**The amount is in shekels, net of tax, through the function Accept runs.** The card computed
+`shares * price` — the position's **native** currency, no FX, no tax, rendered without a symbol on a
+screen where every other number is shekels. On SOXL at $117.28 a six-share trim reads *"~737"* while
+Accept credits about ₪2,700 to cash. The same defect as `_rebalance_to`'s "sell 4,324" against a
+12,139 execution, one order of magnitude quieter. It now calls `_sale_value_ils`, the same function
+the apply handler uses.
+
+**And it says where the money lands.** A trim credits cash, so the card names the net proceeds, the
+resulting cash percentage against his 7.5% target, and which side of it that falls on — above, and
+the redeploy card will size where it goes; at or under, and it is dry powder doing its job.
+
+Deliberately **not** a replacement buy inside the same card. That is a second sizing decision inside
+a card that already has one, which is the shape PR 60 fixed when two cards wanted the same ₪7,476.
+
+### What Eran will see
+
+His two cards disappear, because they were about 44 and 87 agorot. A real breach — SOXL at 45%
+against a 38% cap, ₪1,290 of trim — fires, says how much in shekels, says where the proceeds land,
+and carries `kind: "trim"`, which is in `_ACTIONABLE_KINDS`. Points 1 and 3 were already right on
+that branch and he had never reached it; point 2 was genuinely missing.
+
+### Two existing tests caught the change, and both were fair
+
+`test_the_index_carries_an_ils_value_not_a_native_one` grepped `_positions_index`, whose body moved
+into `_positions_index_and_nav` — the cap card needs the NAV the index was measured against, and
+loading the book twice to get it is how two numbers on one screen come to disagree. The guard now
+follows the body **and** pins the delegation.
+
+`test_a_cap_that_has_corrected_itself_stops_nagging` built its fixture as *"1 unit at 200 in a 2,000
+book = 10% exactly -> breach"* — a breach of zero shekels, used as a convenient way to get a rule
+into a triggered state. Its subject is the re-arm, so the fixture now starts from a breach worth
+acting on. Its docstring already described this family of failure: *"a nag that no user action could
+clear."*
+
+`tests/test_a_cap_breach_needs_a_trade_behind_it.py` — 12 tests, 4 confirmed RED against `2edba83`.
+
+Gates: 1774 SQLite, 1774 PostgreSQL on a dropped and recreated database, ruff clean.
 
 ---
 
@@ -6311,6 +6397,7 @@ the individual items are still open, but it predates PRs 16–26 and its pre-fli
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-09-07 — Weekly status review: **48 commits in 7 days (PR 27 → PR 65, `103fa93`…`853c51d`) — nearly double last week's 26, against zero commits in each of the other three repos.** Per-PR STATUS discipline held again: every PR wrote its own section, and the spine did not go stale the way it did in August — the header was one PR behind (said PR 61.1, HEAD was PR 65) and is corrected. **Two ops items closed by shipped work rather than by nagging**, which is new for this board: the ₪618.65 cash question was **decided** in PR 64 (soft 7.5% target, hard ₪150 floor, a mandatory `reserve_reason` on any card that spends into it) four days after it was flagged; and the 20-file untracked pile is down to **2 files** — `candidate_search.py` and its tests, which is the part that was always the real item. Aged the rest: secrets rotation and VAPID pinning to 5 weeks, broker integration to 8, Pixel P0 QA to 4 (now **thirty-eight** PRs stale, so re-scope or void it rather than run it as written). **The pattern worth naming:** this repo closes ops items when the answer is a decision it can ship, and does not close them when the answer is a console visit — the same shape that has Job Hunter's Google OAuth vars open at 8 weeks. Four of the five remaining rows here are console visits.
 - 2026-08-31 — Weekly status review: **26 commits in 7 days (PR 16 → PR 26, `315ad1f`…`1362ce8`) — the busiest of the four repos while the other three shipped nothing.** Per-PR STATUS discipline held: every PR wrote its own section. What had NOT held was the file's own spine — the `Now` / `Last shipped` / `Verified live` sections still described HEAD `86760ff` (2026-08-03), **eleven PRs and four weeks stale**, buried under 4,300 lines. Restructured: a **Where this repo actually is** block with a real HEAD, an **Ops actions with age** table (this repo had none) and a live **Next** now sit at the top; PHASE A/B/C, P0–P4 and the 08-10 backlog moved verbatim to `STATUS-ARCHIVE.md`; pre-07-20 changelog entries collapsed. 4,416 → ~3,000 lines. **The finding worth keeping: aging the ops items showed `AGENT_API_KEY` was first flagged 2026-08-03 as "rotate it sometime" and was found published in a public repo on 08-30 — four weeks, three restatements, no rotation.** It is now the first row. Also flagged: 20 untracked files including `candidate_search.py` + its tests and `STATUS-V2.md` itself, and a duplicate-message commit pair (`b48b291`/`f5773c0`, one carrying a BOM) — the same gate/ship-script artefact WealthOS shows.
 - 2026-08-16 — **Phase N: history starts.** `nav_snapshots` + a 22:10 daily job + time-weighted returns across the contributions ledger, so a deposit moves the value without moving the line (₪5k into ₪20k then +5% real growth reports 5.00%, not 31.25%). Past NAV is unrecoverable — `Transaction(` has zero writers, `whs_snapshots` was never written — so the job also snapshots the health score WITH its caps, because a stricter yardstick and a worse book need opposite responses. Today's chart prefers real history, falls back to the backfill, and says which. In tree, pending QA.
 - 2026-08-16 — **T4: the target card + Today chart.** Two typed inputs and no slider; defaults measured, empty when unmeasurable. T4.0 untracked 2,463 `frontend/node_modules` files that had made `git status` time out at 40s and, once, return an EMPTY view while five files were staged. `git status` now 0.2s. Chart ranges are a server parameter, not a client slice. `6edebc5`, `10d8b40`.

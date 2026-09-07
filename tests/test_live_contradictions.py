@@ -50,9 +50,15 @@ async def test_a_cap_that_has_corrected_itself_stops_nagging():
     eng, Session = _session()
     try:
         async with Session() as s:
-            # 1 unit at 200 in a 2,000 book = 10% exactly -> breach.
+            # 1 unit at 2,000 in a 3,800 book = 52.6% against a 10% cap, a trim
+            # worth ~1,620. The fixture used to be 10% EXACTLY, which is a breach
+            # of zero shekels -- and since PR 66 a cap breach with no trade
+            # behind it does not fire at all. That change is what stopped two
+            # cards appearing on Eran's book saying "trim SOXL back toward your
+            # 38% cap" about 44 agorot. The subject here is the RE-ARM, so the
+            # fixture now starts from a breach worth acting on.
             user = await _book(s, "cap_clear_probe@example.com",
-                               [_pos("SOXL", 1, 200.0, 200.0), _pos("MSFT", 18, 100.0, 100.0)])
+                               [_pos("SOXL", 1, 2000.0, 2000.0), _pos("MSFT", 18, 100.0, 100.0)])
             await rs.create_rule(s, user, ticker="SOXL", rule_type="max_weight",
                                  mode="pct", level=10.0)
             fired = await rs.evaluate_user(s, user)
@@ -61,7 +67,7 @@ async def test_a_cap_that_has_corrected_itself_stops_nagging():
             # The position drifts back under the cap on its own.
             rows = {p.ticker: p for p in await __import__(
                 "app.services.intake_service", fromlist=["x"]).list_positions(s, user)}
-            rows["SOXL"].current_price = 150.0        # ~7.7% of the book
+            rows["SOXL"].current_price = 100.0        # ~5.3% of the book
             await s.commit()
             await rs.evaluate_user(s, user)
 

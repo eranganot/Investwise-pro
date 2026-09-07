@@ -177,6 +177,11 @@ async def load_positions(session: AsyncSession, user: User, entity: str | None =
             "quantity": float(p.quantity), "cost_basis": float(p.cost_basis),
             "current_price": float(p.current_price) if p.current_price is not None else 0.0,
             "volatility_pct": m.get("volatility_pct"), "liquidity_score": m.get("liquidity_score"),
+            # Carried so a caller valuing a SALE can ask `price_currency` the
+            # same question `_sale_value_ils` does. Without it a TASE row whose
+            # meta overrides the currency would be valued one way on the card
+            # and another by Accept -- the two-sizings failure, in the tax term.
+            "meta": m,
         })
     return out
 
