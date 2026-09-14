@@ -82,3 +82,32 @@ def test_editing_a_holding_to_zero_removes_it():
     from app.api.routes import intake as route
     rsrc = inspect.getsource(route.edit_position)
     assert '"deleted"' in rsrc, "the endpoint must report the removal, not 500"
+
+
+def test_a_ghost_does_not_silence_the_buy_idea_it_resembles():
+    """The third consequence of the zero row, and the least visible.
+
+    MEASURED 2026-09-14: USO at quantity 0.0 ranked **85.4** on the app's own
+    commodity screen -- above COMT at 79.2 -- and the live card recommended
+    COMT. `_buy_idea_recs` skips a ticker the book already holds, which is
+    correct ("this card exists to surface a name the book does NOT hold"), but
+    `held` was built from every position row regardless of quantity. So the
+    ghost made the app skip its own top-ranked candidate and recommend the
+    runner-up, with nothing on screen to say why.
+    """
+    import inspect
+
+    src = inspect.getsource(rec)
+    start = src.index("held = {str(getattr(r,")
+    decl = src[start:start + 260]
+    assert "quantity" in decl, (
+        "`held` must count only positions with shares in them, or a 0-share row "
+        "suppresses the buy idea for that ticker")
+
+    # And as data: a book holding only a ghost holds nothing.
+    class _R:
+        def __init__(self, t, q): self.ticker, self.quantity = t, q
+    rows = [_R("USO", 0.0), _R("SOXL", 22.7926)]
+    held = {r.ticker.upper() for r in rows if float(r.quantity or 0) > 0}
+    assert held == {"SOXL"}
+    assert "USO" not in held, "USO is not held; the app may recommend it"

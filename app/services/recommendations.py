@@ -2887,10 +2887,26 @@ def _holding_verdict_recs(rows, snap, cap: float, trimmed: set) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Taking money off the table
 # --------------------------------------------------------------------------- #
-#: How close a position must come to one of its OWN rule levels before the app
-#: says so. Ten percent: near enough that the decision is real, far enough that
-#: it is not simply announcing the firing a day early.
+#: How close a position must come to its own TAKE-PROFIT before the app says
+#: so. Ten percent of price: near enough that the decision is real, far enough
+#: that it is not simply announcing the firing a day early.
 _NEAR_RULE_FRAC = 0.10
+
+#: ...and the same question for a TRAILING STOP, which cannot use the same
+#: measure. A trailing stop RATCHETS: it sits at peak x (1 - trail), so a 10%
+#: trail is ~10% below the price BY CONSTRUCTION whenever the position is at
+#: its peak. "Within 10% of the level" is therefore its normal resting state,
+#: not news.
+#:
+#: MEASURED on the live book the hour this shipped, which is how it was caught:
+#: VTI, BND and QQQ all produced "closing on your trailing stop" while having
+#: given back 12.9%, 14.2% and **7.8%** of their trails respectively. QQQ was
+#: 7.8% of the way from its peak to its stop and the app called it closing.
+#:
+#: The honest measure is how much of the trail has actually been given back:
+#:      (peak - price) / (peak - stop)
+#: which is 0 at the peak and 1 at the stop, whatever the trail width.
+_TRAIL_GIVEBACK = 0.60
 
 #: Unrealised gain, against cost, at which a holding is worth a conversation
 #: even with no rule on it at all.
@@ -2965,9 +2981,30 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                 continue
             if target <= 0:
                 continue
-            gap = (target - price) / price if rt == "take_profit" else (price - target) / price
-            if not (0 < gap <= _NEAR_RULE_FRAC):
-                continue
+            if rt == "take_profit":
+                # Approaching a level from BELOW: distance as a share of price
+                # is the right measure, and it shrinks as the position runs.
+                gap = (target - price) / price
+                if not (0 < gap <= _NEAR_RULE_FRAC):
+                    continue
+                near_pct = gap * 100.0
+            else:
+                # A trailing stop. Measure the fraction of the TRAIL given
+                # back, never the distance -- see `_TRAIL_GIVEBACK`.
+                try:
+                    trail = float(r.get("level") or 0.0) / 100.0
+                except (TypeError, ValueError):
+                    continue
+                if not (0.0 < trail < 1.0):
+                    continue
+                peak = target / (1.0 - trail)
+                span = peak - target
+                if span <= 0:
+                    continue
+                given = (peak - price) / span
+                if given < _TRAIL_GIVEBACK:
+                    continue
+                near_pct = given * 100.0
             # The slice that rule would actually sell, valued through the same
             # arithmetic Accept would run. A card that names a number Accept
             # would not produce is the claim invariant broken again.
@@ -2980,9 +3017,9 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                           f"sell {frac:.0%} of the position -- about {_ils(amount)} "
                           f"-- and leave the rest running.")
             else:
-                title = f"{tk} is closing on your trailing stop"
-                action = (f"{tk} is {_pct(gap * 100)} above your trailing stop at "
-                          f"{target:,.2f}, which follows its peak down. If it gets "
+                title = f"{tk} has given back most of its trailing stop"
+                action = (f"{tk} has fallen {_pct(near_pct)} of the way from its "
+                          f"peak to your trailing stop at {target:,.2f}. If it gets "
                           f"there the whole position exits -- about {_ils(amount)}.")
             out.append({
                 "id": _rid("near_rule", tk, rt), "dimension": "holding",
@@ -2993,7 +3030,7 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                         "Nothing happens automatically -- the rule raises a card"],
                 "est_amount": amount, "apply": {"kind": "none"},
                 "meta": {"ticker": tk, "rule_type": rt, "target": target,
-                         "gap_pct": round(gap * 100, 2)}})
+                         "gap_pct": round(near_pct, 2)}})
 
         # 2) IT HAS SIMPLY RUN A LONG WAY.
         if gain_pct >= _GAIN_CARD_PCT and cost > 0:
@@ -3043,10 +3080,18 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                         "Or raise the cap, if you have changed your mind about "
                         "how much of this you want to own",
                         "Waiting is fine -- this is a heads-up, not a breach"],
-                # Zero today by construction (it is not over yet); the DISTANCE
-                # is what the reader needs, and `moved_on` keys off the headroom
-                # through the id rather than a number that is always zero.
-                "est_amount": round(max(0.0, over_at_cap), 2),
+                # THE HEADROOM IN SHEKELS, not the trim. The trim is zero by
+                # construction here -- the position is not over the cap yet --
+                # and a card whose amount is always 0.0 can never un-mute,
+                # because `moved_on` fires on the amount MOVING. Shipping 0.0
+                # reproduced the exact defect this card was written to fix, and
+                # the test asserting "est_amount is not None" passed on it: a
+                # check that could not fail for the thing it was checking.
+                #
+                # The headroom moves every time the position does, which is
+                # what makes the mute expire when the situation changes.
+                "est_amount": round(max(0.0, nav * headroom / 100.0), 2),
+                "meta_trim_at_cap_ils": round(max(0.0, over_at_cap), 2),
                 "apply": {"kind": "none"},
                 "meta": {"ticker": tk, "weight_pct": round(w_pct, 2),
                          "cap_pct": cap_pct, "headroom_pct": round(headroom, 2)}})
@@ -3581,7 +3626,19 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
     except Exception:  # noqa: BLE001
         return out
 
-    held = {str(getattr(r, "ticker", "") or "").upper() for r in (rows or [])}
+    # QUANTITY > 0, or a ghost row silences the buy idea it looks like.
+    #
+    # MEASURED 2026-09-14. USO sat at quantity 0.0 and ranked 85.4 on the
+    # commodity screen -- ABOVE COMT at 79.2 -- and the card recommended COMT,
+    # because `held` was built from every row and USO looked held. The skip
+    # below is right ("this card exists to surface a name the book does NOT
+    # hold"); it was being handed a book that was not true.
+    #
+    # Third consequence of the same zero row, after the armed rules and the
+    # Commodities-at-0% reading. `rules_service._positions_index` and
+    # `_profit_recs` already filter this; this one did not.
+    held = {str(getattr(r, "ticker", "") or "").upper() for r in (rows or [])
+            if float(getattr(r, "quantity", 0) or 0) > 0}
 
     for idea in ideas:
         if len(out) >= _MAX_BUY_IDEA_CARDS:

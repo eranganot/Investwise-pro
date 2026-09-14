@@ -149,6 +149,72 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 67.1 / 67.2 - the cards that replaced a silence with a noise, and the test that aged out
+
+Found by RUNNING the PR 67 smoke script against the live build an hour after it shipped, which is
+the only reason any of this was seen. Three defects, two of them in code written that morning.
+
+### The trailing-stop card fired on three positions sitting at their peaks
+
+A trailing stop RATCHETS to `peak x (1 - trail)`, so a 10% trail sits ~10% below the price **by
+construction** whenever the position is at its peak. PR 67 measured nearness as distance from the
+level as a share of price, which is the trail's WIDTH, not danger. Live, all at once:
+
+```
+QQQ   9.3% above its stop  ->   7.8% of the trail actually given back
+VTI   8.8%                 ->  12.9%
+BND   8.7%                 ->  14.2%
+```
+
+QQQ was 7.8% of the way from its peak to its stop and the app said it was "closing on your trailing
+stop". Now measured as `(peak - price) / (peak - stop)`, firing at 60%. All three go quiet.
+
+Eran's "within 10% of the level" answer was right for a take-profit -- a level approached from
+below. It was applied to a mechanism that moves with the price, which was mine to get right.
+
+### The near-cap card shipped `est_amount: 0.0`
+
+The trim required at a cap you have not breached is zero, and `moved_on` un-mutes on the amount
+MOVING. So the card could never un-mute -- **the exact defect these cards were written to fix**.
+Now the headroom in shekels (SOXL 47, QQQ 195), which moves whenever the position does.
+
+Worse: the unit test asserted `est_amount is not None` and PASSED on 0.0. A check that could not
+fail for the thing it was checking. Now asserts `> 0`.
+
+### The ghost was hiding the app's own top-ranked commodity
+
+`_buy_idea_recs` skips a ticker the book already holds -- correct, that card exists to surface names
+the book does NOT hold. But `held` was built from every position row with no quantity filter. USO sat
+at 0.0 shares and ranks **85.4** on the commodity screen, ABOVE the COMT at 79.2 that the card was
+recommending. The ghost made the app skip its own best candidate and name the runner-up, with
+nothing on screen to say why.
+
+Third consequence of that one row, after the three armed rules and Commodities reading 0%.
+`rules_service._positions_index` and `_profit_recs` already filtered it; this did not.
+
+### CI had been red for days, and not because of PR 67
+
+`test_a_real_quote_afterwards_heals_the_row` failed on every run since **2026-09-09**, with no app
+code changing. `_quote()` hardcoded `as_of="2026-09-01T20:00:00+00:00"`;
+`refresh_all_positions` refuses a quote older than `STALE_AFTER_TRADING_DAYS` (5) and does not write
+it. Measured at the fix: **9 trading days old against a 5-day window**, so `updated` was 0 and the
+"heals the row" case had become impossible to pass -- for the staleness guard working perfectly.
+
+The other cases in that file kept passing because they assert a REFUSAL, and a stale quote is
+refused too. So the suite read 1815/1816 healthy while one test was unpassable. **A date literal in
+a fixture is a test that schedules its own failure.** The fixture now stamps `now()`.
+
+Gate after: **1820 passed, 0 failed** -- the first fully green run on this repo in at least a
+fortnight. Railway deploys on red CI, which is why nobody had to notice.
+
+### What the smoke script now pins
+
+`scripts/smoke/smoke-pr67-the-market-was-shut.ps1`, read-only by default. Beyond the PR 67 claims it
+asserts the two noise defects cannot return: no trailing-stop card on a position that has given back
+less than 60% of its trail, no profit card with a zero or null `est_amount`, and no lower-ranked
+commodity carded while a higher-ranked one goes unnamed. Check 1b -- the trading-day guard -- can
+only be PROVED on a Saturday, and says so rather than passing on a weekday.
+
 ## PR 67 — the market was shut, the ledger was blind, and nothing ever said "take some off the table"
 
 Eran, 2026-09-14, five numbered complaints from one screenshot. Four were the same two causes wearing

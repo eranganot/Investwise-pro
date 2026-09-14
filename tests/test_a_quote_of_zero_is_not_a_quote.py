@@ -59,8 +59,27 @@ BOOK = {"entity_name": "Personal", "positions": [
 
 
 def _quote(price, ccy="USD", market="NASDAQ"):
+    """A quote that is FRESH WHENEVER THIS RUNS, not on the day it was written.
+
+    This carried a hardcoded ``as_of="2026-09-01T20:00:00+00:00"`` and CI went
+    red on 2026-09-09 without a line of app code changing.
+    `refresh_all_positions` refuses a quote older than `STALE_AFTER_TRADING_DAYS`
+    (5) and does not write it -- so once the wall clock was six trading days
+    past 2026-09-01, "a real quote afterwards heals the row" got `updated: 0`
+    and failed, for the staleness guard working exactly as designed on a fixture
+    that had aged out. Measured at the time of the fix: 9 trading days old
+    against a 5-day window.
+
+    The other cases in this file kept passing because they assert a REFUSAL, and
+    a stale quote is refused too. So the suite read 1815/1816 healthy while the
+    one test that needed a successful write had become impossible to pass.
+
+    A date literal in a fixture is a test that schedules its own failure.
+    """
+    from datetime import datetime, timezone
+
     return NS(ticker="AAA", market=market, price=price, currency=ccy,
-              as_of="2026-09-01T20:00:00+00:00", as_of_source="market")
+              as_of=datetime.now(timezone.utc).isoformat(), as_of_source="market")
 
 
 async def _refresh(own_session, stub, monkeypatch):

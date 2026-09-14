@@ -116,9 +116,14 @@ def test_every_card_carries_an_amount_so_the_mute_can_expire():
          _rule("QQQ", "trailing_stop", 10.0, target=690.0)])
     assert cards, "fixture sanity"
     for c in cards:
-        assert c.get("est_amount") is not None, (
-            f"{c['title']}: a card with no amount can never un-mute, however "
-            f"far the position runs")
+        # `is not None` was the original assertion and it PASSED ON 0.0, which
+        # is the same silence in a different costume: `moved_on` un-mutes on the
+        # amount MOVING, and zero never moves. A check that cannot fail for the
+        # thing it is checking is not a check.
+        assert c.get("est_amount"), (
+            f"{c['title']}: est_amount is {c.get('est_amount')!r} - a card with "
+            f"no live amount can never un-mute, however far the position runs")
+        assert float(c["est_amount"]) > 0, c["title"]
 
 
 def test_cash_never_gets_a_profit_card():
@@ -142,3 +147,73 @@ def test_an_inactive_rule_is_not_a_level_you_hold():
                          [_rule("SOXL", "take_profit", 130.0, target=130.0,
                                 active=False)])
     assert cards == []
+
+
+# --------------------------------------------------------------------------- #
+# PR 67.1 - found by running the smoke test against the live book an hour after
+# PR 67 shipped. Both defects were in cards written to fix a silence problem,
+# and both replaced it with a noise problem.
+# --------------------------------------------------------------------------- #
+
+def test_a_trailing_stop_at_its_peak_is_not_news():
+    """A trailing stop RATCHETS. It sits at peak x (1 - trail), so a 10% trail
+    is ~10% below the price by construction whenever the position is at its
+    peak - and "within 10% of the level" is its resting state, not a warning.
+
+    MEASURED on production 2026-09-14, the hour PR 67 shipped. Three cards
+    fired at once:
+
+        VTI   8.8% above its stop  ->  12.9% of the trail given back
+        BND   8.7% above its stop  ->  14.2% of the trail given back
+        QQQ   9.3% above its stop  ->   7.8% of the trail given back
+
+    QQQ was seven per cent of the way from its peak to its stop and the app
+    told him it was "closing on your trailing stop".
+    """
+    live = [
+        ("VTI", 2.0505, 376.31, 378.335, 343.116, 10.0),
+        ("BND", 7.4682, 71.22, 72.0754, 65.0205, 10.0),
+        ("QQQ", 4.0215, 714.88, 718.96, 648.423, 10.0),
+    ]
+    for tk, qty, px, cost, target, trail in live:
+        rows = [_P(tk, qty, px, cost)]
+        snap = {"nav": NAV, "exposure_ticker": {tk: 0.10}}
+        cards = _profit_recs(rows, snap,
+                             [_rule(tk, "trailing_stop", trail, target=target)])
+        assert cards == [], (
+            f"{tk}: {(target / (1 - trail / 100) - px) / (target / (1 - trail / 100) - target):.1%} "
+            f"of the trail given back is not 'closing on your trailing stop'")
+
+
+def test_a_trailing_stop_that_has_really_been_given_back_does_speak():
+    """Same rule, a position that has actually fallen most of the way."""
+    # 20% trail, stop at 102.448 -> peak 128.06. At 108 the position has given
+    # back (128.06 - 108) / (128.06 - 102.448) = 78% of its trail.
+    rows = [_P("SOXL", 22.7926, 108.0, 111.8837)]
+    snap = {"nav": NAV, "exposure_ticker": {"SOXL": 0.30}}
+    cards = _profit_recs(rows, snap,
+                         [_rule("SOXL", "trailing_stop", 20.0, target=102.448)])
+    c = next(c for c in cards if "trailing stop" in c["title"])
+    assert "given back" in c["title"]
+    assert "78" in c["action"], c["action"]
+
+
+def test_the_near_cap_card_carries_an_amount_that_actually_MOVES():
+    """`est_amount` was the trim required at the cap, which is 0.0 by
+    construction before the breach - so `moved_on` could never un-mute it,
+    which is the exact defect these cards exist to fix.
+
+    The original test asserted `est_amount is not None` and passed on 0.0: a
+    check that could not fail for the thing it was checking.
+    """
+    def headroom_amount(weight):
+        rows = [_P("SOXL", 22.7926, 121.82, 111.8837)]
+        snap = {"nav": NAV, "exposure_ticker": {"SOXL": weight}}
+        cards = _profit_recs(rows, snap, [_rule("SOXL", "max_weight", 38.0)])
+        return next(c for c in cards if "cap" in c["title"])["est_amount"]
+
+    a = headroom_amount(0.3779)   # 37.79% -> 0.21 points of headroom
+    b = headroom_amount(0.3700)   # 37.00% -> 1.00 point
+    assert a > 0, "an amount of zero can never un-mute"
+    assert b > a, "the amount must move as the position does"
+    assert abs(a - round(NAV * (38.0 - 37.79) / 100.0, 2)) < 0.5, a
