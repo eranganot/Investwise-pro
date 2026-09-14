@@ -1,11 +1,11 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-07 by Claude (weekly status review; HEAD is PR 65 `853c51d`)._
+_Last updated: 2026-09-14 by Claude (PR 67; HEAD was PR 66 `fab6e46`)._
 _Seeded from git history + prior transcripts._
 
 ---
 
-## 📍 Where this repo actually is — 2026-09-07
+## 📍 Where this repo actually is — 2026-09-14
 
 **HEAD is PR 66.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
@@ -46,11 +46,12 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **5 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
-| 2026-08-03 | **5 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
-| 2026-07-13 | **8 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **4 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **thirty-eight PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
-| 2026-08-31 | **1 week** | **Untracked code: down from 20 files to 2.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. |
+| 2026-08-03 | **6 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
+| 2026-08-03 | **6 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
+| 2026-07-13 | **9 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **5 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **thirty-eight PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | **2 weeks** | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-14: unchanged for a second week — and this was the week the repo shipped one PR instead of the forty-eight it shipped the week before, so "too busy" is no longer the reading.)_ |
+| 2026-09-14 | **new** | ⚠️ **Stale `.git/index.lock` in this repo, left by the weekly review's own sandbox `git status`.** The sandbox cannot delete it. Until it is removed, `git add` / `git commit` here fail with "Unable to create index.lock". Fix: `Remove-Item -Force 'C:\dev\Investwise-pro\.git\index.lock'`. Recorded as an ops item rather than a footnote because the review process broke the repo it was inspecting; future runs must use `git --no-optional-locks status`. |
 
 ---
 
@@ -147,6 +148,128 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 67 — the market was shut, the ledger was blind, and nothing ever said "take some off the table"
+
+Eran, 2026-09-14, five numbered complaints from one screenshot. Four were the same two causes wearing
+different clothes, one was a feature that did not exist, and one was not a defect at all.
+
+### 1 + 2 — the holes in the chart, and the ILS 208.56 that never moved
+
+**Symptom.** *"I'm missing records on 31/8, 07-08/09, 12/09 so the graph is missing (and not enough
+price history???)"* and *"there are few holdings add/removed with no deposit/withdrawal recorded"*.
+
+**Evidence.** Every snapshot existed. What was missing was the MEASUREMENT. The reconstruction index
+from `POST /portfolio/performance` runs `... 09-02, 09-03, 09-04, 09-08, 09-09, 09-10, 09-11` —
+**2026-09-07 has no bar at all, because it was US Labor Day.** Run `window_return_from` against the
+unmeasured days and all four fall out of two lines of that function:
+
+| snapshot | prev | resolves to | why `None` |
+|---|---|---|---|
+| 09-07 (Mon, holiday) | 09-06 (Sun) | 09-04 -> 09-04 | `ka == kb` |
+| 09-08 (Tue) | 09-07 (holiday) | 09-04 -> 09-08 | span 4 days vs 1 asked, `> want + 2` |
+| 09-12 (Sat) | 09-11 (Fri) | 09-11 -> 09-11 | `ka == kb` |
+| 08-29 (Sat) | 08-28 (Fri) | 08-28 -> 08-28 | `ka == kb` |
+
+**Root cause (both).** `nav_snapshot` is a CALENDAR cron — 22:10 every night, weekends and holidays
+included — while the price history it is measured against has only TRADING days. And the ±ILS
+figures were not deposits at all: every book change in that window came from
+`/recommendations/*/accept`, `/plan/target/apply`, `/plan/sleeves/fund`, `/strategies/*/apply` and
+`/plan/sleeves/*/swap` — internal reallocations, all of them. `nav_history` read only the
+CONTRIBUTIONS ledger, which correctly says nothing about trades, and **never asked the TRADE
+ledger**, which exists for exactly this. `/plan/sleeves/fund` compounded it by never writing to that
+ledger at all — the hole `ledger_service`'s own docstring warns about, in its own words: *"if a write
+path can move a position and does not call `record_leg`, that path is a hole in the ledger."*
+So the app estimated, and reported its own reconstruction's error term as money: **+132.11 on 08-31,
+-340.67 on 09-01, captioned as "-208.56 ILS you moved in or out"** on a book where nothing moved in
+or out.
+
+**RULED OUT.** *Lost snapshot rows* — all present in `/portfolio/nav-history`. *A broken price feed* —
+`price_refresh` has run 327 times with 0 failures. *A genuinely short history* — the index is a year
+deep and healthy; the caption "there is not enough price history" was true of nothing.
+
+**WHY SILENT.** Both failure modes render as prose, not as an error. "Not enough price history" is a
+sentence the reader has no way to check, and an estimated flow is a plausible number in a field that
+normally holds a real one.
+
+### 3 — USO at 0 shares, holding three armed rules
+
+`/api/v1/portfolio` returned USO with `quantity: 0.0`, cost basis intact, counted in `count: 6`,
+rendered as "0 shares · +9.1% since you bought", holding Commodities at 0% of the book — which is what
+the live "Buy COMT" card was reacting to — and `/api/v1/rules` showed it carrying a take-profit at
+168.17, a 16% trailing stop and a stop-loss at 124.92, **all `active: true`, on nothing.**
+
+**Root cause.** `recommendations.py`'s `kind == "trim"` branch was the ONLY sell path in the app with
+no delete-at-zero test; `sell_position`, `sell_losers`, `_sell_ils`, the core realign and
+`_execute_funded_sleeve` all have one. It wrote `max(0.0, qty - shares)` and kept the row. The manual
+edit endpoint was a second way in.
+
+**`purge_orphan_rules` was not broken.** It deletes rules whose ticker is not in `held`, and `held`
+comes from `load_positions`, which still returned the zero row. It did its job perfectly on a lie —
+which is why the fix is to delete the position, not to add a second mechanism beside a correct one.
+
+### 4 — prices: NO DEFECT FOUND
+
+`price_refresh`: **327 runs, 0 failures**, reading Yahoo's `regularMarketPrice`/`regularMarketTime` —
+the live intraday quote, not a daily bar. Every holding stamped `2026-09-11T20:00Z` because the
+complaint was made at 06:18 UTC on a Monday, with the US market shut since Friday. A probe against
+production and against Yahoo directly, every 10 minutes across the session, found the app's stored
+price identical to Yahoo's at every sample. **Nothing was changed for this.** What was wrong is that
+the screen said `price_freshness: "fresh"` over a Friday close, which reads as broken on a Monday.
+
+### 5 — no card ever said "take some off the table"
+
+Three separate things, none of them a bug, which is why it survived so long:
+
+* the only ACTIONABLE trim in the app was a concentration-cap breach;
+* `Trim: <ticker>` was a FUNDAMENTALS verdict (fires at score < 40) that mentioned a gain only as a
+  clause in its sentence and shipped `apply: {"kind": "none"}` with `est_amount: None`;
+* SOXL's take-profit is set at **+80%** (target 201.39 against 121.82), so nothing was going to fire.
+
+Meanwhile SOXL sat at **37.8% of the book against a 38% cap he set himself** — two tenths of a point
+from breaching, with the app silent.
+
+**And one real defect found on the way:** `execution_plan` returned `sell_position` — a FULL EXIT —
+for a fired `take_profit`, while the note the app writes on its own take-profit rules reads *"Takes
+some off the table if it climbs ~10% more."* Live on QQQ at 791.02 and USO at 168.17. A card may not
+claim a change it does not produce, and this one claimed the opposite of what it did.
+
+**Why the slice is fixed and not trend-conditioned.** Eran asked exactly that. This repo already ran
+the experiment — backlog B2, 2,514 sessions: the trend overlay on TQQQ returned **17.19% CAGR against
+40.25%** for simply holding it and 20.73% for holding QQQ, with a **deeper** drawdown (40.55% vs
+35.12%) and ~7 points a year lost to 45 round-trips. The trend-dependent exit already exists and is
+correct: `trailing_stop` ratchets off `peak_price`, so it sells late in a strong trend and early in a
+weak one without forecasting anything. Two mechanical rules doing one job each beats one rule
+guessing.
+
+### What shipped
+
+| # | change |
+|---|---|
+| 1 | `is_trading_day()` — weekends decided with no feed call at all; a weekday holiday decided from the benchmark's own last close. **Fails open**: a snapshot not taken is permanent data loss (this job lost 7 nights once), a snapshot on a dead day costs one unmeasured step, so every uncertain case records. |
+| 1 | `window_reason_from()` — the caption names the market being shut instead of blaming the price history. |
+| 2 | `ledger_service.traded_dates()`, consulted by `nav_history`. A step whose shape change is covered by recorded buy/sell legs books from the recorded NAVs as pure return: no estimation, no invented flow. |
+| 2 | `_execute_funded_sleeve` records its legs — the `/plan/sleeves/fund` hole, closed. |
+| 3 | the `trim` branch deletes at zero; `update_position` treats an edit to 0 shares as an exit; `_positions_index` ignores zero-quantity rows so the rules machinery cannot be lied to again. |
+| 5 | `take_profit` fires as a **25% trim** and re-arms one rung higher (`next_rung`) instead of latching off — a winner is sold in slices at successively higher prices. `trim_fraction` (migration `0022`) sizes it per rule; null means the house default. A DECLINED firing still latches, as before. |
+| 5 | `_profit_recs` — three cards: one of YOUR levels is within 10%; a holding is up 25%+; a winner is within 2 points of its own cap. Every one carries `est_amount`, because `moved_on` cannot un-mute a card whose number never moves — which is why `Trim: SOXL` stayed hidden for a fortnight after being marked done on 09-08. |
+| 6 | the SPY line on the account chart, built from SPY's closes on the SNAPSHOT dates and broken on the SAME unmeasured steps. Measured: **you +4.11%, SPY +0.18%, +3.93 points.** |
+
+**The trap in 6, avoided deliberately.** `performance()` already returns a `benchmark_index`, and
+drawing it here would have been wrong in the most convincing possible way: it is aligned to TODAY's
+book priced backwards, which over the same window reads **-8.28%** against the account line's
+**+4.11%**. Both correct, and the comparison between them meaningless — the two-targets-one-book
+shape this repo has paid for before. `tests/test_the_benchmark_line_answers_the_same_question.py`
+pins `portfolio_index` out of `series_for` by name.
+
+**Caught on the way in by this repo's own guard:** `test_the_loop_stays_free_while_a_provider_answers`
+failed on the first version of the benchmark fetch — a synchronous `guarded_history` on the event
+loop. Both it and `is_trading_day` now go through `offload`; note the guard only catches a DIRECT
+call, so the second one was invisible to it and not to the loop.
+
+**Known-remaining, pre-existing, not from this PR:** `tests/test_a_quote_of_zero_is_not_a_quote.py::
+test_a_real_quote_afterwards_heals_the_row` fails on `main` at `fab6e46` — a refresh that should heal
+a zeroed row reports `updated: 0`. Untouched here; it is red before and after.
 
 ## PR 66 — a cap that fires on a sleeve it just funded, and a card that can't say how much
 
@@ -6397,6 +6520,7 @@ the individual items are still open, but it predates PRs 16–26 and its pre-fli
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-09-14 — Weekly status review: **one commit in 7 days (PR 66 `fab6e46`, 09-07) — down from 48 and 26 in the two weeks before.** That is not a criticism; it is the datum that makes the ops table legible. For three weeks the honest defence of the untracked `candidate_search.py` was that this repo was shipping faster than it could tidy. This week it shipped one PR, and the file is still untracked — so the item is a decision being deferred, not a queue being drained. Aged: broker integration to **9 weeks** (the oldest item on any of the four boards), VAPID pinning and secrets rotation to **6**, Pixel P0 QA to **5**, untracked code to **2**. Nothing closed. ⚠️ **Two process faults recorded, both mine.** (1) The sandbox's `git status` left an undeletable `.git/index.lock` here (and in AdaptiveFit and WealthOS) — it will block Eran's next commit; the removal command is in the ops table. Future runs use `git --no-optional-locks status`. (2) **This file is 6,412 lines / 364KB.** The 08-31 restructure cut it to ~3,000 by moving PHASE A/B/C and P0–P4 to `STATUS-ARCHIVE.md`; per-PR sections have since doubled it back. Twenty-six PR narratives now sit above the changelog, the oldest (PR 41–46) more than six weeks old and superseded by `EXECUTION_PLAN_2026-09-03_v6.md`. **Flagged, not fixed** — moving ~2,500 lines on this mount is exactly the operation `safe-windows-edits` says can silently truncate, and it should be done deliberately in a session that can verify the result, not by a scheduled job. Next week this becomes an ops row if it has not been done.
 - 2026-09-07 — Weekly status review: **48 commits in 7 days (PR 27 → PR 65, `103fa93`…`853c51d`) — nearly double last week's 26, against zero commits in each of the other three repos.** Per-PR STATUS discipline held again: every PR wrote its own section, and the spine did not go stale the way it did in August — the header was one PR behind (said PR 61.1, HEAD was PR 65) and is corrected. **Two ops items closed by shipped work rather than by nagging**, which is new for this board: the ₪618.65 cash question was **decided** in PR 64 (soft 7.5% target, hard ₪150 floor, a mandatory `reserve_reason` on any card that spends into it) four days after it was flagged; and the 20-file untracked pile is down to **2 files** — `candidate_search.py` and its tests, which is the part that was always the real item. Aged the rest: secrets rotation and VAPID pinning to 5 weeks, broker integration to 8, Pixel P0 QA to 4 (now **thirty-eight** PRs stale, so re-scope or void it rather than run it as written). **The pattern worth naming:** this repo closes ops items when the answer is a decision it can ship, and does not close them when the answer is a console visit — the same shape that has Job Hunter's Google OAuth vars open at 8 weeks. Four of the five remaining rows here are console visits.
 - 2026-08-31 — Weekly status review: **26 commits in 7 days (PR 16 → PR 26, `315ad1f`…`1362ce8`) — the busiest of the four repos while the other three shipped nothing.** Per-PR STATUS discipline held: every PR wrote its own section. What had NOT held was the file's own spine — the `Now` / `Last shipped` / `Verified live` sections still described HEAD `86760ff` (2026-08-03), **eleven PRs and four weeks stale**, buried under 4,300 lines. Restructured: a **Where this repo actually is** block with a real HEAD, an **Ops actions with age** table (this repo had none) and a live **Next** now sit at the top; PHASE A/B/C, P0–P4 and the 08-10 backlog moved verbatim to `STATUS-ARCHIVE.md`; pre-07-20 changelog entries collapsed. 4,416 → ~3,000 lines. **The finding worth keeping: aging the ops items showed `AGENT_API_KEY` was first flagged 2026-08-03 as "rotate it sometime" and was found published in a public repo on 08-30 — four weeks, three restatements, no rotation.** It is now the first row. Also flagged: 20 untracked files including `candidate_search.py` + its tests and `STATUS-V2.md` itself, and a duplicate-message commit pair (`b48b291`/`f5773c0`, one carrying a BOM) — the same gate/ship-script artefact WealthOS shows.
 - 2026-08-16 — **Phase N: history starts.** `nav_snapshots` + a 22:10 daily job + time-weighted returns across the contributions ledger, so a deposit moves the value without moving the line (₪5k into ₪20k then +5% real growth reports 5.00%, not 31.25%). Past NAV is unrecoverable — `Transaction(` has zero writers, `whs_snapshots` was never written — so the job also snapshots the health score WITH its caps, because a stricter yardstick and a worse book need opposite responses. Today's chart prefers real history, falls back to the backfill, and says which. In tree, pending QA.
@@ -6407,6 +6531,5 @@ Postgres per-test isolation fixture (throwaway NullPool engine, own event loop);
 - 2026-08-15 — **Card claims: a card may not claim a portfolio change it does not produce.** Three Today cards proposed buying Equities to move Equities from 97% toward an 80% target, funded by selling Equities — net movement zero. Root cause: prose and arithmetic assembled in different places. Six defects (direction never checked; ticker weight measured against a class target; the honesty clause dead on this path; impact rendered from trade size; funding raiding sleeve holdings TQQQ/SOXL; a gross-vs-net shortfall on nearly every card). Silent because every test in the area asserted on strings — including one guarding the exact sentence on the other consumer of the same code, where the C3 fix had been applied at the call site instead of the boundary. Now: `propose_funded_buy` simulates the post-trade mix and derives its own claim; `describe_funding` requires `buying_class`; `size_purchase` split into `class_gap_ils` / `name_room_ils`; `plan_funding` raises net proceeds, spends one overweight budget per class, and won't sell an underweight class; one `FundingLedger` per build so no two cards spend the same shares. `tests/test_card_claims.py` asserts on portfolio state by applying each card's `apply` spec and re-measuring. A first cut of the netting DROPPED cards whose legs were taken and briefly left Today with nothing actionable — caught by smoke P0.4 / §14 (`agents degraded: funding`) and fixed by netting at build time so a card is re-sourced, not deleted. 790 passed, 4 skipped. Verified live on `98c8b26`.
 - 2026-08-10 — **Beat the Market P0 (safety) written, not yet run.** All four items from `BEAT_MARKET_NEXT_PLAN.md` P0 are in the working tree: (0.1) `load_basket` no longer deletes the book — `mode="fund"` is the new default for the rule-based family and raises only the sleeve's shortfall through the existing funding engine (spendable cash to the objective floor, then worst-fit holdings), abstaining with a stated reason rather than half-executing; `mode="replace"` survives for the four static families behind a confirm that now lists every position and its value; both modes gained `dry_run`. (0.2) `measuredProfile` reads `metrics.cagr_pct` before `ok`, so a card that kept its numbers through a failed refresh shows chips plus "refresh has been failing since X" instead of "Couldn't measure". (0.3) freshness became **three** states, not two — the original bug was that FMP stamps `_now()` on every quote, so a delisted holding looked freshly traded; `Quote.as_of_source` now distinguishes a venue timestamp from a request timestamp, FMP reads its real `timestamp`, and where the primary can't say, Yahoo is asked purely for the trade time. A quote older than 5 **trading** days no longer overwrites the price; the position is flagged, badged in Holdings, reported in `/portfolio.stale_positions`, and surfaced on Today as guidance — never an automatic write-off. (0.4) suggested protective rules reach Today as one card wired to `create_rules`. Plus `smoke-p0.ps1` and two new test files. **The sandbox VM died before any of it could be executed** — see the ⛔ block at the top of this file.
 - 2026-08-03 — Weekly status review: 🎉 **busiest week of the four repos — 11 commits, `d42f38c`→`86760ff`.** The entire 5-issue bug batch (phases 1–11) is committed AND verified live (`smoke-all.ps1` 29/30); rewrote the "Uncommitted (2026-08-02)" section as "Last shipped" with a phase→commit table, resolving last week's uncommitted-work flag. Working tree **clean**. Merged the duplicated "Open items" list into "Next" and gave Next a priority order. ⚠️ Flagged: the **Phases 0–5 alignment-batch QA has now gone two weeks unrun** and its SW update path (`iw-v10`) is stale — the app is on `iw-v11`; decide whether the 08-03 smoke pass subsumes it. Broker integration still unstarted after 3 weeks as the "next initiative". The one failing smoke check (`subscriptions: 0`) is a device action, not a defect.
-- 2026-07-27 — Weekly status review: quiet week — no commits since `9e2cd01` (2026-07-18); tree clean; STATUS in sync. Pending QA flagged: Phases 0–5 alignment batch + notification alignment on the Pixel 9.
-- 2026-07-20 — Weekly status review: ✅ **the whole 2026-07-18 alignment batch is now committed** — 8 commits `defe8ec`→`9e2cd01` (HEAD), resolving the "Phase 1+ uncommitted" flag; working tree clean apart from doc edits. Note: two near-duplicate commit pairs in history (`5acab4c`/`9e2cd01`, `2c02d07`/`fe9ffc6`) — harmless, both phases landed once in the tree. Folded the commit-hygiene notes (no here-strings, no `git add -A`) into Known sharp edges; collapsed old review entries. (This STATUS was also rewritten whole via bash after an Edit-tool write truncated it on the mount.)
+- 2026-07-20→08-03 (weekly reviews, collapsed 2026-09-14, >6 weeks) — The 07-18 alignment batch and the 5-issue bug batch both landed and were verified live (`smoke-all.ps1` 29/30); working trees clean; the duplicate-commit-message artefact and the commit-hygiene rules (no here-strings, no `git add -A`) were folded into **Known sharp edges**, where they still live.
 - 2026-06-22→-07-18 (consolidated 2026-08-31, all >6 weeks old) — **Foundations through the alignment batch.** Installable PWA + web push with 7-day-TTL server dismissals; price-provider hardening (FMP + Yahoo fallback); Markets tab, Gemini summaries, risk-on/off regime; the trading-rules engine; 30-min reprice with a truthful source label; NAV/goal alignment and FX normalization; opportunity screener + fundamentals. Then **Accept actually executes** (sells credit net-of-CGT proceeds to a visible CASH holding; fee-swaps replace at a live price), **notification ↔ Today alignment** (a permanent localStorage hide vs a 7-day server dismissal was the real cause of "push says do X, app says nothing to do"), actionable trend cards + per-holding suggested rules, the grouped trading-rules UI, and war-room timestamps. Closing it: the **2026-07-18 alignment batch, Phases 0–5** (`defe8ec`…`9e2cd01`) — cash as a first-class holding, grounded signals, the funding engine, strategy profiles, green gated CI, and the stale-PWA-shell fix that turned out to be the real cause of the reported "Ignore does nothing" bugs. SW `iw-v3`→`iw-v10`; ~75 tests added.

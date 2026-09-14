@@ -793,13 +793,24 @@ function drawTodayReal(h){
   // spanGaps:false is load-bearing. `pct` now carries NULL for a day the app
   // could not measure, and the whole point is that the line BREAKS there rather
   // than drawing a confident flat step. Chart.js would happily bridge it.
-  drawChart("ch_today","line",{labels:h.dates,datasets:[
-      {label:"% change",data:h.pct,borderColor:col,backgroundColor:col+"22",
-       fill:true,pointRadius:0,tension:.12,borderWidth:2,spanGaps:false}]},{
-    plugins:{legend:{display:false},
+  // The benchmark rides the SAME labels and breaks on the SAME nulls -- the
+  // server builds it that way on purpose (nav_history.benchmark_series). It is
+  // NOT performance()'s benchmark_index, which is aligned to today's book
+  // priced backwards and read -8.28% over a window this line did +4.11%.
+  const bm=h.benchmark;
+  const _ds=[{label:"You",data:h.pct,borderColor:col,backgroundColor:col+"22",
+              fill:true,pointRadius:0,tension:.12,borderWidth:2,spanGaps:false}];
+  if(bm&&bm.pct&&bm.pct.length===h.dates.length){
+    _ds.push({label:bm.ticker||"SPY",data:bm.pct,borderColor:"#8b97a8",
+              borderDash:[4,3],fill:false,pointRadius:0,tension:.12,
+              borderWidth:1.5,spanGaps:false});
+  }
+  drawChart("ch_today","line",{labels:h.dates,datasets:_ds},{
+    plugins:{legend:{display:_ds.length>1,
+                     labels:{color:"#8b97a8",boxWidth:10,usePointStyle:true}},
              tooltip:{callbacks:{title:c=>h.dates[c[0].dataIndex],
-               label:c=>`${c.parsed.y>=0?"+":""}${c.parsed.y}%`+
-                        (h.nav_ils?`  (${h.nav_ils[c.dataIndex]} ILS)`:"")}}},
+               label:c=>`${c.dataset.label}: ${c.parsed.y>=0?"+":""}${c.parsed.y}%`+
+                        (c.datasetIndex===0&&h.nav_ils?`  (${h.nav_ils[c.dataIndex]} ILS)`:"")}}},
     scales:{x:{ticks:{color:"#8b97a8",maxRotation:0,autoSkip:true,maxTicksLimit:6,
                       callback:function(v,i){const d=this.getLabelForValue(v);
                         if(!d)return"";const p=String(d).split("-");
@@ -847,8 +858,9 @@ function drawTodayReal(h){
     ((h.unmeasured_days&&h.unmeasured_days.length)
       ? `<div class="warn" style="margin-top:2px">No measurement for
          ${h.unmeasured_days.map(u=>`<b>${u.as_of}</b>`).join(", ")}: your holdings changed and
-         there was not enough price history to tell that apart from the market. The line breaks
-         there rather than drawing a flat day.</div>`
+         the app could not tell that apart from the market. The line breaks there rather than
+         drawing a flat day.
+         <div class="mk" style="margin-top:2px">${h.unmeasured_days.map(u=>u.reason).join(" &middot; ")}</div></div>`
       : "")+
     ((h.resolved_changes&&h.resolved_changes.length)
       ? `<div class="mk" style="margin-top:2px">Your holdings also changed on
@@ -862,8 +874,19 @@ function drawTodayReal(h){
          compounded over ${h.measured_steps} of ${h.steps} steps in this window; the rest could
          not be measured.</div>`
       : "")+
-    `<div class="mk" style="margin-top:2px">Recorded daily since ${h.recorded_since}. This is your
-     actual account, not a reconstruction.</div>`+
+    // "Recorded daily" was a promise the app had stopped keeping on purpose:
+    // snapshots are taken on TRADING days, because a point on a shut market is
+    // one the chart cannot measure across. Saying "daily" made every weekend
+    // look like a missing record.
+    `<div class="mk" style="margin-top:2px">Recorded every trading day since ${h.recorded_since}.
+     This is your actual account, not a reconstruction.` +
+    (bm&&bm.total_pct!=null
+      ? ` Over the same ${bm.measured_steps} measured steps, ${bm.ticker||"SPY"} did
+          <b>${bm.total_pct>=0?"+":""}${bm.total_pct}%</b> &mdash; you are
+          <b class="${(chg-bm.total_pct)>=0?'ok':'bad'}">${(chg-bm.total_pct)>=0?"+":""}${(chg-bm.total_pct).toFixed(2)}</b>
+          points against it.`
+      : "")+
+    `</div>`+
     ((h.gaps&&h.gaps.length)
       ? `<div class="warn">Not recorded on every day: ${h.gaps.map(g=>`${g.from} to ${g.to} (${g.days}d)`).join(", ")}. The line joins across the gap rather than inventing the days between.</div>`
       : "");

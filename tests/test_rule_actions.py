@@ -25,14 +25,45 @@ class _Rule:
 POS = {"price": 556.71, "cost": 600.0, "qty": 12.0, "weight_pct": 40.0}
 
 
-def test_stops_and_take_profit_become_a_full_exit():
-    """A stop-loss is a full exit by definition - that's what the order type is."""
-    for rt in ("stop_loss", "trailing_stop", "take_profit"):
+def test_stops_become_a_full_exit():
+    """A stop-loss is a full exit by definition - that's what the order type is.
+
+    A trailing stop likewise: the gain it was protecting is evaporating. These
+    two stay full exits. `take_profit` no longer does -- see below.
+    """
+    for rt in ("stop_loss", "trailing_stop"):
         plan = execution_plan(_Rule(rt), POS)
         assert plan is not None, rt
         assert plan["kind"] == "sell_position"
         assert plan["shares"] == 12.0
         assert plan["ticker"] == "META"
+
+
+def test_take_profit_takes_some_off_the_table_rather_than_liquidating():
+    """It returned `sell_position` -- a FULL exit -- while the note the app
+    writes on its own take-profit rules read "Takes some off the table if it
+    climbs ~10% more". Live on QQQ at 791.02 and USO at 168.17 on 2026-09-14.
+    A card may not claim a change it does not produce."""
+    plan = execution_plan(_Rule("take_profit"), POS)
+    assert plan["kind"] == "trim", "a take-profit trims; it does not liquidate"
+    assert plan["shares"] == round(12.0 * 0.25, 6), "the house slice is a quarter"
+    assert plan["ladder"] is True
+    assert plan["ticker"] == "META"
+
+
+def test_a_rule_may_size_its_own_slice():
+    r = _Rule("take_profit")
+    r.trim_fraction = 0.5
+    assert execution_plan(r, POS)["shares"] == round(12.0 * 0.5, 6)
+
+
+def test_a_nonsense_slice_falls_back_to_the_house_size():
+    """Null is the default; zero would be a rule that sells nothing, and
+    anything above 1 is a liquidation wearing a trim's label."""
+    for bad in (0.0, -0.2, 1.5, "banana", None):
+        r = _Rule("take_profit")
+        r.trim_fraction = bad
+        assert execution_plan(r, POS)["shares"] == round(12.0 * 0.25, 6), bad
 
 
 def test_max_weight_trims_back_to_the_cap_exactly():

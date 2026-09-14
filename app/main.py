@@ -109,6 +109,11 @@ async def lifespan(app: FastAPI):
                     # P4: strategy_signal rules pin the strategy they follow.
                     "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
                     "strategy_id VARCHAR(40)",
+                    # A take-profit sells a SLICE and each rule may size its
+                    # own. Null is not zero: null means the house default
+                    # (25%), zero would mean a rule that sells nothing.
+                    "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
+                    "trim_fraction DOUBLE PRECISION",
                     # PR 3: the trade ledger becomes writable. `transactions`
                     # already existed (unwritten), so create_all will not touch
                     # it -- these columns have to be added by hand, and

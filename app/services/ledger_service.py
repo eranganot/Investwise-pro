@@ -124,6 +124,37 @@ async def net_flows_ils(session, user, *, after: str | None = None,
     return round(total, 2)
 
 
+async def traded_dates(session, user) -> set:
+    """The set of dates on which a Buy or Sell leg was recorded.
+
+    For `nav_history`, which has one question to answer about every step where
+    the position count changed: *was that a trade, or was it money?* A buy or a
+    sell is money moving WITHIN the book, so a step containing one needs no
+    estimation -- the recorded NAVs already describe it, and the difference
+    between the two readings is what got reported to Eran as -208.56 ILS of
+    deposits and withdrawals that never happened.
+
+    Returned as a set of ISO dates rather than a predicate over rows, so the
+    caller pays one query for the whole window instead of one per step.
+    """
+    from sqlalchemy import select
+
+    from app.models.tables import Transaction
+
+    q = select(Transaction).where(
+        Transaction.subject == getattr(user, "email", None),
+        Transaction.txn_type.in_((BUY, SELL)),
+    )
+    try:
+        rows = (await session.execute(q)).scalars().all()
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort, like every read here. Losing this degrades the chart to
+        # the estimate it used before -- never to a wrong number.
+        logger.warning("ledger: traded_dates unavailable: %s", exc)
+        return set()
+    return {r.executed_at.date().isoformat() for r in rows if r.executed_at}
+
+
 async def recent(session, user, limit: int = 50) -> list[dict]:
     """The ledger as the API returns it."""
     from sqlalchemy import desc, select

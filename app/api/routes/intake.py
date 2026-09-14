@@ -565,6 +565,15 @@ async def edit_position(position_id: str, body: EditPositionRequest,
         quantity=body.quantity, cost_basis=body.cost_basis, current_price=body.current_price)
     if row is None:
         raise HTTPException(status_code=404, detail="Holding not found.")
+    # Editing the share count to zero is an exit, and `update_position` removes
+    # the row rather than leaving a 0-share holding in the book. Say so plainly:
+    # a silent 200 carrying quantity 0 is what made the ghost look normal.
+    if isinstance(row, dict) and row.get("deleted"):
+        return {"ok": True, "deleted": True, "ticker": row["ticker"],
+                "market": row["market"],
+                "note": (f"{row['ticker']} was set to 0 shares, so it has been "
+                         f"removed from your book. Any trading rules on it are "
+                         f"removed with it.")}
     return {"id": str(row.id), "ticker": row.ticker, "market": row.market,
             "quantity": float(row.quantity), "cost_basis": float(row.cost_basis),
             "current_price": float(row.current_price) if row.current_price is not None else None,

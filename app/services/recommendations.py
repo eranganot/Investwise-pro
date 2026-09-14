@@ -1757,6 +1757,18 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                if (r.get("apply") or {}).get("kind") == "trim"}
     recs += await _offload(_holding_verdict_recs, rows, snap, cap, trimmed)
     _tm.mark("holding_verdicts")
+
+    # TAKING MONEY OFF THE TABLE. Built from the levels the user set himself,
+    # so the app is not inventing an opinion about when to sell -- it is telling
+    # him his own is getting close. See `_profit_recs`. Defensive like every
+    # agent around it: a rules read that fails costs the cards, never the view.
+    try:
+        from app.services.rules_service import list_rules as _lr
+        _user_rules = await _lr(session, user)
+    except Exception:  # noqa: BLE001
+        _user_rules = []
+    recs += await _offload(_profit_recs, rows, snap, _user_rules)
+    _tm.mark("profit")
     recs += await _offload(_hedge_recs, rows, snap)
     _tm.mark("hedge")
     # `_sleeve_floor` stops the uptrend card offering a cap BELOW the sleeve
@@ -2872,6 +2884,196 @@ def _holding_verdict_recs(rows, snap, cap: float, trimmed: set) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Taking money off the table
+# --------------------------------------------------------------------------- #
+#: How close a position must come to one of its OWN rule levels before the app
+#: says so. Ten percent: near enough that the decision is real, far enough that
+#: it is not simply announcing the firing a day early.
+_NEAR_RULE_FRAC = 0.10
+
+#: Unrealised gain, against cost, at which a holding is worth a conversation
+#: even with no rule on it at all.
+_GAIN_CARD_PCT = 25.0
+
+#: How close to a `max_weight` cap counts as drifting INTO it. A winner crosses
+#: its cap by growing, and the day it crosses is a worse day to find out.
+_NEAR_CAP_PCT_POINTS = 2.0
+
+
+def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
+    """Cards for taking money off the table -- the ones Eran had none of.
+
+    2026-09-14: *"I'm holding assets that are moving which is great but I don't
+    see any card recommendation about when to sell to trim profits."* He was
+    right, and the reason was structural rather than a bug:
+
+      * the only ACTIONABLE trim in the app was a concentration-cap breach;
+      * `Trim: <ticker>` was a FUNDAMENTALS verdict (score < 40) that mentioned
+        a gain only as a clause in its sentence, and shipped `apply: none`;
+      * his take-profit rules existed but sat far away -- SOXL's is at +80%, so
+        nothing was ever going to fire.
+
+    So the app was silent on a book whose largest holding was up and sitting
+    0.2 points under its own cap. Three cards, in the order a decision actually
+    arrives:
+
+      1. one of YOUR OWN rule levels is close;
+      2. a holding has run far enough to be worth a look regardless;
+      3. a winner is growing INTO its cap, before it breaches.
+
+    Every card carries `est_amount`. That is not decoration: `moved_on` can only
+    un-mute a card whose number has moved, so a card without one stays muted for
+    the full TTL however far the position runs -- which is exactly what happened
+    to `Trim: SOXL` after it was marked done on 2026-09-08.
+    """
+    out: list[dict] = []
+    nav = float(snap.get("nav") or 0.0)
+    if not nav:
+        return out
+    weights = snap.get("exposure_ticker") or {}
+    by_ticker: dict[str, list[dict]] = {}
+    for r in rules or []:
+        if r.get("active") and r.get("ticker"):
+            by_ticker.setdefault(str(r["ticker"]).upper(), []).append(r)
+
+    from app.services.intake_service import is_cash_position
+
+    for p in rows:
+        tk = (p.ticker or "").upper()
+        if is_cash_position(tk, p.meta if isinstance(p.meta, dict) else None):
+            continue
+        price = float(p.current_price or 0.0)
+        cost = float(p.cost_basis or 0.0)
+        qty = float(p.quantity or 0.0)
+        if price <= 0 or qty <= 0:
+            continue
+        w_pct = float(weights.get(p.ticker, 0.0)) * 100.0
+        value_ils = (weights.get(p.ticker, 0.0)) * nav
+        gain_pct = ((price / cost) - 1.0) * 100.0 if cost > 0 else 0.0
+        mine = by_ticker.get(tk, [])
+
+        # 1) ONE OF YOUR OWN LEVELS IS CLOSE.
+        for r in mine:
+            rt = r.get("rule_type")
+            if rt not in ("take_profit", "trailing_stop"):
+                continue
+            target = r.get("target")
+            try:
+                target = float(target)
+            except (TypeError, ValueError):
+                continue
+            if target <= 0:
+                continue
+            gap = (target - price) / price if rt == "take_profit" else (price - target) / price
+            if not (0 < gap <= _NEAR_RULE_FRAC):
+                continue
+            # The slice that rule would actually sell, valued through the same
+            # arithmetic Accept would run. A card that names a number Accept
+            # would not produce is the claim invariant broken again.
+            frac = 1.0 if rt == "trailing_stop" else _take_profit_frac(mine, r)
+            amount = round(value_ils * frac, 2)
+            if rt == "take_profit":
+                title = f"{tk} is closing on your take-profit"
+                action = (f"{tk} is {_pct(gap * 100)} below your {target:,.2f} "
+                          f"take-profit. When it gets there the app will offer to "
+                          f"sell {frac:.0%} of the position -- about {_ils(amount)} "
+                          f"-- and leave the rest running.")
+            else:
+                title = f"{tk} is closing on your trailing stop"
+                action = (f"{tk} is {_pct(gap * 100)} above your trailing stop at "
+                          f"{target:,.2f}, which follows its peak down. If it gets "
+                          f"there the whole position exits -- about {_ils(amount)}.")
+            out.append({
+                "id": _rid("near_rule", tk, rt), "dimension": "holding",
+                "severity": "MEDIUM", "title": title, "action": action,
+                "how": [f"Decide now what you want to do at {target:,.2f}, "
+                        f"rather than on the day",
+                        "Or move the level if it no longer reflects your plan",
+                        "Nothing happens automatically -- the rule raises a card"],
+                "est_amount": amount, "apply": {"kind": "none"},
+                "meta": {"ticker": tk, "rule_type": rt, "target": target,
+                         "gap_pct": round(gap * 100, 2)}})
+
+        # 2) IT HAS SIMPLY RUN A LONG WAY.
+        if gain_pct >= _GAIN_CARD_PCT and cost > 0:
+            gain_ils = round(value_ils * (1.0 - cost / price), 2)
+            has_tp = any(r.get("rule_type") == "take_profit" for r in mine)
+            out.append({
+                "id": _rid("ran_up", tk), "dimension": "holding",
+                "severity": "MEDIUM",
+                "title": f"{tk} is up {gain_pct:.0f}% -- decide what to do with it",
+                "action": (f"{tk} has gone from {cost:,.2f} to {price:,.2f}, "
+                           f"{_pct(gain_pct)} above what you paid, and is "
+                           f"{w_pct:.0f}% of your book. About {_ils(gain_ils)} of "
+                           f"its value is gain you have not taken."
+                           + ("" if has_tp else " You have no take-profit on it.")),
+                "how": ([f"Trim a slice -- 25% of {tk} is about "
+                         f"{_ils(value_ils * 0.25)} -- and let the rest run"]
+                        + ([] if has_tp else
+                           [f"Or set a take-profit on {tk} so the app asks you "
+                            f"at a level you choose"])
+                        + ["Mind the tax on any realised gain",
+                           "Doing nothing is a decision too -- it is not a "
+                           "reason to sell"]),
+                "est_amount": gain_ils, "apply": {"kind": "none"},
+                "meta": {"ticker": tk, "gain_pct": round(gain_pct, 2)}})
+
+        # 3) IT IS GROWING INTO ITS CAP.
+        for r in mine:
+            if r.get("rule_type") != "max_weight":
+                continue
+            try:
+                cap_pct = float(r.get("level"))
+            except (TypeError, ValueError):
+                continue
+            headroom = cap_pct - w_pct
+            if not (0 < headroom <= _NEAR_CAP_PCT_POINTS):
+                continue
+            over_at_cap = round(nav * (w_pct - cap_pct) / 100.0, 2)
+            out.append({
+                "id": _rid("near_cap", tk), "dimension": "diversification",
+                "severity": "MEDIUM",
+                "title": f"{tk} is nearly at your {cap_pct:.0f}% cap",
+                "action": (f"{tk} is {w_pct:.1f}% of your book against the "
+                           f"{cap_pct:.0f}% cap you set -- {headroom:.1f} points "
+                           f"of headroom. It is getting there by going up, so the "
+                           f"breach will arrive on a good day, not a bad one."),
+                "how": [f"Trim {tk} back below the cap on your own terms",
+                        "Or raise the cap, if you have changed your mind about "
+                        "how much of this you want to own",
+                        "Waiting is fine -- this is a heads-up, not a breach"],
+                # Zero today by construction (it is not over yet); the DISTANCE
+                # is what the reader needs, and `moved_on` keys off the headroom
+                # through the id rather than a number that is always zero.
+                "est_amount": round(max(0.0, over_at_cap), 2),
+                "apply": {"kind": "none"},
+                "meta": {"ticker": tk, "weight_pct": round(w_pct, 2),
+                         "cap_pct": cap_pct, "headroom_pct": round(headroom, 2)}})
+    return out
+
+
+def _take_profit_frac(mine: list[dict], rule: dict) -> float:
+    """The slice this take-profit would sell, read through `rules_service`.
+
+    Imported rather than re-derived: two implementations of "how much does a
+    take-profit sell" is two numbers that can disagree between the card and
+    Accept, which is the claim invariant this repo already paid for once.
+    """
+    from app.services.rules_service import TAKE_PROFIT_FRACTION
+
+    raw = rule.get("trim_fraction")
+    try:
+        frac = float(raw) if raw is not None else TAKE_PROFIT_FRACTION
+    except (TypeError, ValueError):
+        frac = TAKE_PROFIT_FRACTION
+    return frac if 0.0 < frac <= 1.0 else TAKE_PROFIT_FRACTION
+
+
+def _pct(x: float) -> str:
+    return f"{abs(x):.1f}%"
+
+
 def _hedge_recs(rows, snap) -> list[dict]:
     """Flag sector/factor concentration and suggest a diversifier or hedge."""
     out: list[dict] = []
@@ -3859,11 +4061,36 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
             shares = min(float(spec["shares"]), float(p.quantity))
             gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
                                          float(p.cost_basis or 0), p.market, p.meta)
-            await update_position(session, user, str(p.id),
-                                  quantity=max(0.0, float(p.quantity) - shares))
+            # A TRIM THAT TAKES EVERYTHING IS AN EXIT, AND AN EXIT DELETES.
+            #
+            # This branch was the only sell path in the app without this test.
+            # `sell_position` has it, `sell_losers` has it, `_sell_ils` has it,
+            # the core realign has it, `_execute_funded_sleeve` has it -- and
+            # this one wrote `max(0.0, qty - shares)` and kept the row.
+            #
+            # MEASURED on this book, 2026-09-14: USO sat in the portfolio at
+            # quantity 0.0 with its cost basis intact, counted in `positions`,
+            # rendered as a card reading "0 shares ... +9.1% since you bought",
+            # holding Commodities at 0% of the book -- which is what the live
+            # COMT buy card is reacting to -- and still carrying THREE armed
+            # trading rules: take-profit 168.17, trailing stop 16%, stop-loss
+            # 124.92. A rule armed on a position you do not own can fire and
+            # propose selling something that is not there.
+            # Deleting the row is the WHOLE fix, including for the rules.
+            # `rules_service.purge_orphan_rules` already deletes rules for
+            # tickers that are not held -- it was working perfectly and being
+            # fed a lie, because a zero-quantity row is still returned by
+            # `load_positions`, so USO was "held" and its rules were not
+            # orphans. Fix the cause; do not add a second mechanism beside a
+            # correct one.
+            remaining = max(0.0, float(p.quantity) - shares)
+            if remaining <= 0:
+                await delete_position(session, user, p.ticker, p.market)
+            else:
+                await update_position(session, user, str(p.id), quantity=remaining)
             credited = await credit_cash(session, user, gross - tax)
             detail = {"sold": [spec["ticker"]], "cash_added_ils": round(credited, 2),
-                      "tax_ils": round(tax, 2)}
+                      "tax_ils": round(tax, 2), "full_exit": remaining <= 0}
     elif kind == "sell_position":
         # A stop-loss / trailing stop / take-profit is a full exit by definition.
         # The position leaves the book and the net-of-CGT proceeds land in cash,

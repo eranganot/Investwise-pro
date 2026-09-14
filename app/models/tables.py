@@ -404,6 +404,11 @@ class TradingRule(Base, PKMixin, TimestampMixin):
     # see "TQQQ entry" and be following something they never agreed to.
     strategy_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     peak_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # trailing-stop high-water
+    # What fraction of the position ONE take-profit firing sells. NULL is not
+    # zero: null means the house default (`rules_service.TAKE_PROFIT_FRACTION`,
+    # 0.25); zero would mean a rule that sells nothing. Only `take_profit` reads
+    # it -- a stop-loss and a trailing stop are full exits by definition.
+    trim_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     note: Mapped[str | None] = mapped_column(String(160), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     triggered: Mapped[bool] = mapped_column(Boolean, default=False)

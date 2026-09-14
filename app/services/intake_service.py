@@ -7,6 +7,7 @@ position's JSON `meta`.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from decimal import Decimal
 
@@ -17,6 +18,8 @@ from app.models.tables import Account, Contribution, Entity, Position, User, mon
 from app.schemas.intake import IntakePosition
 from app.services.allocation_mix import ASSET_CLASS_SOURCE_USER
 from app.schemas.lag import LagObservation
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_entity(session: AsyncSession, user: User, name: str, entity_type: str) -> Entity:
@@ -265,6 +268,18 @@ async def update_position(
     if market:
         row.market = market
     if quantity is not None:
+        # EDITING A HOLDING DOWN TO ZERO IS SELLING IT, and a sold holding does
+        # not stay in the book. Without this the edit pencil is a second way to
+        # mint the ghost row the trim path used to leave behind: counted in
+        # `positions`, rendered as "0 shares ... +9.1% since you bought", still
+        # holding its asset class at 0% of the book, and still keeping its
+        # trading rules armed because `load_positions` reports it as held.
+        if float(quantity) <= 0:
+            tk, mk = row.ticker, row.market
+            await session.delete(row)
+            await session.commit()
+            logger.info("position %s edited to zero -- removed from the book", tk)
+            return {"deleted": True, "ticker": tk, "market": mk}
         row.quantity = money(quantity)
     if cost_basis is not None:
         row.cost_basis = money(cost_basis)

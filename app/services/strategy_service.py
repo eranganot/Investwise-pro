@@ -1101,6 +1101,24 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
     leftover = round(max(0.0, budget), 2)
     cash_after = round(cash_now - from_cash + leftover, 2)
     await set_cash(session, user, cash_after)
+
+    # A HOLE IN THE LEDGER, CLOSED. `ledger_service` states the invariant in its
+    # own docstring -- "if a write path can move a position and does not call
+    # ``record_leg``, that path is a hole in the ledger" -- and this path moved
+    # the book without one for its entire life. It is `/plan/sleeves/fund`, and
+    # on 2026-09-06 alone it ran five times.
+    #
+    # The cost was not a missing audit trail. `nav_history` cannot see a swap it
+    # has no legs for, so it read "the position count changed and the
+    # contributions ledger is silent" as money possibly moving, estimated the
+    # difference against a reconstruction, and then reported that
+    # reconstruction's own error term to Eran as deposits and withdrawals:
+    # +132.11 on 08-31 and -340.67 on 09-01, captioned as -208.56 ILS of "money
+    # you moved in or out" on a book where nothing moved in or out.
+    from app.services import ledger_service as ledger
+    await ledger.record_legs(session, user, sold=sold, bought=bought,
+                             source="sleeve_fund",
+                             note="sleeve funded -- internal reallocation")
     await session.commit()
     return {"sold": sold, "bought": bought, "skipped": skipped,
             "tax_ils": round(tax_total, 2), "unspent_ils": leftover,

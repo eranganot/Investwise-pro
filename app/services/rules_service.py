@@ -141,6 +141,50 @@ def cap_breach_is_material(level: float, weight_pct: float, value_ils: float) ->
     return cap_trim_ils(level, weight_pct, value_ils) >= MIN_TRADE_ILS
 
 
+#: How much of a position one take-profit firing sells. A quarter: enough to be
+#: worth the friction and the CGT, small enough that four rungs still leave the
+#: winner running. Overridable per rule via ``meta``-free `note` parsing is
+#: deliberately NOT offered -- a number hidden in prose is a number nobody can
+#: audit. See `take_profit_fraction`.
+TAKE_PROFIT_FRACTION = 0.25
+
+#: How much higher the next rung sits after one fires. The ladder is the whole
+#: point: a position that keeps trending gets sold in slices at successively
+#: higher prices, which is trend-responsive in OUTCOME without predicting
+#: anything, and if it rolls over instead the trailing stop takes the rest.
+TAKE_PROFIT_LADDER_STEP = 0.10
+
+
+def take_profit_fraction(rule) -> float:
+    """The slice one firing of this take-profit sells.
+
+    A per-rule override wins when present and sane; otherwise the house default.
+    Clamped to (0, 1]: a fraction of zero is a rule that does nothing, and one
+    above 1 is a full exit wearing a trim's label.
+    """
+    raw = getattr(rule, "trim_fraction", None)
+    try:
+        frac = float(raw) if raw is not None else TAKE_PROFIT_FRACTION
+    except (TypeError, ValueError):
+        frac = TAKE_PROFIT_FRACTION
+    if not (0.0 < frac <= 1.0):
+        frac = TAKE_PROFIT_FRACTION
+    return frac
+
+
+def next_rung(level: float, mode: str, step: float = TAKE_PROFIT_LADDER_STEP) -> float:
+    """Where a fired take-profit re-arms.
+
+    In `price` mode the level is a price and the next rung is `step` above it.
+    In `pct` mode the level is a gain percentage against cost, so the rung moves
+    by `step` in percentage POINTS of that same scale -- 80 becomes 90, not 88.
+    """
+    lvl = float(level or 0.0)
+    if str(mode) == "pct":
+        return round(lvl + step * 100.0, 4)
+    return round(lvl * (1.0 + step), 4)
+
+
 def rearm_threshold(level: float) -> float:
     """The value a standing condition must clear to re-arm, in the rule's unit."""
     lvl = abs(float(level))
@@ -199,6 +243,17 @@ async def _positions_index_and_nav(session: AsyncSession, user: User) -> tuple[d
         # once the pricing fix reset the corrupted row from ~72.9 back to its
         # true 1.0, any such rule "crashed" and fired.
         if tk == "CASH":
+            continue
+        # NEITHER IS A POSITION YOU NO LONGER HOLD. A row at quantity 0 is an
+        # exit that failed to delete itself, and `load_positions` still returns
+        # it -- so `purge_orphan_rules` saw the ticker in `held`, correctly
+        # concluded its rules were not orphans, and left them armed.
+        #
+        # MEASURED 2026-09-14: USO at quantity 0.0 kept a take-profit at 168.17,
+        # a 16% trailing stop and a stop-loss at 124.92, all `active: true`, on
+        # nothing. The trim path that created the row is fixed above; this makes
+        # the rules machinery immune to the next path that gets it wrong.
+        if float(p.get("quantity") or 0) <= 0:
             continue
         _w = weights.get(p["ticker"], 0) or 0
         out[tk] = {"price": float(p.get("current_price") or 0),
@@ -283,7 +338,40 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
             return {"kind": "sell_position", "ticker": rule.ticker.upper(),
                     "shares": round(qty, 6), "rule_type": rt}
         return None
-    if rt in ("stop_loss", "trailing_stop", "take_profit"):
+    if rt == "take_profit":
+        # A TAKE-PROFIT TAKES SOME OFF THE TABLE. IT DOES NOT LIQUIDATE.
+        #
+        # This returned `sell_position` -- a full exit -- while the notes the
+        # app writes on its own take-profit rules say, verbatim: *"Takes some
+        # off the table if it climbs ~10% more."* Live on this book on
+        # 2026-09-14, on QQQ at 791.02 and USO at 168.17. A card may not claim
+        # a change it does not produce, and this one claimed the opposite of
+        # what it did.
+        #
+        # WHY A FIXED SLICE AND NOT A TREND-CONDITIONED ONE. Eran asked exactly
+        # that. This repo already ran the experiment: STATUS.md B2 measures the
+        # trend overlay on TQQQ over 2,514 sessions at 17.19% CAGR against
+        # 40.25% for holding it and 20.73% for holding QQQ -- a deeper drawdown
+        # (40.55% vs 35.12%) for two thirds less return, with ~7 points a year
+        # going to 45 round-trips. Conditioning exits on trend is the specific
+        # thing his own data says cost him the most money.
+        #
+        # The trend-dependent exit already exists and is correct: `trailing_stop`
+        # ratchets off `peak_price` (see `_evaluate` and the peak update in
+        # `evaluate_user`), so it sells late in a strong trend and early in a
+        # weak one without anyone forecasting. Two mechanical rules doing one
+        # job each beats one rule guessing.
+        slice_frac = take_profit_fraction(rule)
+        shares = round(qty * slice_frac, 6)
+        if shares <= 0:
+            return None
+        return {"kind": "trim", "ticker": rule.ticker.upper(),
+                "shares": shares, "rule_type": rt,
+                "fraction": slice_frac,
+                "ladder": True}
+    if rt in ("stop_loss", "trailing_stop"):
+        # These two ARE full exits by definition: the thesis is broken, or the
+        # gain being protected is evaporating.
         return {"kind": "sell_position", "ticker": rule.ticker.upper(),
                 "shares": round(qty, 6), "rule_type": rt}
     if rt == "max_weight":
@@ -583,7 +671,21 @@ async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str
 
     await record_outcome(session, user, str(rule.id), outcome, action)
     rule.triggered = False
-    if rule.rule_type in _ONE_SHOT:
+    if rule.rule_type == "take_profit" and str(outcome) == "accepted":
+        # THE LADDER. A take-profit that fired sold a SLICE, not the position,
+        # so the rule is not spent -- it has a next rung. Re-arming it higher is
+        # what makes a winner get sold into strength in stages instead of either
+        # being liquidated at the first rung or never trimmed again.
+        #
+        # Only on `accepted`. A rule the user DECLINED is one they disagreed
+        # with, and moving its level up would quietly re-ask the same question
+        # from a worse place; that still latches off, as before.
+        rule.level = next_rung(rule.level, rule.mode)
+        rule.active = True
+        rule.note = (f"Ladder: next slice if it reaches "
+                     f"{rule.level:.2f}{'%' if rule.mode == 'pct' else ''}.")[:160]
+        logger.info("take_profit %s re-armed at %s", rule.ticker, rule.level)
+    elif rule.rule_type in _ONE_SHOT:
         # Spent: the exit it described has either happened or been declined.
         # Leaving it armed would re-fire on the same condition immediately.
         rule.active = False

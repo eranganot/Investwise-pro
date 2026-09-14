@@ -132,7 +132,7 @@ def _spike_indices(points: list[dict], flows: list[dict] | None) -> set[int]:
 
 
 def time_weighted(points: list[dict], flows: list[dict] | None = None, *,
-                  window_return=None) -> dict:
+                  window_return=None, window_reason=None, traded=None) -> dict:
     """Chain sub-period returns across every cash-flow boundary.
 
     For consecutive snapshots V0 (at t0) and V1 (at t1), with net external flow
@@ -225,7 +225,25 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None, *,
         # there is nothing to attribute. This short-circuit is PR 22's and it
         # stays -- without it a swap becomes an unmeasured hole, which would be
         # the new machinery breaking a case the old code got right.
-        if dn != 0 and abs(f) < 0.005 and abs(raw_delta) >= 0.5:
+        # ...UNLESS THE TRADE LEDGER ALREADY EXPLAINS IT. `transactions` records
+        # what the money actually did, and buy/sell legs are by definition money
+        # moving WITHIN the book. When the ledger has legs across this step, the
+        # shape change is accounted for: nothing external arrived or left, the
+        # flow is zero, and the step books from the recorded NAVs as pure return.
+        #
+        # This is the difference between "we could not tell" and "we checked",
+        # and the reason the check exists is that the estimation it replaces was
+        # reporting its own error term as a deposit. `ledger_service.net_flows_ils`
+        # already says it in its own docstring -- *"a swap is not a flow"* -- and
+        # nothing ever asked it.
+        if dn != 0 and abs(f) < 0.005 and traded is not None and traded(prev[0], d):
+            out["resolved_changes"].append({
+                "as_of": d, "positions_before": prev[2], "positions_after": n_now,
+                "reason": ("a holding was added" if dn > 0 else "a holding was removed")
+                          + " by a trade recorded in your ledger -- money moved "
+                            "between your holdings, not in or out of the account. "
+                            "The whole step is measured as market movement"})
+        elif dn != 0 and abs(f) < 0.005 and abs(raw_delta) >= 0.5:
             # CHARGING THE WHOLE DELTA TO THE FLOW REPORTS THE DAY AS 0.00%.
             #
             # `f = nav - prev_nav` makes the next line arithmetically identical
@@ -327,13 +345,25 @@ def time_weighted(points: list[dict], flows: list[dict] | None = None, *,
                 # the market" is not 0% -- it is no measurement, and the line
                 # must break rather than assert one.
                 unmeasured = True
+                # NAME THE ACTUAL CAUSE. This branch used to assert "there is
+                # not enough price history" for every failure, including the
+                # one that happens most -- a weekend or a holiday, where the
+                # history is complete and there was simply no session. See
+                # `window_reason_from`.
+                why = None
+                if window_reason is not None:
+                    try:
+                        why = window_reason(prev[0], d)
+                    except Exception:  # noqa: BLE001
+                        why = None
                 out["unmeasured_days"].append({
                     "as_of": d, "positions_before": prev[2], "positions_after": n_now,
                     "nav_before": round(prev[1], 2), "nav_after": round(nav, 2),
                     "reason": ("a holding was added" if dn > 0 else "a holding was removed")
-                              + " with nothing in the ledger, and there is not enough "
-                                "price history to measure what the rest of the book did "
-                                "over the same dates. This day carries no measurement"})
+                              + " with nothing in the ledger, and "
+                              + (why or "there is not enough price history to measure "
+                                        "what the rest of the book did over the same dates")
+                              + ". This day carries no measurement"})
 
         if unmeasured:
             # Plotted as a HOLE: the date and the value are real and are kept,
@@ -399,16 +429,97 @@ def gaps(points: list[dict], max_gap_days: int = 4) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
+# trading days
+# --------------------------------------------------------------------------
+
+#: The hour (UTC) after which today's close is expected to have landed in the
+#: feed. The US cash session ends at 20:00 UTC (21:00 outside DST); the snapshot
+#: job runs at 22:10. Before this hour a missing bar means "not yet", not "no
+#: market" -- and that difference decides whether a day of history is lost.
+_CLOSE_LANDED_UTC_HOUR = 21
+
+
+def is_trading_day(today: date | None = None) -> tuple[bool, str]:
+    """Was there a market session on `today`? Returns ``(trading, why)``.
+
+    THE DEFECT THIS ANSWERS. Snapshots are taken on a CALENDAR cron -- 22:10
+    every night, weekends and holidays included -- while the price history the
+    chart measures against has only TRADING days. When the book changes shape
+    on, or across, a day with no session, `window_return_from` cannot resolve
+    two distinct closes, and the step is dropped as unmeasurable.
+
+    MEASURED on this book, 2026-09-13. Five of twenty-two steps carried no
+    measurement, and four of them were this and nothing else:
+
+      * 2026-08-29 (Sat) and 2026-09-12 (Sat) -- both ends of the step resolve
+        back to the SAME Friday close, so `ka == kb` and the window is empty.
+      * 2026-09-07 (US Labor Day; no bar anywhere in the feed) and the 09-08
+        step that had to reach across it -- resolved span 4 days against 1 asked.
+
+    Eran read the caption as the app having lost his records. Every record was
+    there. The market was shut.
+
+    **FAILS OPEN, deliberately and asymmetrically.** A snapshot not taken is a
+    day of history that can never be reconstructed -- `run_nav_snapshot_blocking`
+    exists because seven of those were lost once already, silently. A snapshot
+    taken on a dead day costs exactly one unmeasured step. So this returns False
+    only where it can POSITIVELY show there was no session: a weekend, which
+    needs no feed at all, or a feed that has landed today's closes and does not
+    contain one. A provider outage, an empty series, an early run -- every
+    uncertain case records.
+    """
+    d = today or datetime.now(timezone.utc).date()
+    if d.weekday() >= 5:
+        # Saturday or Sunday. No feed call, no failure mode, no US session.
+        return (False, f"{d.isoformat()} is a "
+                       f"{'Saturday' if d.weekday() == 5 else 'Sunday'}")
+    if datetime.now(timezone.utc).hour < _CLOSE_LANDED_UTC_HOUR:
+        # Today's bar may simply not have been published yet. Refusing here
+        # would turn a scheduling change into silent, permanent data loss.
+        return (True, "before the close has landed -- recording rather than guessing")
+    try:
+        from app.core.config import get_settings
+        from app.providers.registry import guarded_history
+        series = guarded_history(get_settings().benchmark_ticker, 5)
+    except Exception:  # noqa: BLE001
+        return (True, "no benchmark history available -- recording rather than guessing")
+    if not series:
+        return (True, "benchmark history empty -- recording rather than guessing")
+    last = str(series[-1][0])[:10]
+    if last >= d.isoformat():
+        return (True, f"benchmark closed on {last}")
+    return (False, f"no market close on {d.isoformat()} (last session {last})")
+
+
+# --------------------------------------------------------------------------
 # the session-bound half
 # --------------------------------------------------------------------------
 
-async def record_for(session, user, *, source: str = "job") -> dict:
-    """Upsert today's snapshot for one user. Idempotent within a day."""
+async def record_for(session, user, *, source: str = "job",
+                     force: bool = False) -> dict:
+    """Upsert today's snapshot for one user. Idempotent within a day.
+
+    Skips a day with no market session unless `force` -- see `is_trading_day`
+    for why that check fails open, and what it cost before it existed.
+    """
     from sqlalchemy import select
 
     from app.models.tables import NavSnapshot
     from app.services.intake_service import list_positions
     from app.services.strategy_service import _snapshot
+
+    if not force:
+        # Through `offload`: `is_trading_day` may reach the provider, and the
+        # loop-safety test only catches a DIRECT `guarded_history` call in an
+        # async function -- one level of indirection hides it from the check but
+        # not from the event loop.
+        from app.core.offload import offload
+        trading, why = await offload(is_trading_day)
+        if not trading:
+            # Not a failure. A snapshot on a day with no session adds a point
+            # the chart cannot measure across and teaches the reader nothing
+            # the previous close did not already say.
+            return {"ok": False, "reason": "market closed", "detail": why}
 
     rows = await list_positions(session, user)
     if not rows:
@@ -553,6 +664,17 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
 
     flows = await list_contributions(session, user)
 
+    # The trade ledger, asked once for the whole window. A step whose shape
+    # change is covered by recorded buy/sell legs is a reallocation, not a flow,
+    # and needs no reconstruction at all.
+    from app.services.ledger_service import traded_dates
+    _traded = await traded_dates(session, user)
+
+    def traded(after: str, upto: str) -> bool:
+        # Half-open, matching `net_flow_between`: a trade dated on the earlier
+        # snapshot's day is already inside that snapshot's NAV.
+        return any(after < d <= upto for d in _traded)
+
     # Only price the held book when this window actually needs it. The
     # reconstruction is one history fetch per holding plus the benchmark, and
     # the overwhelmingly common case -- a window in which the book did not
@@ -562,23 +684,53 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
     _prev = None
     for _p in points:
         _n = int(_p.get("positions") or 0)
-        if _prev is not None and _n != _prev[1] and abs(
-                net_flow_between(flows, _prev[0], str(_p["as_of"]))) < 0.005:
+        if (_prev is not None and _n != _prev[1]
+                and abs(net_flow_between(flows, _prev[0], str(_p["as_of"]))) < 0.005
+                # A step the ledger already explains needs no reconstruction --
+                # and the reconstruction is the expensive part of this endpoint.
+                and not traded(_prev[0], str(_p["as_of"]))):
             _needs = True
             break
         _prev = (str(_p["as_of"]), _n)
 
     window_return = None
+    window_reason = None
     reconstruction = {"attempted": _needs, "available": False,
                       "basis": "held_book_backfill"}
     if _needs:
         index = await held_book_index(session, user, points)
         if index:
             window_return = window_return_from(index)
+            window_reason = window_reason_from(index)
             reconstruction["available"] = True
             reconstruction["observations"] = len(index)
 
-    twr = time_weighted(points, flows, window_return=window_return)
+    twr = time_weighted(points, flows, window_return=window_return,
+                        window_reason=window_reason, traded=traded)
+
+    # The benchmark, over the same dates and the same measured steps. Its own
+    # closes -- never `performance()`'s `benchmark_index`, which is aligned to a
+    # DIFFERENT portfolio series. See `benchmark_series`.
+    benchmark = None
+    try:
+        from app.core.config import get_settings
+        from app.core.offload import offload
+        from app.providers.registry import guarded_history
+        _bt = get_settings().benchmark_ticker
+        _span = (date.today() - date.fromisoformat(str(points[0]["as_of"]))).days
+        # `offload`, NOT a bare call: `guarded_history` is a synchronous network
+        # fetch, and running it on the loop means the app answers nobody while
+        # it waits. `tests/test_the_loop_stays_free_while_a_provider_answers.py`
+        # caught this one on the way in.
+        _series = await offload(guarded_history, _bt, max(60, _span + 20))
+        _bidx = {str(d)[:10]: float(c) for d, c in (_series or []) if c}
+        if _bidx:
+            _b = benchmark_series(twr["dates"], twr["pct"], _bidx)
+            benchmark = {"ticker": _bt, **_b}
+    except Exception:  # noqa: BLE001 -- a comparison line is never worth the chart
+        logger.warning("nav history: benchmark unavailable", exc_info=False)
+        benchmark = None
+
     return {
         "ok": True, "kind": "nav_snapshots", "range": (range_key or "1M").upper(),
         "recorded_since": recorded_since,
@@ -607,6 +759,10 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
         "measured_steps": twr["measured_steps"],
         "steps": max(0, len(twr["dates"]) - 1),
         "reconstruction": reconstruction,
+        # The comparison line. Null when the benchmark could not be priced --
+        # the chart then draws one line rather than a second one it cannot
+        # stand behind.
+        "benchmark": benchmark,
         "gaps": gaps(points),
         "engine_version": SNAPSHOT_VERSION,
         "window": {"start": twr["dates"][0], "end": twr["dates"][-1],
@@ -678,6 +834,111 @@ _INDEX_SPAN_SLACK_DAYS = 2
 #: reconstruction does not describe this window, not that the residual is noise.
 #: The day is marked unmeasured rather than booked from the recorded NAVs.
 _RESIDUAL_TOLERANCE = 0.02
+
+
+def benchmark_series(dates: list[str], pct: list, index: dict) -> dict:
+    """The benchmark, chained over the SAME steps the account line was.
+
+    THE TRAP THIS EXISTS TO AVOID, and it is not hypothetical. `performance()`
+    already returns a `benchmark_index`, and drawing THAT on this chart would be
+    wrong in the most convincing possible way: `performance` measures TODAY's
+    holdings priced backwards, which over 2026-08-17 -> 09-11 reads **-8.28%**
+    on a book whose account history over the same window did **+4.11%**. The
+    benchmark would be correct, the account line would be correct, and the
+    comparison between them would be meaningless -- the same shape as the
+    two-targets-one-book defect this repo has already paid for.
+
+    So the benchmark is built here, from the benchmark's own closes on the
+    SNAPSHOT dates, and it:
+
+      * starts at 0.0 on the same baseline day;
+      * skips exactly the steps the account line could not measure, so both
+        lines answer the same question over the same market time;
+      * reports 0.0% for a step with no session in it (a weekend), because a
+        shut market is a real zero for an index, not a hole.
+
+    Measured over Eran's live window: account +4.11%, SPY +0.18%.
+    """
+    out = {"pct": [], "total_pct": 0.0, "measured_steps": 0}
+    if not dates or not index:
+        return out
+    keys = sorted(index)
+
+    def _at(d: str):
+        import bisect
+        i = bisect.bisect_right(keys, str(d)) - 1
+        if i < 0:
+            return None
+        k = keys[i]
+        try:
+            if (date.fromisoformat(str(d)) - date.fromisoformat(k)).days > _INDEX_LOOKBACK_DAYS:
+                return None
+        except ValueError:
+            return None
+        return k
+
+    cum = 1.0
+    prev = str(dates[0])
+    out["pct"].append(0.0)
+    steps = 0
+    for i in range(1, len(dates)):
+        d = str(dates[i])
+        if pct[i] is None:
+            # THE SAME HOLE. A benchmark that keeps compounding across a step
+            # the account line refused to measure is comparing two different
+            # windows and calling the difference performance.
+            out["pct"].append(None)
+            prev = d
+            continue
+        ka, kb = _at(prev), _at(d)
+        if ka is None or kb is None or ka == kb:
+            step = 0.0            # the market was shut: a real zero for an index
+        else:
+            va, vb = index.get(ka), index.get(kb)
+            step = (vb / va - 1.0) if (va and vb is not None and va > 0) else 0.0
+        cum *= (1.0 + step)
+        steps += 1
+        out["pct"].append(round((cum - 1.0) * 100.0, 4))
+        prev = d
+    out["total_pct"] = round((cum - 1.0) * 100.0, 4)
+    out["measured_steps"] = steps
+    return out
+
+
+def window_reason_from(index: dict):
+    """A `(a, b) -> str` callable naming WHY a window could not be measured.
+
+    The message the user reads is the whole point of this. "There is not enough
+    price history" was technically true and completely misleading: on 2026-09-07
+    the history was a year deep and perfectly healthy -- it was **Labor Day**,
+    and there was no session to measure. Eran read that caption as the app
+    having lost his records, which is the worst thing a caption can do.
+    """
+    keys = sorted(index)
+
+    def _why(a: str, b: str) -> str:
+        if not keys:
+            return ("there is no price history for your holdings over these "
+                    "dates, so the market move cannot be separated out")
+        try:
+            da, db = date.fromisoformat(str(a)), date.fromisoformat(str(b))
+        except ValueError:
+            return "these dates could not be read"
+        if str(b) < keys[0]:
+            return (f"this is before the price history starts ({keys[0]}), so "
+                    f"there is nothing to measure the move against")
+        sessions = [k for k in keys if str(a) < k <= str(b)]
+        if not sessions:
+            # The common case by a wide margin, and never a data problem.
+            if da.weekday() >= 5 or db.weekday() >= 5:
+                return ("the market was shut between these dates (a weekend), "
+                        "so there is no move to separate from the change")
+            return ("the market was shut between these dates (a holiday), so "
+                    "there is no move to separate from the change")
+        return ("the market was shut for part of this step, so pricing your "
+                "holdings across it would span more market time than the step "
+                "itself covers")
+    return _why
 
 
 def window_return_from(index: dict):
@@ -777,7 +1038,14 @@ def run_nav_snapshot_blocking() -> dict:
         from app.core.config import get_settings
         from app.models.tables import User
 
-        done, failed, health = 0, 0, 0
+        done, failed, health, skipped = 0, 0, 0, 0
+        # Asked ONCE per run, not once per user: the answer is a property of the
+        # market, not of the book, and a per-user call would hit the provider n
+        # times for one fact.
+        trading, why = is_trading_day()
+        if not trading:
+            return {"nav_rows": 0, "health_rows": 0, "failed": 0,
+                    "skipped": "market closed", "detail": why}
         engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
@@ -785,9 +1053,14 @@ def run_nav_snapshot_blocking() -> dict:
                 users = (await session.execute(select(User))).scalars().all()
                 for u in users:
                     try:
-                        r = await record_for(session, u)
+                        # `force`: the market check already ran once above, so a
+                        # per-user re-check would be n provider calls for one
+                        # fact that cannot differ between users.
+                        r = await record_for(session, u, force=True)
                         if r.get("ok"):
                             done += 1
+                        elif r.get("reason") == "market closed":
+                            skipped += 1
                     except Exception as exc:  # noqa: BLE001
                         failed += 1
                         logger.warning("nav snapshot failed for %s: %s", u.email, exc)
@@ -802,6 +1075,7 @@ def run_nav_snapshot_blocking() -> dict:
                 await session.commit()
         finally:
             await engine.dispose()
-        return {"nav_rows": done, "health_rows": health, "failed": failed}
+        return {"nav_rows": done, "health_rows": health, "failed": failed,
+                "skipped": skipped, "detail": why}
 
     return asyncio.run(_run())
