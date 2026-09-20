@@ -113,6 +113,28 @@ class YahooMarketDataProvider(MarketDataProvider):
             raise ValueError(f"insufficient history for '{ticker}'")
         return out[-days:]
 
+    def get_intraday(self, ticker: str, span: str = "1d") -> list[tuple[str, float]]:
+        """5-minute bars for the last session, or 30-minute bars for five.
+
+        The `chart` endpoint, which is not crumb-gated. Timestamps are UTC ISO
+        strings; the caller decides how to label them."""
+        sym = self.to_symbol(ticker)
+        interval = "5m" if span == "1d" else "30m"
+        rng = "1d" if span == "1d" else "5d"
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+               f"?interval={interval}&range={rng}")
+        data = json.loads(_http_text(url))
+        result = ((data.get("chart") or {}).get("result") or [])
+        if not result:
+            raise ValueError(f"no intraday data for '{ticker}'")
+        ts = result[0].get("timestamp") or []
+        closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+        out = [(datetime.fromtimestamp(t, timezone.utc).isoformat(), float(c))
+               for t, c in zip(ts, closes) if c is not None and float(c) > 0]
+        if len(out) < 2:
+            raise ValueError(f"insufficient intraday data for '{ticker}'")
+        return out
+
     # --- quoteSummary is gated: cookie + crumb, cached across calls ---------
     #
     # MEASURED 2026-08-30, against production and directly:

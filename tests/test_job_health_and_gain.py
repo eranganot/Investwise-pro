@@ -36,14 +36,23 @@ def _seed(c):
 # --------------------------------------------------------------------------- #
 # the job that was never called
 # --------------------------------------------------------------------------- #
-def test_the_nav_snapshot_job_actually_runs():
+def test_the_nav_snapshot_job_actually_runs(monkeypatch):
     """Invoke it. That is the entire point.
 
     `from app.core.database import async_session` raised ImportError on every
     one of the seven nights this ran in production -- the name is
     `AsyncSessionLocal`. One call would have caught it, and nothing called it.
+
+    THE CALENDAR IS PINNED. The job correctly skips non-trading days, and this
+    test asked the real calendar -- so it failed every Saturday and Sunday
+    (observed 2026-09-20: `is_trading_day()` -> "2026-09-20 is a Sunday",
+    `nav_rows: 0`). A test that is red two days a week is noise that trains
+    everyone to ignore red.
     """
+    import app.services.nav_history as nh
     from app.services.nav_history import run_nav_snapshot_blocking
+
+    monkeypatch.setattr(nh, "is_trading_day", lambda *a, **k: (True, "pinned by the test"))
 
     logging.disable(logging.CRITICAL)
     try:

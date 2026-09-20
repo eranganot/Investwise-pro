@@ -17,6 +17,10 @@ bcrypt==4.2.1
 prometheus-client==0.21.1
 google-genai==2.8.0
 pywebpush==2.3.0
+# Standing orders date deposits in Asia/Jerusalem. `zoneinfo` needs an IANA
+# database and a slim image is not guaranteed to ship one; this package is the
+# fallback zoneinfo uses when /usr/share/zoneinfo is absent.
+tzdata==2025.2
 # Pinned explicitly: pywebpush asks only for py-vapid>=1.7.0, an open lower
 # bound in a file where everything else is ==. Two machines resolved two
 # different libraries, and the older one calls

@@ -340,7 +340,8 @@ def repair_cash_row(position) -> bool:
     return changed
 
 
-async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> float:
+async def credit_cash(session: AsyncSession, user: User, amount_ils: float,
+                      *, commit: bool = True) -> float:
     """Add ILS proceeds as visible liquidity: grow (or create) a 'CASH' holding.
 
     Cash is stored ILS-native (current_price = 1.0, price_currency = ILS) so its
@@ -357,7 +358,8 @@ async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> f
         cash.cost_basis = Decimal("1")          # repairs rows written before this fix
         cash.current_price = Decimal("1")
         cash.meta = dict(CASH_META)
-        await session.commit()
+        if commit:
+            await session.commit()
         return amount_ils
     account_id = rows[0].account_id if rows else None
     if account_id is None:
@@ -373,7 +375,10 @@ async def credit_cash(session: AsyncSession, user: User, amount_ils: float) -> f
         current_price=Decimal("1"), lifecycle_stage="ACTIVE",
         meta=CASH_META,
     ))
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return amount_ils
 
 

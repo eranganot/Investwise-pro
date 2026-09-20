@@ -473,6 +473,32 @@ class Contribution(Base, PKMixin, TimestampMixin):
     note: Mapped[str] = mapped_column(String(200), default="")
 
 
+class StandingOrder(Base, PKMixin, TimestampMixin):
+    """A recurring monthly deposit into cash -- the user's own standing order.
+
+    The app has no broker link, so this does not MOVE money: on the day, it
+    records the deposit the user's bank makes. Each run writes a normal
+    ``contributions`` row (so "what you put in" and the NAV-flow detector both
+    see a deposit, never a return) and credits the cash row, in one commit.
+
+    ``next_run_on`` is advanced in the SAME commit as the credit, and the
+    contribution note carries the order id and the date it is for, so a job that
+    runs twice -- or two workers that race -- cannot credit one month twice.
+    Dates are YYYY-MM-DD strings, the convention ``nav_snapshots.as_of`` uses.
+    """
+    __tablename__ = "standing_orders"
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    amount_ils: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
+    # 1..28 only: every month has a 28th, so "the 31st" never has to mean
+    # something different in February.
+    day_of_month: Mapped[int] = mapped_column(Integer, default=1)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_run_on: Mapped[str] = mapped_column(String(10), index=True)
+    last_run_on: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    runs: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str] = mapped_column(String(200), default="")
+
+
 class StrategyBacktest(Base, PKMixin, TimestampMixin):
     """One measured result per strategy, recomputed nightly and served from here.
 

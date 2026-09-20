@@ -142,6 +142,14 @@ def guarded_history(ticker: str, days: int = 252):
     return series[-days:]
 
 
+def guarded_intraday(ticker: str, span: str = "1d"):
+    """Intraday bars through the MARKET tier: quote cadence, no stale stock.
+    The history tier keeps bars for hours, which is right for daily closes and
+    wrong for a "today" chart."""
+    return _tiers()["market"].call(f"intraday:{ticker}:{span}",
+                                    lambda: market_provider().get_intraday(ticker, span))
+
+
 def guarded_fundamentals(ticker: str):
     return _tiers()["fundamentals"].call(f"fund:{ticker}", lambda: market_provider().get_fundamentals(ticker))
 

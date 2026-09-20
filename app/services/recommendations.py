@@ -45,7 +45,8 @@ SLEEVE_DRIFT_BAND_PCT = 5.0
 _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective",
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
-                     "fund_plan", "relevel_sleeve_caps", "core_to_basket"}
+                     "fund_plan", "relevel_sleeve_caps", "core_to_basket",
+                     "set_standing_order"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -1734,6 +1735,14 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     #    Monte-Carlo engine — so the card, the digest and "Where this could end up"
     #    all cite one number instead of three.
     projected_median = None
+    # The standing order is money the app itself will record every month, so
+    # the "current path" includes it. Without this the card kept telling a user
+    # who had just set up ₪1,067/month to "add ₪1,067/month".
+    try:
+        from app.services.standing_order_service import monthly_total as _so_monthly
+        _standing = await _so_monthly(session, user)
+    except Exception:  # noqa: BLE001
+        _standing = 0.0
     try:
         from app.api.routes.plan import _auto_target, _portfolio_stats
         from app.engines.simulation_engine import SimulationEngine
@@ -1743,11 +1752,12 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _sim = SimulationEngine(seed=7).run(
                 initial_value=_pstats["nav"], expected_return_pct=_pstats.get("expected_roi") or 6.0,
                 volatility_pct=_pstats.get("volatility") or 12.0, horizon_years=_pyears,
-                target_value=_auto_target(_pstats["nav"], plan))
+                target_value=_auto_target(_pstats["nav"], plan),
+                contribution_per_year=(_standing * 12 if _standing > 0 else None))
             projected_median = float(_sim.nominal.p50)
     except Exception:  # noqa: BLE001
         projected_median = None
-    recs += _behind_goal_recs(plan, snap, objective, projected_median)
+    recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing)
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,
@@ -1776,10 +1786,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # cap came from. Same formula as the suggestions list, same blind spot.
     from app.services import sleeve_service as _sv_mom
     try:
-        _sleeve_floor = {t.upper(): round(w * 100.0, 1)
+        _sleeve_share = {t.upper(): float(w)
                          for t, w in (await _sv_mom.all_sleeve_targets(session, user)).items()}
     except Exception:  # noqa: BLE001 -- a floor is never worth losing the card over
-        _sleeve_floor = {}
+        _sleeve_share = {}
+    _sleeve_floor = {t: round(w * 100.0, 1) for t, w in _sleeve_share.items()}
     recs += await _offload(_momentum_recs, rows, snap, _sleeve_floor)
     _tm.mark("momentum")
 
@@ -1843,7 +1854,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("buy_ideas")
 
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
-                               btgt["target"], _name_caps)
+                               btgt["target"], _name_caps,
+                               _sleeve_share)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"], _name_caps)
 
@@ -2676,7 +2688,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 _OBJ_RETURN = {"Grow": 8.5, "Balanced": 6.5, "Preserve": 4.0, "Income": 5.0}
 
 
-def _behind_goal_recs(plan, snap, objective, projected_override=None) -> list[dict]:
+def _behind_goal_recs(plan, snap, objective, projected_override=None,
+                      standing_monthly: float = 0.0) -> list[dict]:
     """When the plan won't reach the target on the current path, recommend the
     concrete levers to close the gap (each with a machine-applyable spec).
 
@@ -2698,6 +2711,12 @@ def _behind_goal_recs(plan, snap, objective, projected_override=None) -> list[di
     except (ValueError, TypeError):
         pass
     deterministic = nav * (1 + r) ** years
+    _rm0, _n0 = r / 12.0, years * 12
+    if standing_monthly > 0:
+        # Future value of the standing order at the same rate, so the fallback
+        # path counts it exactly as the Monte-Carlo path does.
+        deterministic += (standing_monthly * (((1 + _rm0) ** _n0 - 1) / _rm0)
+                          if _rm0 else standing_monthly * _n0)
     if projected_override and projected_override > 0:
         projected, proj_basis = float(projected_override), "montecarlo"
     else:
@@ -2713,19 +2732,31 @@ def _behind_goal_recs(plan, snap, objective, projected_override=None) -> list[di
     rm = r / 12.0
     n = years * 12
     pmt = gap * rm / (((1 + rm) ** n) - 1) if rm else gap / n
+    # Rounded UP to a whole ₪10 -- the amount a person actually types into a
+    # bank's standing-order form, and never below what closes the gap.
+    pmt = -(-pmt // 10.0) * 10.0   # ceil; `math` is imported locally further down
+    new_total = round(standing_monthly + pmt, 2)
+    _path = (f"With your standing order of {_ils(standing_monthly)}/month you'd reach about "
+             if standing_monthly > 0 else "On the current path you'd reach about ")
     out.append({"id": _rid("behind", "contrib"), "dimension": "goal", "severity": sev,
-                "title": "You're behind — add a monthly contribution",
-                "why": f"On the current path you'd reach about {_ils(projected)} of your {_ils(target)} goal "
+                "title": ("You're behind — raise your monthly contribution" if standing_monthly > 0
+                          else "You're behind — add a monthly contribution"),
+                "why": f"{_path}{_ils(projected)} of your {_ils(target)} goal "
                        f"(~{behind_pct}% short), so nothing changes unless you add to it.",
-                "action": f"On the current path you'd reach about {_ils(projected)} of your {_ils(target)} goal "
-                          f"(~{behind_pct}% short). Investing about {_ils(pmt)}/month would close the gap by your deadline.",
-                "impact": f"About {_ils(pmt)}/month closes the ~{_ils(gap)} gap and puts your {_ils(target)} goal "
-                          f"back within reach by your deadline.",
-                "how": [f"Set up a standing order of ~{_ils(pmt)}/month into this portfolio",
-                        "Keep the same mix — regular contributions do the heavy lifting",
-                        "Re-check here as your balance grows"],
+                "action": (f"Raise your standing order from {_ils(standing_monthly)} to about "
+                           f"{_ils(new_total)}/month to close the gap by your deadline."
+                           if standing_monthly > 0 else
+                           f"Investing about {_ils(pmt)}/month would close the gap by your deadline."),
+                "impact": f"About {_ils(pmt)}/month more closes the ~{_ils(gap)} gap and puts your "
+                          f"{_ils(target)} goal back within reach by your deadline.",
+                "how": [(f"Accept sets your standing order to {_ils(new_total)}/month"
+                         if standing_monthly > 0 else
+                         f"Accept sets up a standing order of {_ils(pmt)}/month into cash, on the 1st"),
+                        "Set the same transfer up at your bank -- the app records it, it does not move money",
+                        "Cash above your target then gets a card that puts it back to work"],
                 "est_amount": round(pmt, 2),
-                "apply": {"kind": "none"}})
+                "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
+                          "add_ils": round(pmt, 2)}})
     _proj_formula = (f("Projection", "projected = Monte-Carlo median (10,000 sims)",
                        substituted=f"NAV {nav:,.0f}, {years}y", result=f"₪{projected:,.0f}")
                      if proj_basis == "montecarlo" else
@@ -3126,7 +3157,13 @@ def _hedge_recs(rows, snap) -> list[dict]:
     if not nav or len(rows) < 2:
         return out
     sector_w: dict[str, float] = {}
+    from app.services.intake_service import is_cash_position
     for p in rows:
+        # Cash has no sector. Asking for the fundamentals of "CASH" returns
+        # Pathward Financial's, which would book the cash balance as Financials.
+        _m = getattr(p, "meta", None)
+        if is_cash_position(p.ticker, _m if isinstance(_m, dict) else None):
+            continue
         f = _fundamentals(p.ticker)
         sector = (f.sector if f and f.sector else "Unknown")
         val = float(p.quantity) * float(p.current_price or 0)
@@ -3185,7 +3222,15 @@ def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
     the rule — the app never trades; a hit raises an alert + a Today to-do."""
     out: list[dict] = []
     weights = (snap or {}).get("exposure_ticker") or {}
+    from app.services.intake_service import is_cash_position
     for p in rows:
+        # A cash balance has no trend. Without this the loop fetched the history
+        # of "CASH" -- a real NASDAQ ticker, Pathward Financial -- and on
+        # 2026-09-17 production showed "CASH is in a downtrend" with a stop-loss
+        # offered on the user's shekels.
+        _m = getattr(p, "meta", None)
+        if is_cash_position(p.ticker, _m if isinstance(_m, dict) else None):
+            continue
         try:
             from app.providers.registry import guarded_history
             hist = guarded_history(p.ticker, days=200)
@@ -3273,9 +3318,108 @@ def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
     return out[:3]
 
 
+def _redeploy_name_targets(held_by_class: dict, weights: dict, target: dict | None,
+                           sleeve_targets: dict | None) -> dict[str, float]:
+    """{ticker: target share of the book} for every held name, or {} without sleeves.
+
+    A sleeve name's target is the sleeve's. The core names in a class share what
+    the class target has left once its sleeve names are subtracted, split in
+    proportion to their current value -- the core's own composition is the
+    user's, and this card is not the place to change it.
+    """
+    if not sleeve_targets:
+        return {}
+    st = {str(k).upper(): float(v or 0.0) for k, v in sleeve_targets.items()}
+    out: dict[str, float] = {}
+    for cls, held in held_by_class.items():
+        tw = float((target or {}).get(cls) or 0.0)
+        sleeve_names = [p for p in held if p.ticker.upper() in st]
+        core_names = [p for p in held if p.ticker.upper() not in st]
+        for p in sleeve_names:
+            out[p.ticker] = st[p.ticker.upper()]
+        core_share = max(0.0, tw - sum(st[p.ticker.upper()] for p in sleeve_names))
+        tot = sum(weights.get(p.ticker, 0.0) for p in core_names)
+        for p in core_names:
+            share = (weights.get(p.ticker, 0.0) / tot) if tot > 0 else 1.0 / len(core_names)
+            out[p.ticker] = core_share * share
+    return out
+
+
+def _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, cap,
+                      name_caps, name_gap, name_reason) -> None:
+    """Spend what the class pass left: first every name still below its target,
+    then the rest at plan weights. Mutates ``legs``.
+
+    The class pass cannot see a sleeve that is short inside a class that is on
+    target in aggregate -- SOXL under while QQQ is over nets to "Equities fine".
+    """
+    from app.services import funding_service as _fund
+
+    cls_of = {p.ticker: cls for cls, held in held_by_class.items() for p in held}
+    placed = {x["ticker"]: x for x in legs}
+
+    def _room(tk):
+        already = placed[tk]["amount_ils"] if tk in placed else 0.0
+        return _fund.name_room_ils(
+            nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps)) - already
+
+    def _add(tk, amt, reason):
+        nonlocal remaining
+        if tk in placed:
+            placed[tk]["amount_ils"] = round(placed[tk]["amount_ils"] + amt, 2)
+        else:
+            placed[tk] = {"ticker": tk, "amount_ils": round(amt, 2),
+                          "asset_class": cls_of.get(tk, ""), "reason": reason}
+            legs.append(placed[tk])
+        remaining = round(remaining - amt, 2)
+
+    # (1) Still-short names, largest shortfall first.
+    for tk in sorted(name_tgt, key=lambda t: -name_gap(t)):
+        already = placed[tk]["amount_ils"] if tk in placed else 0.0
+        g = name_gap(tk) - already
+        amt = round(min(g, _room(tk), remaining), 2)
+        if remaining < _fund.MIN_TRADE_ILS:
+            break
+        if amt >= _fund.MIN_TRADE_ILS or (tk in placed and amt > 0):
+            _add(tk, amt, name_reason(tk, cls_of.get(tk, "")))
+
+    # (2) Everything at target: the rest goes in at plan weights, which keeps
+    # every class where the plan wants it while cash comes down to its target.
+    if remaining >= _fund.MIN_TRADE_ILS:
+        budget = remaining
+        # Drop the names whose share would be under one trade and re-spread
+        # their share over the rest, until every leg clears the minimum --
+        # otherwise the dropped shares silently stay in cash.
+        pool = {tk: t for tk, t in name_tgt.items() if t > 0 and _room(tk) > 0}
+        pro: dict[str, float] = {}
+        while pool:
+            tot = sum(pool.values())
+            pro = {tk: round(min(budget * t / tot, max(0.0, _room(tk))), 2)
+                   for tk, t in pool.items()}
+            small = [tk for tk, a in pro.items()
+                     if a < _fund.MIN_TRADE_ILS and tk not in placed]
+            if not small:
+                break
+            for tk in small:
+                pool.pop(tk)
+        ok = {tk: a for tk, a in pro.items() if tk in pool}
+        if not ok and name_tgt:
+            # Too thin to split: one trade into the largest target with room.
+            tk = max((t for t in name_tgt if _room(t) >= _fund.MIN_TRADE_ILS),
+                     key=lambda t: name_tgt[t], default=None)
+            if tk:
+                ok = {tk: round(min(budget, _room(tk)), 2)}
+        for tk, a in ok.items():
+            if a <= 0:
+                continue
+            _add(tk, a, f"at plan weight ({name_tgt[tk]:.1%} of the book) -- "
+                        f"every holding is at its target, so new money keeps the mix on plan")
+
+
 def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         book_mix: dict | None = None,
-                        name_caps: dict | None = None) -> list[dict]:
+                        name_caps: dict | None = None,
+                        sleeve_targets: dict | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     After a stop-loss fires and you accept it, the proceeds land in cash and the
@@ -3290,6 +3434,19 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         then by screener picks for classes with no representation at all;
       * each leg is clipped by the single-name concentration cap, and legs below
         the minimum trade size are dropped rather than rounded up.
+
+    WITH SLEEVES, EACH NAME HAS A TARGET, AND THE CARD MUST USE IT.
+    ``sleeve_targets`` is {ticker: share of the book} for every sleeve holding.
+    Without it the class pass split a class's budget evenly across whatever you
+    hold in it and gave the smallest name the most. Reproduced on the live book
+    (2026-09-20) with ₪1,067/month arriving: month 3 put ₪623 into QQQ, 3pp OVER
+    its 9% sleeve target, and ₪270 into SOXL, UNDER its 42% target. So when
+    sleeve targets exist, each held name gets a target (a sleeve's own; a core
+    name splits what is left of its class target in proportion to its current
+    value), money goes only to names below their target, and whatever is left
+    after every gap is filled is invested AT plan weights -- which moves every
+    class toward target, because cash is the only thing over its target.
+    Books without sleeves keep the behaviour they had.
     """
     from app.services import funding_service as _fund
 
@@ -3331,6 +3488,21 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         if cls and cls.lower() != "cash":
             held_by_class.setdefault(cls, []).append(r)
 
+    name_tgt = _redeploy_name_targets(held_by_class, weights, target, sleeve_targets)
+
+    def _value(tk: str) -> float:
+        return weights.get(tk, 0.0) * nav
+
+    def _name_gap(tk: str) -> float:
+        return max(0.0, name_tgt.get(tk, 0.0) * nav - _value(tk))
+
+    def _name_reason(tk: str, cls: str) -> str:
+        t = name_tgt.get(tk, 0.0)
+        w = weights.get(tk, 0.0)
+        if tk.upper() in {k.upper() for k in (sleeve_targets or {})}:
+            return f"the {tk} sleeve is {w:.1%} of the book vs your {t:.1%} target"
+        return f"{tk} holds your core {cls}: {w:.1%} vs {t:.1%} of the book"
+
     # Gaps per asset class, largest shortfall first.
     gaps = []
     for cls, tw in (target or {}).items():
@@ -3339,11 +3511,11 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         gap_ils = max(0.0, (float(tw) - float(mix.get(cls, 0.0)))) * nav
         if gap_ils >= _fund.MIN_TRADE_ILS:
             gaps.append((cls, gap_ils, float(tw)))
-    if not gaps:
+    if not gaps and not name_tgt:
         return []
     gaps.sort(key=lambda g: g[1], reverse=True)
 
-    total_gap = sum(g[1] for g in gaps)
+    total_gap = sum(g[1] for g in gaps) or 1.0
     legs: list[dict] = []
     unplaced: list[dict] = []
     remaining = spendable
@@ -3353,7 +3525,23 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         # Proportional share of the surplus, never more than the class actually needs.
         budget = min(gap_ils, round(spendable * (gap_ils / total_gap), 2), remaining)
         held = held_by_class.get(cls) or []
-        if held:
+        if held and name_tgt:
+            # Only names BELOW their target, in proportion to how far below.
+            short = {p.ticker: _name_gap(p.ticker) for p in held}
+            short = {tk: g for tk, g in short.items() if g > 0}
+            tot = sum(short.values())
+            for tk, g in sorted(short.items(), key=lambda kv: -kv[1]):
+                if remaining < _fund.MIN_TRADE_ILS:
+                    break
+                room = _fund.name_room_ils(
+                    nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps))
+                amt = round(min(budget * g / tot, g, room, remaining), 2)
+                if amt < _fund.MIN_TRADE_ILS:
+                    continue
+                legs.append({"ticker": tk, "amount_ils": amt, "asset_class": cls,
+                             "reason": _name_reason(tk, cls)})
+                remaining = round(remaining - amt, 2)
+        elif held:
             # Top up what you already own, weakest weight first.
             held.sort(key=lambda p: weights.get(p.ticker, 0.0))
             per = round(budget / len(held), 2)
@@ -3408,7 +3596,15 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     #
     # Concentrating is the honest fallback: one trade that clears the minimum
     # beats four that do not, and it still respects the single-name cap.
-    if not legs and remaining >= _fund.MIN_TRADE_ILS:
+    if name_tgt and remaining >= _fund.MIN_TRADE_ILS:
+        _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, cap,
+                          name_caps, _name_gap, _name_reason)
+        remaining = round(spendable - sum(x["amount_ils"] for x in legs), 2)
+
+    # With name targets the plan-weight pass above already placed the surplus;
+    # this fallback is for books without sleeves.
+    _fallback = not name_tgt
+    if not legs and remaining >= _fund.MIN_TRADE_ILS and _fallback:
         best = None
         for cls, gap_ils, tw in gaps:
             for p in (held_by_class.get(cls) or []):
@@ -3432,7 +3628,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     # nothing held, no screener pick), so ~1,940 stayed in cash while the card
     # reported success -- 12% cash against a 3% floor. Push what is left into the
     # classes that CAN absorb it, still respecting the single-name cap.
-    if remaining >= _fund.MIN_TRADE_ILS and legs:
+    if not name_tgt and remaining >= _fund.MIN_TRADE_ILS and legs:
         topups = [x for x in legs if not x.get("new_position")]
         for x in sorted(topups, key=lambda leg: weights.get(leg["ticker"], 0.0)):
             if remaining < _fund.MIN_TRADE_ILS:
@@ -3455,23 +3651,30 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     floor_pct = _fund.cash_floor_pct(objective, plan)
     new_names = [x["ticker"] for x in legs if x.get("new_position")]
 
+    # The soft target is 7.5, not "8%": `:.0%` rounded the user's own number.
+    _soft = f"{floor_pct * 100:.1f}".rstrip("0").rstrip(".") + "%"
+    _excess = max(0.0, round(cash_ils - _fund.cash_soft_floor_ils(nav, objective, plan), 2))
     return [{
         "id": _rid("redeploy", round(deployed)), "dimension": "allocation", "severity": "HIGH",
-        "title": f"Redeploy {_ils(deployed)} of idle cash",
-        "why": (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.0%} of the portfolio) against a "
-                f"{floor_pct:.0%} floor for a {objective or 'Balanced'} plan. Cash earns nothing "
-                f"toward your goal, and the sale proceeds left your mix off-plan."),
+        "title": f"Put {_ils(deployed)} of cash back to work",
+        # No claim about WHERE the cash came from. This said "the sale proceeds
+        # left your mix off-plan", which is false the day the surplus is a
+        # standing-order deposit.
+        "why": (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.1%} of the portfolio), "
+                f"{_ils(_excess)} above your {_soft} cash target. Cash above the target "
+                f"earns nothing toward your goal."),
         "action": ("Put it back to work: "
                    + "; ".join(f"{_ils(x['amount_ils'])} into {x['ticker']}" for x in legs)
                    + f". Keeps {_ils(kept)} as your buffer."),
         "impact": (f"Moves every underweight asset class toward its target and cuts cash from "
-                   f"{cash_ils / nav:.0%} to {kept / nav:.0%}."
+                   f"{cash_ils / nav:.1%} to {kept / nav:.1%}."
                    + (f" Adds {', '.join(new_names)} to fill a gap the plan needs."
                       if new_names else "")),
         "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
                 + [f"⚠ {_ils(u['amount_ils'])} could not be placed — {u['reason']}"
                    for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]
-                + [f"Keep {_ils(kept)} in cash ({floor_pct:.0%} floor for {objective or 'Balanced'})",
+                + [f"Keep {_ils(kept)} in cash (your {_soft} target; "
+                   f"the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)})",
                    "Accept executes every leg at live prices, funded entirely from cash",
                    "Tracked book only — no brokerage order is placed"]),
         "est_amount": deployed,
@@ -3515,7 +3718,11 @@ def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
             formulas=[_fml("Cash weight", "cash_weight = cash_value / NAV", result=f"{cash_w:.0%}")])
     if (objective or "") == "Income":
         yields = []
+        from app.services.intake_service import is_cash_position
         for d in pdicts:
+            # Not the yield of Pathward Financial, which is what "CASH" quotes.
+            if is_cash_position(d["ticker"], {"asset_class": d.get("asset_class")}):
+                continue
             f = _fundamentals(d["ticker"])
             if f and f.dividend_yield_pct is not None:
                 yields.append(f.dividend_yield_pct)
@@ -4189,6 +4396,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = await _apply_core_to_basket(session, user, spec)
     elif kind == "redeploy_cash":
         detail = await _apply_redeploy_cash(session, user, spec)
+    elif kind == "set_standing_order":
+        detail = await _apply_set_standing_order(session, user, spec)
     elif kind == "fund_sleeve":
         # Reuses the P0.1 funding path, so there is ONE implementation of "raise
         # this much and buy the sleeve" rather than a second that could size it
@@ -4309,6 +4518,38 @@ async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> 
     except Exception as exc:  # noqa: BLE001 — bookkeeping must not cost a trade
         logger.warning("ledger: could not record %s (%s): %s", kind, rec_id, exc)
 
+
+
+async def _apply_set_standing_order(session: AsyncSession, user: User, spec: dict) -> dict:
+    """Make the user's ACTIVE standing orders total `monthly_total_ils`.
+
+    None -> create one on the 1st. One -> set its amount. Several -> add one
+    order for the difference, rather than guess which of them to change. A
+    paused order is left paused: pausing is a decision this card did not make.
+    Moves no money now; the first deposit is recorded on its day.
+    """
+    from app.services import standing_order_service as so
+
+    total = float(spec.get("monthly_total_ils") or 0.0)
+    orders = [o for o in await so.list_orders(session, user) if o.active]
+    current = sum(float(o.amount_ils) for o in orders)
+    if total <= 0 or total <= current + 0.005:
+        return {"standing_order": "unchanged", "monthly_total_ils": round(current, 2)}
+    if not orders:
+        o = await so.create_order(session, user, amount_ils=total, day_of_month=1,
+                                  note="from the behind-your-goal card")
+        action = "created"
+    elif len(orders) == 1:
+        o = await so.update_order(session, user, str(orders[0].id), amount_ils=total)
+        action = "raised"
+    else:
+        o = await so.create_order(session, user, amount_ils=round(total - current, 2),
+                                  day_of_month=orders[0].day_of_month,
+                                  note="top-up from the behind-your-goal card")
+        action = "added"
+    return {"standing_order": action, "order": so.to_dict(o),
+            "monthly_total_ils": await so.monthly_total(session, user),
+            "broker_note": "Recorded in the app only -- set the same transfer up at your bank."}
 
 
 async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) -> dict:

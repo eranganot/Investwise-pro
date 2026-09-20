@@ -226,6 +226,20 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Strategy signal job not scheduled.", exc_info=False)
 
+    # Standing orders: hourly, primed at boot. Hourly rather than one daily
+    # cron because the job is idempotent (a run that is not due does nothing,
+    # and a credited month is never credited twice) -- so the only effect of a
+    # tighter schedule is that a deposit due at local midnight lands within the
+    # hour, and a boot after downtime catches up at once instead of tomorrow.
+    try:
+        from app.services.standing_order_service import run_standing_orders_blocking
+        _scheduler.add_job(_guarded("standing_orders", run_standing_orders_blocking),
+                           "interval", minutes=60, id="standing_orders",
+                           next_run_time=datetime.now(timezone.utc))
+        logger.info("Standing orders scheduled (hourly, priming now).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Standing order job not scheduled.", exc_info=False)
+
     _scheduler.start()
     logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
 

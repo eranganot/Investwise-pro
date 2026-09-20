@@ -613,6 +613,114 @@ async def write_contribution(body: ContributionRequest,
     return {"ok": True, "total_ils": total, "mode": body.mode}
 
 
+@router.get("/portfolio/position-history")
+async def read_position_history(ticker: str, range: str = "1M",
+                                session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """One holding's price line and your position's value line, for a range.
+
+    `range` is 1D, 1W, 1M, 3M, 1Y or ALL. See services/position_history.py for
+    why the value line starts where the trade record starts.
+    """
+    from app.services.position_history import NotChartable, position_history
+    try:
+        return await position_history(session, user, ticker, range)
+    except NotChartable as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------- #
+# Standing orders -- a monthly deposit into cash that records itself
+# --------------------------------------------------------------------------- #
+class StandingOrderRequest(BaseModel):
+    amount_ils: float = Field(gt=0)
+    day_of_month: int = Field(default=1, ge=1, le=28)
+    note: str = ""
+
+
+class StandingOrderPatch(BaseModel):
+    amount_ils: float | None = Field(default=None, gt=0)
+    day_of_month: int | None = Field(default=None, ge=1, le=28)
+    active: bool | None = None
+    note: str | None = None
+
+
+async def _orders_payload(session: AsyncSession, user: User) -> dict:
+    from app.services import standing_order_service as so
+    orders = await so.list_orders(session, user)
+    return {"orders": [so.to_dict(o) for o in orders],
+            "monthly_total_ils": await so.monthly_total(session, user),
+            "today": so.local_today().isoformat(),
+            "note": ("On the day, the amount is added to your cash and recorded as a "
+                     "deposit. No money is moved: this records the transfer your bank makes.")}
+
+
+@router.get("/portfolio/standing-orders")
+async def read_standing_orders(session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    return await _orders_payload(session, user)
+
+
+@router.post("/portfolio/standing-orders",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def create_standing_order(body: StandingOrderRequest,
+                                session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    from app.services import standing_order_service as so
+    try:
+        o = await so.create_order(session, user, amount_ils=body.amount_ils,
+                                  day_of_month=body.day_of_month, note=body.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "order": so.to_dict(o), **await _orders_payload(session, user)}
+
+
+@router.put("/portfolio/standing-orders/{order_id}",
+            dependencies=[Depends(require_role(Role.ANALYST))])
+async def update_standing_order(order_id: str, body: StandingOrderPatch,
+                                session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    from app.services import standing_order_service as so
+    try:
+        o = await so.update_order(session, user, order_id, amount_ils=body.amount_ils,
+                                  day_of_month=body.day_of_month, active=body.active,
+                                  note=body.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "order": so.to_dict(o), **await _orders_payload(session, user)}
+
+
+@router.delete("/portfolio/standing-orders/{order_id}",
+               dependencies=[Depends(require_role(Role.ANALYST))])
+async def delete_standing_order(order_id: str,
+                                session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    from app.services import standing_order_service as so
+    try:
+        await so.delete_order(session, user, order_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"ok": True, **await _orders_payload(session, user)}
+
+
+@router.post("/portfolio/standing-orders/run",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def run_standing_orders_now(session: AsyncSession = Depends(get_session),
+                                  user: User = Depends(acting_user)) -> dict:
+    """Credit anything DUE now. Idempotent: nothing due -> nothing credited.
+
+    The scheduler does this hourly; this exists so a smoke test and the user can
+    see the same path run without waiting for it.
+    """
+    from app.services import standing_order_service as so
+    done = await so.run_due(session, user)
+    pushed = await so._notify(session, user, done)
+    return {"ok": True, "credited": done, "pushed": pushed,
+            **await _orders_payload(session, user)}
+
+
 # --------------------------------------------------------------------------- #
 # Reconciliation (PR 3)
 # --------------------------------------------------------------------------- #

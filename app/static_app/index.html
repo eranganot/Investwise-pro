@@ -490,6 +490,27 @@
     <label>Cash balance (&#8362;)</label><input id="c_amt" type="number" step="0.01" min="0" placeholder="0.00"/>
     <button class="primary" onclick="saveCash()">Save</button>
     <div class="muted" id="c_out" style="margin-top:8px"></div>
+    <h3 style="margin-top:18px">&#128257; Monthly standing order</h3>
+    <div class="muted" style="margin-bottom:10px">On the day, the amount is added to your cash and
+      recorded as a deposit, and you get a notification. The app does not move money &mdash; set
+      the same transfer up at your bank.</div>
+    <div id="so_list"></div>
+    <div class="grid2"><div><label>Amount per month (&#8362;)</label><input id="so_amt" type="number" step="1" min="1" placeholder="1067"/></div>
+      <div><label>Day of month (1&ndash;28)</label><input id="so_day" type="number" step="1" min="1" max="28" value="1"/></div></div>
+    <button class="primary" onclick="addStandingOrder()">Add standing order</button>
+    <div class="muted" id="so_out" style="margin-top:8px"></div>
+  </div>
+</div>
+<div class="ov" id="histov" onclick="if(event.target.id==='histov')closeHist()">
+  <div class="modal"><span class="x" onclick="closeHist()">&times;</span><h3 id="h_title">Holding</h3>
+    <div class="seg" id="h_mode" style="width:100%;box-sizing:border-box">
+      <button class="on" data-m="value" onclick="setHistMode('value')">Your position</button>
+      <button data-m="price" onclick="setHistMode('price')">Ticker price</button></div>
+    <div class="seg" id="h_rng" style="margin-bottom:10px;width:100%;box-sizing:border-box">
+      <button data-r="1D" onclick="setHistRange('1D')">1D</button><button data-r="1W" onclick="setHistRange('1W')">1W</button><button data-r="1M" onclick="setHistRange('1M')">1M</button><button data-r="3M" onclick="setHistRange('3M')">3M</button><button data-r="1Y" onclick="setHistRange('1Y')">1Y</button><button data-r="ALL" onclick="setHistRange('ALL')">All</button></div>
+    <div id="h_head" style="margin-bottom:6px"></div>
+    <canvas id="ch_hist" height="200"></canvas>
+    <div class="muted" id="h_cap" style="margin-top:8px"></div>
   </div>
 </div>
 <div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
@@ -1476,7 +1497,14 @@ function navSummary(p){
     ${cashRow}
   </div>`;
 }
+function _soLine(){
+  const os=((SO&&SO.orders)||[]).filter(o=>o.active);
+  if(!os.length) return `<div class="mk"><a href="#" onclick="openCash();return false">+ Add a monthly standing order</a></div>`;
+  const nxt=os.map(o=>o.next_run_on).sort()[0];
+  return `<div class="mk">\u{1F501} ${ils(SO.monthly_total_ils)}/month · next ${_soDate(nxt)}</div>`;
+}
 async function loadHoldings(){
+  if(SO===null) await loadStandingOrders();
   try{const p=await(await fetch("/api/v1/portfolio")).json();
     HMAP={};p.positions.forEach(h=>HMAP[h.id]=h);
     const _navTot=p.positions.length?navSummary(p):"";
@@ -1484,7 +1512,7 @@ async function loadHoldings(){
     const _rows=[...p.positions].sort((a,b)=>(isCash(b)?1:0)-(isCash(a)?1:0));
     $("holds").innerHTML=_navTot+_rows.map(h=>{const val=(h.value_ils!=null)?h.value_ils:h.quantity*(h.current_price||0);
       if(isCash(h)) return `<div class="row" style="border-left:3px solid #34d399">
-        <div><div class="nm">\u{1F4B5} Cash</div><div class="mk">Liquid · available to invest</div></div>
+        <div><div class="nm">\u{1F4B5} Cash</div><div class="mk">Liquid · available to invest</div>${_soLine()}</div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>
         <div class="mk">${p.nav_ils?(val/p.nav_ils*100).toFixed(1)+"% of portfolio":""}</div></div>
         <button class="del" title="Edit cash" onclick="openCash()">✎</button></div></div>`;
@@ -1510,6 +1538,7 @@ async function loadHoldings(){
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">\u2715</button></div></div>`;
       return `<div class="row"${_stale?' style="border-left:3px solid #f59e0b"':''}><div><div class="nm">${h.ticker}${_stale?' <span class="rk" style="color:var(--amber)">⚠ price frozen</span>':''}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
         <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div>`}</div>
+        <button class="del" title="Chart" onclick="openHist('${h.ticker}')">📈</button>
         <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">✕</button></div></div>`;}).join("")
@@ -1524,9 +1553,115 @@ async function openCash(){
   try{cur=(await(await fetch("/api/v1/portfolio/cash")).json()).cash_ils||0;}catch(e){}
   $("c_amt").value=cur||"";
   $("c_out").textContent="";
+  $("so_out").textContent="";
   $("cashov").classList.add("show");
+  loadStandingOrders();
 }
 function closeCash(){$("cashov").classList.remove("show");}
+// --- Per-holding chart ------------------------------------------------------
+// Default: YOUR position (shares you actually held x price). The value line
+// starts where the trade record starts; the caption says where and why.
+const HIST={tk:null,mode:"value",rng:"1M",data:null,seq:0};
+function openHist(tk){HIST.tk=tk;HIST.data=null;$("h_title").textContent=tk;
+  $("histov").classList.add("show");_histSeg();loadHist();}
+function closeHist(){$("histov").classList.remove("show");}
+function setHistMode(m){HIST.mode=m;_histSeg();renderHist();}
+function setHistRange(r){HIST.rng=r;_histSeg();loadHist();}
+function _histSeg(){
+  document.querySelectorAll("#h_mode button").forEach(b=>b.classList.toggle("on",b.dataset.m===HIST.mode));
+  document.querySelectorAll("#h_rng button").forEach(b=>b.classList.toggle("on",b.dataset.r===HIST.rng));}
+async function loadHist(){
+  const my=++HIST.seq; $("h_cap").textContent="Loading\u2026"; $("h_head").innerHTML="";
+  try{const r=await fetch(`/api/v1/portfolio/position-history?ticker=${encodeURIComponent(HIST.tk)}&range=${HIST.rng}`);
+    const j=await r.json(); if(my!==HIST.seq) return;
+    if(!r.ok) throw new Error(j.detail||"Could not load history");
+    HIST.data=j; renderHist();
+  }catch(e){ if(my===HIST.seq){$("h_cap").innerHTML=`<span class="bad">${e.message||e}</span>`; if(charts.ch_hist){charts.ch_hist.destroy();delete charts.ch_hist;}} }
+}
+function _hLabel(t){ if(!t) return "";
+  if(t.length===10) return new Date(t+"T12:00:00").toLocaleDateString(undefined,{day:"numeric",month:"short"});
+  const d=new Date(t); return HIST.rng==="1D"?d.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit",hour12:false})
+    :d.toLocaleDateString(undefined,{weekday:"short",day:"numeric"}); }
+function renderHist(){
+  const j=HIST.data; if(!j) return;
+  const v=j.value||{}, pr=j.price||{};
+  const useVal=HIST.mode==="value" && v.available;
+  const pts=useVal?v.points:pr.points;
+  const ys=pts.map(p=>useVal?p.value:p.price);
+  const up=ys[ys.length-1]>=ys[0], col=up?"#34d399":"#f87171";
+  const cur=j.currency||"";
+  const fmt=n=>useVal?ils(n):(Number(n).toLocaleString(undefined,{maximumFractionDigits:2})+" "+cur);
+  let head="";
+  if(useVal){
+    const mk=v.market_change_ils||0, tr=v.trades_change_ils||0;
+    head=`<div class="nm" style="font-size:20px">${ils(ys[ys.length-1])}</div>
+      <div class="${mk>=0?'up':'down'}">${mk>=0?'\u25B2':'\u25BC'} ${ils(Math.abs(mk))} from price moves</div>
+      ${Math.abs(tr)>=1?`<div class="mk">${tr>0?'+':'\u2212'}${ils(Math.abs(tr))} from ${tr>0?'buying':'selling'} &mdash; money moved, not a gain</div>`:""}`;
+  }else{
+    const c=pr.change_pct;
+    head=`<div class="nm" style="font-size:20px">${fmt(ys[ys.length-1])}</div>
+      <div class="${c>=0?'up':'down'}">${c>=0?'\u25B2':'\u25BC'} ${Math.abs(c||0).toFixed(2)}%</div>`;
+  }
+  $("h_head").innerHTML=head;
+  // Buy/sell markers on the matching point.
+  const tIdx=new Map(pts.map((p,i)=>[p.t,i]));
+  const mark=new Array(pts.length).fill(0);
+  (j.trades||[]).forEach(t=>{ let best=-1,bd=1e18; const tt=new Date(t.t).getTime();
+    pts.forEach((p,i)=>{const d=Math.abs(new Date(p.t.length===10?p.t+"T20:00:00Z":p.t).getTime()-tt); if(d<bd){bd=d;best=i;}});
+    if(best>=0) mark[best]=t.type==="Sell"?-1:1; });
+  drawChart("ch_hist","line",{labels:pts.map(p=>_hLabel(p.t)),datasets:[{data:ys,borderColor:col,borderWidth:2,fill:false,tension:.15,
+      pointRadius:mark.map(m=>m?5:0),pointBackgroundColor:mark.map(m=>m<0?"#f87171":"#3b82f6"),pointBorderWidth:0}]},
+    {plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+(useVal?` \u00b7 ${pts[c.dataIndex].shares} sh`:"")}}},
+     scales:{x:{ticks:{color:"#8b97a8",maxTicksLimit:5,maxRotation:0,autoSkipPadding:14},grid:{display:false}},y:{ticks:{color:"#8b97a8",callback:n=>useVal?ils(n):n},grid:{color:"#1f2a3a"}}}});
+  const notes=[];
+  if(HIST.mode==="value" && !v.available) notes.push(`Showing the ticker price: ${v.reason||"no record of your position in this range yet"}.`);
+  else if(useVal && v.clipped) notes.push(`Your line starts ${_soDate((v.starts_at||"").slice(0,10))} &mdash; ${v.starts_because}.`);
+  if(useVal) notes.push(`Converted at today's rate (${j.fx_rate} ${j.base_currency}/${cur}).`);
+  if(j.granularity==="daily_fallback") notes.push("Intraday prices were unavailable, so this uses daily closes.");
+  if((j.trades||[]).length) notes.push("Dots mark your recorded buys (blue) and sells (red).");
+  $("h_cap").innerHTML=notes.join(" ");
+}
+// --- Standing orders (monthly deposit into cash) ---------------------------
+let SO=null;
+function _soDate(d){ if(!d) return ""; const x=new Date(d+"T12:00:00"); return x.toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}); }
+function _ord(n){ const s=["th","st","nd","rd"],v=n%100; return n+(s[(v-20)%10]||s[v]||s[0]); }
+async function loadStandingOrders(){
+  try{ SO=await(await fetch("/api/v1/portfolio/standing-orders")).json(); }catch(e){ SO=null; }
+  renderStandingOrders(); return SO;
+}
+function renderStandingOrders(){
+  const el=$("so_list"); if(!el) return;
+  const os=(SO&&SO.orders)||[];
+  el.innerHTML=os.length?os.map(o=>`<div class="row" style="margin-bottom:6px${o.active?"":";opacity:.6"}">
+      <div><div class="nm">${ils(o.amount_ils)} / month</div>
+        <div class="mk">on the ${_ord(o.day_of_month)} · ${o.active?`next ${_soDate(o.next_run_on)}`:"paused"}${o.runs?` · ${o.runs} deposit${o.runs>1?"s":""} so far`:""}</div></div>
+      <div style="display:flex;gap:6px">
+        <button class="del" title="${o.active?"Pause":"Resume"}" onclick="toggleStandingOrder('${o.id}',${!o.active})">${o.active?"\u23F8":"\u25B6"}</button>
+        <button class="del" title="Change amount" onclick="editStandingOrder('${o.id}',${o.amount_ils})">\u270e</button>
+        <button class="del" title="Delete" onclick="delStandingOrder('${o.id}')">\u2715</button></div></div>`).join("")
+    :`<div class="muted" style="margin-bottom:8px">No standing order yet.</div>`;
+}
+async function _soCall(url,method,body){
+  $("so_out").textContent="Saving\u2026";
+  try{const r=await fetch(url,{method,headers:{"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error((j.detail&&(j.detail[0]?.msg||j.detail))||"Save failed");
+    SO=j; renderStandingOrders(); $("so_out").textContent=""; HMAP={}; loadHoldings();
+  }catch(e){$("so_out").innerHTML=`<span class="bad">${e.message||e}</span>`;}
+}
+function addStandingOrder(){
+  const a=parseFloat($("so_amt").value), d=parseInt($("so_day").value||"1",10);
+  if(!(a>0)){$("so_out").innerHTML='<span class="bad">Enter an amount above 0.</span>';return;}
+  if(!(d>=1&&d<=28)){$("so_out").innerHTML='<span class="bad">Pick a day from 1 to 28.</span>';return;}
+  _soCall("/api/v1/portfolio/standing-orders","POST",{amount_ils:a,day_of_month:d}).then(()=>{$("so_amt").value="";});
+}
+function toggleStandingOrder(id,active){ _soCall(`/api/v1/portfolio/standing-orders/${id}`,"PUT",{active}); }
+function editStandingOrder(id,cur){
+  const v=prompt("New monthly amount (\u20aa)",cur); if(v===null) return;
+  const a=parseFloat(v); if(!(a>0)) return;
+  _soCall(`/api/v1/portfolio/standing-orders/${id}`,"PUT",{amount_ils:a});
+}
+function delStandingOrder(id){ _soCall(`/api/v1/portfolio/standing-orders/${id}`,"DELETE"); }
 async function saveCash(){
   const v=parseFloat($("c_amt").value);
   if(isNaN(v)||v<0){$("c_out").innerHTML='<span class="bad">Enter an amount of 0 or more.</span>';return;}

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-14 by Claude (PR 67; HEAD was PR 66 `fab6e46`)._
+_Last updated: 2026-09-20 by Claude (PR 68 -- see its entry below; HEAD was PR 67.1 `84be80b`)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -51,7 +51,7 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 | 2026-07-13 | **9 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. Start it, or move it to the backlog and stop listing it as next. |
 | 2026-08-10 | **5 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **thirty-eight PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
 | 2026-08-31 | **2 weeks** | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-14: unchanged for a second week — and this was the week the repo shipped one PR instead of the forty-eight it shipped the week before, so "too busy" is no longer the reading.)_ |
-| 2026-09-14 | **new** | ⚠️ **Stale `.git/index.lock` in this repo, left by the weekly review's own sandbox `git status`.** The sandbox cannot delete it. Until it is removed, `git add` / `git commit` here fail with "Unable to create index.lock". Fix: `Remove-Item -Force 'C:\dev\Investwise-pro\.git\index.lock'`. Recorded as an ops item rather than a footnote because the review process broke the repo it was inspecting; future runs must use `git --no-optional-locks status`. |
+| 2026-09-14 | **resolved same day** | ✅ Stale `.git/index.lock` left here by the weekly review's own sandbox `git status`; Eran cleared it, confirmed empty. Kept as a one-line record because the rule is permanent: **weekly runs must use `git --no-optional-locks status`** — plain `git status` writes a lock the sandbox cannot remove. |
 
 ---
 
@@ -146,6 +146,99 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68 — cash is not a bank stock; deposits that record themselves; a chart per holding; surplus cash that follows the plan
+
+_2026-09-20. Eran asked for four things: a monthly standing order into cash, a chart per holding,
+a fix for "the system sometimes confuses cash money with the CASH stock", and a card that says how to
+put cash above the 7.5% soft target back to work. Decisions he made: auto-credit + push; chart shows
+position value with a toggle to ticker price, ranges 1D/1W/1M/3M/1Y/All; redeploy fires above 7.5%,
+deploys the excess only, with an Accept button. Status: **pending deploy + smoke.**_
+
+### 1. The CASH confusion — PROVEN on production, fixed
+
+```
+SYMPTOM      the app sometimes treats cash as the NASDAQ ticker CASH (Pathward Financial)
+EVIDENCE     rec_1e8c9d (2026-09-17) "CASH is in a downtrend" -- momentum loop fetched Pathward's history
+             POST /portfolio/performance: end_value_ils 147,014.61 on NAV 22,148.23
+               147,014.61 - 20,487.11 (every non-cash row) = 126,527.50 ; / 1,661.12 cash units = 76.17
+               GET /market/quote?ticker=CASH -> 76.17 USD. Cash was valued as 1,661 Pathward shares.
+RULED OUT    pricing refresh (cash priced 1.0 on /portfolio -- pricing_service has its own guard);
+             rules (rules_service retires CASH rules; none armed); screener card (skips cash explicitly)
+ROOT CAUSE   cash is a position whose ticker is the string "CASH", which is also a real symbol; ~15 call
+             sites check for it by hand and three loops did not:
+               performance_service._performance_from -> guarded_history("CASH")
+               recommendations._momentum_recs        -> guarded_history("CASH")
+               recommendations._hedge_recs / income  -> guarded_fundamentals("CASH")
+WHY SILENT   Yahoo answers "CASH" with a plausible series; /portfolio (the screen that is looked at) was
+             right; only derived numbers were wrong
+BLAST RADIUS everything reading performance(): the "You're trailing SPY" card (-8.74% was Pathward's
+             gap), max_drawdown 60.02% (range=MAX) which SEEDS THE SOLVER'S RISK CEILING -- the 58.59%
+             quoted in PR 13b-era notes was measured the same way and is very likely contaminated too
+             (INFERRED: cash was ~618 then, still larger than the rest of the book once priced at ~$70);
+             context_service (the agents' performance block); nav_history's day-gap filler
+```
+
+Fix: performance() values cash as a flat base-currency amount on every date (it returned 0%; dropping it
+would overstate every return and drawdown by the weight of the risky rows); `cash_flat_value` reported.
+Momentum, hedge and income loops skip cash. **The check the data can fail:**
+`tests/test_cash_is_never_sent_to_the_market.py` spies on a provider that answers ANY symbol and drives
+performance (1Y and MAX), the whole Today build, rule suggestions and the new chart endpoint; if "CASH"
+reaches the provider from anywhere it fails. Confirmed failing on 84be80b for performance x2 and Today.
+
+**Expect the numbers to move after deploy**: 1Y return, max drawdown, the excess vs SPY and therefore
+whether "You're trailing SPY" shows at all. The solver's stored ceiling is NOT re-seeded (PR 11 rule: a
+constraint the user owns is not moved silently) -- re-check it on the Plan tab against the new drawdown.
+
+### 2. Standing orders (new: `standing_orders`, migration 0023)
+
+A run is exactly a manual deposit: a `contributions` row (so gain, `contribution_rate` and nav_history's
+flow detector see money-in, never a return) plus a cash credit, in ONE commit with `next_run_on`
+advancing. Second guard: the contribution note names the order and the date it is for, so a race cannot
+credit a month twice. Dated the day it was FOR (local noon, Asia/Jerusalem), caught up after downtime
+(max 3 per tick), first run strictly after the day it is created, and resuming a paused order does not
+back-fill the pause. Hourly idempotent job, primed at boot; push on credit (category info).
+`tzdata==2025.2` added: slim images are not guaranteed an IANA database.
+The projection counts it (`source: standing_order`, outranks the measured rate, loses to an explicit
+override). The behind-your-goal card now counts it too, asks for the DIFFERENCE, and its Accept sets
+the order (`set_standing_order`) instead of being guidance-only.
+API: `GET/POST /portfolio/standing-orders`, `PUT/DELETE /portfolio/standing-orders/{id}`,
+`POST /portfolio/standing-orders/run`. UI: Holdings -> Cash -> "Monthly standing order"; the Cash row
+shows the monthly total and next date.
+
+### 3. Per-holding chart (`GET /portfolio/position-history?ticker=&range=`)
+
+Price line: any range (1D = 5-min bars, 1W = 30-min, via a new `get_intraday` on the market tier;
+falls back to daily closes and says so). Value line: shares ACTUALLY held at each moment, rebuilt
+backwards from today's count through the trade ledger -- never today's shares priced back (Phase N).
+It starts at the later of position-opened and ledger-began, and says which; a ledger that does not
+reconcile with today's count hides the line and says why. The change is split into price moves vs
+money moved by trades, so a top-up never reads as a gain. Buy/sell dots on the line. Cash refused (422)
+before any provider call.
+
+### 4. Redeploy card follows sleeve targets — PROVEN by reproduction
+
+Reproduced with the live book's own values (`/portfolio`, `/plan/sleeves`, `/mix`) plus a 1,067/month
+order, accepting each month's card: month 3 put **623 into QQQ (9% sleeve target, held ~11%)** and 270
+into SOXL (42% target, held ~38%). Cause: inside a class the budget was split evenly and the smallest
+holding got the remainder; the card was never given sleeve targets. Now each held name has a target (a
+sleeve's own; core names share what the class target leaves, in proportion to current value), money
+goes only to names below target, and whatever remains after every gap is invested at plan weights
+(moves every class toward target, since cash is the only thing over). Books without sleeves keep the
+old path. Also: the why no longer says "the sale proceeds left your mix off-plan" (false for a
+deposit), and "8% floor" is now "your 7.5% cash target; the hard floor is 150".
+`tests/test_redeploy_follows_sleeve_targets.py` (7 cases, all failing on 84be80b).
+
+### 5. A test that failed every weekend
+
+`test_the_nav_snapshot_job_actually_runs` asked the real calendar; the job correctly skips
+non-trading days, so it was red every Saturday and Sunday (observed 2026-09-20:
+`is_trading_day() -> "2026-09-20 is a Sunday"`, `nav_rows: 0`). Calendar pinned in the test.
+
+### Smoke
+`scripts/smoke/smoke-pr68-cash-standing-orders-charts.ps1` (read-only).
 
 ---
 

@@ -805,9 +805,18 @@ async def goal_projection(contribution_per_year: float | None = None,
 
     # THE RATE. Measured, or explicitly given, or absent with a reason.
     measured = await contribution_rate(session, user)
+    # A STANDING ORDER IS A DECLARED RATE, not an assumed one. The rule here is
+    # "never an assumed savings rate on someone else's card"; an order the user
+    # set up is the opposite of an assumption -- it is the deposit the app will
+    # itself record on the day. It outranks a rate measured from past deposits
+    # because it is the forward-looking fact; an explicit override still wins.
+    from app.services.standing_order_service import monthly_total
+    standing_monthly = await monthly_total(session, user)
     rate, source = None, None
     if contribution_per_year is not None:
         rate, source = float(contribution_per_year), "override"
+    elif standing_monthly > 0:
+        rate, source = round(standing_monthly * 12, 2), "standing_order"
     elif measured.get("ok"):
         rate, source = measured["per_year"], "measured"
 
@@ -833,11 +842,15 @@ async def goal_projection(contribution_per_year: float | None = None,
                 round(c.probability_of_loss_vs_money_in, 3)
                 if c.probability_of_loss_vs_money_in is not None else None),
             "measured": measured,
+            "standing_order_monthly_ils": standing_monthly or None,
             "note": (f"deposits of {rate:,.0f}/yr, {'measured from your ledger' if source == 'measured' else 'as you asked'}, "
                      f"paid at the end of each month. Your ledger also supports "
                      f"{measured.get('per_year_excluding_first')}/yr if the first entry was "
                      f"opening capital rather than a contribution."
                      if source == "measured" else
+                     f"your standing order of {standing_monthly:,.0f}/month "
+                     f"({rate:,.0f}/yr), paid at the end of each month."
+                     if source == "standing_order" else
                      f"deposits of {rate:,.0f}/yr, as you asked, paid at the end of each month."),
         }
     elif rate is not None:

@@ -53,6 +53,19 @@ class BuiltinMarketDataProvider(MarketDataProvider):
             out.append((d, round(price, 4)))
         return out
 
+    def get_intraday(self, ticker: str, span: str = "1d") -> list[tuple[str, float]]:
+        """Deterministic synthetic bars: 78 x 5-minute (1d) or 65 x 30-minute (5d)."""
+        import numpy as np
+        from datetime import datetime, timedelta, timezone
+        n, step = (78, 5) if span == "1d" else (65, 30)
+        rng = np.random.default_rng((_seed(ticker, span)) % (2 ** 32))
+        start = datetime(2026, 6, 12, 13, 30, tzinfo=timezone.utc)
+        out, price = [], 100.0
+        for i, r in enumerate(rng.normal(0.0, 0.0015, n)):
+            price *= (1.0 + float(r))
+            out.append(((start + timedelta(minutes=step * i)).isoformat(), round(price, 4)))
+        return out
+
     def get_fundamentals(self, ticker: str) -> Fundamentals:
         """Deterministic, plausible fundamentals seeded off the ticker.
 

@@ -21,6 +21,12 @@ class MarketDataProvider(ABC):
         """Daily (date, close) history, oldest..newest. Default: none."""
         return []
 
+    def get_intraday(self, ticker: str, span: str = "1d") -> list[tuple[str, float]]:
+        """(ISO timestamp, price) bars within the last session ("1d") or five
+        sessions ("5d"). Optional: a provider without intraday data raises, and
+        the caller falls back to daily closes and says so."""
+        raise NotImplementedError(f"{type(self).__name__} has no intraday data")
+
     def get_fundamentals(self, ticker: str) -> Fundamentals | None:
         """Valuation / growth / quality / income snapshot. Default: unsupported."""
         return None

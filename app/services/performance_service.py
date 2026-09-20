@@ -29,7 +29,7 @@ from app.engines.performance import summarize
 from app.models.tables import User
 from app.core.offload import offload
 from app.providers.registry import guarded_history, market_provider
-from app.services.intake_service import list_positions
+from app.services.intake_service import is_cash_position, list_positions
 
 _MAX_POINTS = 160  # keep the chart payload light
 
@@ -76,7 +76,25 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
     qty, maps, rate = {}, {}, {}
     unconverted: list[dict] = []
     stale_fx: list[dict] = []
+    # CASH IS PART OF THE BOOK AND HAS NO PRICE HISTORY. It is added below as a
+    # flat base-currency amount on every date: it returned 0% over the window,
+    # which is exactly what it did.
+    #
+    # It used to fall through to `guarded_history("CASH")`, and "CASH" is a real
+    # NASDAQ ticker (Pathward Financial). Measured on production 2026-09-20:
+    # 1,661.12 shekels of cash were valued as 1,661.12 Pathward shares at 76.17,
+    # so `end_value_ils` read 147,014.61 on a NAV of 22,148.23 and every figure
+    # derived from the series -- total return, max drawdown, the excess vs SPY,
+    # the solver's seeded risk ceiling -- described a bank stock, not this book.
+    # Dropping cash instead would be wrong the other way: it would overweight
+    # the risky holdings in every return and drawdown the series reports.
+    cash_base = 0.0
     for ticker, quantity, market, meta in holdings:
+        if is_cash_position(ticker, meta):
+            ccy = price_currency(market, meta)
+            r, _st = fx_rate_with_status(ccy, base)
+            cash_base += quantity * r
+            continue
         try:
             series = guarded_history(ticker, history_days)  # [(date, close)]
         except Exception:  # noqa: BLE001
@@ -123,7 +141,7 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
     if len(dates) < 3:
         return {"ok": False, "reason": "not enough overlapping price history"}
 
-    values = [sum(qty[t] * maps[t][d] * rate[t] for t in maps) for d in dates]
+    values = [sum(qty[t] * maps[t][d] * rate[t] for t in maps) + cash_base for d in dates]
     # The benchmark is deliberately NOT converted. Under a constant spot rate a
     # currency conversion is a constant scaling, and a constant scaling cancels
     # in every return ratio -- so converting it would change no reported figure.
@@ -138,6 +156,9 @@ def _performance_from(holdings: list[tuple[str, float, str, dict]],
     out = {
         "ok": True, "benchmark": cfg.benchmark_ticker, "source": market_provider().name,
         "holdings_analyzed": list(maps), "observations": len(dates),
+        # Cash is valued, not analysed: a flat amount on every date. Stated so a
+        # reader can see it was included and how.
+        "cash_flat_value": round(cash_base, 2),
         # The window, and what KIND of measurement this is. A ten-year strategy
         # backtest and this 250-day backfill of today's holdings will disagree,
         # and both are correct -- but a screen can only say so if each figure
