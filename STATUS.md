@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.3; HEAD was `9aba131` = PR 68.2)._
+_Last updated: 2026-09-21 by Claude (PR 68.4; HEAD was `c7e6c13` = PR 68.3)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,32 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.4 — the historical ledger repair: preview first, write only what can be defended
+
+_2026-09-21. Eran: "yes, you should repair the old ledger rows" / "finish the ledger repair".
+Status: **code pending deploy; the repair itself runs after the preview has been read.**_
+
+`GET /portfolio/ledger/repair` (read-only) lists every row the repair would change, the value, and
+where it came from. `POST /portfolio/ledger/repair {"confirm": true}` writes it. `services/ledger_repair.py`.
+
+- **Duplicates** (sleeve_fund + fund_sleeve, same leg, same second) -> the `fund_sleeve` row becomes
+  `txn_type = "Void"` with a note naming the row it duplicates and "was Buy/Sell". Nothing deleted;
+  every reader filters Buy/Sell/Adjust, so Void is ignored and reversible.
+- **Blind sells** (quantity 0: trims, core_to_basket) are sized from two independent estimates --
+  the rule event's `cash_added + tax` and the card's own ₪ amount in `completed_recs`, each divided
+  by the nearest 30-minute bar (60-day intraday range added to the Yahoo provider) at today's FX --
+  and then THE BOOKS: an episode opened inside the ledger has an exact total sold
+  (buys - known sells - today's count). One blind sell -> exact. Several with estimates -> scaled
+  to the exact total ("balanced"), refused if the scale is more than 25% off. Only exact/balanced
+  are written by default; estimate-only needs `include_estimates`. Each written row's note says
+  the method and "was 0 shares".
+- **Truncated funded sells** (`int(shares)`) are listed, never guessed: the fraction was not stored.
+- `tests/test_ledger_repair.py`: preview writes nothing; apply needs confirm; apply voids + sizes and
+  the holding chart then reconciles; a second apply changes nothing; an unanchored estimate is not
+  written.
 
 ---
 

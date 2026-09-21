@@ -119,8 +119,10 @@ class YahooMarketDataProvider(MarketDataProvider):
         The `chart` endpoint, which is not crumb-gated. Timestamps are UTC ISO
         strings; the caller decides how to label them."""
         sym = self.to_symbol(ticker)
+        # 1d: 5-minute bars. 5d / 60d: 30-minute bars (60d is Yahoo's limit for
+        # sub-hourly data, used by the ledger repair to price a past sale).
         interval = "5m" if span == "1d" else "30m"
-        rng = "1d" if span == "1d" else "5d"
+        rng = span if span in ("1d", "5d", "60d") else "5d"
         url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                f"?interval={interval}&range={rng}")
         data = json.loads(_http_text(url))

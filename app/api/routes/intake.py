@@ -645,6 +645,34 @@ def _last_buy(buys, p, price, _td) -> dict | None:
     return None
 
 
+class LedgerRepairRequest(BaseModel):
+    confirm: bool = False
+    include_estimates: bool = False
+
+
+@router.get("/portfolio/ledger/repair")
+async def ledger_repair_preview(session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """READ-ONLY. Every ledger row the repair would change, the value, and why."""
+    from app.services.ledger_repair import preview
+    return await preview(session, user)
+
+
+@router.post("/portfolio/ledger/repair", dependencies=[Depends(require_role(Role.ANALYST))])
+async def ledger_repair_apply(body: LedgerRepairRequest,
+                              session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """Write what the preview proposes. Requires `confirm: true`. Duplicates become
+    `Void` (never deleted); blind sells get a size only at exact/balanced
+    confidence unless `include_estimates` is set."""
+    from app.services.ledger_repair import apply
+    out = await apply(session, user, confirm=body.confirm,
+                      include_estimates=body.include_estimates)
+    if not out.get("ok"):
+        raise HTTPException(status_code=422, detail=out.get("reason"))
+    return out
+
+
 @router.get("/portfolio/position-history")
 async def read_position_history(ticker: str, range: str = "1M",
                                 session: AsyncSession = Depends(get_session),
