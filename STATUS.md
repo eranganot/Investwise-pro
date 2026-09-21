@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.6; HEAD was `c593fbc` = PR 68.5)._
+_Last updated: 2026-09-21 by Claude (PR 68.7; HEAD was `e612197` = PR 68.6)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -153,6 +153,23 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 68.7 — a repaired row keeps its rule event
+
+_2026-09-21. After PR 68.6's apply the preview still showed **measured=1**. Nothing extra had been
+written (the script only previewed after applying), but a second apply would have been wrong.
+Cause: `preview` dropped repaired rows from the pairing. That released their rule events, so the
+SOXL 09-17 15:43:15 event (already used by the repaired 15:43 trim) went to the 15:42 trim, and
+those shares would have been sold twice. Fix: repaired rows (`REPAIR_TAG` + "was 0 shares") stay in
+the pairing as consumers. The assignment then replays exactly as it did at apply time, and they are
+not reported again. `test_a_repaired_row_keeps_its_rule_event` reproduces the production
+CHECK FAILED before the fix. The ship script is **read-only**: deploy, preview, expect 0 duplicates
+and 0 measured. Status: **pending run.**_
+
+Still open: 25 rows at 0 (only `include_estimates` would write the 12 estimates, and it has not
+been run); the unrecorded write path behind AGG/GOOGL/QQQ (PR 68.5 item 2).
+
+---
+
 ## PR 68.6 — measured means two records agree; then the repair is applied
 
 _2026-09-21. PR 68.5's preview: 5 duplicates, 10 measured, 9 estimate, 13 unresolved. Seven of the
@@ -162,7 +179,10 @@ the gap alone does not say which record is right; those three are now ESTIMATE (
 and not written by default. `test_a_measured_size_that_contradicts_the_rules_plan_is_not_written`._
 
 The ship script applies the repair after deploying, and only if the fresh preview is exactly what
-was reviewed (5 duplicates, 7 measured); otherwise it stops without writing. Status: **pending run.**
+was reviewed (5 duplicates, 7 measured); otherwise it stops without writing. Status: **applied
+once, 2026-09-21** -- 5 voids, 7 measured sizes (TQQQ 2.0908, SOXL 2.0412 / 0.7426 / 1.4457 /
+2.6391 / 6.4695, QQQ 0.1807); 25 rows left at 0 (12 estimate, 13 unresolved). Its post-apply check
+failed -- see PR 68.7.
 
 ---
 

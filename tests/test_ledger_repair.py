@@ -192,3 +192,22 @@ def test_a_measured_size_that_contradicts_the_rules_plan_is_not_written(client):
     assert m["confidence"] == "estimate" and "disagree" in m["method"], m
     r = client.post("/api/v1/portfolio/ledger/repair", json={"confirm": True}).json()
     assert any(x["ticker"] == "MSFT" for x in r["skipped"])
+
+
+def test_a_repaired_row_keeps_its_rule_event(client):
+    """Production, 2026-09-21: after the apply, the preview showed measured=1.
+
+    The SOXL 15:43 trim was written from the 15:43:15 event. Once it was repaired
+    it left the blind list, its event looked unused again, and the neighbouring
+    15:42 trim claimed it -- a second apply would have sold those shares twice.
+    """
+    async def add(s):
+        s.add(_tx(txn_type="Sell", quantity=Decimal("0"), source="trim", note="card rec_z",
+                  executed_at=NOW - timedelta(days=4) + timedelta(seconds=60)))
+    _db(add)
+    first = client.post("/api/v1/portfolio/ledger/repair", json={"confirm": True}).json()
+    assert [w["confidence"] for w in first["written"]] == ["measured"]
+    p = client.get("/api/v1/portfolio/ledger/repair").json()
+    assert p["summary"].get("measured", 0) == 0, p["blind_sells"]
+    again = client.post("/api/v1/portfolio/ledger/repair", json={"confirm": True}).json()
+    assert again["written"] == [] and again["voided"] == []

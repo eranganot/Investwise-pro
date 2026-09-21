@@ -204,25 +204,36 @@ async def preview(session: AsyncSession, user: User) -> dict:
 
     # ---- rule events: each one sizes AT MOST ONE row, nearest first ---------
     # The first preview matched one 15:43 event to trims at 15:42 AND 15:43.
+    # Rows an earlier apply already sized stay in the pairing as consumers, so the
+    # assignment replays exactly as it was when they were written. Without them
+    # their events look free again: on production (2026-09-21) the repaired SOXL
+    # 15:43 trim released its 15:43:15 event to the 15:42 trim, and a second
+    # apply would have sold those shares twice.
+    repaired = [t for t in txs if t.txn_type == "Sell" and t.ticker and t.executed_at
+                and REPAIR_TAG in (t.note or "") and "was 0 shares" in (t.note or "")]
+    consumers = [(r["id"], r["ticker"], r["_when"]) for r in rows.values()
+                 if r["_when"] is not None]
+    consumers += [(str(t.id), (t.ticker or "").upper(), _aware(t.executed_at))
+                  for t in repaired]
     pairs = []
-    for r in rows.values():
-        if r["_when"] is None:
-            continue
+    for cid, tk, when in consumers:
         for e in events:
-            if (e.ticker or "").upper() != r["ticker"] or not e.outcome_at:
+            if (e.ticker or "").upper() != tk or not e.outcome_at:
                 continue
             exe = (e.action or {}).get("executed") or {}
             if exe.get("kind") not in ("trim", None):
                 continue
-            dt = abs(_aware(e.outcome_at) - r["_when"])
+            dt = abs(_aware(e.outcome_at) - when)
             if dt <= _EVENT_WINDOW:
-                pairs.append((dt, r["id"], e))
+                pairs.append((dt, cid, e))
     used_rows, used_events = set(), set()
     for dt, rid, e in sorted(pairs, key=lambda x: x[0]):
         if rid in used_rows or e.id in used_events:
             continue
         used_rows.add(rid)
         used_events.add(e.id)
+        if rid not in rows:          # an already-repaired row: it keeps its event
+            continue
         r = rows[rid]
         exe = (e.action or {}).get("executed") or {}
         gross = float(exe.get("cash_added_ils") or 0) + float(exe.get("tax_ils") or 0)
