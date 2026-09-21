@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.2; HEAD was `588a486` = PR 68.1)._
+_Last updated: 2026-09-21 by Claude (PR 68.3; HEAD was `9aba131` = PR 68.2)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,52 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.3 — "are you sure I'm so behind the SPY?" No: the 1M window started on a known-bad snapshot
+
+_2026-09-21. Status: **pending deploy.**_
+
+```
+SYMPTOM      account history, 1M: "-21.9641% ... SPY -0.5263% -- you are -21.44 points against it"
+EVIDENCE     /portfolio/nav-history?range=1M  dates[0] = 2026-08-22, nav 28,496.54, pct[1] = -25.0097
+             /portfolio/nav-history?range=MAX (same rows): 08-22 absent, total +4.0613% vs SPY -0.7048%
+             /portfolio: contributed 20,000.00, NAV 23,057.90 -> +15.29% on money put in
+RULED OUT    a real loss (every other step in the window is within a few %; MAX on the same rows is
+             +4.06%); a flow mis-booked (flow_total_ils 0, unexplained_flows []); the benchmark
+             (SPY -0.53% is right)
+ROOT CAUSE   nav_history.series_for cut the window FIRST (30 days back = 2026-08-22), then
+             time_weighted ran _spike_indices on the cut series. _spike_indices judges a row by the
+             rows on BOTH sides (loop from index 1), so the FX-bug row PR 28 excludes was the window's
+             first point, had no left neighbour, could not be flagged, and anchored the next step:
+             21,369.63 / 28,496.54 - 1 = -25.01%.
+WHY SILENT   PR 28's tests call time_weighted on the full series, and the fix was verified on MAX,
+             which has 08-16/08-17 in front of the row. STATUS listed "delete the 08-22 snapshot" as
+             Done because it was absent from MAX -- the row was never deleted. The 1M window would have
+             walked past it tomorrow and "healed", which is how this stays unfound.
+BLAST RADIUS every range whose cutoff lands on a spike's day; only 08-22 is a spike today.
+CONFIDENCE   PROVEN (reproduced with the live rows and today's date: test fails on 9aba131)
+```
+
+Fix: spikes are found on the WHOLE history and removed before the window is cut; they are listed in
+`suspect_snapshots` on every range. `tests/test_a_window_cut_cannot_resurrect_a_spike.py` (live rows,
+date pinned to 2026-09-21; 1M must equal MAX). The honest answer to the question: since recording
+started (08-16) the account made **+4.06% vs SPY -0.70%**, and +15.3% on the 20,000 deposited on 08-03.
+The +70% "Performance vs benchmark" card is a different thing -- today's holdings priced back a year --
+and says so in its caption.
+
+Also in this PR, two more handlers that wrote wrong share counts to the ledger (found while planning
+the historical repair): `buy_funded` recorded `int(shares)` -- GOOGL's funded sales are in the ledger as
+exactly 2.0 and 1.0 -- and `core_to_basket` reported no share count at all (0-share rows on 09-02 and
+09-06). Both now report exact `shares` / `value_ils`; the Today toast renders either shape. Tests in
+`test_the_ledger_counts_every_share_once.py` (both confirmed failing on 9aba131).
+
+**Still open: repairing the historical ledger rows.** Evidence gathered: rule-fired trims have their
+size in `rule_events` (plan shares + cash_added + tax); other cards have their est. amount in the
+`completed_recs` KV map keyed by the card id the ledger row names; and each position episode that
+opened from zero has an exact total by balance. Next PR: a read-only repair PREVIEW endpoint, then an
+apply step Eran runs after reading it. Duplicates will be voided (reversible), not deleted.
 
 ---
 

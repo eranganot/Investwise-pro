@@ -1134,8 +1134,10 @@ function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="b
 function _applyMsg(j){
   // Turn the accept result into a one-line "here's what changed" confirmation.
   const parts=[];
-  if(j.swapped&&j.bought){parts.push(`Swapped ${(j.sold||[]).join(", ")} \u2192 ${j.bought} (\u20aa${(j.value_ils||0).toLocaleString()})`);}
-  else if(j.sold&&j.sold.length){parts.push(`Sold ${j.sold.join(", ")}`);}
+  // A sale is a ticker, "4 V", or {ticker, shares} -- the handlers never agreed.
+  const _sd=x=>typeof x==="string"?x:`${x.shares!=null?Number(x.shares).toLocaleString(undefined,{maximumFractionDigits:4})+" ":""}${x.ticker}`;
+  if(j.swapped&&j.bought){parts.push(`Swapped ${(j.sold||[]).map(_sd).join(", ")} \u2192 ${j.bought} (\u20aa${(j.value_ils||0).toLocaleString()})`);}
+  else if(j.sold&&j.sold.length){parts.push(`Sold ${j.sold.map(_sd).join(", ")}`);}
   if(j.cash_added_ils){parts.push(`+\u20aa${(j.cash_added_ils).toLocaleString()} to Cash`);}
   if(j.tax_ils){parts.push(`(est. tax \u20aa${(j.tax_ils).toLocaleString()})`);}
   if(j.rules_created&&j.rules_created.length){parts.push("Armed "+j.rules_created.map(r=>r.label).join(", "));}

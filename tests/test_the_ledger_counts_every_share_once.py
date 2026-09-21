@@ -102,3 +102,41 @@ def test_the_funded_sleeve_executor_declares_it_recorded_its_legs():
     src = inspect.getsource(ss._execute_funded_sleeve)
     assert "ledger.record_legs(" in src
     assert '"ledger_recorded": True' in src
+
+
+@pytest.mark.asyncio
+async def test_a_funded_buy_records_the_fraction_it_sold(own_session):
+    """`buy_funded` wrote f"{int(shares)} {ticker}" -- GOOGL's 2.0 and 1.0."""
+    from sqlalchemy import select
+
+    from app.models.tables import Transaction, User
+    from app.services.recommendations import _apply_buy_funded, _record_apply
+
+    logging.disable(logging.CRITICAL)
+    try:
+        with TestClient(m.app) as c:
+            _seed(c)
+            async with own_session() as s:
+                user = (await s.execute(select(User))).scalars().first()
+                detail = await _apply_buy_funded(s, user, {
+                    "kind": "buy_funded", "ticker": "BND", "market": "NASDAQ",
+                    "asset_class": "Fixed Income", "amount_ils": 150.0, "from_cash_ils": 0.0,
+                    "sells": [{"ticker": "SOXL", "market": "TASE", "shares": 1.4247,
+                               "value_ils": 185.2, "tax_ils": 5.0,
+                               "asset_class": "Equities"}]})
+                await _record_apply(s, user, "buy_funded", "rec_bf01", detail)
+                rows = (await s.execute(select(Transaction).where(
+                    Transaction.ticker == "SOXL"))).scalars().all()
+    finally:
+        logging.disable(logging.NOTSET)
+    sells = [float(r.quantity) for r in rows if r.txn_type == "Sell"]
+    assert sells == [pytest.approx(1.4247)], sells
+
+
+def test_the_core_realign_reports_its_share_counts():
+    """`core_to_basket` reported {ticker, ils, tax_ils}: 0 shares in the ledger."""
+    import inspect
+
+    from app.services import recommendations as rr
+    src = inspect.getsource(rr._apply_core_to_basket)
+    assert '"shares": round(shares, 6)' in src and '"value_ils": round(gross, 2)' in src

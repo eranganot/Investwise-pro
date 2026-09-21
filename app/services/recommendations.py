@@ -4701,7 +4701,12 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
             await update_position(session, user, str(p.id), quantity=remaining)
         raised += max(0.0, gross - tax)
         tax_total += tax
-        sold.append(f"{int(shares)} {p.ticker}")
+        # THE EXACT SHARE COUNT. This was f"{int(shares)} {p.ticker}": `int()`
+        # cut the fraction, and `_record_apply` parses that string into the
+        # ledger -- so GOOGL's funded sales are recorded as 2.0 and 1.0 shares.
+        sold.append({"ticker": p.ticker, "shares": round(shares, 6),
+                     "price": float(p.current_price or 0), "value_ils": round(gross, 2),
+                     "tax_ils": round(tax, 2)})
 
     cash_before = await get_cash(session, user)
     # Spend only cash that exists. The card was built against an earlier book, so
@@ -4939,7 +4944,11 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
             await update_position(session, user, str(p.id), quantity=remaining)
         tax_total += tax
         raised += max(0.0, gross - tax)
-        sold.append({"ticker": p.ticker, "ils": round(gross, 2),
+        # `shares` and `value_ils` are what the ledger records. With only
+        # `ils` here, every core realign sale went into `transactions` as a
+        # 0-share, 0-value sell (seen on production: SOXL and BND, 09-02, 09-06).
+        sold.append({"ticker": p.ticker, "shares": round(shares, 6), "price": px,
+                     "value_ils": round(gross, 2), "ils": round(gross, 2),
                      "tax_ils": round(tax, 2), "full_exit": bool(full)})
 
     for leg in plan["legs"]:

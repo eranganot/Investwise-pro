@@ -647,6 +647,23 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
                "positions": int(r.positions or 0)} for r in rows]
     recorded_since = points[0]["as_of"] if points else None
 
+    # BAD SNAPSHOTS ARE FOUND ON THE WHOLE HISTORY, THEN THE WINDOW IS CUT.
+    # `_spike_indices` judges a row by its neighbours on BOTH sides, so a bad
+    # row that lands on the first day of a window has no left neighbour inside
+    # it and can never be caught there. Observed 2026-09-21: the 1M window
+    # (30 days back) began exactly on the 08-22 row -- NAV 28,496.54, the FX-bug
+    # spike PR 28 excluded -- so it became the baseline and the chart read
+    # -21.96% "vs SPY -0.53%" on a book that had made +4.06% (MAX, same rows,
+    # spike excluded). PR 28 fixed this for the full series; the cut undid it.
+    flows = await list_contributions(session, user)
+    _bad = _spike_indices(points, flows)
+    suspect_rows = [{"as_of": points[i]["as_of"], "nav_ils": points[i]["nav_ils"],
+                     "reason": "contradicted by the snapshot after it (reverted "
+                               "without the book changing shape) -- a bad reading, "
+                               "not money"} for i in sorted(_bad)]
+    if _bad:
+        points = [p for i, p in enumerate(points) if i not in _bad]
+
     if days < 36500 and points:
         cutoff = (date.today().toordinal() - days)
         points = [p for p in points
@@ -661,8 +678,6 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
                 "needs": MIN_POINTS_FOR_SERIES,
                 "detail": ("recording started " + recorded_since
                            if recorded_since else "no snapshots recorded yet")}
-
-    flows = await list_contributions(session, user)
 
     # The trade ledger, asked once for the whole window. A step whose shape
     # change is covered by recorded buy/sell legs is a reallocation, not a flow,
@@ -753,6 +768,10 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
         # the difference between "we could not tell" and "we checked" is the
         # whole of this PR.
         "resolved_changes": twr["resolved_changes"],
+        # Rows left out because the next snapshot contradicted them. Found on the
+        # whole history before the window was cut, then any the window's own pass
+        # found; named, so a left-out day is never silently missing.
+        "suspect_snapshots": suspect_rows + list(twr.get("suspect_snapshots") or []),
         # How much of the window the headline percentage actually rests on. A
         # total compounded over 4 of 11 days is not wrong, but a reader who
         # thinks it covers 11 has been misled by omission.
