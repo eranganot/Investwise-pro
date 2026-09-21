@@ -41,7 +41,8 @@ WHAT GETS WRITTEN, and only on `apply(confirm=True)`:
     can be undone by setting the type back. Nothing is deleted.
   * blind sells -> `quantity` (and `value_ils`, `price` when known) with a note:
     method, confidence, and "was 0". MEASURED values (a rule event: cash the
-    book actually received plus tax) are written by default; ESTIMATE values
+    book actually received plus tax, AND within 5% of the share count the rule
+    itself planned) are written by default; ESTIMATE values
     (the card's own pre-trade amount) only with `include_estimates=True`;
     anything else is left alone and listed.
 
@@ -65,6 +66,9 @@ REPAIR_TAG = "repaired 2026-09-21"
 _DUP_SOURCES = {"sleeve_fund", "fund_sleeve"}
 _DUP_WINDOW = timedelta(seconds=5)
 _EVENT_WINDOW = timedelta(seconds=180)
+# A measured size is trusted only when the rule's own planned share count agrees
+# with it this closely; beyond that, the two records of one sale contradict.
+_AGREE = 0.05
 
 
 def _aware(d: datetime | None) -> datetime | None:
@@ -232,9 +236,22 @@ async def preview(session: AsyncSession, user: User) -> dict:
 
     for r in rows.values():
         r.pop("_when", None)
-        if "rule_event" in r["estimates"]:
-            r.update(shares=r["estimates"]["rule_event"], confidence="measured",
-                     method="rule event: cash received + tax, at the price that half hour")
+        ev_sh = r["estimates"].get("rule_event")
+        plan_sh = r["estimates"].get("rule_plan_shares")
+        if ev_sh and plan_sh and abs(ev_sh / plan_sh - 1) > _AGREE:
+            # Two records of one sale that disagree. A card can shrink between
+            # the firing and the accept, so the gap alone does not say which is
+            # right -- and a size nobody can defend is not written by default.
+            # Seen on production: MSFT 0.70, V 0.77 (both 2026-08-25, while the
+            # FX handling was still being fixed), SOXL 09-08 0.87.
+            r.update(shares=ev_sh, confidence="estimate",
+                     method=(f"rule event, but the rule planned {plan_sh:g} shares "
+                             f"({ev_sh / plan_sh:.2f}x) -- the two records disagree"))
+        elif ev_sh:
+            r.update(shares=ev_sh, confidence="measured",
+                     method=("rule event: cash received + tax, at the price that half hour"
+                             + (f"; agrees with the rule's planned {plan_sh:g} shares"
+                                if plan_sh else "")))
         elif "card_amount" in r["estimates"]:
             r.update(shares=r["estimates"]["card_amount"], confidence="estimate",
                      method="the card's own amount before the trade")

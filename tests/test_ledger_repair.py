@@ -172,3 +172,23 @@ def test_one_rule_event_sizes_one_trim(client):
     p = client.get("/api/v1/portfolio/ledger/repair").json()
     measured = [b for b in p["blind_sells"] if b["confidence"] == "measured"]
     assert len(measured) == 1, measured
+
+
+def test_a_measured_size_that_contradicts_the_rules_plan_is_not_written(client):
+    """Production: MSFT measured 0.525 against a planned 0.752 (0.70x)."""
+    async def add(s):
+        from app.models.tables import RuleEvent
+        s.add(_tx(ticker="MSFT", txn_type="Sell", quantity=Decimal("0"), source="trim",
+                  note="card rec_m", executed_at=NOW - timedelta(days=8)))
+        s.add(RuleEvent(subject=SUPERADMIN_EMAIL, rule_id="r2", ticker="MSFT",
+                        rule_type="max_weight", outcome="executed",
+                        outcome_at=NOW - timedelta(days=8) + timedelta(seconds=10),
+                        action={"plan": {"kind": "trim", "shares": 0.75},
+                                "executed": {"kind": "trim", "cash_added_ils": 50.0,
+                                             "tax_ils": 2.5}}))
+    _db(add)
+    p = client.get("/api/v1/portfolio/ledger/repair").json()
+    m = next(b for b in p["blind_sells"] if b["ticker"] == "MSFT")
+    assert m["confidence"] == "estimate" and "disagree" in m["method"], m
+    r = client.post("/api/v1/portfolio/ledger/repair", json={"confirm": True}).json()
+    assert any(x["ticker"] == "MSFT" for x in r["skipped"])

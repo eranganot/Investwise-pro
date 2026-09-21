@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.5; HEAD was `a098568` = PR 68.4)._
+_Last updated: 2026-09-21 by Claude (PR 68.6; HEAD was `c593fbc` = PR 68.5)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,19 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.6 — measured means two records agree; then the repair is applied
+
+_2026-09-21. PR 68.5's preview: 5 duplicates, 10 measured, 9 estimate, 13 unresolved. Seven of the
+ten measured sizes match the rule's own planned share count within 4%; three do not -- MSFT 08-25
+(0.70x), V 08-25 (0.77x), SOXL 09-08 19:49 (0.87x). A card can shrink between firing and accept, so
+the gap alone does not say which record is right; those three are now ESTIMATE (reason on the row)
+and not written by default. `test_a_measured_size_that_contradicts_the_rules_plan_is_not_written`._
+
+The ship script applies the repair after deploying, and only if the fresh preview is exactly what
+was reviewed (5 duplicates, 7 measured); otherwise it stops without writing. Status: **pending run.**
 
 ---
 
