@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.4; HEAD was `c7e6c13` = PR 68.3)._
+_Last updated: 2026-09-21 by Claude (PR 68.5; HEAD was `a098568` = PR 68.4)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,32 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.5 — the first production preview changed the repair: measure, don't balance
+
+_2026-09-21. PR 68.4's preview (`C:\dev\_ship\ledger-repair-preview.json`, read-only, nothing
+written): 5 duplicates, 32 blind sells (6 balanced, 13 estimate, 13 unresolved), 4 truncated funded
+sells. Reading it found three things wrong with the method -- none of it had been written. Status:
+**pending deploy, then apply.**_
+
+1. **One rule event sized two trims.** SOXL 09-17 15:42 and 15:43 both took the 15:43:15 event.
+   Events are now assigned nearest-first, one row each (`test_one_rule_event_sizes_one_trim`).
+2. **The books are not an anchor.** In 3 of the 5 holdings opened inside the ledger the book holds
+   MORE than its recorded trades explain, with no blind sell to blame: AGG +1.6891, GOOGL +1.0363,
+   QQQ +0.0384 shares. Some path still changes positions without a ledger row (candidates, not yet
+   proven: `_rebalance_to` returns no detail so `_record_apply` records nothing; `add_holding`,
+   `edit_position`, `_replace_book`, `broker_sync`). With the SOXL anchor possibly short by the same
+   hole, "balanced" would have scaled every SOXL trim by 0.83 and written it as confident. The books
+   total is now a reported CHECK only (`books_say_sold` beside `repair_would_size`).
+3. **Confidence is now about the evidence, not the arithmetic.** MEASURED = a rule event (the cash the
+   book actually received + tax, / the price that half hour; ~+/-2% from today's FX) -- written by
+   default. ESTIMATE = the card's own pre-trade amount -- written only with `include_estimates`.
+
+**Open, next:** find the write path behind the AGG/GOOGL/QQQ surplus (evidence: the residuals
+above). Until it is found, the holding chart's "Your position" line stays withheld wherever a
+0-share sale remains, and the reason says so.
 
 ---
 

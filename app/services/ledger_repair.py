@@ -23,12 +23,16 @@ HOW EACH BLIND SELL IS SIZED -- two independent estimates, then the books:
   before the sale, converted at today's FX (no historical FX series exists --
   the same limit `performance_service` states; about +/-2% over three weeks).
 
-  3. THE BOOKS. For a holding that was opened INSIDE the ledger (its opening
-     buy is recorded), shares-in minus shares-out must equal today's count.
-     That gives the EXACT total of the blind sells in that episode. One blind
-     sell -> its size is exact. Several -> the estimates are scaled so they sum
-     to the exact total ("balanced": the total is exact, the split between
-     them is proportional to the estimates).
+  3. THE BOOKS -- a CHECK, never a source. For a holding opened inside the ledger,
+     buys minus known sells minus today's count is what the blind sells should
+     add up to. It was going to be the anchor ("exact total, split by the
+     estimates"). The first production preview (2026-09-21) killed that: in 3
+     of the 5 anchored holdings (AGG +1.69, GOOGL +1.04, QQQ +0.04 shares) the
+     book holds MORE than its recorded trades explain, with no blind sell to
+     blame -- some write path still changes positions without a ledger row. An
+     anchor that is itself missing trades would have scaled every SOXL trim by
+     0.83 and written the result with a confident label. So the books total is
+     reported beside the estimates, and nothing is derived from it.
 
 WHAT GETS WRITTEN, and only on `apply(confirm=True)`:
 
@@ -36,9 +40,10 @@ WHAT GETS WRITTEN, and only on `apply(confirm=True)`:
     Every reader filters by Buy/Sell/Adjust, so a Void row is ignored, and it
     can be undone by setting the type back. Nothing is deleted.
   * blind sells -> `quantity` (and `value_ils`, `price` when known) with a note:
-    method, confidence, and "was 0". Only EXACT and BALANCED values are written
-    by default; ESTIMATE-only values need `include_estimates=True`; anything
-    without a defensible value is left alone and listed.
+    method, confidence, and "was 0". MEASURED values (a rule event: cash the
+    book actually received plus tax) are written by default; ESTIMATE values
+    (the card's own pre-trade amount) only with `include_estimates=True`;
+    anything else is left alone and listed.
 
 The preview is the product: it names every row, the value it would write,
 and exactly where that value came from. Not financial advice.
@@ -60,9 +65,6 @@ REPAIR_TAG = "repaired 2026-09-21"
 _DUP_SOURCES = {"sleeve_fund", "fund_sleeve"}
 _DUP_WINDOW = timedelta(seconds=5)
 _EVENT_WINDOW = timedelta(seconds=180)
-# A scaled estimate further than this from its own estimate means the books and
-# the estimates disagree about what happened -- flagged, never written.
-_MAX_SCALE_DRIFT = 0.25
 
 
 def _aware(d: datetime | None) -> datetime | None:
@@ -179,45 +181,67 @@ async def preview(session: AsyncSession, user: User) -> dict:
                  and float(t.quantity or 0) > 0
                  and abs(float(t.quantity) - round(float(t.quantity))) < 1e-9]
 
-    # ---- estimates for each blind sell ------------------------------------
+    # ---- price and card amount for each blind sell -------------------------
     rows: dict[str, dict] = {}
     for t in blind:
         when = _aware(t.executed_at)
         tk = (t.ticker or "").upper()
         ccy = price_currency(t.market, None)
-        fx, fx_status = fx_rate_with_status(ccy)
+        fx, _fx_status = fx_rate_with_status(ccy)
         px, px_src = await offload(_price_at, tk, when) if when else (None, "no time")
         r = {"id": str(t.id), "ticker": tk, "at": when.isoformat() if when else None,
              "source": t.source, "card": _card_id(t.note), "price": px, "price_source": px_src,
              "fx": round(fx, 6), "estimates": {}, "shares": None, "confidence": "unresolved",
-             "method": None}
-        # 1. the rule event executed at the same moment
-        ev = min((e for e in events if (e.ticker or "").upper() == tk and e.outcome_at
-                  and abs(_aware(e.outcome_at) - when) <= _EVENT_WINDOW
-                  and ((e.action or {}).get("executed") or {}).get("kind") in ("trim", None)),
-                 key=lambda e: abs(_aware(e.outcome_at) - when), default=None) if when else None
-        if ev is not None:
-            exe = (ev.action or {}).get("executed") or {}
-            gross = float(exe.get("cash_added_ils") or 0) + float(exe.get("tax_ils") or 0)
-            if gross > 0 and px:
-                r["estimates"]["rule_event"] = round(gross / (px * fx), 6)
-                r["gross_ils"] = round(gross, 2)
-            plan_sh = ((ev.action or {}).get("plan") or {}).get("shares")
-            if plan_sh:
-                r["estimates"]["rule_plan_shares"] = round(float(plan_sh), 6)
-        # 2. the card's own amount
+             "method": None, "_when": when}
         amt = (cards.get(r["card"] or "") or {}).get("amount")
         if amt and px and t.source == "trim":
             r["estimates"]["card_amount"] = round(float(amt) / (px * fx), 6)
-        if "rule_event" in r["estimates"]:
-            r["estimate"], r["estimate_from"] = r["estimates"]["rule_event"], "rule_event"
-        elif "card_amount" in r["estimates"]:
-            r["estimate"], r["estimate_from"] = r["estimates"]["card_amount"], "card_amount"
-        else:
-            r["estimate"], r["estimate_from"] = None, None
         rows[r["id"]] = r
 
-    # ---- the books: episodes opened inside the ledger ---------------------
+    # ---- rule events: each one sizes AT MOST ONE row, nearest first ---------
+    # The first preview matched one 15:43 event to trims at 15:42 AND 15:43.
+    pairs = []
+    for r in rows.values():
+        if r["_when"] is None:
+            continue
+        for e in events:
+            if (e.ticker or "").upper() != r["ticker"] or not e.outcome_at:
+                continue
+            exe = (e.action or {}).get("executed") or {}
+            if exe.get("kind") not in ("trim", None):
+                continue
+            dt = abs(_aware(e.outcome_at) - r["_when"])
+            if dt <= _EVENT_WINDOW:
+                pairs.append((dt, r["id"], e))
+    used_rows, used_events = set(), set()
+    for dt, rid, e in sorted(pairs, key=lambda x: x[0]):
+        if rid in used_rows or e.id in used_events:
+            continue
+        used_rows.add(rid)
+        used_events.add(e.id)
+        r = rows[rid]
+        exe = (e.action or {}).get("executed") or {}
+        gross = float(exe.get("cash_added_ils") or 0) + float(exe.get("tax_ils") or 0)
+        if gross > 0 and r["price"]:
+            r["estimates"]["rule_event"] = round(gross / (r["price"] * r["fx"]), 6)
+            r["gross_ils"] = round(gross, 2)
+            r["rule_event_at"] = _aware(e.outcome_at).isoformat()
+        plan_sh = ((e.action or {}).get("plan") or {}).get("shares")
+        if plan_sh:
+            r["estimates"]["rule_plan_shares"] = round(float(plan_sh), 6)
+
+    for r in rows.values():
+        r.pop("_when", None)
+        if "rule_event" in r["estimates"]:
+            r.update(shares=r["estimates"]["rule_event"], confidence="measured",
+                     method="rule event: cash received + tax, at the price that half hour")
+        elif "card_amount" in r["estimates"]:
+            r.update(shares=r["estimates"]["card_amount"], confidence="estimate",
+                     method="the card's own amount before the trade")
+        if r["shares"] and r.get("price"):
+            r["value_ils"] = round(r["shares"] * r["price"] * r["fx"], 2)
+
+    # ---- the books: a CHECK on each holding opened inside the ledger --------
     episodes = []
     for pos in positions:
         tk = (pos.ticker or "").upper()
@@ -235,59 +259,16 @@ async def preview(session: AsyncSession, user: User) -> dict:
             continue
         known = sum(_signed(t) for t in legs if str(t.id) not in rows)
         in_ep = [rows[str(t.id)] for t in legs if str(t.id) in rows]
-        unknown_total = round(known - float(pos.quantity or 0), 6)
+        books = round(known - float(pos.quantity or 0), 6)
+        sized = round(sum(r["shares"] or 0 for r in in_ep), 6)
         ep = {"ticker": tk, "anchored": True, "opened": opened.isoformat(),
-              "blind_sells": len(in_ep), "exact_total_sold": unknown_total,
-              "residual": None}
-        if not in_ep:
-            ep["residual"] = unknown_total
-            if abs(unknown_total) > 1e-3:
-                ep["why"] = ("the recorded trades do not add up to today's count and no blind "
-                             "sell is there to explain it -- a trade the app never recorded")
-            episodes.append(ep)
-            continue
-        if unknown_total <= 0:
-            ep["why"] = "the books leave nothing for the blind sells -- not repaired"
-            episodes.append(ep)
-            continue
-        missing = [r for r in in_ep if r["estimate"] is None]
-        if len(in_ep) == 1:
-            r = in_ep[0]
-            r.update(shares=unknown_total, confidence="exact", method="books (single blind sell)")
-        elif len(missing) == 1:
-            others = sum(r["estimate"] for r in in_ep if r["estimate"] is not None)
-            rest = round(unknown_total - others, 6)
-            for r in in_ep:
-                if r["estimate"] is not None:
-                    r.update(shares=r["estimate"], confidence="estimate", method=r["estimate_from"])
-            if rest > 0:
-                # Depends on the other sells' estimates, so it is no better than
-                # they are: an estimate, not written by default.
-                missing[0].update(shares=rest, confidence="estimate",
-                                  method="books minus the other sells' estimates")
-        elif not missing:
-            est_sum = sum(r["estimate"] for r in in_ep)
-            scale = unknown_total / est_sum if est_sum else 0
-            ep["scale"] = round(scale, 4)
-            if abs(scale - 1) <= _MAX_SCALE_DRIFT:
-                for r in in_ep:
-                    r.update(shares=round(r["estimate"] * scale, 6), confidence="balanced",
-                             method=f"{r['estimate_from']} scaled x{scale:.3f} to the exact total")
-            else:
-                ep["why"] = (f"the estimates sum to {est_sum:.4f} but the books say "
-                             f"{unknown_total:.4f} -- too far apart to trust either split")
-        else:
-            ep["why"] = f"{len(missing)} blind sells have no estimate -- the split cannot be made"
+              "blind_sells": len(in_ep), "books_say_sold": books,
+              "repair_would_size": sized,
+              "unsized_blind_sells": sum(1 for r in in_ep if not r["shares"])}
+        if not in_ep and abs(books) > 1e-3:
+            ep["why"] = ("today's count and the recorded trades disagree with no blind sell "
+                         "to explain it -- a write path that records nothing")
         episodes.append(ep)
-
-    # ---- outside any anchored episode: estimates only ----------------------
-    for r in rows.values():
-        if r["shares"] is None and r["estimate"] is not None:
-            r.update(shares=r["estimate"], confidence="estimate", method=r["estimate_from"])
-
-    for r in rows.values():
-        if r["shares"] and r.get("price"):
-            r["value_ils"] = round(r["shares"] * r["price"] * r["fx"], 2)
 
     by_conf: dict[str, int] = {}
     for r in rows.values():
@@ -304,7 +285,7 @@ async def preview(session: AsyncSession, user: User) -> dict:
              "at": _aware(t.executed_at).isoformat() if t.executed_at else None,
              "note": "recorded as a whole number by int(); the true fraction was never stored"}
             for t in truncated],
-        "writes_by_default": ["duplicates -> Void", "blind sells with confidence exact/balanced"],
+        "writes_by_default": ["duplicates -> Void", "blind sells with confidence 'measured'"],
     }
 
 
@@ -314,7 +295,7 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
     if not confirm:
         return {"ok": False, "reason": "confirm is required -- run the preview first"}
     plan = await preview(session, user)
-    ok_conf = {"exact", "balanced"} | ({"estimate"} if include_estimates else set())
+    ok_conf = {"measured"} | ({"estimate"} if include_estimates else set())
     stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     voided, written, skipped = [], [], []
 
