@@ -770,8 +770,11 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
             from app.services.plan_service import get_plan
             _plan = await get_plan(session, user)
             _cash_ils = float(await get_cash(session, user) or 0.0)
+            from app.services.fx import book_nav_ils
+            from app.services.intake_service import list_positions as _lp
             _cash_target = float(cash_floor_pct(
-                getattr(_plan, "objective", None), _plan) or 0.0)
+                getattr(_plan, "objective", None), _plan,
+                book_nav_ils(await _lp(session, user))) or 0.0)
         except Exception:  # noqa: BLE001 - the trade is the card; the sentence is not
             logger.warning("cash context unavailable for rule cards", exc_info=True)
     out = []

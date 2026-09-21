@@ -1924,7 +1924,7 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                         "dimension": "liquidity", "severity": "MEDIUM",
                         "title": f"Raise {_ils(_need)} of cash",
                         "why": (f"You hold {_ils(_cash_ils)} liquid against a "
-                                f"{_fs2.cash_floor_pct(objective, plan):.0%} floor for a {objective} "
+                                f"{_fs2.cash_floor_pct(objective, plan, nav):.0%} floor for a {objective} "
                                 f"plan ({_ils(_floor)}). Too little dry powder means a forced sale "
                                 f"at a bad moment."),
                         "action": (f"Sell {_sh} {_c['ticker']} (~{_ils(_need)}) to rebuild your cash "
@@ -3455,6 +3455,13 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         return []
     # The book's currency decides whether US municipal bonds are a real option.
     _ccy = (getattr(plan, "currency", None) or "ILS")
+    # THE TRIGGER. Eran, 2026-09-21: "the card should appear if I have more than
+    # 1500, not by % of my portfolio" -- and then it invests down to the target
+    # (his 150 floor). Below the trigger there is no card, however much of it
+    # would be spendable.
+    _trigger = getattr(plan, "cash_redeploy_at_ils", None) if plan is not None else None
+    if _trigger is not None and cash_ils <= float(_trigger):
+        return []
     spendable = _fund.spendable_cash(cash_ils, nav, objective, plan)
     if spendable < _fund.MIN_TRADE_ILS:
         return []
@@ -3648,11 +3655,13 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         return []
     deployed = round(sum(x["amount_ils"] for x in legs), 2)
     kept = round(cash_ils - deployed, 2)
-    floor_pct = _fund.cash_floor_pct(objective, plan)
+    floor_pct = _fund.cash_floor_pct(objective, plan, nav)
     new_names = [x["ticker"] for x in legs if x.get("new_position")]
 
     # The soft target is 7.5, not "8%": `:.0%` rounded the user's own number.
     _soft = f"{floor_pct * 100:.1f}".rstrip("0").rstrip(".") + "%"
+    if _fund.cash_target_ils_of(plan) is not None:
+        _soft = _ils(_fund.cash_target_ils_of(plan))
     _excess = max(0.0, round(cash_ils - _fund.cash_soft_floor_ils(nav, objective, plan), 2))
     return [{
         "id": _rid("redeploy", round(deployed)), "dimension": "allocation", "severity": "HIGH",
@@ -3660,9 +3669,13 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         # No claim about WHERE the cash came from. This said "the sale proceeds
         # left your mix off-plan", which is false the day the surplus is a
         # standing-order deposit.
-        "why": (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.1%} of the portfolio), "
-                f"{_ils(_excess)} above your {_soft} cash target. Cash above the target "
-                f"earns nothing toward your goal."),
+        "why": ((f"You're holding {_ils(cash_ils)}, above the {_ils(float(_trigger))} at which "
+                 f"you asked to put cash to work. Everything above your {_soft} reserve "
+                 f"({_ils(_excess)}) goes into what the plan is short of.")
+                if _trigger is not None else
+                (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.1%} of the portfolio), "
+                 f"{_ils(_excess)} above your {_soft} cash target. Cash above the target "
+                 f"earns nothing toward your goal.")),
         "action": ("Put it back to work: "
                    + "; ".join(f"{_ils(x['amount_ils'])} into {x['ticker']}" for x in legs)
                    + f". Keeps {_ils(kept)} as your buffer."),
@@ -3673,8 +3686,10 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
                 + [f"⚠ {_ils(u['amount_ils'])} could not be placed — {u['reason']}"
                    for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]
-                + [f"Keep {_ils(kept)} in cash (your {_soft} target; "
-                   f"the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)})",
+                + [(f"Keep {_ils(kept)} in cash (your {_soft} target; "
+                    f"the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)})"
+                    if _soft != _ils(_fund.CASH_HARD_FLOOR_ILS) else
+                    f"Keep {_ils(kept)} in cash (your {_soft} floor)"),
                    "Accept executes every leg at live prices, funded entirely from cash",
                    "Tracked book only — no brokerage order is placed"]),
         "est_amount": deployed,
@@ -4353,7 +4368,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
             else:
                 await update_position(session, user, str(p.id), quantity=remaining)
             credited = await credit_cash(session, user, gross - tax)
-            detail = {"sold": [spec["ticker"]], "cash_added_ils": round(credited, 2),
+            # `shares` IS WHAT THE LEDGER RECORDS. Without it `_record_apply`
+            # fell back to `detail.get("shares") or 0` and every trim on
+            # production went into `transactions` as a 0-share sell (observed
+            # 2026-09-21: 15 trim rows, all quantity 0.0) -- so the ledger
+            # could not say how many shares a holding had on any past day.
+            detail = {"sold": [spec["ticker"]], "shares": round(shares, 6),
+                      "cash_added_ils": round(credited, 2),
                       "tax_ils": round(tax, 2), "full_exit": remaining <= 0}
     elif kind == "sell_position":
         # A stop-loss / trailing stop / take-profit is a full exit by definition.
@@ -4485,6 +4506,13 @@ async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> 
 
     src = kind[:40]
     note = f"card {rec_id}"[:255]
+    # A handler that already wrote its own legs says so. `_execute_funded_sleeve`
+    # records every leg itself (source "sleeve_fund"), and this used to record
+    # the same buys and sells a second time as "fund_sleeve" -- observed on
+    # production as identical pairs at the same second (SOXL 3.9046 and 6.2778,
+    # BND -6.7875 and -4.4084), each trade counted twice.
+    if detail.get("ledger_recorded"):
+        return
     try:
         sold_raw = detail.get("sold") or []
         sells: list[dict] = []

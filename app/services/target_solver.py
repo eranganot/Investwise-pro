@@ -1111,11 +1111,12 @@ async def _book_for_solve(session: AsyncSession, user: User):
 
     plan = await get_plan(session, user)
     cap = float(effective_caps(plan)["concentration_cap"])
-    floor = float(cash_floor_pct(getattr(plan, "objective", None), plan))
-
+    from app.services.fx import book_nav_ils
     from app.services.intake_service import is_cash_position, list_positions
     from app.services.strategy_service import _snapshot
     positions = await list_positions(session, user)
+    floor = float(cash_floor_pct(getattr(plan, "objective", None), plan,
+                                 book_nav_ils(positions)))
 
     # NAV comes from the app's OWN snapshot, not from a sum computed here. Two
     # implementations of NAV is two numbers that can disagree on one screen.

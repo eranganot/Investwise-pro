@@ -23,8 +23,19 @@ async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
     plan = await get_plan(session, user)
     allowed = {"objective", "risk_tolerance", "horizon_years", "target_amount", "target_date", "currency",
                "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period", "preferred_depth",
-               "cash_target_pct"}
+               "cash_target_pct", "cash_target_ils", "cash_redeploy_at_ils"}
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    # ONE CASH TARGET AT A TIME: whichever unit was set last wins, and setting it
+    # clears the other. Two live targets would leave every reader to guess.
+    if "cash_redeploy_at_ils" in data:
+        from decimal import Decimal
+        data["cash_redeploy_at_ils"] = Decimal(str(round(float(data["cash_redeploy_at_ils"]), 2)))
+    if "cash_target_ils" in data:
+        from decimal import Decimal
+        data["cash_target_ils"] = Decimal(str(round(float(data["cash_target_ils"]), 2)))
+        data["cash_target_pct"] = None
+    elif "cash_target_pct" in data:
+        data["cash_target_ils"] = None
     if plan is None:
         plan = Plan(user_id=user.id, **data)
         session.add(plan)

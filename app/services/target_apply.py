@@ -211,7 +211,10 @@ async def apply_target(session, user, *, resizes: list[dict],
     from app.services.plan_service import get_plan
     try:
         plan = await get_plan(session, user)
-        floor = float(cash_floor_pct(getattr(plan, "objective", None), plan)) * 100.0
+        from app.services.fx import book_nav_ils
+        from app.services.intake_service import list_positions as _lp
+        floor = float(cash_floor_pct(getattr(plan, "objective", None), plan,
+                                     book_nav_ils(await _lp(session, user)))) * 100.0
     except Exception:  # noqa: BLE001
         logger.warning("cash floor unavailable; refusing rather than assuming 0%%",
                        exc_info=True)

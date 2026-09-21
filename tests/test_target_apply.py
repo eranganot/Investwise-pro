@@ -176,6 +176,9 @@ def test_the_apply_module_cannot_reach_a_broker():
         ("sqlalchemy", "select"),
         ("app.models.tables", "PlanApplication"),
         ("app.services.plan_service", "get_plan"),
+        # PR 68.1: read-only, to turn a shekel cash target into a share of NAV.
+        ("app.services.fx", "book_nav_ils"),
+        ("app.services.intake_service", "list_positions"),
     }
     src = open("app/services/target_apply.py", encoding="utf-8").read()
     found = set()
@@ -238,9 +241,13 @@ def test_the_apply_module_calls_its_dependencies_with_the_right_signatures():
     assert not hasattr(strategy_catalog, "spec_for"), \
         "spec_for exists now -- update the callers that were corrected to .get()"
 
-    # NOT async, and takes (objective, plan).
+    # NOT async, and takes (objective, plan[, nav]). PR 68.1 added `nav` --
+    # optional, so every two-argument caller still works -- because a shekel
+    # cash target is a share of TODAY's book and cannot be read without it.
     assert not inspect.iscoroutinefunction(cash_floor_pct)
-    assert len(inspect.signature(cash_floor_pct).parameters) == 2
+    params = inspect.signature(cash_floor_pct).parameters
+    assert list(params)[:2] == ["objective", "plan"]
+    assert len(params) == 3 and params["nav"].default is None
 
     assert callable(is_cash_position)
 

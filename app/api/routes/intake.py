@@ -124,6 +124,20 @@ async def get_portfolio(entity: str | None = None,
     from app.core.config import get_settings as _gs
     base = _gs().base_currency
     positions = await list_positions(session, user, entity)
+    # THE LAST PRICED BUY per ticker, from the trade ledger, so a holding can
+    # show "vs your last buy" beside "vs your average price". Only buys since
+    # the position was (re)opened count: a lot from before a full exit is not
+    # part of what you hold now. Buys the ledger recorded without a price are
+    # skipped rather than shown as 0.
+    from datetime import timedelta as _td
+
+    from sqlalchemy import select as _select
+
+    from app.models.tables import Transaction as _Tx
+    _buys = (await session.execute(
+        _select(_Tx.ticker, _Tx.price, _Tx.executed_at).where(
+            _Tx.subject == user.email, _Tx.txn_type == "Buy", _Tx.price > 0)
+        .order_by(_Tx.executed_at.desc()))).all()
     out, nav_ils, nav_native, invested_ils = [], 0.0, 0.0, 0.0
     for p in positions:
         price = float(p.current_price) if p.current_price is not None else None
@@ -179,6 +193,7 @@ async def get_portfolio(entity: str | None = None,
             # than presenting it as current.
             "price_currency_conflict": (p.meta or {}).get("price_currency_conflict"),
             "price_unverified": bool((p.meta or {}).get("price_unverified")),
+            "last_buy": _last_buy(_buys, p, price, _td),
         })
     # "What you put in" is external money, not the book's current cost basis.
     # The basis sum drifts for three reasons that are not deposits: it is
@@ -611,6 +626,23 @@ async def write_contribution(body: ContributionRequest,
     else:
         total = await record_contribution(session, user, body.amount_ils, note=body.note)
     return {"ok": True, "total_ils": total, "mode": body.mode}
+
+
+def _last_buy(buys, p, price, _td) -> dict | None:
+    tk = (p.ticker or "").upper()
+    opened = p.created_at
+    for t, px, when in buys:
+        if (t or "").upper() != tk or when is None:
+            continue
+        if opened is not None:
+            o = opened if opened.tzinfo or not when.tzinfo else opened.replace(tzinfo=when.tzinfo)
+            w = when if when.tzinfo or not o.tzinfo else when.replace(tzinfo=o.tzinfo)
+            if w < o - _td(seconds=60):
+                return None
+        px = float(px)
+        return {"price": round(px, 4), "at": when.isoformat(),
+                "change_pct": (round((price / px - 1) * 100, 2) if price and px else None)}
+    return None
 
 
 @router.get("/portfolio/position-history")

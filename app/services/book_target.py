@@ -173,9 +173,19 @@ async def book_target(session, user, objective: str) -> dict:
     cash_pct = 0.0
     try:
         plan = await get_plan(session, user)
-        raw = getattr(plan, "cash_target_pct", None) if plan is not None else None
-        if raw is not None:
-            cash_pct = max(0.0, min(100.0, float(raw))) / 100.0
+        from app.services.funding_service import cash_target_ils_of
+        if cash_target_ils_of(plan) is not None:
+            # A shekel target, as a share of today's book -- the same conversion
+            # `funding_service.cash_floor_pct` makes, so /mix and the cards agree.
+            from app.services.fx import book_nav_ils
+            from app.services.intake_service import list_positions
+            _nav = book_nav_ils(await list_positions(session, user))
+            if _nav > 0:
+                cash_pct = max(0.0, min(0.5, cash_target_ils_of(plan) / _nav))
+        else:
+            raw = getattr(plan, "cash_target_pct", None) if plan is not None else None
+            if raw is not None:
+                cash_pct = max(0.0, min(100.0, float(raw))) / 100.0
     except Exception:  # noqa: BLE001 - a book target must not fail on a plan read
         cash_pct = 0.0
 

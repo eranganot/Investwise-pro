@@ -44,7 +44,19 @@ MIN_TRADE_ILS = 250.0
 CASH_HARD_FLOOR_ILS = 150.0
 
 
-def cash_floor_pct(objective: str | None, plan=None) -> float:
+def cash_target_ils_of(plan) -> float | None:
+    """The absolute cash target in shekels, or None when the plan uses a %."""
+    raw = getattr(plan, "cash_target_ils", None) if plan is not None else None
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v >= 0 else None
+
+
+def cash_floor_pct(objective: str | None, plan=None, nav: float | None = None) -> float:
     """The book's cash TARGET, as a share of NAV. A FRACTION.
 
     THE NAME IS OLDER THAN THE MEANING, and the meaning changed on 2026-09-06.
@@ -86,6 +98,11 @@ def cash_floor_pct(objective: str | None, plan=None) -> float:
     `getattr` returned None on every call and the objective table was the only
     answer the function could give.
     """
+    # A SHEKEL TARGET IS A SHARE OF TODAY'S BOOK. Converted here, with the NAV
+    # the caller passes, so every percentage reader agrees with the shekel one.
+    ils = cash_target_ils_of(plan)
+    if ils is not None and nav:
+        return max(0.0, min(0.5, ils / float(nav)))
     raw = getattr(plan, "cash_target_pct", None) if plan is not None else None
     if raw is not None:
         try:
@@ -96,6 +113,9 @@ def cash_floor_pct(objective: str | None, plan=None) -> float:
 
 
 def cash_floor_ils(nav: float, objective: str | None, plan=None) -> float:
+    ils = cash_target_ils_of(plan)
+    if ils is not None:
+        return ils
     return max(0.0, float(nav or 0.0)) * cash_floor_pct(objective, plan)
 
 
@@ -589,7 +609,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         "funded_ils": max(0.0, funded),
         "shortfall_ils": round(max(0.0, amount_ils - max(0.0, funded)), 2),
         "cash_floor_ils": round(cash_floor_ils(nav, objective, plan), 2),
-        "cash_floor_pct": cash_floor_pct(objective, plan),
+        "cash_floor_pct": cash_floor_pct(objective, plan, nav),
         # THE SOFT/HARD SPLIT, on the payload, because a card that spends into
         # the reserve has to be able to show the reader where it landed.
         "cash_hard_floor_ils": CASH_HARD_FLOOR_ILS,

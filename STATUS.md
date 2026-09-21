@@ -1,13 +1,17 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-20 by Claude (PR 68 -- see its entry below; HEAD was PR 67.1 `84be80b`)._
+_Last updated: 2026-09-21 by Claude (PR 68.1 on top of the weekly review; HEAD was `aa7826c` = PR 68)._
 _Seeded from git history + prior transcripts._
 
 ---
 
-## 📍 Where this repo actually is — 2026-09-14
+## 📍 Where this repo actually is — 2026-09-21
 
-**HEAD is PR 66.** PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
+**HEAD is `aa7826c` = PR 68** (2026-09-20) — cash is not a bank stock; standing orders (migration
+`0023`); per-holding chart; redeploy card follows sleeve targets. Three PRs landed since the 09-14
+review: PR 67, PR 67.1, PR 68. _(This block read "HEAD is PR 66" until 2026-09-21 — two PRs stale;
+the per-PR sections below were current throughout, it was the spine that lagged, the same failure
+mode the 08-31 restructure was supposed to end.)_ PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
 by the deploy that took the site down. Confirm with `/health` that it serves this push's SHA. NAV ₪20,950.86 across 5 positions: TQQQ, SOXL,
 VTI, BND and cash.
@@ -46,11 +50,11 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **6 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
-| 2026-08-03 | **6 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
-| 2026-07-13 | **9 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **5 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **thirty-eight PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
-| 2026-08-31 | **2 weeks** | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-14: unchanged for a second week — and this was the week the repo shipped one PR instead of the forty-eight it shipped the week before, so "too busy" is no longer the reading.)_ |
+| 2026-08-03 | **7 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
+| 2026-08-03 | **7 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
+| 2026-07-13 | **10 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. At ten weeks this is the oldest item on any of the four boards. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **6 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **forty-one PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | **3 weeks** | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-21: unchanged for a **third** week — same two files, same 2026-08-25 mtime. The repo shipped three PRs this week, so it is neither too busy nor idle; the file is simply not being decided about. Land it or `rm` it.)_ |
 | 2026-09-14 | **resolved same day** | ✅ Stale `.git/index.lock` left here by the weekly review's own sandbox `git status`; Eran cleared it, confirmed empty. Kept as a one-line record because the rule is permanent: **weekly runs must use `git --no-optional-locks status`** — plain `git status` writes a lock the sandbox cannot remove. |
 
 ---
@@ -146,6 +150,73 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.1 — the cash card in shekels, the ledger that lost every trim, and what "%" means
+
+_2026-09-21. Two questions from Eran after PR 68 went live (`aa7826c`, schema 0023): "I have more
+than 1000 in cash but no card", and "what does this % represent -- check and validate". Status:
+**pending deploy + smoke.**_
+
+### 1. No cash card — not a defect; the rule was a percentage and he wanted a number
+
+```
+OBSERVED   cash 1,661.12 ; NAV 23,057.90 ; target 7.5% = 1,729.34  -> 68 UNDER target
+           spendable_cash = 0 -> _redeploy_cash_recs returns [] ; /recommendations: no cash card,
+           none hidden. The liquidity "raise cash" card also silent (68 < the 250 minimum trade).
+```
+
+Eran: "the card should appear if I have more than 1500, not by % of my portfolio", then chose: above
+1,500 the card invests down to the 150 floor. So the TARGET (what is kept) and the TRIGGER (when the
+card shows) are two plan columns (migration 0024, mirrored in main.py): `cash_target_ils` (150) and
+`cash_redeploy_at_ils` (1,500). A shekel target is converted to a share of today's NAV in exactly two
+places -- `funding_service.cash_floor_pct(..., nav=)` / `cash_floor_ils` and `book_target` -- and every
+percentage reader (rules, target_apply, target_solver, the liquidity card) now passes NAV, so /mix,
+the funding floor and the cards cannot disagree. Setting either unit clears the other.
+Reproduced on the live book's values: 1,661 cash -> "Put ₪1,511 of cash back to work" (BND +740 where
+Fixed Income is short, GOOGL +772 at plan weight; SOXL at its 42% cap gets nothing); 1,461 -> no card.
+UI: Holdings -> Cash -> "When to put cash to work". `tests/test_cash_rules_in_shekels.py`.
+
+### 2. The "%" on each holding — validated; label was wrong; last buy added
+
+It is `(current_price - cost_basis) / cost_basis`: today's price against your AVERAGE buy price per
+share, in the ticker's own currency (so FX moves are excluded, and profit already taken on trims is
+not in it). Checked against /portfolio for all five holdings -- SOXL (136.40 - 112.69)/112.69 = +21.0%,
+QQQ +2.3%, GOOGL +2.1%, BND +0.1%, AGG +0.3%, exactly what the screen shows. SOXL's 112.69 blends the
+09-14 re-buy at 102.93 with top-ups at 118-124; the 09-14 full exit reset the basis, so gains or
+losses from before it are not in the number. "since you bought" misdescribed it: now
+"vs avg price 112.69", plus a second line "+x% vs last buy" from the ledger's most recent priced buy
+since the position (re)opened (`last_buy` on /portfolio). Eran asked "last purchase or average?"
+-- average stays the headline (it is the return on the shares you hold); last buy is context for
+timing the next top-up.
+
+### 3. The trade ledger lost every trim and counted sleeve buys twice — PROVEN
+
+```
+SYMPTOM      could not validate cost basis against the ledger (question 2)
+EVIDENCE     /position-history trades, range=ALL, 2026-09-21: every source="trim" Sell has quantity
+             0.0 (15 rows: SOXL, QQQ, BND). Identical Buy/Sell pairs at the same second, sources
+             "sleeve_fund" + "fund_sleeve": SOXL +3.9046 x2, +6.2778 x2; BND -6.7875 x2, -4.4084 x2.
+ROOT CAUSE   (a) the trim handler returned {"sold": ["SOXL"], ...} with no share count, and
+             _record_apply records `detail.get("shares") or 0`.
+             (b) _execute_funded_sleeve records its own legs (sleeve_fund); the fund_sleeve card path
+             then recorded the same legs again in _record_apply.
+RULED OUT    reconcile/Adjust rows (none involved); nav_history (reads traded DATES only, unaffected);
+             net_flows_ils (Adjust rows only, unaffected)
+WHY SILENT   record_leg accepts any quantity; nothing reconciled ledger share counts with positions
+             until PR 68's chart became the first reader of them
+BLAST RADIUS the PR 68 "Your position" line only. Also found: range=ALL downsampled 10y to 400
+             points BEFORE clipping, so a September position had <2 points left ("no record yet").
+```
+
+Fix: trim detail carries `shares`; `_execute_funded_sleeve` returns `ledger_recorded: True` and
+`_record_apply` skips such handlers. The chart builds the value line at full resolution, and REFUSES
+to draw it (price only, reason stated) when a 0-share sale is in the window or when undoing every
+recorded trade does not land on ~0 (or on the hand-entered count) just before the position opened.
+**The bad historical rows are still in `transactions`**; repairing them is a data change and is
+Eran's call -- until then SOXL/QQQ/BND show the price line with the reason.
+`tests/test_the_ledger_counts_every_share_once.py` (trim case confirmed failing on 84be80b).
 
 ---
 
@@ -6679,6 +6750,7 @@ the individual items are still open, but it predates PRs 16–26 and its pre-fli
 Postgres per-test isolation fixture (throwaway NullPool engine, own event loop); ruff strictness. Windows mount can serve truncated views of file-tool edits — verify large writes on the mount (see `safe-windows-edits`). Commit with `git commit -F COMMIT_MSG.txt`, never a PowerShell here-string (parses as pathspecs, commit silently doesn't happen). Never `git add -A` (`frontend/node_modules` is tracked, CRLF-noisy). See CLAUDE.md.
 
 ## Changelog (newest first)
+- 2026-09-21 — Weekly status review: **3 commits in 7 days (PR 67 `0965e18`, PR 67.1 `84be80b`, PR 68 `aa7826c`)** — second-busiest of the five repos, behind Job Hunter's 31. Per-PR STATUS discipline held again: PR 67/67.1/68 each wrote their own section on the day. **What had NOT held, for the second time in four weeks, was the spine** — the `Where this repo actually is` block still said "HEAD is PR 66" and was dated 09-14, two PRs stale; corrected to `aa7826c`. That is the exact failure the 08-31 restructure was built to stop, and it recurs because the per-PR sections are written by the PR session while the header is written by nobody. Ops table aged: broker integration 9→**10 weeks and now the oldest item on any board**, VAPID pin and the three unrotated secrets 6→7, Pixel P0 QA 5→6, untracked `candidate_search.py` 2→**3**. Nothing closed. `EXECUTION_PLAN_2026-09-14_v8.md` is now also untracked (mtime 09-14) — a third uncommitted file, and unlike the other two it is the document the "Next" list points at. ⚠️ **A stale `.git/index.lock` was left here again** — the review's first git call used plain `git status` before switching to `--no-optional-locks`. Empty, sandbox cannot delete it: **remove `C:\dev\Investwise-pro\.git\index.lock` before the next commit.** Second week running, same cause; the rule needs to be step 0 of the review, not a remembered note.
 - 2026-09-14 — Weekly status review: **one commit in 7 days (PR 66 `fab6e46`, 09-07) — down from 48 and 26 in the two weeks before.** That is not a criticism; it is the datum that makes the ops table legible. For three weeks the honest defence of the untracked `candidate_search.py` was that this repo was shipping faster than it could tidy. This week it shipped one PR, and the file is still untracked — so the item is a decision being deferred, not a queue being drained. Aged: broker integration to **9 weeks** (the oldest item on any of the four boards), VAPID pinning and secrets rotation to **6**, Pixel P0 QA to **5**, untracked code to **2**. Nothing closed. ⚠️ **Two process faults recorded, both mine.** (1) The sandbox's `git status` left an undeletable `.git/index.lock` here (and in AdaptiveFit and WealthOS) — it will block Eran's next commit; the removal command is in the ops table. Future runs use `git --no-optional-locks status`. (2) **This file is 6,412 lines / 364KB.** The 08-31 restructure cut it to ~3,000 by moving PHASE A/B/C and P0–P4 to `STATUS-ARCHIVE.md`; per-PR sections have since doubled it back. Twenty-six PR narratives now sit above the changelog, the oldest (PR 41–46) more than six weeks old and superseded by `EXECUTION_PLAN_2026-09-03_v6.md`. **Flagged, not fixed** — moving ~2,500 lines on this mount is exactly the operation `safe-windows-edits` says can silently truncate, and it should be done deliberately in a session that can verify the result, not by a scheduled job. Next week this becomes an ops row if it has not been done.
 - 2026-09-07 — Weekly status review: **48 commits in 7 days (PR 27 → PR 65, `103fa93`…`853c51d`) — nearly double last week's 26, against zero commits in each of the other three repos.** Per-PR STATUS discipline held again: every PR wrote its own section, and the spine did not go stale the way it did in August — the header was one PR behind (said PR 61.1, HEAD was PR 65) and is corrected. **Two ops items closed by shipped work rather than by nagging**, which is new for this board: the ₪618.65 cash question was **decided** in PR 64 (soft 7.5% target, hard ₪150 floor, a mandatory `reserve_reason` on any card that spends into it) four days after it was flagged; and the 20-file untracked pile is down to **2 files** — `candidate_search.py` and its tests, which is the part that was always the real item. Aged the rest: secrets rotation and VAPID pinning to 5 weeks, broker integration to 8, Pixel P0 QA to 4 (now **thirty-eight** PRs stale, so re-scope or void it rather than run it as written). **The pattern worth naming:** this repo closes ops items when the answer is a decision it can ship, and does not close them when the answer is a console visit — the same shape that has Job Hunter's Google OAuth vars open at 8 weeks. Four of the five remaining rows here are console visits.
 - 2026-08-31 — Weekly status review: **26 commits in 7 days (PR 16 → PR 26, `315ad1f`…`1362ce8`) — the busiest of the four repos while the other three shipped nothing.** Per-PR STATUS discipline held: every PR wrote its own section. What had NOT held was the file's own spine — the `Now` / `Last shipped` / `Verified live` sections still described HEAD `86760ff` (2026-08-03), **eleven PRs and four weeks stale**, buried under 4,300 lines. Restructured: a **Where this repo actually is** block with a real HEAD, an **Ops actions with age** table (this repo had none) and a live **Next** now sit at the top; PHASE A/B/C, P0–P4 and the 08-10 backlog moved verbatim to `STATUS-ARCHIVE.md`; pre-07-20 changelog entries collapsed. 4,416 → ~3,000 lines. **The finding worth keeping: aging the ops items showed `AGENT_API_KEY` was first flagged 2026-08-03 as "rotate it sometime" and was found published in a public repo on 08-30 — four weeks, three restatements, no rotation.** It is now the first row. Also flagged: 20 untracked files including `candidate_search.py` + its tests and `STATUS-V2.md` itself, and a duplicate-message commit pair (`b48b291`/`f5773c0`, one carrying a BOM) — the same gate/ship-script artefact WealthOS shows.

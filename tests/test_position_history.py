@@ -167,7 +167,7 @@ def test_an_unreconcilable_ledger_hides_the_value_line(client):
     _db(f)
     body = _get(c, "1M").json()
     assert body["value"]["available"] is False
-    assert "reconcile" in body["value"]["reason"]
+    assert "missing or recorded twice" in body["value"]["reason"]
     assert len(body["price"]["points"]) >= 2, "the price line still shows"
 
 
@@ -180,3 +180,52 @@ def test_the_value_line_never_starts_before_the_ledger_did(client):
     v = _get(c, "3M").json()["value"]
     assert v["points"][0]["t"] >= (date.today() - timedelta(days=8)).isoformat()
     assert "ledger" in v["starts_because"]
+
+
+def test_a_sale_with_no_share_count_hides_the_line_and_says_why(client):
+    """Production's trims were written as 0-share sells before PR 68.1. The
+    count cannot be rebuilt through them, so the line must not be drawn."""
+    c, _ = client
+    _backdate_position(20)
+    _ledger_began(25)
+    from app.models.tables import Transaction
+
+    async def f(s):
+        s.add(Transaction(subject=SUPERADMIN_EMAIL, ticker="QQQ", market="TASE",
+                          txn_type="Sell", quantity=Decimal("0"), source="trim",
+                          executed_at=NOW - timedelta(days=4)))
+    _db(f)
+    v = _get(c, "1M").json()["value"]
+    assert v["available"] is False
+    assert "no share count" in v["reason"]
+
+
+def test_a_trade_counted_twice_is_caught_at_the_opening(client):
+    """The fund_sleeve double-record: undoing both copies of a buy leaves a
+    negative count before the position opened, which must hide the line."""
+    c, _ = client
+    _backdate_position(10)
+    _ledger_began(25)
+    from app.models.tables import Transaction
+
+    async def f(s):
+        for src in ("sleeve_fund", "fund_sleeve"):
+            s.add(Transaction(subject=SUPERADMIN_EMAIL, ticker="QQQ", market="TASE",
+                              txn_type="Buy", quantity=Decimal("6"), price=Decimal("110"),
+                              value_ils=Decimal("0"), source=src,
+                              executed_at=NOW - timedelta(days=10) + timedelta(seconds=1)))
+    _db(f)
+    v = _get(c, "1M").json()["value"]
+    assert v["available"] is False and "recorded twice" in v["reason"], v
+
+
+def test_all_range_still_draws_a_young_position(client, monkeypatch):
+    """Downsampling ten years to 400 points must not erase the last few days."""
+    c, _ = client
+    long = [((date.today() - timedelta(days=2599 - i)).isoformat(), 100.0 + i * 0.01)
+            for i in range(2600)]
+    monkeypatch.setattr(registry, "guarded_history", lambda tk, days=252: long[-days:])
+    _backdate_position(7)
+    _ledger_began(30)
+    v = _get(c, "ALL").json()["value"]
+    assert v["available"] and len(v["points"]) >= 6, v

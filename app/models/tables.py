@@ -326,6 +326,19 @@ class Plan(Base, PKMixin, TimestampMixin):
     # Taken out of the CORE's share of the book and never out of the sleeves.
     # See `book_target.compose`, where that decision is argued.
     cash_target_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # THE SAME TARGET IN SHEKELS, and it wins when set. Eran, 2026-09-21: "the
+    # card should appear if I have more than 1500, not by % of my portfolio."
+    # A fixed amount of dry powder does not grow with the book; a percentage
+    # does. NULL means "use cash_target_pct". Readers never branch on this
+    # themselves: `funding_service.cash_floor_pct(..., nav=)` and
+    # `cash_floor_ils` are the only places it is interpreted.
+    cash_target_ils: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    # WHEN the put-cash-to-work card appears, separate from how much it keeps.
+    # Eran, 2026-09-21: the card appears above 1,500 and invests down to the
+    # 150 hard floor. Between the two, no card either way -- a band, so the
+    # card does not reappear the moment a single deposit lands. NULL: the card
+    # fires as soon as there is a tradeable amount above the cash target.
+    cash_redeploy_at_ils: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
     # one size can describe exactly one sleeve, so the moment a book could run
     # several they became a pointer to the most recently applied -- and a

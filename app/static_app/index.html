@@ -490,6 +490,11 @@
     <label>Cash balance (&#8362;)</label><input id="c_amt" type="number" step="0.01" min="0" placeholder="0.00"/>
     <button class="primary" onclick="saveCash()">Save</button>
     <div class="muted" id="c_out" style="margin-top:8px"></div>
+    <h3 style="margin-top:18px">&#128176; When to put cash to work</h3>
+    <div class="grid2"><div><label>Suggest investing above (&#8362;)</label><input id="cr_at" type="number" step="50" min="0" placeholder="1500"/></div>
+      <div><label>Always keep (&#8362;)</label><input id="cr_keep" type="number" step="10" min="150" placeholder="150"/></div></div>
+    <button class="primary" onclick="saveCashRules()">Save cash rules</button>
+    <div class="muted" id="cr_out" style="margin-top:8px"></div>
     <h3 style="margin-top:18px">&#128257; Monthly standing order</h3>
     <div class="muted" style="margin-bottom:10px">On the day, the amount is added to your cash and
       recorded as a deposit, and you get a notification. The app does not move money &mdash; set
@@ -1537,7 +1542,7 @@ async function loadHoldings(){
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">\u270e</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">\u2715</button></div></div>`;
       return `<div class="row"${_stale?' style="border-left:3px solid #f59e0b"':''}><div><div class="nm">${h.ticker}${_stale?' <span class="rk" style="color:var(--amber)">⚠ price frozen</span>':''}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
-        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk">since you bought</div>`}</div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk" title="Today's price against your average buy price per share, in the ticker's own currency. Excludes currency moves and profit already taken on trims.">vs avg price ${Number(h.cost_basis).toLocaleString(undefined,{maximumFractionDigits:2})}</div>${(h.last_buy&&h.last_buy.change_pct!=null)?`<div class="mk" title="Today's price against the price of your most recent buy (${(h.last_buy.at||"").slice(0,10)}).">${h.last_buy.change_pct>=0?"+":""}${h.last_buy.change_pct.toFixed(1)}% vs last buy</div>`:""}`}</div>
         <button class="del" title="Chart" onclick="openHist('${h.ticker}')">📈</button>
         <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
@@ -1553,11 +1558,30 @@ async function openCash(){
   try{cur=(await(await fetch("/api/v1/portfolio/cash")).json()).cash_ils||0;}catch(e){}
   $("c_amt").value=cur||"";
   $("c_out").textContent="";
-  $("so_out").textContent="";
+  $("so_out").textContent=""; $("cr_out").textContent="";
   $("cashov").classList.add("show");
-  loadStandingOrders();
+  loadStandingOrders(); loadCashRules();
 }
 function closeCash(){$("cashov").classList.remove("show");}
+async function loadCashRules(){
+  try{const p=await(await fetch("/api/v1/plan")).json();
+    $("cr_at").value=p.cash_redeploy_at_ils??"";
+    $("cr_keep").value=p.cash_target_ils??"";
+    $("cr_out").textContent=(p.cash_target_ils==null&&p.cash_target_pct!=null)
+      ?`Now: keep ${p.cash_target_pct}% of the portfolio in cash. Set amounts to use shekels instead.`:"";
+  }catch(e){}
+}
+async function saveCashRules(){
+  const at=parseFloat($("cr_at").value), keep=parseFloat($("cr_keep").value);
+  if(!(keep>=150)){$("cr_out").innerHTML='<span class="bad">Keep at least \u20aa150 (your hard floor).</span>';return;}
+  if(!(at>keep)){$("cr_out").innerHTML='<span class="bad">The investing trigger must be above what you keep.</span>';return;}
+  $("cr_out").textContent="Saving\u2026";
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({cash_target_ils:keep,cash_redeploy_at_ils:at})});
+    const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.detail||"Save failed");
+    $("cr_out").textContent=`Saved: above ${ils(at)}, a card puts everything over ${ils(keep)} to work.`;
+  }catch(e){$("cr_out").innerHTML=`<span class="bad">${e.message||e}</span>`;}
+}
 // --- Per-holding chart ------------------------------------------------------
 // Default: YOUR position (shares you actually held x price). The value line
 // starts where the trade record starts; the caption says where and why.

@@ -151,6 +151,10 @@ class PlanRequest(BaseModel):
     # in `book_target`, so a 750 typed for 7.5 is a 422 at the boundary instead
     # of a clamp nobody sees. 50 is the same ceiling `cash_floor_pct` enforces.
     cash_target_pct: float | None = Field(default=None, ge=0.0, le=50.0)
+    # The same target as a fixed shekel amount (wins over the %, and clears it).
+    cash_target_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
+    # When the put-cash-to-work card appears (it still invests down to the target).
+    cash_redeploy_at_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
 
 
 def _plan_dict(plan, stats: dict) -> dict:
@@ -160,7 +164,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
                 "target_roi_pct": None, "target_roi_period": "yearly",
                 "target_yield_pct": None, "target_yield_period": "yearly", "preferred_depth": None,
-                "cash_target_pct": None,
+                "cash_target_pct": None, "cash_target_ils": None, "cash_redeploy_at_ils": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
         target = _auto_target(nav, plan)
@@ -172,6 +176,11 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "preferred_depth": plan.preferred_depth,
                 # None means nobody has been asked, which is not a deliberate 0.
                 "cash_target_pct": getattr(plan, "cash_target_pct", None),
+                "cash_target_ils": (float(plan.cash_target_ils)
+                                    if getattr(plan, "cash_target_ils", None) is not None else None),
+                "cash_redeploy_at_ils": (float(plan.cash_redeploy_at_ils)
+                                         if getattr(plan, "cash_redeploy_at_ils", None) is not None
+                                         else None),
                 "caps": effective_caps(plan), "current_value": nav,
                 "goal_progress": round(min(1.0, nav / target), 4) if target else None}
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]

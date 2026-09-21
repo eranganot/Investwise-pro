@@ -34,7 +34,7 @@ same reason (no historical FX series exists). Reported as ``fx_basis: "spot"``.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,8 +133,12 @@ async def position_history(session: AsyncSession, user: User, ticker: str,
 
     raw, granularity = await offload(_fetch_prices, pos.ticker, rng)
     scale = _agorot_scale(raw, float(pos.current_price or 0) or None, ccy)
-    prices = [(str(t), round(float(c) * scale, 6)) for t, c in raw if c]
-    prices = _downsample(prices)
+    # Full resolution first: the value line is clipped to where the record
+    # starts, and downsampling a ten-year series to 400 points BEFORE clipping
+    # left one or two points after a position opened in September (observed on
+    # production, SOXL range=ALL: "no record yet" for a 7-day-old position).
+    full = [(str(t), round(float(c) * scale, 6)) for t, c in raw if c]
+    prices = _downsample(full)
     if len(prices) < 2:
         raise NotChartable(f"not enough price history for {tk} over {rng}")
 
@@ -159,17 +163,43 @@ async def position_history(session: AsyncSession, user: User, ticker: str,
     def shares_at(t: datetime) -> float:
         return current_qty - sum(q for when, q, _x in leg_pts if when > t)
 
-    value_pts, reconciles = [], True
-    for t, px in prices:
+    value_pts, reconciles, why_not = [], True, None
+    # A SALE WITH NO SHARE COUNT CANNOT BE UNDONE. Trims were written to the
+    # ledger as 0-share sells until PR 68.1; those rows are still there, and
+    # rebuilding the count through them draws a line that is simply wrong.
+    blind = [x for when, q, x in leg_pts
+             if x.txn_type == _SELL and abs(q) < 1e-9 and (since is None or when >= since)]
+    if blind:
+        reconciles = False
+        why_not = (f"{len(blind)} recorded sale(s) of {tk} have no share count "
+                   f"(trims before PR 68.1), so how many shares you held on past days "
+                   f"cannot be rebuilt")
+    # OPENED INSIDE THE RECORD. Just before it opened the count must be either
+    # ~zero (the opening buy is in the ledger) or exactly the count just after
+    # opening (entered by hand, no opening leg) -- and never negative. Anything
+    # else means a trade is missing or counted twice. A minute's slack either
+    # side: the opening leg and the position row are written in one request,
+    # not at the same microsecond.
+    if reconciles and since is not None and opened is not None and since == _ts(opened):
+        before = shares_at(since - timedelta(seconds=60))
+        after = shares_at(since + timedelta(seconds=60))
+        tol = max(1e-3, 0.005 * max(abs(after), abs(current_qty), 1e-9))
+        if before < -tol or (abs(before) > tol and abs(before - after) > tol):
+            reconciles = False
+            why_not = (f"undoing every recorded trade leaves {before:+.4f} shares before the "
+                       f"position opened (expected 0 or {after:.4f}) -- a trade is missing "
+                       f"or recorded twice")
+    for t, px in full:
         when = _ts(t)
         if since is not None and when < since:
             continue
         sh = shares_at(when)
-        if sh < -1e-6:
-            reconciles = False
         value_pts.append({"t": t, "shares": round(sh, 6), "price": px,
                           "value": round(sh * px * rate, 2)})
 
+    if reconciles and any(v["shares"] < -1e-6 for v in value_pts):
+        reconciles = False
+    value_pts = _downsample(value_pts)
     market_change = 0.0
     for a, b in zip(value_pts, value_pts[1:]):
         market_change += a["shares"] * (b["price"] - a["price"]) * rate
@@ -202,9 +232,10 @@ async def position_history(session: AsyncSession, user: User, ticker: str,
         "trades": markers,
     }
     if not reconciles:
-        out["value"]["reason"] = ("the recorded trades do not reconcile with today's share "
-                                  "count (a hand edit that the ledger never saw) -- showing "
-                                  "the price only rather than a share count that cannot be right")
+        out["value"]["reason"] = (
+            (why_not or "the recorded trades do not reconcile with today's share count "
+                        "(a hand edit that the ledger never saw)")
+            + " -- showing the price only rather than a share count that cannot be right")
     elif len(value_pts) < 2:
         out["value"]["reason"] = (f"no record yet in this range: the line starts "
                                   f"{since.date().isoformat() if since else 'later'}, "

@@ -1120,7 +1120,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
                              source="sleeve_fund",
                              note="sleeve funded -- internal reallocation")
     await session.commit()
-    return {"sold": sold, "bought": bought, "skipped": skipped,
+    return {"sold": sold, "bought": bought, "skipped": skipped, "ledger_recorded": True,
             "tax_ils": round(tax_total, 2), "unspent_ils": leftover,
             "from_cash_ils": from_cash, "cash_ils": cash_after}
 
