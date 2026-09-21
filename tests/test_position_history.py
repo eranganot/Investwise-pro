@@ -229,3 +229,33 @@ def test_all_range_still_draws_a_young_position(client, monkeypatch):
     _ledger_began(30)
     v = _get(c, "ALL").json()["value"]
     assert v["available"] and len(v["points"]) >= 6, v
+
+
+def test_the_chart_lists_your_buys_since_the_position_opened(client):
+    """The timing detail lives here, not on the holdings list (Eran, 2026-09-21).
+    Newest first, priced buys only, lots from before the position opened left out,
+    and the fund_sleeve duplicates still in the ledger collapsed to one."""
+    c, _ = client
+    _backdate_position(10)
+    _ledger_began(30)
+    from app.models.tables import Transaction
+
+    async def f(s):
+        def buy(days_ago, qty, px, src="test", sec=0):
+            s.add(Transaction(subject=SUPERADMIN_EMAIL, ticker="QQQ", market="TASE",
+                              txn_type="Buy", quantity=Decimal(str(qty)), price=Decimal(str(px)),
+                              value_ils=Decimal("0"), source=src,
+                              executed_at=NOW.replace(microsecond=0) - timedelta(days=days_ago)
+                              + timedelta(seconds=sec)))
+        buy(20, 5, 90.0)                       # before the position opened: excluded
+        buy(6, 2, 120.0)
+        buy(2, 1, 125.0, "sleeve_fund")
+        buy(2, 1, 125.0, "fund_sleeve")        # the old double record: collapsed
+        buy(1, 1, 0)                           # unpriced: skipped
+    _db(f)
+    body = _get(c, "1M").json()
+    buys = body["buys"]
+    assert [b["price"] for b in buys] == [125.0, 120.0], buys
+    cur = body["current_price"]
+    assert buys[0]["change_pct"] == pytest.approx((cur / 125.0 - 1) * 100, abs=0.01)
+    assert body["avg_price"] == pytest.approx(100.0)

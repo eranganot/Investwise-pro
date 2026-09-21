@@ -516,6 +516,7 @@
     <div id="h_head" style="margin-bottom:6px"></div>
     <canvas id="ch_hist" height="200"></canvas>
     <div class="muted" id="h_cap" style="margin-top:8px"></div>
+    <div id="h_buys" style="margin-top:14px"></div>
   </div>
 </div>
 <div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
@@ -1542,7 +1543,7 @@ async function loadHoldings(){
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">\u270e</button>
         <button class="del" title="Remove holding" onclick="delHolding('${h.ticker}','${h.market}')">\u2715</button></div></div>`;
       return `<div class="row"${_stale?' style="border-left:3px solid #f59e0b"':''}><div><div class="nm">${h.ticker}${_stale?' <span class="rk" style="color:var(--amber)">⚠ price frozen</span>':''}</div><div class="mk">${h.market} · ${h.quantity} shares · ${h.asset_class||'—'}</div></div>
-        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk" title="Today's price against your average buy price per share, in the ticker's own currency. Excludes currency moves and profit already taken on trims.">vs avg price ${Number(h.cost_basis).toLocaleString(undefined,{maximumFractionDigits:2})}</div>${(h.last_buy&&h.last_buy.change_pct!=null)?`<div class="mk" title="Today's price against the price of your most recent buy (${(h.last_buy.at||"").slice(0,10)}).">${h.last_buy.change_pct>=0?"+":""}${h.last_buy.change_pct.toFixed(1)}% vs last buy</div>`:""}`}</div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="val"><div class="nm">${ils(val)}</div>${_stale?`<div class="mk" style="color:var(--amber)">price from ${_asOf||"an earlier date"}</div><div class="mk">not refreshed — check this holding</div>`:`<div class="${up?'up':'down'}">${up?'▲':'▼'} ${Math.abs(chg).toFixed(1)}%</div><div class="mk" title="Today's price against your average buy price per share, in the ticker's own currency. Excludes currency moves and profit already taken on trims.">vs avg price ${Number(h.cost_basis).toLocaleString(undefined,{maximumFractionDigits:2})}</div>`}</div>
         <button class="del" title="Chart" onclick="openHist('${h.ticker}')">📈</button>
         <button class="del" title="Research this holding (AI)" onclick="researchHolding('${h.ticker}')">🔎</button>
         <button class="del" title="Edit holding" onclick="editHolding('${h.id}')">✎</button>
@@ -1595,7 +1596,7 @@ function _histSeg(){
   document.querySelectorAll("#h_mode button").forEach(b=>b.classList.toggle("on",b.dataset.m===HIST.mode));
   document.querySelectorAll("#h_rng button").forEach(b=>b.classList.toggle("on",b.dataset.r===HIST.rng));}
 async function loadHist(){
-  const my=++HIST.seq; $("h_cap").textContent="Loading\u2026"; $("h_head").innerHTML="";
+  const my=++HIST.seq; $("h_cap").textContent="Loading\u2026"; $("h_head").innerHTML=""; $("h_buys").innerHTML="";
   try{const r=await fetch(`/api/v1/portfolio/position-history?ticker=${encodeURIComponent(HIST.tk)}&range=${HIST.rng}`);
     const j=await r.json(); if(my!==HIST.seq) return;
     if(!r.ok) throw new Error(j.detail||"Could not load history");
@@ -1644,6 +1645,22 @@ function renderHist(){
   if(j.granularity==="daily_fallback") notes.push("Intraday prices were unavailable, so this uses daily closes.");
   if((j.trades||[]).length) notes.push("Dots mark your recorded buys (blue) and sells (red).");
   $("h_cap").innerHTML=notes.join(" ");
+  renderBuys(j);
+}
+// Timing detail: your buys since the position opened, each against today's
+// price. The holdings list shows only "vs avg price"; this is where "was that
+// top-up well timed" lives.
+function renderBuys(j){
+  const el=$("h_buys"); const bs=j.buys||[];
+  if(!bs.length){el.innerHTML="";return;}
+  const cur=j.currency||"", f=n=>Number(n).toLocaleString(undefined,{maximumFractionDigits:2});
+  const pct=c=>c==null?"":`<span class="${c>=0?'up':'down'}">${c>=0?'+':''}${c.toFixed(1)}%</span>`;
+  const last=bs[0];
+  el.innerHTML=`<div class="nm" style="font-size:14px;margin-bottom:4px">Your buys</div>
+    <div class="mk" style="margin-bottom:8px">Last buy ${_soDate(last.at.slice(0,10))} at ${f(last.price)} ${cur}: ${pct(last.change_pct)} since
+      ${j.avg_price?` \u00b7 avg price ${f(j.avg_price)} ${cur}`:""}</div>
+    ${bs.map(b=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
+      <div class="mk">${_soDate(b.at.slice(0,10))} \u00b7 ${f(b.shares)} sh @ ${f(b.price)}</div><div class="mk">${pct(b.change_pct)}</div></div>`).join("")}`;
 }
 // --- Standing orders (monthly deposit into cash) ---------------------------
 let SO=null;

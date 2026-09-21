@@ -205,6 +205,29 @@ async def position_history(session: AsyncSession, user: User, ticker: str,
         market_change += a["shares"] * (b["price"] - a["price"]) * rate
     value_change = (value_pts[-1]["value"] - value_pts[0]["value"]) if len(value_pts) > 1 else 0.0
 
+    # YOUR BUYS, independent of the range: every priced buy since this position
+    # was (re)opened, newest first -- the timing detail Eran asked to see here
+    # rather than on the holdings list (2026-09-21). Identical rows at the same
+    # second are collapsed: `fund_sleeve` recorded sleeve buys twice until PR
+    # 68.1, and those duplicates are still in the ledger.
+    cur_px = float(pos.current_price or 0) or None
+    buys, seen = [], set()
+    open_from = (_ts(opened) - timedelta(seconds=60)) if opened is not None else None
+    for when, q, x in reversed(leg_pts):
+        if x.txn_type != _BUY or not float(x.price or 0):
+            continue
+        if open_from is not None and when < open_from:
+            break
+        key = (when.replace(microsecond=0), round(abs(q), 6), round(float(x.price), 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        px = float(x.price)
+        buys.append({"at": when.isoformat(), "shares": round(abs(q), 6), "price": round(px, 4),
+                     "change_pct": round((cur_px / px - 1) * 100, 2) if cur_px else None})
+        if len(buys) >= 8:
+            break
+
     first_t = _ts(prices[0][0])
     markers = [{"t": when.isoformat(), "type": x.txn_type, "shares": round(abs(q), 6),
                 "price": float(x.price or 0) or None, "source": x.source}
@@ -230,6 +253,9 @@ async def position_history(session: AsyncSession, user: User, ticker: str,
             "trades_change_ils": round(value_change - market_change, 2),
         },
         "trades": markers,
+        "buys": buys,
+        "avg_price": round(float(pos.cost_basis or 0), 4) or None,
+        "current_price": cur_px,
     }
     if not reconciles:
         out["value"]["reason"] = (

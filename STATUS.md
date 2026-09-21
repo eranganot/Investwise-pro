@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.1 on top of the weekly review; HEAD was `aa7826c` = PR 68)._
+_Last updated: 2026-09-21 by Claude (PR 68.2; HEAD was `588a486` = PR 68.1)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,27 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 68.2 — one number per holding; the timing detail moves to the chart
+
+_2026-09-21. PR 68.1 (`588a486`) showed two figures under each holding -- "vs avg price" and
+"vs last buy". Eran: "it should be only one of the options", asked which is better, agreed with
+keeping average, and asked for the timing detail in the chart screen. Status: **pending deploy.**_
+
+Why average: it is the return on the shares actually held, and it agrees with value vs invested on
+the same row. "Vs last buy" describes only the newest slice (SOXL: 6.3 of 23.8 shares) and on this
+book it resets with nearly every card accept (five SOXL buys 09-14 -> 09-20), so it moved because
+Accept was pressed, not because the market did.
+
+- Holdings list: only "▲x% vs avg price N".
+- Chart screen (📈): "Your buys" -- last buy date, price and % since, the average price, then every
+  priced buy since the position (re)opened, newest first, each with % vs today. Independent of the
+  range tab. Identical rows at the same second (the pre-68.1 `fund_sleeve` duplicates) are collapsed.
+  `/portfolio/position-history` gains `buys`, `avg_price`, `current_price`; `/portfolio` keeps
+  `last_buy` (the smoke reads it).
+- Test: `test_the_chart_lists_your_buys_since_the_position_opened`.
 
 ---
 
