@@ -143,25 +143,28 @@ def test_an_overweight_too_small_to_trade_is_not_an_overweight():
         f"correct, and the reason claims it is:\n  {text}")
 
 
-def test_the_book_target_overrides_only_the_classes_it_names():
-    """Merged, not replaced -- and the merge is what keeps the idea cards alive.
+def test_the_book_target_is_the_target_and_it_still_holds_commodities():
+    """PR 71 replaced the PR 42 merge, and this test used to pin the merge.
 
-    Sleeves plus core describe Equities and Fixed Income. Neither has an opinion
-    on Commodities, so the book target does not mention it. Replacing the table
-    outright would make the Commodities target zero, and `propose_funded_buy`
-    refuses a buy into a class with no gap: the two commodity idea cards on Today
-    would have disappeared because the plan was never asked, not because it said
-    no.
+    The merge kept the Commodities idea cards alive by filling that class from
+    the objective table -- and on 2026-09-22 it summed to 110%: USO was bought
+    toward a 10% target the rebalance card did not have, and sold by it the same
+    day. The card-survival concern is now met by the book target itself:
+    `compose` carves the objective's Commodities share out of a core that names
+    none, so the book target holds Commodities AND sums to 1.0.
     """
     from app.services.allocation_mix import OBJ_TARGET
+    from app.services.book_target import compose
     from app.services.funding_service import targets_for
 
     assert targets_for("Grow") == OBJ_TARGET["Grow"]
     assert targets_for("Grow", {}) == OBJ_TARGET["Grow"], "an empty target is not a target"
 
-    merged = targets_for("Grow", {"Equities": 0.892, "Fixed Income": 0.108})
-    assert merged["Equities"] == 0.892, "the book's own classes win"
-    assert merged["Fixed Income"] == 0.108
-    assert merged["Commodities"] == OBJ_TARGET["Grow"]["Commodities"], (
-        "a class the book target does not model keeps the objective's view of it; "
-        "zeroing it silently deletes every idea card for that class")
+    bt = compose(sleeve_targets={"SOXL": 0.40, "QQQ": 0.19},
+                 core_mix={"Equities": 0.6, "Fixed Income": 0.4},
+                 objective="Grow", cash_pct=0.0064)["target"]
+    t = targets_for("Grow", bt)
+    assert t == bt, "the book target is used as-is -- nothing is filled in beside it"
+    assert t["Commodities"] == OBJ_TARGET["Grow"]["Commodities"], (
+        "the commodity share now lives IN the book target, so the idea cards survive")
+    assert abs(sum(t.values()) - 1.0) < 0.005, f"a target mix must sum to 100%: {t}"

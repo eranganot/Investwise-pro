@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-22 by Claude (PR 70; built on PR 69)._
+_Last updated: 2026-09-22 by Claude (PR 71; built on PR 70)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -153,6 +153,49 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 71 — one target mix, and it holds your 10% Commodities
+
+_2026-09-22. Eran's screenshot after accepting "Consider USO": the rebalance card now read "Sell
+Commodities (~1,036)". The USO card had said "Moves Commodities from 0% to 5% against your 10%
+target"._
+
+**Root cause (PROVEN: reproduced on the live target, plus an end-to-end test that fails on PR 70).**
+`funding_service.targets_for` MERGED the book target (sleeves + core) with the objective table for
+classes the book did not name. The live book target was {Equities .8322, Fixed Income .1614, Cash
+.0064}; Grow added Commodities .10, so the merge summed to **110%**. Buy cards and funding read the
+merge; `/mix`, the rebalance card and the PR 70 health score read the book target, where Commodities
+was 0%. So one card bought toward 10% and the next sold toward 0%. Each was honest against its own
+target.
+
+**Ruled out:** USO classified differently by the two cards (both say Commodities); a stale target (same
+build); the rebalance card reading the objective table (it quotes Equities 83%, the book target).
+
+**Why silent:** the merge was a deliberate PR 42 decision ("replacing would zero Commodities and
+delete the idea cards"). The card-claim tests check each card against ITS target; nothing checked
+that the merged target summed to 100% or matched `/mix`. The same fault hit every objective: Preserve's
+table adds Cash 10% to a book target with no Cash key.
+
+**Eran's decision: "Yes, 10% carved from core".** `book_target.compose` takes the objective's
+Commodities share (Grow/Balanced/Income 10%, Preserve 0) out of the core's remainder, after the cash
+reserve, whenever the core names no Commodities of its own (60/40 does not; All-Weather does). The
+sleeves are untouched. The book target is then complete and sums to 1.0, so `targets_for` now
+REPLACES instead of merging. Holdings in the carved class leave the "core region" everywhere
+(`_core_plan`, the core-basket card, `measured_assumptions`), so the core card no longer offers to
+sell USO as "not in the basket". The Plan tab says how the unclaimed remainder splits (Commodities,
+cash reserve, core).
+
+**On the live book (expected; check after deploy):** target Equities 77.2%, Fixed Income 12.1%,
+Commodities 10%, Cash 0.6%. The core runs 30% of the book at 60/40, down from 40%. USO now counts
+toward Commodities, not against it. Commodity ideas may offer the remaining ~5 points.
+
+`tests/test_one_target_holds_commodities.py` (9 tests; they fail on PR 70, including the end-to-end one
+where `/mix` showed Commodities +7% drift against 0%). Updated deliberately:
+`test_the_funding_layer_reads_the_books_target` (the merge pin became the one-target pin),
+`test_c6_core` (the core target is now 54/36/10, and its own 60/40 shape is unchanged),
+`test_the_book_can_hold_cash_on_purpose` (the cash arithmetic is pinned with `commodities_pct=0`).
+
+---
+
 ## PR 70 — the health score is On plan + On track; one priority scale for every card
 
 _2026-09-22. Eran: "let's re-think on how to calculate the health score and what does it mean" and
@@ -173,7 +216,7 @@ goal (standing-order run when one exists). Score = mean. Every input comes from 
 screen already uses. `/health-check`, the nightly `whs_snapshots` row (`detail.score_basis`) and the
 AI summary all quote it; the legacy blend stays as `legacy_score`. Expected on the live book:
 **On plan 76, On track 27, score 51 "Needs attention"** (doc said 77/52 with the core estimated at
-~20% of its basket; computed it should be ~13%, since BND 1,257 is the only basket holding -- check after deploy).
+~20% of its basket; measured live after deploy: 13%, so On plan 76, On track 27, score 51 as expected).
 
 **Priority (`app/services/card_priority.py`).** money 0-40 (full at 5% of NAV; ideas half) + time
 0-35 (fired 35, <=2% 20, <=5% 10, <=10% 5, stale/tax deadline 20, goal 10) + your rules 0-25 +

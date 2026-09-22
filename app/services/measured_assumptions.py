@@ -454,8 +454,17 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
         basket = _core_weights(core_row_id) or {}
         cname = ((_static_get(core_row_id) or {}).get("name") or core_row_id)
         # Cash is in no basket, so it is not part of the composition question.
+        # PR 71: a class carved out of the core (Commodities, when the core
+        # names none) is not part of the core's composition either.
+        from app.services.allocation_mix import classify as _cls
+        from app.services.book_target import carved_classes
+        from app.services.plan_service import get_plan as _gp
+        _plan = await _gp(session, user)
+        _carved = carved_classes(((_static_get(core_row_id) or {}).get("target_allocation")),
+                                 getattr(_plan, "objective", None))
         held = {tk: val for tk, meta, val in unclaimed
-                if str(meta.get("asset_class") or "") != "Cash" and tk != "CASH"}
+                if str(meta.get("asset_class") or "") != "Cash" and tk != "CASH"
+                and (str(meta.get("asset_class") or "") or _cls(tk, "")) not in _carved}
         matched, evidence = core_matches_basket(held, basket,
                                                 band_pct=SLEEVE_DRIFT_BAND_PCT)
         crow = by_id.get(core_row_id)

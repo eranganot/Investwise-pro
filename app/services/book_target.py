@@ -78,8 +78,22 @@ def sleeve_class_mix(sleeve_targets: dict[str, float]) -> dict[str, float]:
     return out
 
 
+def carved_classes(core_mix: dict | None, objective: str | None,
+                   commodities_pct: float | None = None) -> set[str]:
+    """The classes carved OUT of the core region (PR 71): {"Commodities"} when
+    the core names none and the plan wants some. A holding in a carved class is
+    not the core's -- it is judged against its own target, so the core card must
+    not offer to sell it for being "not in the basket"."""
+    if not core_mix or float(core_mix.get("Commodities") or 0.0):
+        return set()
+    want = (float(commodities_pct) if commodities_pct is not None else
+            float((OBJ_TARGET.get(objective or "Balanced") or {}).get("Commodities") or 0.0))
+    return {"Commodities"} if want > 0 else set()
+
+
 def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | None,
-            objective: str, cash_pct: float = 0.0) -> dict:
+            objective: str, cash_pct: float = 0.0,
+            commodities_pct: float | None = None) -> dict:
     """The pure half, so the arithmetic can be tested without a database.
 
     `cash_pct` is a deliberate reserve as a FRACTION of NAV -- dry powder, so
@@ -91,6 +105,18 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
 
     Default 0.0, which reproduces the previous target exactly, so a book with
     no reserve configured is managed exactly as it was.
+
+    COMMODITIES ARE CARVED OUT OF THE CORE (PR 71, Eran 2026-09-22: "Yes, 10%
+    carved from core"). A chosen core like Classic 60/40 names no Commodities,
+    so this target used to hold none -- while `funding_service.targets_for`
+    filled the gap from the objective table (Grow: 10%) and the buy cards
+    bought toward it. The result summed to 110%: "Consider USO" bought
+    Commodities toward 10% and the rebalance card, reading this target, sold
+    them toward 0%. Now the commodity share is part of THE target:
+    `commodities_pct` (default: the objective table's Commodities weight) comes
+    out of the core's remainder, after the cash reserve, and only when the core
+    has no opinion on Commodities itself (All-Weather does; 60/40 does not).
+    Never out of the sleeves, for the same reason as cash.
     """
     sleeves = sleeve_class_mix(sleeve_targets)
     sleeved = sum(sleeves.values())
@@ -118,6 +144,13 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
     clamped = want_cash > cash + 1e-9
     core_share -= cash
 
+    comm = 0.0
+    if core_mix and not float(core_mix.get("Commodities") or 0.0):
+        want_comm = (float(commodities_pct) if commodities_pct is not None else
+                     float((OBJ_TARGET.get(objective) or {}).get("Commodities") or 0.0))
+        comm = min(max(0.0, want_comm), core_share)
+        core_share -= comm
+
     base = core_mix or OBJ_TARGET.get(objective) or OBJ_TARGET["Balanced"]
     base_sum = sum(base.values()) or 1.0
     core = {c: (w / base_sum) * core_share for c, w in base.items()}
@@ -130,6 +163,8 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
         # replacing it: the reserve is a floor the user asked for, not a
         # ceiling on what their core strategy may choose to hold.
         target["Cash"] = target.get("Cash", 0.0) + cash
+    if comm > 0:
+        target["Commodities"] = target.get("Commodities", 0.0) + comm
 
     total = sum(target.values())
     if abs(total - 1.0) > _SUM_TOLERANCE:                        # pragma: no cover
@@ -143,6 +178,9 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
         "core_pct": round(core_share, 4),
         "cash_pct": round(cash, 4),
         "cash_clamped": clamped,
+        # The commodity carve-out, separate from the core so a card can say
+        # where the Commodities target came from.
+        "commodities_pct": round(comm, 4),
     }
 
 

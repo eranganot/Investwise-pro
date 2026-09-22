@@ -63,8 +63,10 @@ CORE_6040 = {"Equities": 0.6, "Fixed Income": 0.4}
 
 def _compose(cash_pct=0.0):
     from app.services.book_target import compose
+    # commodities_pct=0: these pin the CASH arithmetic alone. The PR 71
+    # Commodities carve-out has its own tests (test_one_target_holds_commodities).
     return compose(sleeve_targets=SLEEVES, core_mix=CORE_6040,
-                   objective="Grow", cash_pct=cash_pct)
+                   objective="Grow", cash_pct=cash_pct, commodities_pct=0.0)
 
 
 def test_no_cash_target_is_exactly_what_the_book_does_today():
@@ -76,7 +78,8 @@ def test_no_cash_target_is_exactly_what_the_book_does_today():
     from app.services.book_target import compose
 
     with_arg = _compose(0.0)
-    without = compose(sleeve_targets=SLEEVES, core_mix=CORE_6040, objective="Grow")
+    without = compose(sleeve_targets=SLEEVES, core_mix=CORE_6040, objective="Grow",
+                      commodities_pct=0.0)
     assert with_arg == without, (
         "adding the parameter changed the answer when the parameter is zero")
     assert "Cash" not in with_arg["target"], with_arg["target"]

@@ -245,10 +245,19 @@ def targets_for(objective: str | None, book_target: dict | None = None) -> dict:
     Callers that know the book target pass it. Paths with no session to resolve
     one keep the objective table unchanged.
     """
-    base = dict(OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"]))
+    # PR 71 -- REPLACED, no longer merged. The merge filled every class the book
+    # target did not name from the objective table, and on 2026-09-22 that
+    # summed to 110%: the book named Equities/Fixed Income/Cash, the Grow table
+    # added Commodities 10%, "Consider USO" bought toward that 10%, and the
+    # rebalance card -- reading the book target, where Commodities was 0% --
+    # offered to sell it the same day. The reason for merging (a 60/40 core
+    # has no opinion on Commodities, so replacing would zero the class) is now
+    # answered where it belongs: `book_target.compose` carves the objective's
+    # Commodities share out of the core, so the book target is complete and
+    # sums to 1.0 by construction. One target, every reader.
     if book_target:
-        base.update({k: v for k, v in dict(book_target).items() if v is not None})
-    return base
+        return {k: float(v) for k, v in dict(book_target).items() if v is not None}
+    return dict(OBJ_TARGET.get(objective or "Balanced", OBJ_TARGET["Balanced"]))
 
 
 def rank_trim_candidates(rows, snap, objective: str | None, cap: float,

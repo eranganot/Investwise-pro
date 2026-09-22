@@ -283,8 +283,20 @@ async def get_my_sleeves(session: AsyncSession = Depends(get_session),
                          "following_signal": o.get("following_signal"),
                          "signal_as_of": o.get("signal_as_of"),
                          "tickers": o.get("tickers")})
+    # PR 71: what the unclaimed remainder is split into, from THE book target,
+    # so the Plan tab can say the core is not all of the remainder.
+    _comm = _cashr = 0.0
+    try:
+        from app.services.book_target import book_target as _bt
+        _p = await get_plan(session, user)
+        _btv = await _bt(session, user, getattr(_p, "objective", None) or "Balanced")
+        _comm, _cashr = float(_btv.get("commodities_pct") or 0.0), float(_btv.get("cash_pct") or 0.0)
+    except Exception:  # noqa: BLE001 -- the sleeve table must still render
+        logger.warning("book target unavailable for the sleeves view", exc_info=False)
     return {
         "sleeves": _sleeves,
+        "commodities_pct": round(_comm, 4),
+        "cash_reserve_pct": round(_cashr, 4),
         "allocated_pct": sv.total_pct(sleeves),
         "allocated_held_pct": occ["allocated_held_pct"],
         "allocated_held_ils": occ["allocated_held_ils"],

@@ -1548,6 +1548,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                     continue
                 if _ch(_p) == "Cash":
                     continue          # cash is in no basket; it is not a leg
+                if float(btgt.get("commodities_pct") or 0.0) > 0 and _ch(_p) == "Commodities":
+                    continue          # PR 71: carved out of the core, own target
                 _meta = _p.meta if isinstance(_p.meta, dict) else None
                 _v = (float(_p.quantity or 0.0) * float(_p.current_price or 0.0)
                       * _fxr(_pcur(_p.market, _meta)))
@@ -4842,6 +4844,11 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
             continue
         if tk == "CASH" or _ch(p) == "Cash":
             cash_ils += v
+            continue
+        if float(btgt.get("commodities_pct") or 0.0) > 0 and _ch(p) == "Commodities":
+            # PR 71: Commodities are carved out of the core with their own
+            # target. Without this, rule 1 of `plan_realign` would sell USO in
+            # full as "not in the basket" the day after the plan bought it.
             continue
         if tk in claimed:
             sleeve_val[tk] = sleeve_val.get(tk, 0.0) + v

@@ -1899,6 +1899,9 @@ function coreRow(pct){
     </div>
     ${mix?`<div class="mk" style="opacity:.75">🎯 Managed to <b>${mix}</b> — the target your
        rebalance cards measure drift against.</div>`:""}
+    ${(MYSLEEVES&&MYSLEEVES.commodities_pct>0)?`<div class="mk" style="opacity:.75">Of the core's ${pct}%,
+       <b>${Math.round(MYSLEEVES.commodities_pct*1000)/10}% of the book is set aside for Commodities</b>
+       with its own target, and ${MYSLEEVES.cash_reserve_pct>0?`${Math.round(MYSLEEVES.cash_reserve_pct*1000)/10}% for your cash reserve; `:""}the rest runs the core.</div>`:""}
     <div style="display:flex;align-items:center;gap:8px;padding:2px 0 4px 0;flex-wrap:wrap">${coreControl()}</div>
     <div class="mk" id="core_note" style="opacity:.7"></div>
     <div class="mk" style="opacity:.7;margin-top:4px">${c
