@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-21 by Claude (PR 68.7; HEAD was `e612197` = PR 68.6)._
+_Last updated: 2026-09-22 by Claude (PR 69; HEAD was `2c1c122` = PR 68.7)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -153,6 +153,36 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 69 — the server alone decides which cards show
+
+_2026-09-22. Eran: the web Today showed "QQQ is closing on your take-profit" and the SOXL 42% rule
+card; his Android home-screen app showed neither ("the ones that I shared with you are the ones
+that are missing in my phone")._
+
+**Root cause.** Ignore, Accept and Mark-as-done each ALSO wrote a per-device hide
+(`localStorage["iw_snoozed_v2"]`, 7 days, keyed by card id) and `loadToday` filtered the server's
+list through it. The server brings a card back when its amount moves >=25% or its rule fires again
+(PR 34); the device that pressed the button kept hiding it. Both missing cards were exactly that
+class: the QQQ card was a server re-fire ("asked for about 664 ILS when you filed it... 1,064 now"),
+and the SOXL rule card returns under the same id every time the rule fires.
+**Reproduced** in Chromium on the shipped `index.html` with the API mocked: saved hide -> re-fired
+card missing; no saved hide -> shown; this PR -> shown either way.
+
+**Ruled out:** a stale shell (the service worker is network-first for navigations and the shell;
+phone and web ran `2c1c122`); another account (only those two cards differed); a render error (one
+throwing card replaces the whole list with an error).
+
+**Why silent:** the "N suggestions are hidden" line counted and named only what the SERVER hid. A
+device-hidden card appeared nowhere. (Also dead: `syncSnoozes` referenced an undefined `snoozed`
+and failed silently inside its try.)
+
+**Fix:** no device-local hide at all; Ignore awaits the server's dismissal before reloading; the
+old keys are cleared once on load; `sw.js` -> `iw-v27`. `tests/test_the_server_alone_hides_cards.py`
+(4 tests; all 4 fail against the previous `index.html`). **Confirm on the phone after deploy: the
+two cards reappear.**
+
+---
+
 ## PR 68.7 — a repaired row keeps its rule event
 
 _2026-09-21. After PR 68.6's apply the preview still showed **measured=1**. Nothing extra had been
@@ -163,7 +193,8 @@ those shares would have been sold twice. Fix: repaired rows (`REPAIR_TAG` + "was
 the pairing as consumers. The assignment then replays exactly as it did at apply time, and they are
 not reported again. `test_a_repaired_row_keeps_its_rule_event` reproduces the production
 CHECK FAILED before the fix. The ship script is **read-only**: deploy, preview, expect 0 duplicates
-and 0 measured. Status: **pending run.**_
+and 0 measured. Status: **live as `2c1c122`, 2026-09-21; preview clean (0 duplicates, 0 measured,
+25 left at 0: 12 estimate, 13 unresolved).**_
 
 Still open: 25 rows at 0 (only `include_estimates` would write the 12 estimates, and it has not
 been run); the unrecorded write path behind AGG/GOOGL/QQQ (PR 68.5 item 2).
