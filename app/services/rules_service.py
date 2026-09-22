@@ -845,6 +845,9 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                     "title": title or f"Rule on {r.ticker}",
                     "action": action or "Review this holding.",
                     "rule_id": str(r.id),
+                    # PR 70: the shekels this firing moves, for the priority
+                    # score and the mute marks. Same gross the action quotes.
+                    "est_amount": (round(gross, 2) if plan else None),
                     "apply": {**(plan or {"kind": "none"}), "rule_id": str(r.id)},
                     # WHEN this firing happened travels with the card.
                     #
@@ -856,7 +859,10 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                     # reach the screen rather than being auto-acknowledged
                     # against a dismissal from three weeks ago.
                     "meta": {"triggered_at": (r.last_triggered_at.isoformat()
-                                              if r.last_triggered_at else None)},
+                                              if r.last_triggered_at else None),
+                             # PR 70: the priority score treats a fired stop as
+                             # always Important, so the card says which rule it is.
+                             "rule_type": r.rule_type, "ticker": r.ticker},
                     "how": how})
     if _cleared:
         # Persist the re-arm, or the next render latches it all over again and

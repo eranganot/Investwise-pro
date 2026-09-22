@@ -35,6 +35,16 @@ async def _portfolio_context(session: AsyncSession, user: User) -> dict:
     _caps = effective_caps(await get_plan(session, user))
     cap = _caps.get("concentration_cap")
     health = health_scores(snap, cap, _caps.get("volatility_cap")) if snap else {}
+    # PR 70: the summary quotes the score the screen shows, not the legacy blend.
+    if snap:
+        from app.services.plan_health import plan_health
+        try:
+            _ph = await plan_health(session, user)
+        except Exception:  # noqa: BLE001
+            _ph = None
+        if _ph:
+            health = {**health, "wealth_health_score": _ph["score"],
+                      "on_plan": _ph["on_plan"], "on_track": _ph["on_track"]}
     recs = await build_recommendations(session, user)
     holdings = []
     nav = snap.get("nav") or 0
@@ -47,8 +57,7 @@ async def _portfolio_context(session: AsyncSession, user: User) -> dict:
     return {
         "nav_ils": round(nav) if nav else None,
         "health": {k: health.get(k) for k in (
-            "wealth_health_score", "risk_score", "tax_efficiency_score",
-            "diversification_score", "liquidity_score") if k in health},
+            "wealth_health_score", "on_plan", "on_track") if k in health},
         "top_holdings": holdings[:8],
         "open_actions": [r.get("title") for r in recs.get("recommendations", [])][:6],
         "market_regime": mkt.get("regime"),

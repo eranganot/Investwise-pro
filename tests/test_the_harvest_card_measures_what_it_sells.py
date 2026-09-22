@@ -92,7 +92,10 @@ def _seed(c, positions):
 
 def _tax_card(c):
     body = c.get("/api/v1/recommendations").json()
-    cards = [r for r in (body.get("recommendations") or []) if r.get("dimension") == "tax"]
+    # Both lists: since PR 70 the first 12 are chosen by priority, and a small
+    # harvest on a book left busy by earlier tests can sit in the collapsed rest.
+    cards = [r for r in (body.get("recommendations") or []) + (body.get("more_recommendations") or [])
+             if r.get("dimension") == "tax"]
     return cards[0] if cards else None
 
 

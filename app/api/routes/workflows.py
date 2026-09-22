@@ -57,8 +57,28 @@ async def portfolio_health_check(entity: str | None = None,
     # Risk is scored against the plan's own volatility budget, so a Grow investor
     # isn't marked down for the volatility their objective requires.
     sc = health_scores(snap, cap, caps.get("volatility_cap"))
+    # PR 70. THE SCORE IS "ON PLAN" + "ON TRACK" (Eran, 2026-09-22). The four
+    # legacy components below are still computed and returned -- the opportunity
+    # list and the AI context read them -- but none of them is the headline any
+    # more. `wealth_health_score` carries the new score so every reader of the
+    # old key shows the same number as the screen.
+    from app.services.plan_health import plan_health
+    try:
+        ph = await plan_health(session, user)
+    except Exception:  # noqa: BLE001 -- fall back to the legacy score, and say so
+        logger.warning("plan health unavailable; showing the legacy score", exc_info=True)
+        ph = None
     return {
-        "wealth_health_score": sc["wealth_health_score"],
+        "wealth_health_score": (ph["score"] if ph else sc["wealth_health_score"]),
+        "score_basis": ("on_plan_on_track" if ph else "legacy_components"),
+        "label": (ph["label"] if ph else None),
+        "on_plan": (ph["on_plan"] if ph else None),
+        "on_track": (ph["on_track"] if ph else None),
+        "on_track_detail": (ph["on_track_detail"] if ph else None),
+        "on_track_basis": (ph["on_track_basis"] if ph else None),
+        "plan_parts": (ph["parts"] if ph else None),
+        "plan_weights": (ph["weights"] if ph else None),
+        "legacy_score": sc["wealth_health_score"],
         "risk_score": sc["risk_score"],
         "tax_efficiency_score": sc["tax_efficiency_score"],
         "liquidity_score": sc["liquidity_score"],

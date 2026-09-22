@@ -610,8 +610,22 @@ async function boot(){
   catch(e){show("setup");}
 }
 
+let PLANH=null;
+// PR 70: what each part of the score measures, and what it read this time.
+const PART_EXPLAIN={
+  sleeves:["Sleeves","Each strategy sleeve against the size you chose (inside 3 points scores 100, falling to 0 at 12 points off), and your core against the basket it names. Weighted by each one's share of the book. <b>30% of On plan.</b>"],
+  mix:["Mix","Your largest asset-class drift from your plan's target mix. Inside the 3-point band scores 100; 12 points off scores 0. <b>20% of On plan.</b>"],
+  rules:["Rules","How many holdings have a stop (stop-loss or trailing stop), less 25 for each rule that has fired and is still waiting for you. <b>20% of On plan.</b>"],
+  concentration:["Concentration","Your largest holding against your concentration limit. 20 points off for every percentage point over. <b>15% of On plan.</b>"],
+  cash:["Cash","Cash between your floor and your redeploy line scores 100. Below the floor, or above the line, scores less. <b>15% of On plan.</b>"],
+  on_track:["On track","The chance of reaching your goal by its date, from the same 10,000-run projection shown under \"Where this could end up\". A standing order counts, because it is money you have committed to add. Half of your score."],
+};
+function explainPart(k){const e=PART_EXPLAIN[k];if(!e)return;const P=(PLANH&&PLANH.plan_parts)||{};
+  const now=k==="on_track"?(PLANH&&PLANH.on_track_detail):(P[k]||{}).detail;
+  $("m_t").textContent=e[0];$("m_b").innerHTML=e[1]+(now?`<div class="mk" style="margin-top:8px">Now: ${now}</div>`:"");
+  $("m_b").style.maxHeight="";$("m_b").style.overflowY="";$("ov").classList.add("show");}
 const EXPLAIN={
-  health:["Your wealth health","0–100 blending the four things we can actually measure from your holdings: <b>30% Risk + 25% Tax + 25% Spread + 20% Cash</b>. Every one of them is shown below the score, and every one can reach 100 — so 100 is attainable and whatever is holding you back is always visible. 80+ Strong, 60+ Healthy."],
+  health:["Your wealth health","Two questions, averaged: <b>On plan</b> (are you doing what you decided: sleeves 30%, mix 20%, rules 20%, concentration 15%, cash 15%) and <b>On track</b> (the chance of reaching your goal). Risk is judged by whether you follow the strategies and stops you chose, not by an outside cap. 80+ Strong, 60+ Healthy, 40+ Needs attention."],
   risk:["Risk score","Whether your money is as calm as <b>your own plan asks for</b>. We blend each holding's volatility by size and compare it to the volatility budget your risk tolerance sets (Low 10%, Medium 15%, High 25%). Inside your budget scores 85–100; going over it pulls the score down. You are <b>not</b> penalised for the volatility your objective requires — only for exceeding it."],
   tax:["Tax score","How <b>tax-efficient</b> you are. Starts at 100 and falls as you carry unrealized losses you haven't used to offset gains. Nothing left to harvest = 100."],
   spread:["Spread","Diversification. If one holding is a big slice, this drops. The limit flexes with your risk tolerance."],
@@ -927,22 +941,37 @@ async function loadToday(){
     const s=h.wealth_health_score;
     $("rating").textContent=rWord(s);$("rating").style.color=rCol(s);
     $("score").textContent=s;$("barfill").style.width=s+"%";$("barfill").style.background=rCol(s);
-    $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
-      .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
-    // PR 16. Risk is the chip that decides this score (weight 0.30), and it is
-    // driven entirely by the book's assumed volatility. Say which volatility.
-    const vb=h.volatility_basis||"static", vs=h.avg_volatility_pct_static;
-    $("dims").innerHTML+=vb==="measured"
-      ? `<div class="mk" style="margin-top:6px">Risk is scored on <b>${h.avg_volatility_pct}%</b> volatility measured from your own strategies (${h.measured_pct_of_book}% of the book) against your <b>${h.volatility_cap_pct}%</b> cap${vs!=null&&vs!==h.avg_volatility_pct?` — the instrument table would have said ${vs}%`:""}.</div>`
-      : `<div class="mk" style="margin-top:6px">⚠️ Risk is scored on <b>${h.avg_volatility_pct}%</b> assumed volatility against your <b>${h.volatility_cap_pct}%</b> cap. That figure is the instrument table, not a measurement of the rules you run.</div>`;
+    // PR 70. The score is ON PLAN (are you doing what you decided?) and ON
+    // TRACK (will you reach your goal?). The chips are the five parts of On plan
+    // plus On track, each explained on tap with the number it was scored on.
+    PLANH=h;
+    if(h.score_basis==="on_plan_on_track"){
+      const P=h.plan_parts||{};
+      const chip=(k,v,key)=>`<span class="chip" onclick="explainPart('${key}')">${k} ${v==null?"—":v} <span class="q">ⓘ</span></span>`;
+      $("dims").innerHTML=`<div class="mk" style="margin-bottom:6px;width:100%"><b>On plan ${h.on_plan}</b>${h.on_track!=null?` · <b>On track ${h.on_track}</b>`:""}</div>`
+        +[["Sleeves","sleeves"],["Mix","mix"],["Rules","rules"],["Concentration","concentration"],["Cash","cash"]]
+          .map(([k,key])=>chip(k,(P[key]||{}).score,key)).join("")
+        +(h.on_track!=null?chip("On track",h.on_track,"on_track"):"")
+        +`<div class="mk" style="margin-top:6px;width:100%">${h.on_track_detail||""}</div>`;
+    }else{
+      $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
+        .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
+      // Legacy fallback only (plan health unavailable): say which volatility
+      // the Risk chip was scored on, as PR 16 required.
+      const vb=h.volatility_basis||"static", vs=h.avg_volatility_pct_static;
+      $("dims").innerHTML+=vb==="measured"
+        ? `<div class="mk" style="margin-top:6px">Risk is scored on <b>${h.avg_volatility_pct}%</b> volatility measured from your own strategies (${h.measured_pct_of_book}% of the book) against your <b>${h.volatility_cap_pct}%</b> cap${vs!=null&&vs!==h.avg_volatility_pct?` — the instrument table would have said ${vs}%`:""}.</div>`
+        : `<div class="mk" style="margin-top:6px">⚠️ Risk is scored on <b>${h.avg_volatility_pct}%</b> assumed volatility against your <b>${h.volatility_cap_pct}%</b> cap. That figure is the instrument table, not a measurement of the rules you run.</div>`;
+    }
   }catch(e){}
   try{const r=await(await fetch("/api/v1/recommendations")).json();
     // Which triggered rules actually produced a card. Re-render the banner now
     // that the authoritative answer has arrived.
     REC_BANNER=r.rule_banner||null; renderRuleBanner();
     const all=r.recommendations||[];
+    const more=r.more_recommendations||[];
     RECMAP={};
-    all.forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),
+    all.concat(more).forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),
                                  severity:o.severity||null};});
     const recs=all;
     // "Nothing to do" and "you ignored everything" and "an agent failed" are three
@@ -953,6 +982,7 @@ async function loadToday(){
     const hiddenCards=r.hidden_cards||[];
     $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
       + (hidden&&recs.length?ignoredNote(hidden,hiddenCards):"")
+      + (more.length?(MORE_HTML=more.map(recCard).join(""),moreNote(more)):"")
       + (done&&recs.length?doneNote(done):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
@@ -987,6 +1017,13 @@ async function loadToday(){
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
   }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
 }
+// PR 70: cards past the first 12, by priority. Collapsed, never dropped.
+function moreNote(more){
+  return `<div class="card center muted" style="font-size:13px" id="moreRecs">
+    ${more.length} more lower-priority ${more.length>1?"suggestions":"suggestion"} ·
+    <span class="link" onclick="document.getElementById('moreRecs').outerHTML=MORE_HTML">show ${more.length>1?"them":"it"}</span></div>`;
+}
+let MORE_HTML="";
 function doneNote(done){
   return `<div class="card center muted" style="font-size:13px">
     ✅ ${done} ${done>1?"suggestions":"suggestion"} marked done ·
@@ -1079,6 +1116,10 @@ function recCard(o){
   const why=o.why?`<div class="why" style="font-size:13px;opacity:.8;margin:2px 0 6px"><b>Why:</b> ${o.why}</div>`:"";
   const impact=o.impact?`<div class="impact" style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px"><b>Impact:</b> ${o.impact}</div>`:"";
   const fund=fundingBlock(o);
+  // PR 70: other ideas that fill the same gap ride on this card, not beside it.
+  const alts=(o.alternatives||[]).length
+    ? `<div class="mk" style="margin:4px 0">Also fills this gap: ${(o.alternatives||[]).map(a=>`${a.title||a.ticker}${a.score!=null?` (priority ${a.score})`:""}`).join(" · ")}</div>`
+    : "";
   // Say up front whether the app can execute this or whether it's guidance you
   // act on yourself -- Accept used to look identical for both.
   const tag=o.actionable
@@ -1116,13 +1157,13 @@ function recCard(o){
     ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid #60a5fa;
          background:rgba(96,165,250,.08);border-radius:4px">You marked this handled &mdash; it is back because ${o.refired_because}.</div>`
     : "";
-  return `<div class="rec"${o.refired_because?' style="border-left:3px solid #60a5fa"':''}><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}">${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
+  return `<div class="rec"${o.refired_because?' style="border-left:3px solid #60a5fa"':''}><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}"${o.priority?` title="Priority ${o.priority.score}: money ${o.priority.money}, time ${o.priority.time}, your rules ${o.priority.rules}${o.priority.quality!=null?`, idea quality ${o.priority.quality}`:""}"`:""}>${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
     <div style="margin:2px 0 6px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${scopeChip}${tag}</div>
     ${why}
     <div class="act">${o.action}</div>
     ${back}${notes}
     ${impact}
-    ${fund}
+    ${fund}${alts}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
     ${auditAccordion(o)}
     <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button>${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;

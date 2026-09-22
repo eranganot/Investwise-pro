@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-22 by Claude (PR 69; HEAD was `2c1c122` = PR 68.7)._
+_Last updated: 2026-09-22 by Claude (PR 70; built on PR 69)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -150,6 +150,45 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 70 — the health score is On plan + On track; one priority scale for every card
+
+_2026-09-22. Eran: "let's re-think on how to calculate the health score and what does it mean" and
+"re-think the priority of the cards -- they are not giving the urgency when it matters". Designed
+and approved in the proposal doc (claude.ai artifact 8078afb9); his decisions: goal card stays Worth
+doing; ideas may rank with fixes, ties within 5 points go to your own rule; the plan's concentration
+cap raises GUIDANCE, a max-weight rule raises the ACTION card; weights as proposed._
+
+**Why the old score was wrong for this book.** Risk read **3/100**: measured 49% volatility against a
+generic 25% cap, on a book that runs a 3x SOXL sleeve on purpose. Tax read 100 because nothing was
+underwater. Headline 64 "Healthy" while the goal was 26.5% likely.
+
+**Health (`app/services/plan_health.py`).** ON PLAN = sleeves 30% (each sleeve inside its 3-pt band;
+core vs its basket via `_core_plan`) + mix 20% (largest drift vs `mix_check`) + rules 20% (holdings
+with a stop, -25 per fired rule waiting) + concentration 15% (-20 per point over the plan cap) + cash
+15% (between the floor and the redeploy line). ON TRACK = the projection's probability of meeting the
+goal (standing-order run when one exists). Score = mean. Every input comes from the function its
+screen already uses. `/health-check`, the nightly `whs_snapshots` row (`detail.score_basis`) and the
+AI summary all quote it; the legacy blend stays as `legacy_score`. Expected on the live book:
+**On plan 76, On track 27, score 51 "Needs attention"** (doc said 77/52 with the core estimated at
+~20% of its basket; computed it should be ~13%, since BND 1,257 is the only basket holding -- check after deploy).
+
+**Priority (`app/services/card_priority.py`).** money 0-40 (full at 5% of NAV; ideas half) + time
+0-35 (fired 35, <=2% 20, <=5% 10, <=10% 5, stale/tax deadline 20, goal 10) + your rules 0-25 +
+idea quality 0-45 (6-month trend, screen score, share of the class gap closed). >=70 Important,
+50-69 Worth doing, 30-49 Nice to have, else Minor; a stop at/near its level is always Important.
+Written back into `severity`, so the pill, push filter and mute marks follow. Scored BEFORE the mute
+logic. Same-class buy ideas fold into one card with `alternatives` (USO carries UGA). Cards past the
+first 12 are served as `more_recommendations`, collapsed, instead of silently dropped (found when
+`test_a_loss_with_nothing_to_offset...` lost its small harvest card past the cut on a busy test DB).
+
+**Behaviour changes to watch:** push sends on CRITICAL/HIGH, and more cards are now HIGH (Worth
+doing) -- buy ideas can push. The concentration Trim card is guidance (Mark as done); the rule card
+still executes. Fired-rule cards now carry `est_amount`.
+
+`tests/test_priority_and_plan_health.py` (26, live numbers), `tests/test_the_health_check_scores_the_plan.py` (2).
 
 ---
 

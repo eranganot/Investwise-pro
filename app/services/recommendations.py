@@ -1253,7 +1253,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                              f"Place a SELL order for ~{shares} {tk} shares (~{_ils(trim)})",
                              "Reinvest the proceeds across your other holdings or your plan's target mix"],
                      "est_amount": round(trim, 2),
-                     "apply": {"kind": "trim", "ticker": tk, "shares": shares}})
+                     # GUIDANCE, not an action (Eran, 2026-09-22: "the plan should
+                     # trigger guidance card, the rule should trigger action card").
+                     # Crossing the plan's limit is advice; a max-weight RULE you
+                     # armed firing is the card whose Accept executes the trim.
+                     "apply": {"kind": "none"},
+                     "meta": {"ticker": tk, "weight_pct": round(w * 100, 2),
+                              "limit_pct": round(cap * 100, 2), "source": "plan_cap"}})
         recs[-1]["audit_trail"] = audit_for("diversification",
             raw_data={"ticker": tk, "weight": round(w, 4), "concentration_cap": round(cap, 4),
                       "nav": round(nav, 2), "price": round(price, 2)},
@@ -2377,6 +2383,32 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     # holding/hedge/momentum/fee agents that don't set them explicitly).
     _ensure_why_impact(recs)
 
+    # PR 70. ONE PRIORITY SCALE. Scored here -- after reconciliation, BEFORE the
+    # mute logic -- so the marks that decide whether a hidden card comes back
+    # compare severities on the scale the card is now shown on.
+    try:
+        from sqlalchemy import select as _sel
+
+        from app.models.tables import TradingRule as _TR
+        from app.services.card_priority import apply_priority
+        from app.services.fx import fx_rate as _fxp, price_currency as _pcp
+        _pw: dict[str, float] = {}
+        if nav:
+            for _p in rows:
+                _pm = _p.meta if isinstance(_p.meta, dict) else {}
+                _tkp = str(_p.ticker or "").upper()
+                _pw[_tkp] = _pw.get(_tkp, 0.0) + (float(_p.quantity) * float(_p.current_price or 0)
+                                                  * _fxp(_pcp(_p.market, _pm))) / nav
+        _mw = {str(t).upper(): float(lv) for t, lv in (await session.execute(
+            _sel(_TR.ticker, _TR.level).where(_TR.subject == user.email, _TR.active.is_(True),
+                                              _TR.rule_type == "max_weight"))).all()}
+        apply_priority(recs, nav=float(nav or 0.0), weights=_pw, max_weight_rules=_mw)
+        from app.services.card_priority import fold_alternatives
+        recs = fold_alternatives(recs)
+    except Exception:  # noqa: BLE001 -- a card keeps its own severity rather than vanish
+        logger.warning("card priority scoring failed; generator severities kept", exc_info=True)
+        degraded.append("card_priority")
+
     # Drop anything the user dismissed (server-side, so push + Today stay in sync).
     dismissed = await load_dismissed(session, user)
     completed = await load_completed(session, user)
@@ -2575,7 +2607,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         except Exception:  # noqa: BLE001
             logger.warning("rule banner reconciliation failed", exc_info=False)
 
-    recs.sort(key=lambda r: _SEV.get(r["severity"], 9))
+    # PR 70: by priority score; within 5 points your own rule or a protective
+    # card first. Falls back to the severity order when a card was not scored.
+    from app.services.card_priority import sort_key as _prio_key
+    recs.sort(key=lambda r: (_prio_key(r) if r.get("priority") else (0, 0.0),
+                             _SEV.get(r["severity"], 9)))
     _tm.mark("reconcile_and_filter")
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
     bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
@@ -2629,6 +2665,10 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     _tm.mark("scope_and_contradictions")
 
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
+            # PR 70: past the first 12 a card used to vanish without a trace, and
+            # which ones vanished is now decided by the priority score. They are
+            # served, collapsed under "N more lower-priority suggestions".
+            "more_recommendations": recs[12:],
             "market": market,
             # What the book is managed to, and where each half came from. On the
             # payload rather than only inside a card, so a smoke test can assert
@@ -3061,7 +3101,11 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                         "Nothing happens automatically -- the rule raises a card"],
                 "est_amount": amount, "apply": {"kind": "none"},
                 "meta": {"ticker": tk, "rule_type": rt, "target": target,
-                         "gap_pct": round(near_pct, 2)}})
+                         "gap_pct": round(near_pct, 2),
+                         # PR 70: distance to the level as a share of price, the
+                         # one measure the priority score reads for every level.
+                         "distance_pct": round(((target - price) if rt == "take_profit"
+                                                else (price - target)) / price * 100.0, 2)}})
 
         # 2) IT HAS SIMPLY RUN A LONG WAY.
         if gain_pct >= _GAIN_CARD_PCT and cost > 0:
@@ -3962,7 +4006,17 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
                      # recommendation read next month traces to the weights and
                      # the COVERAGE that produced it rather than to whatever the
                      # table says by then.
-                     "ranked_for": idea.get("ranked_for")},
+                     "ranked_for": idea.get("ranked_for"),
+                     # PR 70: what the priority score reads for an idea --
+                     # performance, potential, and how much of its class's gap
+                     # this buy closes, all from numbers already on the card.
+                     "idea": {"screen_score": score,
+                              "return_6m_pct": (idea.get("metrics") or {}).get("trend_pct"),
+                              **{k: (round(float(getattr(buy, a)) * 100, 2)
+                                     if getattr(buy, a, None) is not None else None)
+                                 for k, a in (("class_from_pct", "class_before"),
+                                              ("class_to_pct", "class_after"),
+                                              ("class_target_pct", "class_target"))}}},
         })
         already_named.add(tk)
 

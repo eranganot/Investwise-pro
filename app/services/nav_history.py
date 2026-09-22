@@ -606,9 +606,19 @@ async def record_health_for(session, user) -> dict:
     )).scalar_one_or_none()
     if entity_id is None:
         return {"ok": False, "reason": "no entity to attach the score to"}
+    # PR 70: the recorded score is the one the screen shows (On plan + On track).
+    # The legacy components stay in their columns; `detail.score_basis` says
+    # which scale `score` is on, so a history spanning the change can be read.
+    from app.services.plan_health import plan_health
+    try:
+        ph = await plan_health(session, user)
+    except Exception:  # noqa: BLE001 -- losing the new score must not lose the row
+        logger.warning("plan health unavailable for the snapshot", exc_info=True)
+        ph = None
+    _score = float(ph["score"]) if ph else float(sc["wealth_health_score"])
     session.add(WhsSnapshot(
         entity_id=entity_id,
-        score=float(sc["wealth_health_score"]),
+        score=_score,
         risk=float(sc["risk_score"]), tax=float(sc["tax_efficiency_score"]),
         alloc=float(sc["diversification_score"]), liq=float(sc["liquidity_score"]),
         thematic=0.0,
@@ -619,9 +629,14 @@ async def record_health_for(session, user) -> dict:
                 "volatility_cap": caps.get("volatility_cap"),
                 "max_weight": round(snap.get("max_weight") or 0.0, 4),
                 "avg_volatility_pct": round(snap.get("avg_volatility_pct") or 0.0, 2),
-                "version": SNAPSHOT_VERSION},
+                "version": SNAPSHOT_VERSION,
+                "score_basis": "on_plan_on_track" if ph else "legacy_components",
+                "on_plan": ph["on_plan"] if ph else None,
+                "on_track": ph["on_track"] if ph else None,
+                "plan_parts": ph["part_scores"] if ph else None,
+                "legacy_score": sc["wealth_health_score"]},
     ))
-    return {"ok": True, "score": sc["wealth_health_score"]}
+    return {"ok": True, "score": round(_score)}
 
 
 async def series_for(session, user, *, range_key: str = "1M") -> dict:
