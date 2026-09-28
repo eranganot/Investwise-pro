@@ -127,8 +127,35 @@
   .oc .k{color:var(--mut);font-size:13px}.oc .v{font-weight:700}
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-end;justify-content:center;z-index:50}
   .ov.show{display:flex}
-  .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:18px 18px 28px}
-  .modal h3{margin:0 0 8px}.modal p{color:#c9d3df;line-height:1.55;font-size:14px}.modal .x{float:right;color:var(--mut);cursor:pointer;font-size:20px}
+  .modal{background:var(--card);border:1px solid var(--line);border-radius:18px 18px 0 0;max-width:600px;width:100%;padding:0 18px 28px;
+    max-height:92vh;overflow-y:auto;overscroll-behavior:contain;box-sizing:border-box}
+  /* PR 75: the title row stays put while the body scrolls, so the close button
+     is always reachable (Eran, 2026-09-28: "the graph pop-up is not looking good"). */
+  .modal h3{margin:0 0 8px;position:sticky;top:0;z-index:2;background:var(--card);padding:16px 0 10px;border-bottom:1px solid var(--line)}
+  .modal .x{position:sticky;top:12px;z-index:3;float:right;margin-top:12px;color:var(--mut);cursor:pointer;font-size:22px;line-height:1;padding:2px 6px;border-radius:8px}
+  .modal .x:hover{color:var(--ink);background:var(--soft)}
+  .modal p{color:#c9d3df;line-height:1.55;font-size:14px}
+  @media(min-width:700px){.ov{align-items:center;padding:24px}.modal{border-radius:18px;max-height:88vh;padding-bottom:22px;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
+  .hchart{position:relative;height:220px;margin-top:4px}
+  .hbuy{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--line)}
+  .hmore{background:none;border:0;color:#7fb0ff;cursor:pointer;font-size:12px;padding:8px 0 0;font-weight:600}
+  /* PR 75: a decision card is two option tiles; the recommended one is filled. */
+  .dec{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+  @media(max-width:560px){.dec{grid-template-columns:1fr}}
+  .dopt{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--card2);display:flex;flex-direction:column;gap:6px}
+  .dopt.rec{border-color:#1f6f4a;box-shadow:inset 0 0 0 1px #1f6f4a;background:#0d1d17}
+  .dopt .dt{font-weight:700;font-size:14px}
+  .dopt .dd{color:var(--mut);font-size:12px;line-height:1.45}
+  .dopt .dw{color:#9fe3c4;font-size:12px;line-height:1.45}
+  .dopt .tag{align-self:flex-start;font-size:11px;font-weight:700;color:var(--green);background:#123024;border-radius:999px;padding:2px 9px}
+  .dopt .dgo{margin-top:auto;padding-top:4px;display:flex;gap:8px;align-items:stretch}
+  .dopt .dgo button{flex:1;padding:9px 12px;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;border:1px solid #1f6f4a;background:transparent;color:var(--green);white-space:nowrap}
+  .dopt .dgo button:hover{background:#0f2619}
+  .dopt.rec .dgo button{background:var(--green);color:#05261a;border-color:var(--green)}
+  .dopt.rec .dgo button:hover{filter:brightness(1.08)}
+  .lvl{display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:0 10px}
+  .lvl input{width:84px;background:transparent;border:0;outline:0;color:var(--ink);padding:8px 0;font-size:13px;font-weight:600}
+  .lvl span{color:var(--mut);font-size:12px}
   /* Phase 2.1 - Source Code & Data accordion */
   details.audit{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--card2)}
   details.audit>summary{cursor:pointer;list-style:none;padding:9px 12px;font-size:12px;font-weight:700;color:var(--mut);display:flex;align-items:center;gap:7px}
@@ -514,7 +541,7 @@
     <div class="seg" id="h_rng" style="margin-bottom:10px;width:100%;box-sizing:border-box">
       <button data-r="1D" onclick="setHistRange('1D')">1D</button><button data-r="1W" onclick="setHistRange('1W')">1W</button><button data-r="1M" onclick="setHistRange('1M')">1M</button><button data-r="3M" onclick="setHistRange('3M')">3M</button><button data-r="1Y" onclick="setHistRange('1Y')">1Y</button><button data-r="ALL" onclick="setHistRange('ALL')">All</button></div>
     <div id="h_head" style="margin-bottom:6px"></div>
-    <canvas id="ch_hist" height="200"></canvas>
+    <div class="hchart"><canvas id="ch_hist"></canvas></div>
     <div class="muted" id="h_cap" style="margin-top:8px"></div>
     <div id="h_buys" style="margin-top:14px"></div>
   </div>
@@ -1183,6 +1210,7 @@ function recCard(o){
     ${fund}${alts}
     <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
     ${auditAccordion(o)}
+    ${decisionBlock(o)}
     <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button>${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
@@ -1200,16 +1228,36 @@ function _applyMsg(j){
   if(j.advisory){return j.note||"Marked as done \u2014 nothing was bought or sold.";}
   return parts.length?("Done \u2014 "+parts.join(" \u00b7 ")):"Done \u2014 applied.";
 }
-function actBtn(o){
-  // PR 72: a rule that fights a sleeve target is a decision with two answers.
+// PR 72 made a rule that fights a sleeve target a decision with two answers.
+// PR 75 lays them out as two tiles, marks the one the sleeve's own signal
+// recommends (Eran: "the recommended option will be the default choice" --
+// highlighted, still a click), and the Sell no longer changes the sleeve.
+function decisionBlock(o){
   const ap=o.apply||{};
-  if(ap.kind==="rule_vs_sleeve"&&ap.options){
-    const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
-    return `<button class="acc" onclick="decideRule('${o.id}','sell')">Sell &amp; lower sleeve to ${s.sleeve_pct_to}%</button>
-      <span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:nowrap">
-        <button class="acc" onclick="decideRule('${o.id}','keep')">Keep &amp; move rule to</button>
-        <input id="lvl_${o.id}" type="number" step="any" value="${k.level}" style="width:86px"/>${u}</span>`;
-  }
+  if(!(ap.kind==="rule_vs_sleeve"&&ap.options)) return "";
+  const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
+  const sh=(s.apply||{}).shares, tk=ap.ticker||"", r=ap.recommended||"sell";
+  const f=n=>Number(n).toLocaleString(undefined,{maximumFractionDigits:2});
+  const tag=c=>r===c?`<span class="tag">Recommended</span>`:"";
+  const why=c=>r===c&&ap.recommended_why?`<div class="dw">${esc(ap.recommended_why)}</div>`:"";
+  return `<div class="dec">
+    <div class="dopt${r==="sell"?" rec":""}">${tag("sell")}
+      <div class="dt">Sell ${sh!=null?f(sh)+" ":""}${esc(tk)}</div>
+      <div class="dd">~${ils(s.gross_ils||0)}${s.tax_ils?` \u00b7 est. tax ${ils(s.tax_ils)}`:""} \u00b7 ${esc(tk)} ${f(s.weight_now_pct)}% \u2192 ${f(s.weight_after_pct)}% of the book.
+        Your ${f(s.sleeve_pct)}% sleeve target stays; not bought back until it trades below ${f(s.hold_above)}.</div>
+      ${why("sell")}
+      <div class="dgo"><button onclick="decideRule('${o.id}','sell')">Sell</button></div></div>
+    <div class="dopt${r==="keep"?" rec":""}">${tag("keep")}
+      <div class="dt">Keep the shares</div>
+      <div class="dd">Nothing is sold. Your take-profit moves up from ${f(k.old_level)}${u}.</div>
+      ${why("keep")}
+      <div class="dgo"><label class="lvl" title="New take-profit level"><input id="lvl_${o.id}" type="number" step="any" value="${k.level}" aria-label="New take-profit level"/>${u?`<span>${u}</span>`:""}</label>
+        <button onclick="decideRule('${o.id}','keep')">Keep &amp; move rule</button></div></div>
+  </div>`;
+}
+function actBtn(o){
+  const ap=o.apply||{};
+  if(ap.kind==="rule_vs_sleeve"&&ap.options) return "";
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
@@ -1241,14 +1289,14 @@ async function decideRule(id,choice){
     q+=`&level=${v}`;
     msg=`Keep the position and move the rule to ${v}?\n\nNothing is sold.`;
   } else {
-    msg="Sell the slice and lower the sleeve?\n\nThis updates your InvestWise book and your plan. No brokerage order is placed.";
+    msg="Sell the slice?\n\nYour sleeve target is NOT changed; the app will not buy it back until the price falls below today's. This updates your InvestWise book only. No brokerage order is placed.";
   }
   if(!confirm(msg))return;
   try{const r=await fetch(`/api/v1/recommendations/${id}/accept?${q}`,_statePost(_cardState(id)));
     const j=await r.json().catch(()=>({}));
     if(r.status===404){alert("That decision no longer applies, so I've removed it.");HMAP={};loadToday();return;}
     if(!r.ok){alert(j.detail||"Not applied.");return;}
-    alert(j.note||_applyMsg(j)+(j.sleeve&&j.sleeve.ok?` · sleeve ${j.sleeve.previous_pct}% \u2192 ${j.sleeve.sleeve_pct}%`:""));
+    alert(j.note||_applyMsg(j)+(j.buyback_hold?` \u00b7 sleeve target unchanged; not bought back above ${j.buyback_hold.level}`:""));
     HMAP={};loadToday();
   }catch(e){alert(e.message||e);}
 }
@@ -1730,7 +1778,8 @@ function renderHist(){
     if(best>=0) mark[best]=t.type==="Sell"?-1:1; });
   drawChart("ch_hist","line",{labels:pts.map(p=>_hLabel(p.t)),datasets:[{data:ys,borderColor:col,borderWidth:2,fill:false,tension:.15,
       pointRadius:mark.map(m=>m?5:0),pointBackgroundColor:mark.map(m=>m<0?"#f87171":"#3b82f6"),pointBorderWidth:0}]},
-    {plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+(useVal?` \u00b7 ${pts[c.dataIndex].shares} sh`:"")}}},
+    {maintainAspectRatio:false,interaction:{mode:"index",intersect:false},
+     plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+(useVal?` \u00b7 ${pts[c.dataIndex].shares} sh`:"")}}},
      scales:{x:{ticks:{color:"#8b97a8",maxTicksLimit:5,maxRotation:0,autoSkipPadding:14},grid:{display:false}},y:{ticks:{color:"#8b97a8",callback:n=>useVal?ils(n):n},grid:{color:"#1f2a3a"}}}});
   const notes=[];
   if(HIST.mode==="value" && !v.available) notes.push("The line above is the ticker's price, shown because your position cannot be drawn.");
@@ -1753,9 +1802,11 @@ function renderBuys(j){
   el.innerHTML=`<div class="nm" style="font-size:14px;margin-bottom:4px">Your buys</div>
     <div class="mk" style="margin-bottom:8px">Last buy ${_soDate(last.at.slice(0,10))} at ${f(last.price)} ${cur}: ${pct(last.change_pct)} since
       ${j.avg_price?` \u00b7 avg price ${f(j.avg_price)} ${cur}`:""}</div>
-    ${bs.map(b=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)">
-      <div class="mk">${_soDate(b.at.slice(0,10))} \u00b7 ${f(b.shares)} sh @ ${f(b.price)}</div><div class="mk">${pct(b.change_pct)}</div></div>`).join("")}`;
+    ${bs.map((b,i)=>`<div class="hbuy"${i>=5?' data-more="1" style="display:none"':""}>
+      <div class="mk">${_soDate(b.at.slice(0,10))} \u00b7 ${f(b.shares)} sh @ ${f(b.price)}</div><div class="mk">${pct(b.change_pct)}</div></div>`).join("")}
+    ${bs.length>5?`<button class="hmore" onclick="_moreBuys(this)">Show all ${bs.length} buys</button>`:""}`;
 }
+function _moreBuys(btn){document.querySelectorAll('#h_buys [data-more]').forEach(e=>e.style.display="");btn.remove();}
 // --- Standing orders (monthly deposit into cash) ---------------------------
 let SO=null;
 function _soDate(d){ if(!d) return ""; const x=new Date(d+"T12:00:00"); return x.toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"}); }

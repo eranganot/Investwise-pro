@@ -114,12 +114,18 @@ async def test_the_soxl_take_profit_on_its_sleeve_becomes_a_decision_card():
     assert d["apply"]["kind"] == "rule_vs_sleeve"
     assert d["actionable"] is True
     sell, keep = d["apply"]["options"]["sell"], d["apply"]["options"]["keep"]
-    # SELL takes the rule's own 25% slice and lowers the sleeve by what it sold:
-    # 40% sleeve, 40.1% position, a quarter of it -> about 30%.
+    # SELL takes the rule's own 25% slice. PR 75 (Eran: "it should not change
+    # the goal of the sleeve, only the current holding"): the sleeve stays 40%,
+    # the HOLDING drops from 40.1% to about 30%, and the sale price is where the
+    # buy-back hold sits.
     assert sell["apply"]["kind"] == "trim" and sell["apply"]["shares"] == pytest.approx(25.0)
     assert sell["strategy_id"] == SLEEVE
-    assert sell["sleeve_pct_from"] == pytest.approx(40.0)
-    assert 29.5 <= sell["sleeve_pct_to"] <= 30.5, sell
+    assert sell["sleeve_pct"] == pytest.approx(40.0)
+    assert "sleeve_pct_to" not in sell, "the Sell answer no longer resizes the sleeve"
+    assert 29.5 <= sell["weight_after_pct"] <= 30.5, sell
+    assert sell["hold_above"] == pytest.approx(151.45)
+    # No stored strategy signal in this book -> the risk-reducing default.
+    assert d["apply"]["recommended"] == "sell" and "No stored signal" in d["apply"]["recommended_why"]
     # KEEP moves the rule past today's price -- the next rung (163.37) here.
     assert keep["old_level"] == pytest.approx(148.52)
     assert keep["level"] == pytest.approx(max(rs.next_rung(148.52, "price"), 151.45 * 1.1))
@@ -261,7 +267,7 @@ async def test_keep_refuses_a_level_that_would_fire_again_at_once(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sell_trims_the_slice_lowers_the_sleeve_and_climbs_the_ladder(monkeypatch):
+async def test_sell_trims_the_slice_keeps_the_sleeve_and_climbs_the_ladder(monkeypatch):
     eng, Session = _session()
     try:
         async with Session() as s:
@@ -276,13 +282,16 @@ async def test_sell_trims_the_slice_lowers_the_sleeve_and_climbs_the_ladder(monk
             fresh = await s.get(TradingRule, rule.id)
             legs = (await s.scalars(select(Transaction).where(
                 Transaction.ticker == "SOXL"))).all()
+            from app.services import buyback_hold as bh
+            holds = await bh.load(s, user)
     finally:
         await eng.dispose()
     assert out["applied"] == "trim", out
     # What the card claimed, re-measured:
     assert float(rows["SOXL"].quantity) == pytest.approx(100.0 - sell["apply"]["shares"])
-    assert sleeves[SLEEVE] == pytest.approx(sell["sleeve_pct_to"])
-    assert out["sleeve"]["ok"] and out["sleeve"]["previous_pct"] == pytest.approx(40.0)
+    assert sleeves[SLEEVE] == pytest.approx(40.0), "the sleeve target is Eran's; a sale keeps it"
+    assert out["sleeve_unchanged_pct"] == pytest.approx(40.0)
+    assert holds["SOXL"]["level"] == pytest.approx(151.45) == out["buyback_hold"]["level"]
     assert float(rows["CASH"].quantity) > 0, "net proceeds land in cash"
     assert [(t.txn_type, float(t.quantity)) for t in legs] == [("Sell", pytest.approx(25.0))]
     assert float(fresh.level) == pytest.approx(rs.next_rung(148.52, "price")) and fresh.active
@@ -410,10 +419,10 @@ async def test_a_failed_conversion_does_not_retire_the_take_profit(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 7. The sleeve moves by what was actually sold
+# 7. A partial fill: the hold records what was actually sold; the sleeve stays
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_a_partial_fill_moves_the_sleeve_partially(monkeypatch):
+async def test_a_partial_fill_holds_what_was_sold_and_keeps_the_sleeve(monkeypatch):
     eng, Session = _session()
     try:
         async with Session() as s:
@@ -432,8 +441,8 @@ async def test_a_partial_fill_moves_the_sleeve_partially(monkeypatch):
     finally:
         await eng.dispose()
     assert out["shares"] == pytest.approx(10.0)
-    frm, to = sell["sleeve_pct_from"], sell["sleeve_pct_to"]
-    assert sleeves[SLEEVE] == pytest.approx(round(frm - (frm - to) * 10 / 25, 2))
+    assert sleeves[SLEEVE] == pytest.approx(sell["sleeve_pct"]) == pytest.approx(40.0)
+    assert out["buyback_hold"]["shares"] == pytest.approx(10.0)
 
 
 def test_the_sleeve_cut_is_sized_from_value_not_one_rows_share_count():

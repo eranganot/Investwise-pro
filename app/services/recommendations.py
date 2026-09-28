@@ -1196,7 +1196,12 @@ def _fund_action(sleeve_ids: list[str]) -> dict:
     return {"kind": "fund_plan"}
 
 
-async def build_recommendations(session: AsyncSession, user: User) -> dict:
+async def build_recommendations(session: AsyncSession, user: User,
+                                simulate_cash_ils: float | None = None) -> dict:
+    """`simulate_cash_ils` (PR 75): the cash card is sized as if you held that
+    much cash, NAV raised by the difference. Only the cash card reads it; the
+    route that passes it returns only that card, marked simulated, with no
+    Accept. Nothing about it is written."""
     _tm = _Stopwatch()
     rows = await list_positions(session, user)
     if not rows:
@@ -1242,6 +1247,19 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _cash_ils = 0.0
     # Resolved here, before anything reads it: the funding exclusions need the
     # core basket, and the tax block below needs the same set.
+    # PR 75 -- take-profit holds. Released first (a retreated price ends the
+    # hold for good), then read once for every buyer in this build.
+    from app.services import buyback_hold as _bh
+    try:
+        if await _bh.release_retreated(session, user, rows):
+            # Committed HERE: nothing later in the build commits, so a release
+            # left in the session was lost and the hold came back (review,
+            # CONFIRMED) -- "released for good" has to be written.
+            await session.commit()
+        _holds_active = _bh.active(await _bh.load(session, user), rows)
+    except Exception:  # noqa: BLE001 - a hold must never cost the Today view
+        logger.warning("buy-back holds unavailable", exc_info=True)
+        _holds_active = {}
     btgt = await _book_target(session, user, objective)
 
     # Sleeve holdings AND the core basket are never a funding source for a Today
@@ -1858,6 +1876,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _sleeve_share = {}
     _sleeve_floor = {t: round(w * 100.0, 1) for t, w in _sleeve_share.items()}
     recs += await _offload(_momentum_recs, rows, snap, _sleeve_floor)
+    # The FLOOR above is the plan (a cap may not sit below the planned sleeve);
+    # the SHARE the cash card sizes buys against honours a take-profit hold.
+    if _holds_active and _sleeve_share:
+        _sleeve_share, _ = _bh.apply_holds(_sleeve_share, _holds_active,
+                                           _bh.weights_of(rows, snap.get("nav") or 0.0))
     _tm.mark("momentum")
 
     # AN OPEN CIRCUIT IS A DEGRADED AGENT, and has to say so here.
@@ -1919,9 +1942,25 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                             objective, _pin_out)
     _tm.mark("buy_ideas")
 
+    if simulate_cash_ils is not None:
+        _sim_snap = {**snap, "nav": (snap.get("nav") or 0.0) + float(simulate_cash_ils) - _cash_ils,
+                     "_real_nav": snap.get("nav") or 0.0}
+        _redeploy = await _offload(_redeploy_cash_recs, rows, _sim_snap, plan, objective, cap,
+                                   float(simulate_cash_ils), btgt["target"], _name_caps,
+                                   _sleeve_share, _holds_active,
+                                   round(sum((btgt.get("held_back") or {}).values())
+                                         * (_sim_snap.get("nav") or 0.0), 2))
+        return {"simulated": True, "simulate_cash_ils": float(simulate_cash_ils),
+                "cash_now_ils": round(_cash_ils, 2),
+                "note": ("Read-only preview: the cash card as if you held this much cash "
+                         "(NAV raised by the difference). The preview itself is not saved and cannot be accepted."),
+                "recommendations": [{**r, "apply": {"kind": "none", "simulated": True,
+                                                    "legs": (r.get("apply") or {}).get("legs")}}
+                                    for r in _redeploy]}
+    _reserve = round(sum((btgt.get("held_back") or {}).values()) * (snap.get("nav") or 0.0), 2)
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"], _name_caps,
-                               _sleeve_share)
+                               _sleeve_share, _holds_active, _reserve)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"], _name_caps)
 
@@ -2115,6 +2154,11 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         # is the P1 duplicate-cap bug in card form, which is why the caps are
         # summed too -- same primitive, same reason.
         _targets = await _sv.all_sleeve_targets(session, user)
+        # PR 75: the PLANNED targets stay what every card displays and caps
+        # against; a ticker on a take-profit hold just gets no top-up card (see
+        # the loop). Review: cutting `_targets` itself made the cap card quote
+        # "a 30% sleeve" for a planned 40%.
+        _held_tks = set(_holds_active or {})
         # The leg each rule currently wants -- one read, shared with the loop
         # below, so the card and `all_sleeve_targets` cannot disagree about
         # which instrument a sleeve is asking for. PR 63.
@@ -2134,6 +2178,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                 _gap = _target_pct - _actual_pct
                 if abs(_gap) < SLEEVE_DRIFT_BAND_PCT:
                     continue
+                if _gap > 0 and _tk in _held_tks:
+                    continue      # sold on its take-profit; not bought back yet
                 _held = _actual_pct > 0.05
                 _amount = abs(_gap) / 100.0 * nav
                 _cold = not _held and _gap > 0
@@ -2186,7 +2232,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                             async with _agent_tx(session):
                                 from app.services.strategy_service import load_basket
                                 _prev = await load_basket(session, user, _sid,
-                                                          mode="fund", dry_run=True)
+                                                          mode="fund", dry_run=True,
+                                                          honour_holds=True)
                         except Exception:  # noqa: BLE001 - a preview must not kill Today
                             _prev = None
 
@@ -3671,8 +3718,16 @@ def _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, ca
 def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         book_mix: dict | None = None,
                         name_caps: dict | None = None,
-                        sleeve_targets: dict | None = None) -> list[dict]:
+                        sleeve_targets: dict | None = None,
+                        holds: dict | None = None,
+                        reserved_ils: float = 0.0) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
+
+    PR 75 -- `holds` are tickers under a take-profit buy-back hold and
+    `reserved_ils` the planned value they are short of. That money stays in
+    cash (it is the sleeve's, parked), and no leg -- including the plan-weight
+    pass -- may buy a held ticker. Review, CONFIRMED before this: the pass gave
+    SOXL its plan weight and the card bought the whole sale straight back.
 
     After a stop-loss fires and you accept it, the proceeds land in cash and the
     portfolio drifts away from its plan. The old "Put idle cash to work" card
@@ -3715,10 +3770,18 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     if _trigger is not None and cash_ils <= float(_trigger):
         return []
     spendable = _fund.spendable_cash(cash_ils, nav, objective, plan)
+    _held = {t.upper() for t in (holds or {})}
+    _reserved = round(max(0.0, min(float(reserved_ils or 0.0), spendable)), 2)
+    spendable = round(spendable - _reserved, 2)
     if spendable < _fund.MIN_TRADE_ILS:
         return []
 
     mix, _ = current_mix(rows)
+    if snap.get("_real_nav"):
+        # A simulated cash amount raises NAV; every invested class is diluted by
+        # the same factor (review: the gaps were measured against the real NAV).
+        _k = float(snap["_real_nav"]) / nav
+        mix = {c: w * _k for c, w in mix.items()}
     # The BOOK's target when the caller has one. Reading OBJ_TARGET here meant a
     # book with a chosen core redeployed its cash against the objective while
     # the rebalance card in the same payload used the core -- two answers, one
@@ -3903,10 +3966,47 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             x["reason"] += " (incl. budget reallocated from an unfillable class)"
             remaining = round(remaining - extra, 2)
 
+    # PR 75: a held ticker is never a leg, whichever pass produced it.
+    if _held:
+        for x in [x for x in legs if x["ticker"].upper() in _held]:
+            unplaced.append({"asset_class": x.get("asset_class"), "amount_ils": x["amount_ils"],
+                             "reason": f"{x['ticker']} is on a take-profit buy-back hold -- kept in cash"})
+        legs[:] = [x for x in legs if x["ticker"].upper() not in _held]
+
+    # PR 75 (plan item 3): RESEARCH the core legs -- is topping up this name the
+    # best use of the money in its class? Sleeves are never swapped. See
+    # `redeploy_research`. Only runs when there is a core leg to research, so a
+    # sleeve-only card costs no screener scan.
+    _research = None
+    _sleeve_set = {t.upper() for t in (sleeve_targets or {})}
+    if any(x["ticker"].upper() not in _sleeve_set for x in legs):
+        from app.services import redeploy_research as _rr
+        try:
+            _research = _rr.research(
+                legs, unplaced, sleeve_tickers=_sleeve_set,
+                held_tickers={t.upper() for t in weights},
+                scores=_rr.live_scores(objective, _ccy), trend=_rr.live_trend,
+                room_for=lambda tk: _fund.name_room_ils(
+                    nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps)),
+                min_trade=_fund.MIN_TRADE_ILS)
+        except Exception:  # noqa: BLE001 - research failing must leave the sized card as it was
+            logger.warning("redeploy research failed; card shown unresearched", exc_info=True)
+            _research = None
+
     if not legs:
         return []
     deployed = round(sum(x["amount_ils"] for x in legs), 2)
     kept = round(cash_ils - deployed, 2)
+    # SPENDABLE MONEY NO PASS COULD PLACE -- a holding at its concentration cap,
+    # a class with no candidate under the minimum trade. It used to fall into
+    # "Keep ₪X in cash (your ₪150 floor)", which called ₪4,136 a ₪150 floor.
+    _silent = round(spendable - deployed - sum(u["amount_ils"] for u in unplaced), 2)
+    if _silent >= 1:
+        unplaced.append({"asset_class": None, "amount_ils": _silent,
+                         "reason": "no underweight holding had room for it under your "
+                                   "concentration caps"})
+    # Money the passes or the research could not (or would not) place.
+    _leftover = round(_reserved + sum(u["amount_ils"] for u in unplaced), 2) >= 1
     floor_pct = _fund.cash_floor_pct(objective, plan, nav)
     new_names = [x["ticker"] for x in legs if x.get("new_position")]
 
@@ -3922,8 +4022,11 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         # left your mix off-plan", which is false the day the surplus is a
         # standing-order deposit.
         "why": ((f"You're holding {_ils(cash_ils)}, above the {_ils(float(_trigger))} at which "
-                 f"you asked to put cash to work. Everything above your {_soft} reserve "
-                 f"({_ils(_excess)}) goes into what the plan is short of.")
+                 f"you asked to put cash to work. "
+                 + (f"Everything above your {_soft} reserve ({_ils(_excess)}) goes into what the "
+                    f"plan is short of." if not _leftover else
+                    f"Of the {_ils(_excess)} above your {_soft} reserve, {_ils(deployed)} goes into "
+                    f"what the plan is short of and the rest stays in cash, for the reasons below."))
                 if _trigger is not None else
                 (f"You're holding {_ils(cash_ils)} ({cash_ils / nav:.1%} of the portfolio), "
                  f"{_ils(_excess)} above your {_soft} cash target. Cash above the target "
@@ -3931,19 +4034,29 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         "action": ("Put it back to work: "
                    + "; ".join(f"{_ils(x['amount_ils'])} into {x['ticker']}" for x in legs)
                    + f". Keeps {_ils(kept)} as your buffer."),
-        "impact": (f"Moves every underweight asset class toward its target and cuts cash from "
-                   f"{cash_ils / nav:.1%} to {kept / nav:.1%}."
+        "impact": (("Moves every underweight asset class toward its target and cuts cash from "
+                    if not _leftover else
+                    "Moves the classes it buys toward their targets (some money is kept in cash "
+                    "-- see below) and cuts cash from ")
+                   + f"{cash_ils / nav:.1%} to {kept / nav:.1%}."
                    + (f" Adds {', '.join(new_names)} to fill a gap the plan needs."
                       if new_names else "")),
         "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
-                + [f"⚠ {_ils(u['amount_ils'])} could not be placed — {u['reason']}"
-                   for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]
-                + [(f"Keep {_ils(kept)} in cash (your {_soft} target; "
-                    f"the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)})"
-                    if _soft != _ils(_fund.CASH_HARD_FLOOR_ILS) else
-                    f"Keep {_ils(kept)} in cash (your {_soft} floor)"),
+                + [f"⚠ {_ils(u['amount_ils'])} stays in cash — {u['reason']}"
+                   for u in unplaced if u["amount_ils"] >= 1]
+                + [(f"Keep {_ils(kept)} in cash"
+                    + (" in total -- the amounts above plus " if _leftover else " (")
+                    + (f"your {_soft} target; the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)}"
+                       if _soft != _ils(_fund.CASH_HARD_FLOOR_ILS) else f"your {_soft} floor")
+                    + ("" if _leftover else ")")),
                    "Accept executes every leg at live prices, funded entirely from cash",
-                   "Tracked book only — no brokerage order is placed"]),
+                   "Tracked book only — no brokerage order is placed"]
+                + ([f"{_ils(_reserved)} more stays in cash for "
+                    + ", ".join(f"{t} (not bought back until it trades below "
+                                f"{float((holds or {}).get(t, {}).get('level') or 0):,.2f})"
+                                for t in sorted(_held))
+                    + " -- your sleeve target is unchanged"] if _reserved >= 1 else [])
+                + _research_lines(_research, objective)),
         "est_amount": deployed,
         "apply": {"kind": "redeploy_cash", "legs": legs},
         "meta": {"cash_before_ils": round(cash_ils, 2), "cash_after_ils": kept,
@@ -3951,8 +4064,44 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                  # What the plan asked for but the book could not absorb. Silence
                  # here is what let ~1,940 sit idle while the card read as a
                  # complete answer.
-                 "unplaced": [u for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS]},
+                 "unplaced": [u for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS],
+                 # What was researched, what won and why the rest lost, plus the
+                 # assumption pins (investing-discipline §3).
+                 "research": _research},
     }]
+
+
+def _research_lines(research: dict | None, objective: str | None) -> list[str]:
+    """The 'also considered' lines for the cash card, and the disclosures."""
+    if not research:
+        return []
+    out: list[str] = []
+    for r in research.get("records") or []:
+        alts = r.get("also_considered") or []
+        if r.get("decision") == "kept" and r.get("incumbent"):
+            head = (f"Researched {r['asset_class']}: kept {r['incumbent']}"
+                    + (f" ({r['incumbent_score']:.0f}/100)" if r.get("incumbent_score") is not None else ""))
+        elif r.get("decision") == "swapped":
+            head = f"Researched {r['asset_class']}: {r['chosen']} instead of {r['leg_ticker_before']}"
+        elif r.get("decision") == "held_back":
+            head = f"Researched {r['asset_class']}: nothing bought -- see the cash line"
+        else:
+            head = f"Researched {r['asset_class']}: {r['chosen']}"
+        if alts:
+            head += ". Also considered: " + "; ".join(
+                f"{a['ticker']} {a['score']:.0f} ({a['lost_because']})" for a in alts)
+        out.append(head)
+    if out:
+        from app.services import objective_weights as _ow
+        _tilt = _ow.tilt_disclosure(objective)
+        out.append("Scores are the screener's (weights "
+                   f"{_ow.WEIGHTS_VERSION}, not owner-reviewed)"
+                   + (f"; {_tilt}" if _tilt else "")
+                   + ". A new name must beat what you hold by "
+                   f"{research['records'][0]['margin_pts']:g} points; "
+                   "confirmed downtrends (price < 50-day < 200-day) are not bought. "
+                   "Not financial advice.")
+    return out
 
 
 def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
@@ -4635,6 +4784,39 @@ async def _conservation_report(session, user, kind: str, rec_id: str,
             "nav_drift_ils": round(drift, 2)}
 
 
+async def _decision_recommendation(session: AsyncSession, user: User, strategy_id: str,
+                                   ticker: str) -> tuple[str, str]:
+    """("keep" | "sell", why) for a rule-vs-sleeve card. PR 75, Eran's choice.
+
+    Reads the STORED daily signal (`strategy_signal_state`), never fetches: the
+    Today view must not wait on a price feed. Fresh = its session is within the
+    signal service's own MAX_FEED_AGE_DAYS. The strategy's rule still holding
+    the ticker -> Keep; out of it, or no fresh signal -> Sell.
+    """
+    try:
+        from app.services import strategy_signal_service as sss
+        row = await sss._state(session, user.email, strategy_id)
+    except Exception:  # noqa: BLE001
+        row = None
+    if row is None or not row.as_of:
+        return "sell", (f"No stored signal for the {strategy_id} strategy, so the "
+                        f"risk-reducing answer is the default.")
+    try:
+        age = (datetime.now(timezone.utc).date()
+               - datetime.fromisoformat(str(row.as_of)[:10]).date()).days
+    except ValueError:
+        age = 10**6
+    if age > sss.MAX_FEED_AGE_DAYS:
+        return "sell", (f"The {strategy_id} signal is from {row.as_of} ({age} days old), "
+                        f"too old to lean on, so the risk-reducing answer is the default.")
+    w = float((row.target or {}).get(ticker.upper(), (row.target or {}).get(ticker, 0)) or 0)
+    if w > 0:
+        return "keep", (f"The {strategy_id} rule still holds {ticker} as of {row.as_of} "
+                        f"— the trend it was bought for is intact.")
+    return "sell", (f"The {strategy_id} rule is out of {ticker} as of {row.as_of} "
+                    f"— the trend it was bought for has turned.")
+
+
 async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: list[dict],
                                        contradictions: list[dict], pre: dict,
                                        weights: dict, *, nav: float = 0.0
@@ -4709,34 +4891,34 @@ async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: 
             if not nav or nav <= 0:
                 continue
             sold_pct = gross / float(nav) * 100.0
-            new_sleeve = _sv.shrunk_sleeve_pct(sl["sleeve_pct"], sl["ticker_pct"], sold_pct)
-            # A sleeve is resized as a whole. When it holds more than this
-            # ticker the other legs' targets shrink too, and the card says so
-            # rather than implying only the slice moves.
-            _others = ("" if sl.get("n_tickers", 1) <= 1 else
-                       f" The sleeve holds {sl['n_tickers']} tickers; all of their targets "
-                       f"shrink in proportion.")
+            w_after = max(0.0, w_now - sold_pct)
             unit = "%" if rule.mode == "pct" else ""
             name = sl["strategy_id"]
+            # WHICH ANSWER IS RECOMMENDED: the sleeve's own strategy signal
+            # (Eran, 2026-09-28). Its rule still holding the ticker -> Keep; out,
+            # or no fresh signal -> Sell, the risk-reducing fallback.
+            rec_choice, rec_why = await _decision_recommendation(session, user, name, tk)
             decision = {
                 **card,
                 "title": (f"{tk} hit your take-profit — but it's on your "
                           f"{sl['sleeve_pct']:g}% sleeve target. Your call."),
                 "why": (f"Two of your own decisions disagree. The rule says take a slice at "
                         f"{float(rule.level):g}{unit} (now {price:,.2f}). The sleeve says hold "
-                        f"{sl['ticker_pct']:.1f}% of the book in {tk}, and you hold {w_now:.1f}%. "
-                        f"Selling without lowering the sleeve gets bought straight back."),
-                "action": (f"Sell {shares:g} {tk} (~₪{gross:,.0f}) and lower the sleeve to "
-                           f"{new_sleeve:g}% — or keep it and move the rule to "
-                           f"{new_level:g}{unit}."),
+                        f"{sl['ticker_pct']:.1f}% of the book in {tk}, and you hold {w_now:.1f}%."),
+                "action": (f"Sell {shares:g} {tk} (~₪{gross:,.0f}) and keep the "
+                           f"{sl['sleeve_pct']:g}% sleeve target — or keep the shares and move "
+                           f"the rule to {new_level:g}{unit}."),
+                # PR 75 (Eran: "if I chose to sell it should not change the goal of
+                # the sleeve, only the current holding"). The sale no longer
+                # resizes the sleeve; a buy-back hold stops the app re-buying it.
                 "impact": (f"Sell: about ₪{max(0.0, gross - tax):,.0f} lands in cash after an "
-                           f"estimated ₪{tax:,.0f} of tax; the {name} sleeve goes "
-                           f"{sl['sleeve_pct']:g}% → {new_sleeve:g}% and the core takes the rest."
-                           f"{_others} "
+                           f"estimated ₪{tax:,.0f} of tax; {tk} goes from {w_now:.1f}% to about "
+                           f"{w_after:.1f}% of the book while the {name} sleeve target stays "
+                           f"{sl['sleeve_pct']:g}%. Nothing re-buys {tk} while it trades at or above "
+                           f"{price:,.2f}; once it falls below that, top-ups resume. "
                            f"Keep: nothing is sold; the rule re-arms at {new_level:g}{unit}."),
-                "how": [f"Sell & lower sleeve: trims {shares:g} {tk} in your InvestWise book, "
-                        f"credits the net proceeds to cash, and resizes the sleeve so the "
-                        f"funder does not re-buy it.",
+                "how": [f"Sell: trims {shares:g} {tk} in your InvestWise book and credits the "
+                        f"net proceeds to cash. Your sleeve target is not changed.",
                         f"Keep & update rule: nothing is sold; the take-profit moves to "
                         f"{new_level:g}{unit} (you can type a different level).",
                         "No brokerage order is placed — mirror a sale at your broker.",
@@ -4748,10 +4930,13 @@ async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: 
                         "take-profit."],
                 "est_amount": round(gross, 2),
                 "apply": {"kind": "rule_vs_sleeve", "rule_id": str(rule.id), "ticker": tk,
+                          "recommended": rec_choice, "recommended_why": rec_why,
                           "options": {
                               "sell": {"apply": dict(spec), "strategy_id": name,
-                                       "sleeve_pct_from": sl["sleeve_pct"],
-                                       "sleeve_pct_to": new_sleeve,
+                                       "sleeve_pct": sl["sleeve_pct"],
+                                       "weight_now_pct": round(w_now, 2),
+                                       "weight_after_pct": round(w_after, 2),
+                                       "hold_above": round(price, 6),
                                        "gross_ils": round(gross, 2), "tax_ils": round(tax, 2)},
                               "keep": {"level": new_level, "old_level": float(rule.level),
                                        "mode": rule.mode, "rule_type": rule.rule_type}}},
@@ -4796,7 +4981,7 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         opts = spec.get("options") or {}
         if choice not in ("sell", "keep"):
             return {"ok": False, "applied": "none", "needs_choice": True, "title": rec["title"],
-                    "error": "This card needs a choice: sell & lower the sleeve, or keep & update the rule."}
+                    "error": "This card needs a choice: sell the slice (the sleeve target stays), or keep & update the rule."}
         if choice == "keep":
             from app.services.rules_service import keep_and_relevel
             lvl = float(level) if level is not None else float(opts["keep"]["level"])
@@ -4939,14 +5124,15 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         # differently from the button on the Plan tab.
         from app.services.strategy_service import load_basket
         detail = await load_basket(session, user, spec["strategy_id"],
-                                   sleeve_pct=spec.get("sleeve_pct"), mode="fund")
+                                   sleeve_pct=spec.get("sleeve_pct"), mode="fund",
+                                   honour_holds=True)
     elif kind == "fund_plan":
         # A ticker two sleeves both want. Only the whole-plan path can honour a
         # SUMMED target -- funding one of the two sleeves would buy that sleeve's
         # share while the card described the total, so the card would still be
         # right and the action would still be wrong.
         from app.services.strategy_service import fund_plan
-        detail = await fund_plan(session, user, dry_run=False)
+        detail = await fund_plan(session, user, dry_run=False, honour_holds=True)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
         detail = await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
@@ -4981,26 +5167,21 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = {"rules_created": created}
     # A rule-driven card closes the loop on its own audit trail: the firing that
     # produced this card is stamped with what was actually done.
-    # THE SLEEVE MOVES WITH THE SALE, or the funder buys it back. See
-    # `_rule_conflicts_to_decisions` for the two measured round trips.
+    # PR 75 -- THE SLEEVE TARGET STAYS; THE SALE IS REMEMBERED. Eran: "if I
+    # chose to sell it should not change the goal of the sleeve, only the
+    # current holding". PR 72 shrank the sleeve so the funder would not buy the
+    # slice straight back; a buy-back hold at the sale price does that job
+    # without editing the plan (`buyback_hold`).
     if _sleeve_after and detail.get("shares"):
-        from app.services import sleeve_service as _sv
-        _from = float(_sleeve_after["sleeve_pct_from"])
-        _to = float(_sleeve_after["sleeve_pct_to"])
-        # A PARTIAL FILL MOVES THE SLEEVE PARTIALLY. The trim sells
-        # min(planned, held); if it sold less than the card planned, the cut is
-        # scaled to what was actually sold.
-        _planned = float((_sleeve_after.get("apply") or {}).get("shares") or 0)
-        _sold = float(detail.get("shares") or 0)
-        if _planned > 0 and 0 < _sold < _planned:
-            _to = round(_from - (_from - _to) * (_sold / _planned), 2)
-        if _to > 0:
-            detail["sleeve"] = await _sv.add_or_resize(
-                session, user, _sleeve_after["strategy_id"], _to)
-        else:
-            # Only `retire_sleeve` may drop a sleeve: it re-levels the caps too.
-            from app.services.strategy_service import retire_sleeve
-            detail["sleeve"] = await retire_sleeve(session, user, _sleeve_after["strategy_id"])
+        from app.services import buyback_hold as _bh
+        _p = by_ticker.get(spec["ticker"])
+        _px = float(_sleeve_after.get("hold_above")
+                    or (getattr(_p, "current_price", None) or 0))
+        detail["buyback_hold"] = await _bh.record(
+            session, user, ticker=spec["ticker"], sold_price=_px,
+            shares=float(detail.get("shares") or 0),
+            strategy_id=_sleeve_after.get("strategy_id"), rule_id=spec.get("rule_id"))
+        detail["sleeve_unchanged_pct"] = _sleeve_after.get("sleeve_pct")
         await session.commit()
     rule_id = spec.get("rule_id")
     if rule_id:

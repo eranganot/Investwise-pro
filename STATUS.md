@@ -157,6 +157,74 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 75 — cash above the trigger is researched; a take-profit sale keeps the sleeve; the decision card recommends
+
+_2026-09-28. Plan item 3 ("PR D", approved 10:10) plus Eran's evening items: "the graph pop-up is not
+looking good", "the card ... doesn't look good", "the recommended option will be the default choice",
+and -- "really important" -- "if I chose to sell it should not change the goal of the sleeve, only the
+current holding of it". His choices: the sleeve strategy's own signal decides the recommendation, Sell as
+the fallback; recommended = highlighted, still a click; after a Sell, "hold until price retreats"._
+
+**Sell keeps the sleeve (was: PR 72 shrank it 40% -> 30.38%).** `buyback_hold` records the sale price per
+ticker (kv_settings, no migration). While the price is AT OR ABOVE it, every proposer of buys treats the
+sleeve target as met at the current weight: `book_target` parks the shortfall in the Cash target (not the
+core), the cash card reserves it and never legs a held ticker, the sleeve top-up card is not raised, and a
+Today Accept of a sleeve/whole-plan funding skips the ticker (`honour_holds`). The first price BELOW the
+sale releases the hold for good (committed in the build). A buy started from the Plan screen is not
+blocked. The planned sleeve (display, caps, book_target.sleeves) never changes.
+
+**Recommended answer.** `_decision_recommendation` reads the stored daily signal
+(`strategy_signal_state`, no fetch): the sleeve's rule still holding the ticker and fresh (<= 3 days)
+-> Keep; out, stale or missing -> Sell. Shown as a tag, a filled button and one line of why.
+
+**Cash research (plan D1/D2).** Sizing unchanged (gaps, sleeve targets, caps, the ₪150 floor).
+`redeploy_research` re-decides each CORE leg (never a sleeve): the held name vs up to 3 screener names in
+the same class on one scale; a swap needs `redeploy.new_name_margin_pts@1` (10 points, owner_reviewed
+False) AND the same screen with the same data gaps (the screener's PR 27 rule); a confirmed downtrend
+(`trend.confirmed_downtrend@1`: price < 50-day < 200-day) is never bought -- a held name in one is
+replaced or its money kept in cash. "Also considered" with why each lost, the pins, the weights
+disclosure and "Not financial advice" are on the card. `GET /recommendations?simulate_cash=N` is a
+read-only preview (apply none). Live cash (₪1,124) is under the ₪1,500 trigger, so no card today.
+Measured on a local book shaped like Eran's: a CRM leg replaced the QQQ top-up (75 vs 41, same factors)
+-- exactly the kind of swap the margin governs; flagged to Eran.
+
+**Cosmetics.** Modals: height-capped (92vh / 88vh desktop), inner scroll, sticky title and close, centred
+on desktop, sheet on phones; the holding chart sits in a 220px box; buys fold after 5. Decision card: two
+option tiles, level input beside Keep with the full number.
+
+**Independent review (fresh agent), fixed:**
+1. CONFIRMED -- the cash card bought SOXL straight back with the whole sale (the plan-weight pass gave a
+   held ticker its weight; `spendable` ignored the parked Cash). Now the shortfall is reserved and no leg
+   may be a held ticker.
+2. CONFIRMED -- a released hold was never committed (the build does not commit), so it came back.
+3. By trace -- a top-up card for another ticker of the same sleeve loaded the whole basket on Accept,
+   held ticker included. `honour_holds` on Today's funding paths.
+4. CONFIRMED -- research bought a new position in a downtrend when the better name had no room.
+5. The preview measured gaps against the real NAV; now the mix is diluted to the simulated NAV.
+6. Trend fetches bounded (8 per class).
+7. CONFIRMED -- claims: "moves every underweight class" / "everything above your reserve" when money was
+   held back; and (pre-existing) "Keep ₪4,136 in cash (your ₪150 floor)" when ₪3,986 of it was simply
+   unplaceable under the caps. Every unplaced amount now has a line; the totals say what they contain.
+8. The stale-cap card and book_target.sleeves quoted the held-back weight as the sleeve; display now
+   uses the plan.
+Also: a second sale adds its shares to the hold; `shrunk_sleeve_pct` (no caller) removed; the
+needs-choice error no longer says "lower the sleeve".
+Not fixed, recorded: the research screens the universe again inside the build when a core leg exists
+(only when cash is over the trigger); Accept rebuilds the card, so on a partly-reachable screener the
+swap can differ from what was shown (true of every rebuilt card).
+
+Gate: 2038 passed / 0 failed on SQLite and on Postgres 16; ruff clean.
+
+**PR 73 ledger repair, run by Eran 2026-09-28.** Preview then "y": 5 rebalance Adjust legs (QQQ 0.0384 at
+09-20 14:17 x1.03299, QQQ 0.0057 and VTI 0.0088 at 09-26 13:14 x1.002682 "exact_total", USO 0.0740 and UGA
+0.0824 at 09-26 x1.029441 "measured"), 8 estimated blind sells sized, 0 duplicates voided, 20 blind sells
+left unresolved as agreed (Q4). After it: QQQ, UGA, USO and VTI each draw their position line. SOXL is
+not reconstructed -- its blind sells make the factor unidentifiable.
+
+**Open for Eran:** the projection engine subtracts volatility drag from a measured CAGR (PR 74 entry).
+
+---
+
 ## PR 74 — the goal is the money you put in; one goal everywhere; no card moves it
 
 _2026-09-28. Eran's item 4 ("something is off with the goals measurements"), plan section 4 (C1-C3),

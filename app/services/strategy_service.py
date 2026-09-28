@@ -633,9 +633,20 @@ def _default_mode(strategy_id: str) -> str:
 # --------------------------------------------------------------------------- #
 # load_basket
 # --------------------------------------------------------------------------- #
+async def _held_back_tickers(session: AsyncSession, user: User, rows) -> set[str]:
+    """PR 75: tickers under an active take-profit buy-back hold. A card on Today
+    must not buy them back; a buy the user starts on the Plan screen may."""
+    from app.services import buyback_hold as bh
+    try:
+        return set(bh.active(await bh.load(session, user), rows))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 async def load_basket(session: AsyncSession, user: User, strategy_id: str,
                       total: float | None = None, sleeve_pct: float | None = None,
-                      mode: str | None = None, dry_run: bool = False) -> dict:
+                      mode: str | None = None, dry_run: bool = False,
+                      honour_holds: bool = False) -> dict:
     if sleeve_pct is None:
         # C3: size from the sleeve ROW. The old fallback read
         # plans.strategy_sleeve_pct, and only when plans.strategy happened to
@@ -655,7 +666,8 @@ async def load_basket(session: AsyncSession, user: User, strategy_id: str,
         return {"ok": False, "error": f"unknown mode '{mode}'"}
     if mode == FUND:
         return await _fund_sleeve(session, user, strategy_id, s, total=total,
-                                  sleeve_pct=sleeve_pct, dry_run=dry_run)
+                                  sleeve_pct=sleeve_pct, dry_run=dry_run,
+                                  honour_holds=honour_holds)
     return await _replace_book(session, user, strategy_id, s, total=total, dry_run=dry_run)
 
 
@@ -696,7 +708,7 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
 
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,
                        *, total: float | None, sleeve_pct: float | None,
-                       dry_run: bool) -> dict:
+                       dry_run: bool, honour_holds: bool = False) -> dict:
     from app.services import sleeve_service as _sv_sig
     targets = sleeve_targets(
         strategy_id, sleeve_pct,
@@ -707,6 +719,12 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                 "error": "this strategy has no sleeve to fund — its basket is the core itself"}
 
     rows = await list_positions(session, user)
+    if honour_holds:
+        _hb = await _held_back_tickers(session, user, rows)
+        targets = {k: v for k, v in targets.items() if k.upper() not in _hb}
+        if not targets:
+            return {"ok": False, "mode": FUND, "strategy_id": strategy_id,
+                    "error": "every ticker in this sleeve is on a take-profit buy-back hold"}
     snap = _snapshot(rows)
     nav = snap.get("nav") or 0.0
     if nav <= 0:
@@ -805,7 +823,8 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
 # --------------------------------------------------------------------------- #
 # Whole-plan funding (C3)
 # --------------------------------------------------------------------------- #
-async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) -> dict:
+async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
+                    honour_holds: bool = False) -> dict:
     """Fund every under-funded sleeve on the book in one pass.
 
     **Why one pass rather than calling ``_fund_sleeve`` N times.** Each call
@@ -848,6 +867,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
     cap = effective_caps(plan)["concentration_cap"]
     cash_ils = await get_cash(session, user)
     held = _held_ils(rows, snap)
+    _hb_plan = await _held_back_tickers(session, user, rows) if honour_holds else set()
     # No sleeve is a funding source for any other, including itself.
     exclude = await sv.sleeve_tickers(session, user)
 
@@ -883,6 +903,8 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True) 
         sid = row.strategy_id
         pct = float(row.sleeve_pct or 0.0)
         targets = sleeve_targets(sid, pct, live=sv._live_for(_live_caps, sid))
+        if honour_holds and targets:
+            targets = {k: v for k, v in targets.items() if k.upper() not in _hb_plan}
         entry = {"strategy_id": sid, "sleeve_pct": pct,
                  "name": (strategy_catalog.get(sid) or {}).get("name", sid)}
         if not targets:

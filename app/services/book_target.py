@@ -93,7 +93,8 @@ def carved_classes(core_mix: dict | None, objective: str | None,
 
 def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | None,
             objective: str, cash_pct: float = 0.0,
-            commodities_pct: float | None = None) -> dict:
+            commodities_pct: float | None = None,
+            held_back: dict[str, float] | None = None) -> dict:
     """The pure half, so the arithmetic can be tested without a database.
 
     `cash_pct` is a deliberate reserve as a FRACTION of NAV -- dry powder, so
@@ -134,6 +135,14 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
     # the two cannot drift, and the total cannot fail to be 1.0.
     core_share = max(0.0, 1.0 - sleeved)
 
+    # PR 75 -- A TAKE-PROFIT HOLD. `sleeve_targets` arrives with each held
+    # ticker already cut to its current weight (`buyback_hold.apply_holds`);
+    # the cut is parked in CASH here, before the core divides the remainder.
+    # Without this the core would silently absorb the sleeve's shortfall and
+    # the cash from the sale would buy other names of the same class.
+    held = min(sum(max(0.0, float(v)) for v in (held_back or {}).values()), core_share)
+    core_share -= held
+
     # The reserve is taken HERE, before the core divides what is left, and it is
     # CLAMPED to what the core actually has. Asking for 40% cash on a book whose
     # sleeves already claim 73% cannot be honoured without shrinking them, so it
@@ -165,6 +174,8 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
         target["Cash"] = target.get("Cash", 0.0) + cash
     if comm > 0:
         target["Commodities"] = target.get("Commodities", 0.0) + comm
+    if held > 0:
+        target["Cash"] = target.get("Cash", 0.0) + held
 
     total = sum(target.values())
     if abs(total - 1.0) > _SUM_TOLERANCE:                        # pragma: no cover
@@ -181,6 +192,8 @@ def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | No
         # The commodity carve-out, separate from the core so a card can say
         # where the Commodities target came from.
         "commodities_pct": round(comm, 4),
+        # Weight parked in Cash by take-profit holds, per ticker (PR 75).
+        "held_back": {k: round(float(v), 4) for k, v in (held_back or {}).items() if v > 0},
     }
 
 
@@ -227,8 +240,33 @@ async def book_target(session, user, objective: str) -> dict:
     except Exception:  # noqa: BLE001 - a book target must not fail on a plan read
         cash_pct = 0.0
 
+    # PR 75: the planned sleeve targets stay as they are (`planned_sleeve_targets`
+    # below); what the BUYERS are managed to honours any take-profit hold.
+    planned = dict(targets)
+    held: dict[str, float] = {}
+    try:
+        from app.services import buyback_hold as bh
+        _holds = await bh.load(session, user)
+        if _holds:
+            from app.services.fx import book_nav_ils
+            from app.services.intake_service import list_positions
+            _rows = await list_positions(session, user)
+            _act = bh.active(_holds, _rows)
+            if _act:
+                targets, held = bh.apply_holds(targets, _act, bh.weights_of(_rows, book_nav_ils(_rows)))
+    except Exception:  # noqa: BLE001 - a hold read must not cost the book target
+        targets, held = planned, {}
+
     out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective,
-                  cash_pct=cash_pct)
+                  cash_pct=cash_pct, held_back=held)
+    out["planned_sleeve_targets"] = {k.upper(): round(float(v), 4) for k, v in planned.items()}
+    if held:
+        # What the book SHOWS as its sleeves stays the plan (review: the display
+        # fields quoted the held-back weight as if the sleeve had shrunk). The
+        # managed `target` above is the one with the hold parked in Cash.
+        _ps = sleeve_class_mix(planned)
+        out["sleeves"] = _round_mix(_ps)
+        out["sleeved_pct"] = round(sum(_ps.values()), 4)
     out["core_strategy_id"] = sid if core_mix else None
     out["core_strategy_name"] = (entry or {}).get("name") if core_mix else None
     # Named so a card can say which of the two it is quoting rather than

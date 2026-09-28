@@ -250,18 +250,6 @@ async def sleeves_holding(session: AsyncSession, user: User, ticker: str) -> lis
     return out
 
 
-def shrunk_sleeve_pct(sleeve_pct: float, ticker_pct: float, sold_pct: float) -> float:
-    """The sleeve size that holds `sold_pct` points less of its ticker.
-
-    All three are percent of NAV. Pure, so the card and Accept compute the same
-    number: a 40% SOXL sleeve selling a quarter of a 40.1% position lands at
-    about 30%.
-    """
-    if ticker_pct <= 0 or sleeve_pct <= 0:
-        return round(max(0.0, sleeve_pct), 2)
-    return round(max(0.0, sleeve_pct * (1.0 - min(1.0, sold_pct / ticker_pct))), 2)
-
-
 async def sleeve_tickers(session: AsyncSession, user: User) -> set[str]:
     """Just the names. The exclusion set, for callers that do not need weights."""
     return set(await all_sleeve_targets(session, user))

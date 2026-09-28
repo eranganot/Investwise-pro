@@ -70,8 +70,11 @@ def test_the_history_list_badges_every_card_and_has_no_accept():
 
 
 def test_a_decision_card_renders_both_choices():
-    start = HTML.index("function actBtn(")
+    # PR 75: the two answers are option tiles (`decisionBlock`), and the one
+    # the sleeve's signal recommends carries the tag and the filled button.
+    start = HTML.index("function decisionBlock(")
     body = HTML[start:HTML.index("async function acceptRec(", start)]
     assert "rule_vs_sleeve" in body
     assert "decideRule('${o.id}','sell')" in body and "decideRule('${o.id}','keep')" in body
     assert "lvl_${o.id}" in body, "the keep level is editable"
+    assert "Recommended" in body and "ap.recommended" in body

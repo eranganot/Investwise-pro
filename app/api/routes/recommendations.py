@@ -31,9 +31,12 @@ class CardState(BaseModel):
 
 
 @router.get("/recommendations")
-async def recommendations(session: AsyncSession = Depends(get_session),
+async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=10_000_000.0),
+                          session: AsyncSession = Depends(get_session),
                           user: User = Depends(acting_user)) -> dict:
-    return await build_recommendations(session, user)
+    """`?simulate_cash=3000` (PR 75): a read-only preview of the cash card as if
+    you held that much cash. Returns only that card, marked simulated."""
+    return await build_recommendations(session, user, simulate_cash_ils=simulate_cash)
 
 
 @router.post("/recommendations/{rec_id}/accept")
