@@ -80,7 +80,15 @@ async def gather(session: AsyncSession, user: User) -> dict:
         pass
     plan = await get_plan(session, user)
     if plan:
-        ctx["goal"] = {"target_ils": getattr(plan, "target_amount", None),
+        # PR 74 -- the ONE goal (goal_service), not the stored column: the
+        # target, the money put in that it is built from, and the deadline.
+        from app.services.goal_service import compute_goal, goal_from
+        try:
+            _g = await compute_goal(session, user, plan, None)
+        except Exception:  # noqa: BLE001 -- a ledger read must not cost the digest
+            _g = goal_from(plan, [], None)
+        ctx["goal"] = {"target_ils": _g.get("target"), "put_in_ils": _g.get("put_in"),
+                       "deadline": _g.get("deadline"),
                        "target_date": getattr(plan, "target_date", None),
                        "objective": getattr(plan, "objective", None),
                        "risk_tolerance": getattr(plan, "risk_tolerance", None)}

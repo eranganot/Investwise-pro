@@ -1,6 +1,7 @@
 """Portfolio data intake (Section 5) - JSON or CSV upload."""
 import csv
 import io
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -600,6 +601,10 @@ class ContributionRequest(BaseModel):
     amount_ils: float
     mode: str = "adjust"          # adjust | set
     note: str = ""
+    # PR 74: when the money actually moved. The goal compounds each deposit
+    # from its own date; absent, an adjust is "now" and a set keeps the
+    # earliest date already on the ledger.
+    occurred_at: datetime | None = None
 
 
 @router.get("/portfolio/contributions")
@@ -621,10 +626,14 @@ async def write_contribution(body: ContributionRequest,
     rearrange money already inside the account and must leave "what you put in"
     untouched. That conflation is what made a ₪20,000 deposit read as ₪20,790.
     """
+    at = body.occurred_at
+    if at is not None and at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
     if body.mode == "set":
-        total = await set_contributed(session, user, body.amount_ils)
+        total = await set_contributed(session, user, body.amount_ils, occurred_at=at)
     else:
-        total = await record_contribution(session, user, body.amount_ils, note=body.note)
+        total = await record_contribution(session, user, body.amount_ils, note=body.note,
+                                          occurred_at=at)
     return {"ok": True, "total_ils": total, "mode": body.mode}
 
 

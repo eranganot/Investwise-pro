@@ -157,6 +157,85 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 74 — the goal is the money you put in; one goal everywhere; no card moves it
+
+_2026-09-28. Eran's item 4 ("something is off with the goals measurements"), plan section 4 (C1-C3),
+approved with the plan (Q1 the deadline governs, Q2 remove "Give it more time")._
+
+**Root cause (PROVEN -- reproduced on the PR 73 code with his shape: ₪20,000 put in, 30%/yr, deadline
+2031).** Four goals, not one:
+- `/plan` derived the target LIVE from NAV (`_auto_target`: NAV x (1+roi)^horizon). Progress was
+  therefore NAV / (NAV x 1.3^6) = **0.2072, a constant** -- live on production, and reproduced
+  locally to four decimals. No gain or loss could ever move it; gains raised the goal instead.
+- the "You're behind" card read the STORED `plan.target_amount` (₪113,039, written at the last save),
+  counted 5 years (deadline year minus this year) where /plan counted 6 (horizon), and projected at the
+  static objective table (8.5%) while /plan used the measured ~25%.
+- `/portfolio/risk` read the stored column too; the context/digest took /plan's number.
+- "Set a target you'll actually hit" rewrote the target to the projection; "Give it more time"
+  rewrote the horizon. Both moved the goalposts.
+
+Ruled out: the contributions ledger (correct: one ₪20,000 row, 08-03; standing orders write dated
+deposit rows, so no migration was needed); the Monte-Carlo engine as the cause of the disagreement
+(same engine everywhere -- the INPUTS differed: target, years, return).
+
+**Fix.** `app/services/goal_service.py` is the one goal: every contribution compounded at the ROI from
+its own date to the deadline (31 Dec of the deadline year; without one, first deposit + horizon, or plan
+creation + horizon -- always a fixed date). Progress = NAV / target; the on-track line = the same
+deposits compounded to today, so ahead/behind is honest. /plan, /plan/projection (years LEFT to the
+deadline), the behind card, the risk report and the context all call it; `plan.target_amount` is a
+cache written on save. The behind card's headline is /plan's return, the conservative table figure a
+second line only when the headline is measured. Levers C and D are deleted; A (money in) and B stay.
+Live after deploy: target ~₪82,700 (was ₪121,386); it moves only when money goes in or out, or the
+ROI or deadline is edited. The plan screen previews the same formula (checked: JS = Python on five
+cases incl. monthly ROI, a withdrawal, "2031/06/30", 0% and a 29 Feb anchor).
+
+**Independent review (fresh agent), 10 findings; fixed:**
+1. CONFIRMED -- the monthly amount was sized with plain compounding beside a Monte-Carlo headline:
+   "₪680/month closes the gap" left the engine's median at ₪88,299 of ₪120,000. Now `_goal_levers`
+   searches the amount ON the engine (smallest whole ₪10 whose median reaches the target), and the
+   card says the headline is a median of simulations, with the volatility.
+2. CONFIRMED -- the conservative line used measured volatility; Lever B compared a compounded figure
+   with a median. Conservative = table rate at table volatility on the same engine, called
+   "conservative" only when its outcome is lower; Lever B compares table-rate compounding both sides.
+3. CONFIRMED -- a passed deadline fell back to the horizon (projection "6 years", 99%). Now the
+   projection says the deadline has passed; the risk report gets no forward window.
+4. CONFIRMED -- `mode=set` re-dated the whole ledger to now. The opening balance keeps the earliest
+   date; `occurred_at` can be given on any contribution.
+5. CONFIRMED -- withdrawals >= deposits gave a negative target and "100% chance". Now no goal, said so.
+6. Clearing the ROI froze the old derived number as a typed goal: the screen sends no amount without
+   an ROI; ROI with no date to grow to quotes no stale number.
+7. Deadline edits did not refresh the preview; date formats, 29 Feb and 0% differed JS vs Python.
+8. "mixed" basis was labelled measured -> "part-measured (N% of the book)".
+10. context_service goal read unguarded -> guarded.
+Not fixed, recorded: 9 -- /portfolio/risk's own engine treats drift as a CAGR while SimulationEngine
+subtracts drag, so the two chance-of-goal figures differ for one goal (pre-existing; context already
+refuses to copy the risk report's goal probability).
+
+**Finding for Eran (not fixed -- it changes every projection the app shows).** The measured return is a
+CAGR (`measured_assumptions`, "cagr_pct"), which already contains volatility drag. `SimulationEngine`
+treats `expected_return_pct` as an arithmetic mean and subtracts 0.5 sigma^2 again. Measured: 30,000 at
+25%/yr and 67.5% vol has an engine median of 33,023 after 5.26 years (~1.8%/yr); on the live book
+/plan/projection's median was ₪62,708 over 6 years where 24.98% compounded gives ~₪95,900.
+Pre-existing since PR 16 in /plan/projection; PR 74 inherits it by design (one return basis).
+
+Also fixed on the way (test-only): `test_a_hidden_card_is_named_on_the_payload_not_merely_counted`
+picked the first card as its victim, but the buy-idea ranking rests on live provider history and two
+builds with nothing dismissed disagreed (WEAT, then DBC). It now picks a card present in two builds.
+Failed identically on the PR 73 base, so not caused by this change.
+
+**PR 73 deploy note.** eae1edd was pushed (reflog 15:04:57 UTC) and Railway marked the deployment
+REMOVED, not FAILED, with no logs and no Redeploy. Ruled out by observation: the push (on origin), the
+tree (byte-identical to the tested one incl. Dockerfile, requirements, railway.json), the image (built
+from the Dockerfile on python:3.12.14; preDeploy `alembic upgrade head` on a fresh Postgres; container
+healthy, /health/ready 200 in seconds). Railway's reason is unknown; an empty commit (de8cffb)
+redeployed the same code and it is live and smoke-clean.
+
+Gate: 2015 passed / 0 failed on SQLite and on Postgres 16; ruff clean. Smoke `scripts/smoke/smoke-pr74-goals-on-money-put-in.ps1`: on
+the PR 73 code 12 FAIL (incl. both goal-moving cards); on PR 74 0 FAIL -- both against a local server
+seeded with Eran's shape.
+
+---
+
 ## PR 73 — a rebalance is trades; the history it never wrote, reconstructed
 
 _2026-09-28. Eran's item 2 ("what is the difference between my position to the ticker price?"), plan

@@ -413,7 +413,7 @@
           <div class="mk">how long your money stays invested — sets how much risk fits</div></div>
         <div><label>Target amount (₪) <span class="mk">· auto from ROI</span></label><input id="p_amt" type="number" readonly style="opacity:.85;cursor:not-allowed"/><div class="mk" id="amt_note"></div></div>
       </div>
-      <label>Goal deadline (year)</label><input id="p_date" placeholder="2035"/>
+      <label>Goal deadline (year)</label><input id="p_date" placeholder="2035" oninput="recalcTarget()"/>
       <div class="mk">the year you want to hit your target amount</div>
       <label>Targets <span class="link" onclick="explain('roiyield')">ROI vs Yield?</span></label>
       <div class="grid2">
@@ -989,7 +989,7 @@ async function loadToday(){
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
-    $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
+    $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${(p.goal&&p.goal.deadline)||p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
   }catch(e){}
   try{const r=await(await fetch("/api/v1/plan/projection")).json();const o=$("outcomes");
     if(r&&!r.message){
@@ -3069,16 +3069,36 @@ async function fundStratSleeveConfirm(id,name){
     loadHoldings&&loadHoldings();
   }catch(e){o.innerHTML=String(e);}
 }
-let PLAN_NAV=0;
+// PR 74. The target is the MONEY YOU PUT IN, each deposit compounded at your
+// ROI from its own date to the deadline -- the same formula as
+// app/services/goal_service.py. It used to be live NAV x (1+roi)^n, which made
+// progress a constant and let market gains raise the goal.
+let PLAN_FLOWS=[], PLAN_HOR=0;
+function _goalDeadline(){
+  const raw=($("p_date").value||"").trim();
+  // Same rules as goal_service.deadline_of: a full ISO date as given, else
+  // the YEAR governs (31 Dec), else first deposit + horizon (29 Feb -> 28 Feb).
+  if(raw.length>=10&&/^\d{4}-\d{2}-\d{2}/.test(raw)){const d=new Date(raw.slice(0,10)+"T00:00:00Z");if(!isNaN(d))return d;}
+  if(/^\d{4}/.test(raw))return new Date(Date.UTC(+raw.slice(0,4),11,31));
+  const yrs=+($("p_hor").value||0);
+  if(yrs&&PLAN_FLOWS.length){const f=new Date(PLAN_FLOWS[0].at+"T00:00:00Z"), m=f.getUTCMonth();
+    f.setUTCFullYear(f.getUTCFullYear()+yrs); if(f.getUTCMonth()!==m)f.setUTCDate(0); return f;}
+  return null;
+}
 function recalcTarget(){
-  const roi=+($("p_roi").value||0), years=+($("p_hor").value||0), per=$("p_roi_p").value;
+  const roiRaw=$("p_roi").value, roi=+(roiRaw||0), per=$("p_roi_p").value;
   const note=$("amt_note");
-  if(PLAN_NAV<=0){ if(note)note.textContent="Add holdings to auto-calculate your target."; return; }
-  if(!roi||!years){ if(note)note.textContent="Enter a target ROI % and horizon to set the target."; return; }
-  const n = per==="monthly"?years*12 : per==="quarterly"?years*4 : years;
-  const tgt=Math.round(PLAN_NAV*Math.pow(1+roi/100, n));
+  if(!PLAN_FLOWS.length){ if(note)note.textContent="No deposits are logged yet. Once what you put in is logged, the target is derived from it."; return; }
+  const dl=_goalDeadline();
+  if(roiRaw===""||!dl){ if(note)note.textContent="Enter a target ROI % and a deadline year to set the target."; return; }
+  const n=per==="monthly"?12:per==="quarterly"?4:1, annual=Math.pow(1+roi/100,n)-1;
+  let tgt=0, putIn=0;
+  for(const c of PLAN_FLOWS){const t=Math.max(0,(dl-new Date(c.at+"T00:00:00Z"))/(365.25*864e5));
+    tgt+=c.amount_ils*Math.pow(1+annual,t); putIn+=c.amount_ils;}
+  tgt=Math.round(tgt);
   $("p_amt").value=tgt;
-  if(note)note.innerHTML=`= ₪${Math.round(PLAN_NAV).toLocaleString()} compounding ${roi}%/${per} for ${years}y \u2192 <b>₪${tgt.toLocaleString()}</b>`;
+  const word=per==="monthly"?"month":per==="quarterly"?"quarter":"yr";
+  if(note)note.innerHTML=`= ₪${Math.round(putIn).toLocaleString()} put in, compounding ${roi}%/${word} from each deposit to ${dl.toISOString().slice(0,10)} \u2192 <b>₪${tgt.toLocaleString()}</b>. Changes only when you add or withdraw money — not when the market moves.`;
 }
 async function loadPlan(){
   try{const p=await(await fetch("/api/v1/plan")).json();
@@ -3086,13 +3106,19 @@ async function loadPlan(){
     $("p_depth").value=p.preferred_depth?String(p.preferred_depth):"";
     if(p.target_amount)$("p_amt").value=p.target_amount; if(p.target_date)$("p_date").value=p.target_date;
     if(p.target_roi_pct!=null)$("p_roi").value=p.target_roi_pct; if(p.target_roi_period)$("p_roi_p").value=p.target_roi_period;
-    PLAN_NAV=p.current_value||0; recalcTarget();
+    PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
     if(p.target_yield_pct!=null)$("p_yld").value=p.target_yield_pct; if(p.target_yield_period)$("p_yld_p").value=p.target_yield_period;
     renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){}
 }
 function renderGoal(p){
-  if(p.goal_progress!=null){$("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${p.target_date||'—'} (${pct(p.goal_progress)})`;$("goalfill").style.width=Math.round(p.goal_progress*100)+"%";}
+  const g=p.goal||{};
+  // Where you should be TODAY at your ROI, against where you are: the honest
+  // ahead/behind, which moves with the market while the target does not.
+  const track=(g.on_track_value!=null&&g.ahead_by!=null)
+    ?`<div class="mk" style="margin-top:4px">On-track line today: ${ils(g.on_track_value)} — you're <b class="${g.ahead_by>=0?'ok':'warn'}">${ils(Math.abs(g.ahead_by))} ${g.ahead_by>=0?'ahead':'behind'}</b>.</div>`:"";
+  const why=g.breakdown?`<div class="mk" style="margin-top:2px">${g.breakdown}</div>`:"";
+  if(p.goal_progress!=null){$("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${g.deadline||p.target_date||'—'} (${pct(p.goal_progress)})`+track+why;$("goalfill").style.width=Math.round(p.goal_progress*100)+"%";}
   else{$("goalbig").innerHTML=`<span class="muted">Set a target amount to track progress.</span>`;$("goalfill").style.width="0%";}
 }
 function renderPlanNote(p){const cap=p.caps?p.caps.concentration_cap:0.25;
@@ -3111,7 +3137,9 @@ function renderRoi(p){const e=$("roi_note");
 async function savePlan(){
   const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
     preferred_depth:$("p_depth").value?+$("p_depth").value:null,
-    target_amount:$("p_amt").value?+$("p_amt").value:null,target_date:$("p_date").value||null,
+    // The amount is DERIVED (read-only field). With no ROI there is nothing to
+    // derive, and sending the old derived number would freeze it as a typed goal.
+    target_amount:($("p_roi").value!==""&&$("p_amt").value)?+$("p_amt").value:null,target_date:$("p_date").value||null,
     target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
     target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
   $("plan_out").textContent="Saving…";
@@ -3119,7 +3147,10 @@ async function savePlan(){
     if(resp.status===401){location.href="/login";return;}
     const p=await resp.json();
     if(!resp.ok){$("plan_out").innerHTML=`<span class="bad">Save failed (${resp.status})</span>`;return;}
-    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;renderGoal(p);renderPlanNote(p);renderRoi(p);
+    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;
+    PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
+    if(p.target_amount!=null)$("p_amt").value=p.target_amount;
+    renderGoal(p);renderPlanNote(p);renderRoi(p);
   }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 

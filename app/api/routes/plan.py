@@ -121,18 +121,12 @@ def _portfolio_stats(rows, measured: dict | None = None) -> dict:
 _TARGET_PERIODS = {"monthly": 12, "quarterly": 4, "yearly": 1}
 
 
-def _auto_target(nav: float, plan) -> float | None:
-    """Goal target. In 'auto from ROI' mode (target_roi_pct set) it is derived
-    live from the current NAV so it stays aligned with the holdings total and the
-    projection: target = NAV x (1 + roi)^periods. Otherwise the saved amount."""
-    if plan is None:
-        return None
-    if plan.target_roi_pct is not None and nav:
-        roi = float(plan.target_roi_pct)
-        years = max(1, plan.horizon_years or 10)
-        n = years * _TARGET_PERIODS.get(plan.target_roi_period or "yearly", 1)
-        return round(nav * (1 + roi / 100.0) ** n, 2)
-    return float(plan.target_amount) if plan.target_amount is not None else None
+async def _goal(session, user, plan, nav) -> dict:
+    """PR 74 -- the ONE goal (`goal_service.compute_goal`). Replaces
+    `_auto_target`, which derived the target from LIVE NAV, so progress was
+    ``NAV / (NAV x (1+roi)^n)`` -- a constant no market move could change."""
+    from app.services.goal_service import compute_goal
+    return await compute_goal(session, user, plan, nav)
 
 
 class PlanRequest(BaseModel):
@@ -157,8 +151,9 @@ class PlanRequest(BaseModel):
     cash_redeploy_at_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
 
 
-def _plan_dict(plan, stats: dict) -> dict:
+def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
     nav = stats["nav"]
+    goal = goal or {}
     if plan is None:
         base = {"configured": False, "objective": "Balanced", "risk_tolerance": "Medium",
                 "horizon_years": 10, "target_amount": None, "target_date": None, "currency": "ILS",
@@ -167,7 +162,7 @@ def _plan_dict(plan, stats: dict) -> dict:
                 "cash_target_pct": None, "cash_target_ils": None, "cash_redeploy_at_ils": None,
                 "caps": effective_caps(None), "goal_progress": None}
     else:
-        target = _auto_target(nav, plan)
+        target = goal.get("target")
         base = {"configured": True, "objective": plan.objective, "risk_tolerance": plan.risk_tolerance,
                 "horizon_years": plan.horizon_years, "target_amount": target,
                 "target_date": plan.target_date, "currency": plan.currency,
@@ -182,7 +177,11 @@ def _plan_dict(plan, stats: dict) -> dict:
                                          if getattr(plan, "cash_redeploy_at_ils", None) is not None
                                          else None),
                 "caps": effective_caps(plan), "current_value": nav,
-                "goal_progress": round(min(1.0, nav / target), 4) if target else None}
+                "goal_progress": goal.get("progress")}
+    # PR 74. The whole goal, so the screen can show WHY the target is what it
+    # is ("₪20,000 put in, compounding 30%/yr to 31 Dec 2031 -> ₪82,7xx") and
+    # where you should be today (`on_track_value`) against where you are.
+    base["goal"] = goal or None
     base["portfolio_expected_roi_pct"] = stats["expected_roi"]
     # PR 16 -- where that figure came from. The banner reading "~10.87%/yr vs
     # your 30%/yr target" never said it was an instrument-table guess about
@@ -211,17 +210,24 @@ def _plan_dict(plan, stats: dict) -> dict:
 @router.get("/plan")
 async def get_my_plan(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     plan = await get_plan(session, user)
-    return _plan_dict(plan, _portfolio_stats(await _orm(session, user),
-                                             await _measured(session, user)))
+    stats = _portfolio_stats(await _orm(session, user), await _measured(session, user))
+    return _plan_dict(plan, stats, await _goal(session, user, plan, stats["nav"]))
 
 
 @router.put("/plan", dependencies=[Depends(require_role(Role.ANALYST))])
 async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     plan = await upsert_plan(session, user, **req.model_dump())
+    stats = _portfolio_stats(await _orm(session, user), await _measured(session, user))
+    goal = await _goal(session, user, plan, stats["nav"])
+    # `plan.target_amount` is a CACHED COPY of the derived goal, written on save,
+    # so anything still reading the column reads the same number. A typed
+    # amount (no ROI, basis "saved_amount") is the user's and is left alone.
+    if goal.get("basis") == "contributions":
+        from decimal import Decimal
+        plan.target_amount = Decimal(str(goal["target"]))
     await session.commit()
-    return _plan_dict(plan, _portfolio_stats(await _orm(session, user),
-                                             await _measured(session, user)))
+    return _plan_dict(plan, stats, goal)
 
 
 @router.get("/plan/sleeves")
@@ -809,8 +815,20 @@ async def goal_projection(contribution_per_year: float | None = None,
     plan = await get_plan(session, user)
     if not stats["nav"]:
         return {"message": "Add holdings to project your goal."}
-    years = max(1, plan.horizon_years if plan else 10)
-    target = _auto_target(stats["nav"], plan)
+    goal = await _goal(session, user, plan, stats["nav"])
+    target = goal.get("target")
+    # The deadline governs (Eran, Q1): years LEFT to it, the same figure the
+    # behind card uses. Horizon only when there is no deadline at all.
+    if goal.get("deadline"):
+        if not goal.get("years_left"):
+            # A deadline that has passed. Projecting over the horizon instead
+            # quoted "6 years" and a 99% chance against a date already gone.
+            return {"message": (f"Your goal's deadline ({goal['deadline']}) has passed. "
+                                f"Set a new deadline to project it."),
+                    "target_amount": target, "deadline": goal["deadline"], "years": 0}
+        years = goal["years_left"]
+    else:
+        years = max(1, plan.horizon_years if plan else 10)
     roi = stats["expected_roi"] or 6.0
     vol = stats["volatility"] or 12.0
 
@@ -887,7 +905,7 @@ async def goal_projection(contribution_per_year: float | None = None,
         "uplift_median": excess_uplift,
         "moves_more": None,
         "note": (f"an extra {EXCESS_PP:.1f}pp a year of return is worth "
-                 f"{excess_uplift:,.0f} at the median over {years} years."),
+                 f"{excess_uplift:,.0f} at the median over {years:.1f} years."),
     }
     if contrib_block.get("available"):
         cu = contrib_block["uplift_median"]
@@ -902,7 +920,8 @@ async def goal_projection(contribution_per_year: float | None = None,
                "is the better-paid lever."))
 
     return {
-        "years": years, "starting_value": round(stats["nav"], 2),
+        "years": round(years, 1), "starting_value": round(stats["nav"], 2),
+        "deadline": goal.get("deadline"),
         "projected_median": round(sim.nominal.p50, 2),
         "projected_low": round(sim.nominal.p5, 2), "projected_high": round(sim.nominal.p95, 2),
         "target_amount": target,
@@ -924,7 +943,7 @@ async def goal_projection(contribution_per_year: float | None = None,
         "expected_return_pct_static": stats.get("static_expected_roi"),
         "volatility_pct_static": stats.get("static_volatility"),
         "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, "
-                        f"{stats['volatility'] or 12}% volatility, over {years} years"
+                        f"{stats['volatility'] or 12}% volatility, over {years:.1f} years"
                         + (f" ({stats['assumption_basis']}; "
                            f"{stats.get('measured_pct_of_book')}% of the book measured)"
                            if stats.get("assumption_basis") not in (None, "static") else

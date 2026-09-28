@@ -24,7 +24,11 @@ def test_plan_settings_carries_the_caps_and_the_depth():
         "say where; if not, it is a comment describing a wire nobody ran.")
 
 
-def test_behind_goal_recs_and_lower_target_apply():
+def test_behind_goal_offers_money_in_and_never_rewrites_the_goal():
+    """PR 74 replaced `test_behind_goal_recs_and_lower_target_apply`, which
+    asserted the card that LOWERED the target worked. Eran removed it (and
+    "Give it more time"): both moved the goalposts to meet the ball. The one
+    lever left is the one that legitimately moves a goal -- money in."""
     with TestClient(m.app) as c:
         c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
             {"ticker": "TEVA", "market": "NYSE", "asset_class": "Equities", "depth": 3,
@@ -34,15 +38,15 @@ def test_behind_goal_recs_and_lower_target_apply():
              "spot_price": 100, "listing_price": 100, "quantity": 200, "cost_basis": 100,
              "expected_return_pct": 3, "volatility_pct": 5}]})
         c.put("/api/v1/plan", json={"objective": "Balanced", "risk_tolerance": "Medium",
-                                    "horizon_years": 5, "target_amount": 10_000_000})
+                                    "horizon_years": 5, "target_amount": 10_000_000,
+                                    "target_date": "2031", "target_roi_pct": None})
         recs = c.get("/api/v1/recommendations").json()["recommendations"]
         goal = [r for r in recs if r["dimension"] == "goal"]
-        assert goal, "expected behind-goal recommendations"
-        lower = next(r for r in goal if r["apply"]["kind"] == "set_plan"
-                     and "target_amount" in r["apply"]["fields"])
-        assert c.post(f"/api/v1/recommendations/{lower['id']}/accept").status_code == 200
-        plan = c.get("/api/v1/plan").json()
-        assert plan["target_amount"] < 10_000_000  # lowered to a realistic level
+        assert goal, "expected a behind-goal card"
+        assert all(r["apply"]["kind"] != "set_plan" for r in goal), [r["title"] for r in goal]
+        contrib = next(r for r in goal if r["apply"]["kind"] == "set_standing_order")
+        assert contrib["goal_target_ils"] == 10_000_000
+        assert c.get("/api/v1/plan").json()["target_amount"] == 10_000_000
 
 
 def test_accept_rebalance_moves_mix_toward_objective():

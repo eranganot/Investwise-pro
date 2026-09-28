@@ -1790,21 +1790,40 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         _standing = await _so_monthly(session, user)
     except Exception:  # noqa: BLE001
         _standing = 0.0
+    # PR 74 -- ONE goal (goal_service) and ONE return basis. Before, this card
+    # read the stored `plan.target_amount` (a different number from /plan's live
+    # one), counted years from the deadline where /plan counted the horizon, and
+    # projected at the static objective table while /plan used the measured
+    # return. Now it asks the same questions of the same functions as /plan and
+    # /plan/projection, so all three quote one target, one deadline, one return.
+    _goal: dict = {}
+    _pstats: dict = {}
+    _levers = None
     try:
-        from app.api.routes.plan import _auto_target, _portfolio_stats
-        from app.engines.simulation_engine import SimulationEngine
-        _pstats = _portfolio_stats(rows)
-        if _pstats.get("nav"):
-            _pyears = max(1, int(getattr(plan, "horizon_years", 10) or 10)) if plan else 10
-            _sim = SimulationEngine(seed=7).run(
-                initial_value=_pstats["nav"], expected_return_pct=_pstats.get("expected_roi") or 6.0,
-                volatility_pct=_pstats.get("volatility") or 12.0, horizon_years=_pyears,
-                target_value=_auto_target(_pstats["nav"], plan),
-                contribution_per_year=(_standing * 12 if _standing > 0 else None))
-            projected_median = float(_sim.nominal.p50)
+        from app.api.routes.plan import _measured, _portfolio_stats
+        from app.services.goal_service import compute_goal
+        _pstats = _portfolio_stats(rows, await _measured(session, user))
+        _goal = await compute_goal(session, user, plan, _pstats.get("nav"))
+        if _pstats.get("nav") and _goal.get("target") and _goal.get("years_left"):
+            _er = _pstats.get("expected_roi")
+            _levers = await _offload(
+                _goal_levers, nav=_pstats["nav"],
+                rate=(_er if _er is not None else 6.0),
+                vol=_pstats.get("volatility") or 12.0,
+                years=_goal["years_left"], target=_goal["target"],
+                standing_monthly=_standing,
+                cons_rate=_OBJ_RETURN.get(objective, 6.5),
+                cons_vol=_pstats.get("static_volatility") or _pstats.get("volatility") or 12.0)
+            projected_median = _levers["projected"]
     except Exception:  # noqa: BLE001
-        projected_median = None
-    recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing)
+        logger.warning("goal projection for the behind card failed", exc_info=True)
+        projected_median, _levers = None, None
+    _er = _pstats.get("expected_roi")
+    recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing,
+                              goal=_goal, expected_roi_pct=(_er if _er is not None else None),
+                              return_basis=_pstats.get("assumption_basis"),
+                              measured_pct=_pstats.get("measured_pct_of_book"),
+                              volatility_pct=_pstats.get("volatility"), levers=_levers)
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,
@@ -2813,126 +2832,230 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
 _OBJ_RETURN = {"Grow": 8.5, "Balanced": 6.5, "Preserve": 4.0, "Income": 5.0}
 
 
-def _behind_goal_recs(plan, snap, objective, projected_override=None,
-                      standing_monthly: float = 0.0) -> list[dict]:
-    """When the plan won't reach the target on the current path, recommend the
-    concrete levers to close the gap (each with a machine-applyable spec).
+def _fv_monthly(monthly: float, r: float, years: float) -> float:
+    """Future value of `monthly` paid at month-end for `years` at `r` a year."""
+    rm, n = r / 12.0, int(round(years * 12))
+    if monthly <= 0 or n <= 0:
+        return 0.0
+    return monthly * (((1 + rm) ** n - 1) / rm) if rm else monthly * n
 
-    projected_override: when provided (the Monte-Carlo median from the app's home
-    panel), it is used as the "current path" projection so the card, the digest and
-    "Where this could end up" all agree on one number instead of diverging."""
+
+def _goal_levers(*, nav: float, rate: float, vol: float, years: float, target: float,
+                 standing_monthly: float, cons_rate: float, cons_vol: float) -> dict:
+    """Every number the behind card states, from ONE engine (the one
+    /plan/projection runs: same seed, same inputs).
+
+    PR 74 review, CONFIRMED: the monthly amount used to be sized with plain
+    compound growth while the headline was a Monte-Carlo median, which carries
+    volatility drag. At NAV 30,000, 25%/yr, 67.5% vol, 5.26 years, target
+    120,000 the card said "about ₪680/month closes the gap"; the engine's
+    median WITH 680/month was ₪88,299 -- still short, so the card claimed a
+    change it does not produce. Here the amount is SEARCHED on the engine: the
+    smallest whole ₪10 whose median reaches the target.
+
+    `cons_*` is the objective table's rate at the table's own volatility, the
+    like-for-like cautious figure. Monotone in the deposit, so bisection holds.
+    """
+    import math
+
+    from app.engines.simulation_engine import SimulationEngine
+
+    def median(r: float, v: float, monthly: float) -> float:
+        return float(SimulationEngine(seed=7).run(
+            initial_value=nav, expected_return_pct=r, volatility_pct=v,
+            horizon_years=years, target_value=target,
+            contribution_per_year=(monthly * 12 if monthly > 0 else None)).nominal.p50)
+
+    def need(r: float, v: float) -> float | None:
+        if median(r, v, standing_monthly) >= target:
+            return 0.0
+        lo, hi = 0.0, 10.0
+        while median(r, v, standing_monthly + hi) < target:
+            lo, hi = hi, hi * 2
+            if hi > 10_000_000:
+                return None          # no realistic monthly amount closes it
+        while hi - lo > 10.0:
+            mid = (lo + hi) / 2
+            if median(r, v, standing_monthly + mid) >= target:
+                hi = mid
+            else:
+                lo = mid
+        return math.ceil(hi / 10.0) * 10.0
+
+    return {"projected": median(rate, vol, standing_monthly),
+            "conservative": median(cons_rate, cons_vol, standing_monthly),
+            "pmt": need(rate, vol), "pmt_cons": need(cons_rate, cons_vol),
+            "rate": rate, "vol": vol, "cons_rate": cons_rate, "cons_vol": cons_vol}
+
+
+def _behind_goal_recs(plan, snap, objective, projected_override=None,
+                      standing_monthly: float = 0.0, *, goal: dict | None = None,
+                      expected_roi_pct: float | None = None,
+                      return_basis: str | None = None,
+                      measured_pct: float | None = None,
+                      volatility_pct: float | None = None,
+                      levers: dict | None = None) -> list[dict]:
+    """When the plan won't reach the goal on the current path, the ONE lever
+    that legitimately moves it: more money in.
+
+    PR 74 (Eran's item 4). The goal is `goal_service`'s -- the money you put in,
+    compounded at your ROI to the deadline -- and years are years LEFT to that
+    deadline, the same everywhere. The headline return is the MEASURED one /plan
+    uses; the conservative objective-table figure is a second line, never the
+    headline. "Set a target you'll actually hit" (rewrote the target to the
+    projection) and "Give it more time" (rewrote the horizon) are GONE: both
+    moved the goalposts to meet the ball, and Eran removed them (Q2).
+
+    levers: `_goal_levers` -- projection, conservative figure and both monthly
+    amounts from the engine /plan/projection runs. Without it (a failed run,
+    or a unit test) every figure is fixed-return compounding, amount included.
+    `projected_override` is kept for the call signature and ignored."""
     out: list[dict] = []
-    if plan is None or not getattr(plan, "target_amount", None):
-        return out
+    goal = goal or {}
+    target = goal.get("target")
+    years = goal.get("years_left")
     nav = snap["nav"]
-    target = float(plan.target_amount)
-    r = (_OBJ_RETURN.get(objective, 6.5)) / 100.0
-    years = max(1, int(getattr(plan, "horizon_years", 10) or 10))
-    # try to use the deadline year if present
-    try:
-        import datetime as _dt
-        yr = int(str(getattr(plan, "target_date", "") or "")[:4])
-        years = max(1, yr - _dt.date.today().year) or years
-    except (ValueError, TypeError):
-        pass
-    deterministic = nav * (1 + r) ** years
-    _rm0, _n0 = r / 12.0, years * 12
-    if standing_monthly > 0:
-        # Future value of the standing order at the same rate, so the fallback
-        # path counts it exactly as the Monte-Carlo path does.
-        deterministic += (standing_monthly * (((1 + _rm0) ** _n0 - 1) / _rm0)
-                          if _rm0 else standing_monthly * _n0)
-    if projected_override and projected_override > 0:
-        projected, proj_basis = float(projected_override), "montecarlo"
+    if plan is None or not target or not years or years <= 0 or not nav:
+        return out
+    target = float(target)
+    r_cons = (_OBJ_RETURN.get(objective, 6.5)) / 100.0
+    r = (float(expected_roi_pct) / 100.0) if expected_roi_pct is not None else r_cons
+    measured = return_basis not in (None, "static")
+
+    def _pmt(rate: float, short: float) -> float:
+        rm, n = rate / 12.0, max(1, int(round(years * 12)))
+        p = short * rm / (((1 + rm) ** n) - 1) if rm else short / n
+        # Rounded UP to a whole ₪10 -- the amount a person actually types into a
+        # bank's standing-order form, and never below what closes the gap.
+        return -(-p // 10.0) * 10.0
+
+    if levers:
+        # ONE engine for every number on the card (see `_goal_levers`).
+        projected, proj_basis = float(levers["projected"]), "montecarlo"
+        conservative = float(levers["conservative"])
+        pmt, pmt_cons = levers.get("pmt"), levers.get("pmt_cons")
+        if pmt is None:
+            logger.warning("behind card: no monthly amount under 10M closes the gap; not shown")
+            return out
     else:
-        projected, proj_basis = deterministic, "fixed-return"
+        # No engine run (tests, or it failed): the fixed-return pair, sized on
+        # the SAME formula it projects with, so the claim still holds for it.
+        # `projected_override` is deliberately NOT used here: a Monte-Carlo
+        # headline with a fixed-return monthly amount is the mismatch the
+        # review caught. The engine path is `levers`.
+        projected = nav * (1 + r) ** years + _fv_monthly(standing_monthly, r, years)
+        proj_basis = "fixed-return"
+        conservative = nav * (1 + r_cons) ** years + _fv_monthly(standing_monthly, r_cons, years)
+        pmt = pmt_cons = None
     if projected >= target:
         return out  # on track on the current path
 
     gap = target - projected
     behind_pct = round((1 - projected / target) * 100) if target else 0
     sev = "CRITICAL" if behind_pct >= 40 else "HIGH"
+    deadline = goal.get("deadline") or "your deadline"
 
-    # Lever A — add money: required monthly contribution (future value of an annuity)
-    rm = r / 12.0
-    n = years * 12
-    pmt = gap * rm / (((1 + rm) ** n) - 1) if rm else gap / n
-    # Rounded UP to a whole ₪10 -- the amount a person actually types into a
-    # bank's standing-order form, and never below what closes the gap.
-    pmt = -(-pmt // 10.0) * 10.0   # ceil; `math` is imported locally further down
+    if pmt is None:
+        pmt = _pmt(r, gap)
+        pmt_cons = _pmt(r_cons, max(0.0, target - conservative))
     new_total = round(standing_monthly + pmt, 2)
-    _path = (f"With your standing order of {_ils(standing_monthly)}/month you'd reach about "
-             if standing_monthly > 0 else "On the current path you'd reach about ")
+    if return_basis == "measured":
+        _rate_word = f"your measured ~{r * 100:.1f}%/yr"
+    elif measured:
+        _rate_word = (f"your part-measured ~{r * 100:.1f}%/yr"
+                      + (f" ({measured_pct:g}% of the book measured)" if measured_pct is not None else ""))
+    else:
+        _rate_word = f"~{r * 100:.1f}%/yr (instrument table, not measured)"
+    if proj_basis == "montecarlo":
+        # A median of simulations, NOT the rate compounded: at high volatility
+        # the two are far apart, and the card must not pair a rate with a
+        # number that rate does not produce.
+        _vol = (levers or {}).get("vol") or volatility_pct
+        _how = (f"the median of 10,000 simulations at {_rate_word}"
+                + (f" and ~{_vol:.0f}% volatility" if _vol else ""))
+        _path = (f"With your standing order of {_ils(standing_monthly)}/month, {_how} reaches about "
+                 if standing_monthly > 0 else f"{_how[0].upper()}{_how[1:]} reaches about ")
+    else:
+        _path = (f"With your standing order of {_ils(standing_monthly)}/month, at {_rate_word}, you'd reach about "
+                 if standing_monthly > 0 else f"At {_rate_word} you'd reach about ")
+    # The SECOND line exists to put a cautious figure beside a measured one.
+    # With no measurement the headline already IS a table rate, and a second
+    # table rate beside it is noise. Called "conservative" only when its
+    # OUTCOME is lower -- with measured volatility near 70% the drag can put a
+    # 25% median below an 8.5% one, and then it is not the cautious figure.
+    if not measured:
+        _cons_line = ""
+    else:
+        _cons_word = ("a conservative" if conservative < projected else "the objective table's")
+        _cons_line = (f"At {_cons_word} {r_cons * 100:.1f}%/yr: about {_ils(conservative)}"
+                      + (f", and closing the gap would take about {_ils(pmt_cons)}/month."
+                         if pmt_cons else "."))
     out.append({"id": _rid("behind", "contrib"), "dimension": "goal", "severity": sev,
                 "title": ("You're behind — raise your monthly contribution" if standing_monthly > 0
                           else "You're behind — add a monthly contribution"),
-                "why": f"{_path}{_ils(projected)} of your {_ils(target)} goal "
-                       f"(~{behind_pct}% short), so nothing changes unless you add to it.",
+                "why": f"{_path}{_ils(projected)} of your {_ils(target)} goal by {deadline} "
+                       f"(~{behind_pct}% short), so nothing changes unless you add to it."
+                       + (f" {_cons_line}" if _cons_line else ""),
                 "action": (f"Raise your standing order from {_ils(standing_monthly)} to about "
-                           f"{_ils(new_total)}/month to close the gap by your deadline."
+                           f"{_ils(new_total)}/month to close the gap by {deadline}."
                            if standing_monthly > 0 else
-                           f"Investing about {_ils(pmt)}/month would close the gap by your deadline."),
+                           f"Investing about {_ils(pmt)}/month would close the gap by {deadline}."),
                 "impact": f"About {_ils(pmt)}/month more closes the ~{_ils(gap)} gap and puts your "
-                          f"{_ils(target)} goal back within reach by your deadline.",
+                          f"{_ils(target)} goal back within reach by {deadline}.",
                 "how": [(f"Accept sets your standing order to {_ils(new_total)}/month"
                          if standing_monthly > 0 else
                          f"Accept sets up a standing order of {_ils(pmt)}/month into cash, on the 1st"),
                         "Set the same transfer up at your bank -- the app records it, it does not move money",
-                        "Cash above your target then gets a card that puts it back to work"],
+                        "Cash above your target then gets a card that puts it back to work",
+                        *([goal["breakdown"]] if goal.get("breakdown") else [])],
                 "est_amount": round(pmt, 2),
+                "goal_target_ils": round(target, 2), "goal_deadline": goal.get("deadline"),
+                "goal_years_left": round(float(years), 1),
+                "return_pct": round(r * 100, 2), "return_basis": return_basis or "static",
+                "conservative_return_pct": round(r_cons * 100, 2),
+                "conservative_projection_ils": round(conservative, 2),
                 "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
                           "add_ils": round(pmt, 2)}})
     _proj_formula = (f("Projection", "projected = Monte-Carlo median (10,000 sims)",
-                       substituted=f"NAV {nav:,.0f}, {years}y", result=f"₪{projected:,.0f}")
+                       substituted=f"NAV {nav:,.0f}, {years:.1f}y at {r * 100:.1f}%",
+                       result=f"₪{projected:,.0f}")
                      if proj_basis == "montecarlo" else
-                     f("Projection", "projected = NAV x (1+r)^years",
-                       substituted=f"{nav:,.0f} x (1+{r:.3f})^{years}", result=f"₪{projected:,.0f}"))
+                     f("Projection", "projected = NAV x (1+r)^years + standing order FV",
+                       substituted=f"{nav:,.0f} x (1+{r:.3f})^{years:.2f}", result=f"₪{projected:,.0f}"))
     out[-1]["audit_trail"] = audit_for("goal",
         raw_data={"nav": round(nav, 2), "target": round(target, 2), "projected": round(projected, 2),
                   "projection_basis": proj_basis, "behind_pct": behind_pct,
-                  "annual_return_pct": round(r * 100, 2), "years": years},
+                  "annual_return_pct": round(r * 100, 2), "return_basis": return_basis or "static",
+                  "conservative_return_pct": round(r_cons * 100, 2),
+                  "conservative_projection": round(conservative, 2),
+                  "years": round(float(years), 3), "deadline": goal.get("deadline"),
+                  "put_in": goal.get("put_in"), "goal_basis": goal.get("basis")},
         formulas=[
+            f("Goal", "target = sum(deposit x (1+roi)^(years to deadline))",
+              result=f"₪{target:,.0f}"),
             _proj_formula,
             f("Monthly contribution", "pmt = gap x (r/12) / ((1+r/12)^(12*years) - 1)",
               result=f"₪{pmt:,.0f}/mo")])
 
-    # Lever B — shift to a higher-growth mix (only if not already Grow)
+    # Lever B — shift to a higher-growth mix (only if not already Grow). BOTH
+    # sides the same kind of number: the objective table's rate compounded, for
+    # Grow and for the current objective. (Review, CONFIRMED: comparing a
+    # compounded Grow figure with a Monte-Carlo median invented the uplift.)
     if objective != "Grow":
-        proj_grow = nav * (1 + _OBJ_RETURN["Grow"] / 100.0) ** years
-        out.append({"id": _rid("behind", "grow"), "dimension": "goal", "severity": "HIGH",
-                    "title": "Shift to a higher-growth mix",
-                    "action": f"Switching from {objective} to a Grow mix raises expected growth, lifting the "
-                              f"projection to about {_ils(proj_grow)} — but with bigger swings along the way.",
-                    "how": ["Change your objective to Grow (more equities, fewer bonds)",
-                            "Accepting this rebalances your holdings toward the Grow target",
-                            "Make sure the extra volatility still fits your risk tolerance"],
-                    "est_amount": round(proj_grow - projected, 2),
-                    "apply": {"kind": "set_objective_and_rebalance", "objective": "Grow"}})
-
-    # Lever C — extend the horizon
-    import math
-    need_years = math.log(target / nav) / math.log(1 + r) if nav > 0 and r > 0 else years + 5
-    if need_years > years:
-        new_years = int(math.ceil(need_years))
-        out.append({"id": _rid("behind", "horizon"), "dimension": "goal", "severity": "MEDIUM",
-                    "title": "Give it more time",
-                    "action": f"At your current mix you'd need about {new_years} years (vs {years}) to reach "
-                              f"{_ils(target)}. Extending the deadline makes the goal realistic without extra risk.",
-                    "how": [f"Push your horizon out to ~{new_years} years",
-                            "Accepting this updates your plan's horizon",
-                            "Your projection and odds update immediately"],
-                    "est_amount": None,
-                    "apply": {"kind": "set_plan", "fields": {"horizon_years": new_years}}})
-
-    # Lever D — set a realistic target
-    out.append({"id": _rid("behind", "target"), "dimension": "goal", "severity": "LOW",
-                "title": "Set a target you'll actually hit",
-                "action": f"A realistic target on the current path is about {_ils(projected)} by your deadline.",
-                "how": [f"Lower your target to ~{_ils(projected)}",
-                        "Accepting this updates your plan's target amount",
-                        "You can always raise it again later"],
-                "est_amount": round(projected, 2),
-                "apply": {"kind": "set_plan", "fields": {"target_amount": round(projected, 2)}}})
+        _g = _OBJ_RETURN["Grow"] / 100.0
+        proj_grow = nav * (1 + _g) ** years + _fv_monthly(standing_monthly, _g, years)
+        proj_now = nav * (1 + r_cons) ** years + _fv_monthly(standing_monthly, r_cons, years)
+        if proj_grow > proj_now:
+            out.append({"id": _rid("behind", "grow"), "dimension": "goal", "severity": "HIGH",
+                        "title": "Shift to a higher-growth mix",
+                        "action": f"Switching from {objective} to a Grow mix raises expected growth: on the "
+                                  f"objective table, about {_ils(proj_grow)} by {deadline} instead of "
+                                  f"{_ils(proj_now)} — but with bigger swings along the way.",
+                        "how": ["Change your objective to Grow (more equities, fewer bonds)",
+                                "Accepting this rebalances your holdings toward the Grow target",
+                                "Make sure the extra volatility still fits your risk tolerance"],
+                        "est_amount": round(proj_grow - proj_now, 2),
+                        "apply": {"kind": "set_objective_and_rebalance", "objective": "Grow"}})
     return out
 
 

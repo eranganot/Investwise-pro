@@ -243,7 +243,13 @@ def test_a_hidden_card_is_named_on_the_payload_not_merely_counted():
             assert first["hidden_cards"] == [], "nothing is hidden yet"
             recs = first["recommendations"]
             assert recs, "expected at least one card to hide"
-            victim = recs[0]
+            # A card that is in TWO consecutive builds. The buy-idea ranking
+            # rests on live provider history, so which commodity ranks first
+            # can change between two calls with nothing dismissed (measured
+            # 2026-09-28: WEAT then DBC) -- and a victim that vanishes on its
+            # own proves nothing about the mute.
+            again = {x["id"] for x in c.get("/api/v1/recommendations").json()["recommendations"]}
+            victim = next(x for x in recs if x["id"] in again)
 
             r = c.post(f"/api/v1/recommendations/{victim['id']}/dismiss",
                        json={"amount": victim.get("est_amount"),

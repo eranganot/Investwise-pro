@@ -448,7 +448,7 @@ def position_to_observation(p: Position) -> LagObservation | None:
 # --- Contributions: the only thing that changes "what you put in" -----------
 
 async def record_contribution(session: AsyncSession, user: User, amount_ils: float,
-                              *, note: str = "") -> float:
+                              *, note: str = "", occurred_at=None) -> float:
     """Log external money in (positive) or out (negative). Returns the new total.
 
     Trading only rearranges money that is already inside the account, so nothing
@@ -457,9 +457,14 @@ async def record_contribution(session: AsyncSession, user: User, amount_ils: flo
     amount_ils = round(float(amount_ils or 0.0), 2)
     if amount_ils == 0:
         return await total_contributed(session, user)
-    session.add(Contribution(
+    row = Contribution(
         subject=user.email, amount_ils=Decimal(str(amount_ils)),
-        kind="deposit" if amount_ils > 0 else "withdrawal", note=(note or "")[:200]))
+        kind="deposit" if amount_ils > 0 else "withdrawal", note=(note or "")[:200])
+    # PR 74: the goal compounds each deposit from ITS date, so a deposit logged
+    # late must be able to carry the day the money actually moved.
+    if occurred_at is not None:
+        row.occurred_at = occurred_at
+    session.add(row)
     await session.commit()
     return await total_contributed(session, user)
 
@@ -577,19 +582,29 @@ async def list_contributions(session: AsyncSession, user: User) -> list[dict]:
              "note": c.note} for c in res.scalars().all()]
 
 
-async def set_contributed(session: AsyncSession, user: User, amount_ils: float) -> float:
+async def set_contributed(session: AsyncSession, user: User, amount_ils: float,
+                          *, occurred_at=None) -> float:
     """Replace the ledger with a single opening balance.
 
     For the common case: you know you have put in ₪20,000 in total and do not
     want to reconstruct every historical transfer.
+
+    PR 74: the opening balance KEEPS the date of the earliest row it replaces
+    (or the date given). The goal compounds every deposit from its own date,
+    and re-dating the whole ledger to "now" on a re-submit of the same total
+    moved the goal with no money moving.
     """
     amount_ils = round(float(amount_ils or 0.0), 2)
-    existing = await session.execute(
-        select(Contribution).where(Contribution.subject == user.email))
-    for row in existing.scalars().all():
+    existing = (await session.execute(
+        select(Contribution).where(Contribution.subject == user.email))).scalars().all()
+    earliest = min((r.occurred_at for r in existing if r.occurred_at is not None), default=None)
+    for row in existing:
         await session.delete(row)
-    session.add(Contribution(
+    row = Contribution(
         subject=user.email, amount_ils=Decimal(str(amount_ils)),
-        kind="deposit" if amount_ils >= 0 else "withdrawal", note="opening balance"))
+        kind="deposit" if amount_ils >= 0 else "withdrawal", note="opening balance")
+    if occurred_at is not None or earliest is not None:
+        row.occurred_at = occurred_at if occurred_at is not None else earliest
+    session.add(row)
     await session.commit()
     return amount_ils

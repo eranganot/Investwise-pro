@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,8 @@ from app.providers.registry import guarded_history, market_provider
 from app.services.fx import position_value_ils
 from app.services.intake_service import list_positions
 from app.services.plan_service import get_plan
+
+logger = logging.getLogger(__name__)
 
 
 def _years_from_plan(plan) -> float | None:
@@ -80,8 +83,21 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
     bench_rets = pct_returns([bench_map[d] for d in dates]) if bench_map else None
 
     plan = await get_plan(session, user)
-    target = float(plan.target_amount) if plan and getattr(plan, "target_amount", None) else None
-    years = _years_from_plan(plan)
+    # PR 74 -- the ONE goal: the same target and the same years left to the
+    # same deadline as /plan, the behind card and the projection. This read the
+    # stored `plan.target_amount` and counted whole calendar years to the
+    # deadline year (5 where /plan said 6).
+    from app.services.goal_service import compute_goal, goal_from
+    try:
+        _g = await compute_goal(session, user, plan, nav)
+    except Exception:  # noqa: BLE001 -- the ledger read must not cost the risk report
+        logger.warning("goal for the risk report fell back to the saved amount", exc_info=True)
+        _g = goal_from(plan, [], nav)
+    target = _g.get("target")
+    # Deadline set -> years LEFT to it; 0 (passed) means no forward window,
+    # never a silent fall back to the horizon.
+    years = ((_g.get("years_left") or None) if _g.get("deadline")
+             else _years_from_plan(plan))
 
     # THE STATED FORWARD RETURN, which is what the goal projection is now built
     # from. `analyze` used to derive it from the trailing 251 days -- 107.08%/yr
