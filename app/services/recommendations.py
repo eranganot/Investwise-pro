@@ -2907,9 +2907,13 @@ def _goal_levers(*, nav: float, rate: float, vol: float, years: float, target: f
 
     from app.engines.simulation_engine import SimulationEngine
 
+    from app.engines.return_convention import drift_pct
+
     def median(r: float, v: float, monthly: float) -> float:
+        # PR 76: `r` is a compound rate; the engine gets its drift, exactly as
+        # /plan/projection does, so the card and the screen quote one median.
         return float(SimulationEngine(seed=7).run(
-            initial_value=nav, expected_return_pct=r, volatility_pct=v,
+            initial_value=nav, expected_return_pct=drift_pct(r, v), volatility_pct=v,
             horizon_years=years, target_value=target,
             contribution_per_year=(monthly * 12 if monthly > 0 else None)).nominal.p50)
 
@@ -3014,9 +3018,9 @@ def _behind_goal_recs(plan, snap, objective, projected_override=None,
     else:
         _rate_word = f"~{r * 100:.1f}%/yr (instrument table, not measured)"
     if proj_basis == "montecarlo":
-        # A median of simulations, NOT the rate compounded: at high volatility
-        # the two are far apart, and the card must not pair a rate with a
-        # number that rate does not produce.
+        # A median of simulations. Since PR 76 it compounds at the stated rate
+        # (`return_convention`), so the rate and the number agree; the volatility
+        # is still said, because it is what makes the range so wide.
         _vol = (levers or {}).get("vol") or volatility_pct
         _how = (f"the median of 10,000 simulations at {_rate_word}"
                 + (f" and ~{_vol:.0f}% volatility" if _vol else ""))
@@ -3028,8 +3032,8 @@ def _behind_goal_recs(plan, snap, objective, projected_override=None,
     # The SECOND line exists to put a cautious figure beside a measured one.
     # With no measurement the headline already IS a table rate, and a second
     # table rate beside it is noise. Called "conservative" only when its
-    # OUTCOME is lower -- with measured volatility near 70% the drag can put a
-    # 25% median below an 8.5% one, and then it is not the cautious figure.
+    # OUTCOME is lower (since PR 76 both compound at their rates, so it is,
+    # whenever the table rate is the lower one).
     if not measured:
         _cons_line = ""
     else:
@@ -3057,6 +3061,7 @@ def _behind_goal_recs(plan, snap, objective, projected_override=None,
                         *([goal["breakdown"]] if goal.get("breakdown") else [])],
                 "est_amount": round(pmt, 2),
                 "goal_target_ils": round(target, 2), "goal_deadline": goal.get("deadline"),
+                "projected_ils": round(projected, 2),
                 "goal_years_left": round(float(years), 1),
                 "return_pct": round(r * 100, 2), "return_basis": return_basis or "static",
                 "conservative_return_pct": round(r_cons * 100, 2),

@@ -3183,7 +3183,7 @@ function renderRoi(p){const e=$("roi_note");
     const basisLine=meas
       ?`<div class="mk" style="margin-top:3px">Measured from your own strategies (${p.measured_pct_of_book}% of the book)${wasStatic!=null&&wasStatic!==p.portfolio_expected_roi_pct?` — the instrument table would have said ~${wasStatic}%/yr`:""}. Measured is what happened, not a forecast.</div>`
       :`<div class="mk" style="margin-top:3px">⚠️ Not measured — this is the instrument table, which prices a leveraged fund as if you held it buy-and-hold. Your sleeves are rules that sit out of it some of the time.</div>`;
-    e.innerHTML=`Your portfolio's expected return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`+basisLine;}
+    e.innerHTML=`Your portfolio's expected compound return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`+basisLine;}
   else e.style.display="none";}
 async function savePlan(){
   const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
@@ -3382,7 +3382,9 @@ function drawProjection(r){
   }else{
     contribLine=`<div class="mk" style="margin-top:6px">No deposits are modelled here${wc.note?` — ${wc.note}`:""} Log them in Plan to see the other line.</div>`;
   }
-  const asm=(r.assumptions||[]).length?`<div class="mk" style="margin-top:4px">Assumes ${(r.assumptions||[]).join("; ")}.</div>`:"";
+  const asm=((r.assumptions||[]).length?`<div class="mk" style="margin-top:4px">Assumes ${(r.assumptions||[]).join("; ")}.</div>`:"")
+    // PR 76: why the projection moved, said once where the numbers are.
+    +(r.return_convention_note?`<div class="mk" style="margin-top:4px">\u2139\ufe0f ${r.return_convention_note}</div>`:"");
   $("proj_cap").innerHTML=cap+` <span class="mk">· ${(r.runs||10000).toLocaleString()} Monte Carlo runs</span>`+contribLine+asm;
 }
 function drawChart(id,type,data,extra){

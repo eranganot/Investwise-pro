@@ -832,10 +832,15 @@ async def goal_projection(contribution_per_year: float | None = None,
     roi = stats["expected_roi"] or 6.0
     vol = stats["volatility"] or 12.0
 
-    def _run(**kw):
+    from app.engines.return_convention import CONVENTION, CONVENTION_NOTE, drift_pct
+
+    def _run(rate: float | None = None, **kw):
         # Same seed on every run, so the three are compared on the same draws and
         # a difference between them is the lever, not the sampler.
-        args = {"initial_value": stats["nav"], "expected_return_pct": roi,
+        # PR 76: `rate` is a COMPOUND rate; the engine gets its drift, so the
+        # median grows at the stated rate (see `engines.return_convention`).
+        args = {"initial_value": stats["nav"],
+                "expected_return_pct": drift_pct(roi if rate is None else rate, vol),
                 "volatility_pct": vol, "horizon_years": years, "target_value": target}
         args.update(kw)
         return SimulationEngine(seed=7).run(**args)
@@ -897,7 +902,7 @@ async def goal_projection(contribution_per_year: float | None = None,
                                  f"deposit, so the projection is unchanged.")
 
     # THE RIVAL LEVER, so the spec's claim is checkable rather than asserted.
-    ex = _run(expected_return_pct=roi + EXCESS_PP)
+    ex = _run(rate=roi + EXCESS_PP)
     excess_uplift = round(ex.nominal.p50 - sim.nominal.p50, 2)
     excess_block = {
         "extra_return_pp": EXCESS_PP,
@@ -942,7 +947,9 @@ async def goal_projection(contribution_per_year: float | None = None,
         "measured_pct_of_book": stats.get("measured_pct_of_book"),
         "expected_return_pct_static": stats.get("static_expected_roi"),
         "volatility_pct_static": stats.get("static_volatility"),
-        "assumptions": [f"~{stats['expected_roi'] or 6}% expected return, "
+        "return_convention": CONVENTION,
+        "return_convention_note": CONVENTION_NOTE,
+        "assumptions": [f"~{stats['expected_roi'] or 6}%/yr compound return (the median grows at it), "
                         f"{stats['volatility'] or 12}% volatility, over {years:.1f} years"
                         + (f" ({stats['assumption_basis']}; "
                            f"{stats.get('measured_pct_of_book')}% of the book measured)"

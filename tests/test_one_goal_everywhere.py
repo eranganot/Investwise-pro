@@ -92,9 +92,12 @@ def test_the_amount_on_the_card_really_closes_the_gap_on_the_same_engine():
               standing_monthly=0.0, cons_rate=8.5, cons_vol=20.0)
     lv = _goal_levers(**kw)
 
+    from app.engines.return_convention import drift_pct
+
     def median(monthly):
+        # PR 76: 25% is a COMPOUND rate; the engine gets its drift.
         return SimulationEngine(seed=7).run(
-            initial_value=30_000, expected_return_pct=25, volatility_pct=67.5,
+            initial_value=30_000, expected_return_pct=drift_pct(25, 67.5), volatility_pct=67.5,
             horizon_years=5.26, target_value=120_000,
             contribution_per_year=monthly * 12).nominal.p50
     assert lv["projected"] < 120_000

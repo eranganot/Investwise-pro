@@ -13,6 +13,8 @@ Pure math, no I/O - the service layer supplies the price history.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -125,15 +127,21 @@ def analyze(*, tickers: list[str], weights: list[float],
         # "a measured CAGR" in the user's own words. A CAGR is already a
         # GEOMETRIC growth rate -- the -0.5*sigma^2 volatility drag is baked
         # into it -- so it is compounded directly and the drag is NOT applied a
-        # second time. `median = nav * exp(g*T)` is then exactly "compound at
-        # the stated rate", which is what a reader means by 22%/yr.
+        # second time. The median is `nav * (1+g)^T` -- "compound at the
+        # stated rate", which is what a reader means by 22%/yr (see below).
         #
         # Subtracting the drag anyway would have been the conservative-looking
         # mistake: on the live book, sigma is 67.5%, so 0.5*sigma^2 is 22.8% and
         # would have wiped out the entire 22.18% assumption, putting the median
         # five-year outcome BELOW today's NAV for arithmetic reasons rather than
         # for anything the measurement said.
-        drift = float(drift_pct) / 100.0
+        # PR 76 (review, CONFIRMED): `exp(g*T)` is CONTINUOUS compounding at g,
+        # not "compound at the stated rate" -- 17% high over 6 years at 24.98%
+        # (₪112,570 against ₪95,840 on Eran's book). The annual-compound rate g
+        # is the continuous rate log1p(g); with that the median is exactly
+        # nav*(1+g)^T, the same median `return_convention.drift_pct` gives the
+        # plan projection.
+        drift = math.log1p(max(float(drift_pct) / 100.0, -0.999999))
         rng = np.random.default_rng(seed)
         z = rng.standard_normal(runs)
         terminal = nav * np.exp(drift * years + port_vol * np.sqrt(years) * z)

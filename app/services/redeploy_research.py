@@ -95,7 +95,10 @@ def live_scores(objective: str | None, currency: str = "ILS") -> dict[str, dict]
             out[p.ticker.upper()] = {
                 "score": float(p.score) if p.score is not None else None,
                 "reasons": list(p.reasons or []), "data_gaps": list(getattr(p, "data_gaps", []) or []),
-                "asset_class": cls, "name": p.name, "screen": cls_default}
+                "asset_class": cls, "name": p.name, "screen": cls_default,
+                # PR 76, Eran's option B: "etf" vs "stock" -- a fund top-up is
+                # only ever replaced by a fund, a stock by a stock.
+                "kind": getattr(p, "kind", None)}
     try:
         _add(ag.screen_equities(weights=ow.weights_for(objective), top_n=1000), "Equities",
              classify_it=True)
@@ -114,6 +117,15 @@ def live_scores(objective: str | None, currency: str = "ILS") -> dict[str, dict]
 
 def _gaps(v: dict) -> set[str]:
     return {str(g).split(":")[0] for g in (v.get("data_gaps") or [])}
+
+
+def _same_kind(a: dict, b: dict) -> bool:
+    """LIKE FOR LIKE (Eran, 2026-09-28, option B): a fund's score is an average
+    of hundreds of companies, a stock's is one company, and the score does not
+    measure the diversification between them. Unknown kind on either side is
+    not evidence of a match."""
+    ka, kb = a.get("kind"), b.get("kind")
+    return ka is not None and ka == kb
 
 
 def _comparable(a: dict, b: dict) -> bool:
@@ -163,6 +175,18 @@ def research(legs: list[dict], unplaced: list[dict], *, sleeve_tickers: set[str]
                        and (t not in taken or (incumbent is None and t == tk))
                        and not (incumbent is not None and t == tk)),
                       key=lambda kv: -kv[1]["score"])
+        # LIKE FOR LIKE BEFORE THE CAP (review of PR 76, CONFIRMED): filtered
+        # after the three-candidate cut, a held fund saw three stocks and never
+        # reached the fund 39 points past the margin. Eligible names are the
+        # holding's own kind; the best few of the other kinds are still listed,
+        # without a trend fetch, because they cannot win.
+        inc_meta = (scores.get(incumbent) or {}) if incumbent else {}
+        other_kind: list[dict] = []
+        if incumbent is not None:
+            eligible = [(t, v) for t, v in pool if _same_kind(inc_meta, v)]
+            other_kind = [{"ticker": t, "score": v["score"], "kind": v.get("kind")}
+                          for t, v in pool if not _same_kind(inc_meta, v)][:2]
+            pool = eligible
         considered, skipped = [], []
         for n_checked, (t, v) in enumerate(pool):
             if n_checked >= MAX_TREND_CHECKS:
@@ -174,9 +198,12 @@ def research(legs: list[dict], unplaced: list[dict], *, sleeve_tickers: set[str]
                 continue
             considered.append({"ticker": t, "score": v["score"], "trend": tr,
                                "data_gaps": v.get("data_gaps") or [], "screen": v.get("screen"),
+                               "kind": v.get("kind"),
                                "reasons": v.get("reasons") or [], "name": v.get("name")})
             if len(considered) >= MAX_CANDIDATES:
                 break
+        # `pool` is already like for like for a held name; a class you hold
+        # nothing in takes the best name of any kind (nothing to replace).
         best = considered[0] if considered else None
         rec = {"asset_class": cls, "leg_ticker_before": tk, "incumbent": incumbent,
                "incumbent_score": (scores.get(incumbent) or {}).get("score") if incumbent else None,
@@ -239,10 +266,14 @@ def research(legs: list[dict], unplaced: list[dict], *, sleeve_tickers: set[str]
             else:
                 rec["decision"] = "kept"
         # Why each runner-up lost, in words.
+        _kind_word = {"etf": "a fund", "stock": "a single stock", "bond": "a bond fund",
+                      "commodity": "a commodity fund"}
         for c in considered:
             if c["ticker"] == rec["chosen"]:
                 continue
-            if rec["decision"] == "kept" and incumbent:
+            if rec["decision"] == "held_back":
+                why = f"not chosen: {incumbent or tk}'s money was kept in cash (see the cash line)"
+            elif rec["decision"] == "kept" and incumbent:
                 if rec["incumbent_score"] is None:
                     why = f"{incumbent} has no screener score, so they cannot be compared -- kept the top-up"
                 elif not _comparable(scores.get(incumbent) or {}, c):
@@ -258,6 +289,15 @@ def research(legs: list[dict], unplaced: list[dict], *, sleeve_tickers: set[str]
             rec["also_considered"].append({**{k: c[k] for k in ("ticker", "score")},
                                            "trend": c["trend"].get("state"), "lost_because": why,
                                            "data_gaps": c["data_gaps"]})
+        for o in other_kind:
+            if inc_meta.get("kind") is None:
+                why = (f"{incumbent} has no screener score this scan (not reached, or not in "
+                       f"the universe), so its kind is unknown and nothing replaces it -- like for like")
+            else:
+                why = (f"{_kind_word.get(o.get('kind'), 'a different kind')} cannot replace "
+                       f"{_kind_word.get(inc_meta.get('kind'), 'this holding')} top-up -- like for like")
+            rec["also_considered"].append({"ticker": o["ticker"], "score": o["score"],
+                                           "trend": None, "lost_because": why, "data_gaps": []})
         rec["also_considered"] += [{"ticker": x["ticker"], "score": x["score"],
                                     "trend": "downtrend", "lost_because": x["lost_because"]}
                                    for x in skipped[:MAX_CANDIDATES]]

@@ -160,7 +160,9 @@ FIGURE_BASIS = {
         "the ONLY probability of reaching your goal. A fraction between 0 and 1, "
         "from the same simulation the Plan screen shows"),
     "projection.years": "the horizon that probability is measured over",
-    "projection.projected_median": "the median simulated end value, in real terms",
+    # Nominal: `goal_projection` returns `sim.nominal.p50` (review of PR 76 --
+    # this said "real terms" while the figure was nominal).
+    "projection.projected_median": "the median simulated end value, in nominal shekels",
 }
 
 

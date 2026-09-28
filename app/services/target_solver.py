@@ -450,13 +450,10 @@ def geometric_to_arithmetic_pct(cagr_pct: float, volatility_pct: float) -> float
     version of "a target expressed as an average is not the outcome you are most
     likely to get".
     """
-    sigma = max(0.0, float(volatility_pct)) / 100.0
-    g = float(cagr_pct) / 100.0
-    if g <= -1.0:
-        return float(cagr_pct)
-    # Deliberately NOT rounded: this feeds the simulation, it is not displayed,
-    # and rounding a drift throws away precision the projection then compounds.
-    return (math.log1p(g) + 0.5 * sigma ** 2) * 100.0
+    # PR 76: the one implementation lives in `engines.return_convention`, which
+    # every projection now uses; this name stays for its existing callers.
+    from app.engines.return_convention import drift_pct
+    return drift_pct(cagr_pct, volatility_pct)
 
 
 def cost_of(measured: dict, *, nav_ils: float, horizon_years: float = 10.0,

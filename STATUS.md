@@ -65,6 +65,18 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 ## 🔖 Backlog — carried, with the evidence so it need not be re-derived
 
+### B-margin-A. Cash research: let any name replace a top-up past the margin (Eran, 2026-09-28)
+
+Parked by Eran as the fallback to option B (PR 76). Today a held FUND is only replaced by a fund and a
+held STOCK by a stock (`redeploy_research._same_kind`); single stocks show as "also considered". Option
+A drops that rule: any name 10+ points above the holding (same screen, same data gaps) replaces the
+top-up. Why it was not chosen: the screener scores company fundamentals, so a fund's score (an average
+of hundreds of companies) runs low against a single stock's, and the score does not measure the
+diversification lost -- a local preview replaced a QQQ top-up with CRM (75 vs 41), then VZ (76 vs 40).
+Revisit if B leaves good single names unused; switching is removing the `_same_kind` gate.
+
+### B-sells-trend. Sell cards on trend alone, flagged unmeasured (Eran Q5, 2026-09-28) -- for PR E.
+
 ### B1. PR 55.1's `sigma/sqrt(f)` scaling was WRONG — **WITHDRAWN in PR 56.** Evidence kept.
 
 **Closed as a defect; open as a question.** The scaling is gone from the code and pinned out by
@@ -154,6 +166,55 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 76 — a compound return is projected as a compound return, once; cash swaps are like for like
+
+_2026-09-28, approved 22:06 ("do it now as a separate PR"; table rates read as compound: "yes")._
+
+**Root cause (PROVEN in code, reproduced).** `SimulationEngine` takes an ARITHMETIC drift (its median
+is `exp((mu - sigma^2/2)T)`). Every return the app projects is a COMPOUND rate -- the measured
+out-of-sample CAGR (`measured_assumptions._pick_return`), and, per Eran, the instrument table's rows
+and the objective table's 8.5%. `/plan/projection` (and through it the digest and plan health) and the
+behind-goal card passed the compound rate as the drift, so volatility was taken twice: on Eran's book
+(₪25,148, 24.98%, 44.62% vol, 6y) the median came out ₪61,049 -- the live screen showed ₪62,708 that
+morning, within 3% of the reproduction -- where compounding gives ₪95,840. The risk report
+(`drift_convention: cagr`) and the target solver (`geometric_to_arithmetic_pct`) already converted.
+Ruled out: the engine (right for its input), the measured figure (a CAGR by construction), the
+volatility input (the one blend every screen uses).
+
+**Fix.** `engines/return_convention.drift_pct` is the one converter (the target solver's name now
+delegates to it). The projection's base, with-deposits and +1pp runs and the behind card's headline,
+conservative line and monthly-amount search all convert. The payload carries `return_convention:
+"compound"` and a note the projection card shows. Eran's book after: 6-year median ₪94,449; at the
+2031 deadline ₪80,157 (was ₪54,676) against the ₪82,692 goal; chance 49% (was 34%). The leveraged
+table row (12%/55%) no longer has a negative median.
+Out of scope: `/api/v1/simulation` and `worker.simulation_task` take a user-typed return; nothing on
+the plan screens calls them.
+
+**Cash research, option B (Eran).** A held fund is only replaced by a fund, a held stock by a stock
+(`kind` from the universe: 11 etf, 61 stock); other kinds stay listed with "like for like". A class held
+in nothing takes the best name of any kind. Option A is in the backlog (B-margin-A).
+
+**Independent review (fresh agent), fixed:**
+1. CONFIRMED -- the like-for-like filter ran AFTER the three-candidate cut, so a held fund saw three
+   stocks and never reached a fund 39 points past the margin; B was close to a no-op. Now filtered
+   before the cap (and before any trend fetch); the best two of other kinds are listed.
+2. CONFIRMED, pre-existing -- the risk report's "cagr" median was `nav*exp(g*T)`, continuous
+   compounding: 17% high over 6 years at 24.98% (₪112,570 vs ₪95,840). Now `log1p(g)`, so every
+   median in the app is `nav*(1+g)^T`. Its test had pinned the continuous form at 5%; now annual at 3%.
+3. CONFIRMED -- runners-up read "ranked below QQQ" when QQQ's money was kept in cash; a held name the
+   screener did not score has no kind, and the card now says so rather than implying a comparison.
+5. CONFIRMED, pre-existing -- the digest's context called the projection median "real terms"; it is
+   nominal.
+Also: the behind card carries `projected_ils`, and the smoke compares it with the projection's
+median; "expected compound return" on the plan screen; stale comments.
+Not fixed, recorded: `RiskEngine.vet`'s ruin check still reads a typed per-holding
+`expected_return_pct` as a drift (it only vetoes; no median is shown from it).
+
+Gate: 2053 passed / 0 failed on SQLite and on Postgres 16; ruff clean.
+Smoke `smoke-pr76-one-return-convention.ps1`: PR 75 code 3 FAIL, PR 76 0 FAIL (local).
 
 ---
 

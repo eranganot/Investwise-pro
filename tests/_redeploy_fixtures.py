@@ -4,9 +4,9 @@ from app.services import redeploy_research as rr
 MIN = 250.0
 
 
-def S(score, screen="Equities", gaps=(), cls=None):
+def S(score, screen="Equities", gaps=(), cls=None, kind="stock"):
     return {"score": score, "screen": screen, "asset_class": cls or screen,
-            "data_gaps": list(gaps), "reasons": [], "name": None}
+            "data_gaps": list(gaps), "reasons": [], "name": None, "kind": kind}
 
 
 def trend(states):

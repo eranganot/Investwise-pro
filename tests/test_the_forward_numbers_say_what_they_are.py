@@ -186,9 +186,12 @@ def test_the_stated_rate_is_compounded_and_the_drag_is_not_applied_twice():
                   nav=nav, target=102_973.0, years=years, drift_pct=STATED_DRIFT_PCT)
 
     assert out["goal"]["drift_convention"] == "cagr", out["goal"]
-    want = nav * np.exp(g * years)
+    # ANNUAL compounding: (1+g)^T. This asserted exp(g*T) -- continuous
+    # compounding, 17% high over 6 years at 24.98% -- and called it "compound at
+    # the stated rate" (review of PR 76). Tolerance tightened from 5% to 3%.
+    want = nav * (1.0 + g) ** years
     got = out["goal"]["median_terminal"]
-    assert abs(got / want - 1.0) < 0.05, (
+    assert abs(got / want - 1.0) < 0.03, (
         f"the median terminal is {got:,.0f}; compounding {STATED_DRIFT_PCT}% for "
         f"{years:g} years gives {want:,.0f}. A gap this size means the "
         f"volatility drag is being applied to a rate that already includes it.")
