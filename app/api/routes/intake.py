@@ -648,6 +648,7 @@ def _last_buy(buys, p, price, _td) -> dict | None:
 class LedgerRepairRequest(BaseModel):
     confirm: bool = False
     include_estimates: bool = False
+    include_rebalances: bool = False
 
 
 @router.get("/portfolio/ledger/repair")
@@ -667,7 +668,8 @@ async def ledger_repair_apply(body: LedgerRepairRequest,
     confidence unless `include_estimates` is set."""
     from app.services.ledger_repair import apply
     out = await apply(session, user, confirm=body.confirm,
-                      include_estimates=body.include_estimates)
+                      include_estimates=body.include_estimates,
+                      include_rebalances=body.include_rebalances)
     if not out.get("ok"):
         raise HTTPException(status_code=422, detail=out.get("reason"))
     return out

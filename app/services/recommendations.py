@@ -1437,6 +1437,18 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
     mix, _ = current_mix(rows)
     target = btgt["target"]
     report = AllocationEngine().compute(target_allocation=target, current_allocation=mix, nav=nav)
+    # PR 73: Accept on ANY of these cards rebalances the whole book with real
+    # trades, sized by `_rebalance_plan` -- the function Accept runs. The card
+    # quotes that plan's sales, buys and tax, so the tax is on screen before the
+    # tap rather than discovered in the ledger afterwards.
+    try:
+        _rp = _rebalance_plan(rows, target)
+    except Exception:  # noqa: BLE001 -- a missing quote must not cost the card
+        _rp = None
+    _rp_line = (f"Accept rebalances the whole book with real trades: sells about "
+                f"{_ils(_rp['gross_sold_ils'])}, estimated tax {_ils(_rp['tax_ils'])}, "
+                f"buys about {_ils(_rp['buy_ils'])} with what the sales raise"
+                if _rp and (_rp["sells"] or _rp["buys"]) else None)
     # Every action past the drift threshold, not the first two. The slice meant
     # `_rid("rebal","Fixed Income")` was never GENERATED on a book drifted in
     # three classes -- not suppressed, not filtered, simply never built. A card
@@ -1488,7 +1500,8 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                      "how": [f"{a.action_type.title()} {a.asset_class} by ~{_ils(a.estimated_trade_value_currency)}"
                              + (f" — e.g. {CLASS_ETF[a.asset_class]}" if a.asset_class in CLASS_ETF else ""),
                              f"After tax & costs that's about {_ils(a.net_trade_value_currency)} moved",
-                             f"Target is {whence}"],
+                             f"Target is {whence}"] + ([_rp_line] if _rp_line else []),
+                     "rebalance_tax_ils": (_rp["tax_ils"] if _rp else None),
                      "est_amount": a.net_trade_value_currency,
                      # `direction` is recorded, not left to be read back off the
                      # title. `_reconcile` merges these legs into one card and
@@ -4257,101 +4270,164 @@ def _buy_ideas(snap, currency: str = "USD", objective: str | None = None,
         return []
 
 
-async def _rebalance_to(session, user, rows, objective: str) -> None:
-    """Scale holdings so each asset class hits the BOOK's target weight (NAV held constant).
+def _rebalance_plan(rows, target: dict) -> dict:
+    """THE ONE SIZING of "rebalance the book to its target", for the card AND Accept.
 
-    Reads the same `_book_target` the card does, and that is not a tidiness
-    point: this is the function Accept runs. When it read the CORE's mix while
-    the card quoted the core's mix too, both were wrong together and at least
-    agreed. Fixing only the card would have been worse than fixing neither --
-    the screen would have said "sell 4,324" and the button would have sold
-    12,139.
+    Pure. Returns the per-holding legs Accept will execute and the tax the sales
+    owe, so the card can quote the tax before the tap and the executor cannot
+    trade a different number (the rule `_core_plan` already follows).
 
-    **Every value here is ILS.** It used to sum ``quantity * current_price`` raw and
-    call that NAV -- adding USD-priced holdings to an ILS cash row as if they were
-    the same unit. The class factors were then computed against that mixed number
-    and written straight back into share counts, so an Accept on a rebalance card
-    minted shares out of the arithmetic: +4.8% of NAV per tap on a USD book, no
-    trade, no cash movement. The docstring said "NAV held constant"; only the
-    docstring did. It is now asserted below rather than claimed here.
+    PR 73 -- WHY THIS EXISTS. `_rebalance_to` used to compute one factor per asset
+    class and write the new share counts straight into the book: no sale, no
+    purchase, no tax, and NO LEDGER ROW. Reproduced on a book shaped like Eran's
+    (Equities x1.584, Fixed Income x0.2475, Commodities x1.1, 0 transactions),
+    and matched live: the rebalance he accepted on 2026-09-26 13:14:49 scaled
+    USO and UGA by exactly 1.0295 and SOXL and VTI by 1.00268 -- two holdings
+    per class agreeing to five decimals -- none of it recorded. Sixteen rebalance
+    accepts since 08-21 went the same way, which is why the per-holding chart
+    could not rebuild a share count for QQQ, USO, UGA or VTI.
+
+    Now the SAME target mix is reached with real legs: every holding whose count
+    falls is a SELL (valued and taxed through `_sale_value_ils`, the function
+    every other sell uses), every holding whose count rises is a BUY funded only
+    by the sales' net proceeds. Tax is real money leaving the book, so the buys
+    are scaled to what the sales actually raise; the book lands a hair short of
+    the target by exactly the tax, and says so.
+
+    Cash stays out, as before (PR 17): a rebalance reshuffles INVESTED value.
     """
     from collections import defaultdict
 
     from app.services.fx import book_nav_ils, fx_rate, position_value_ils, price_currency
     from app.services.intake_service import is_cash_position
 
-    target = (await _book_target(session, user, objective))["target"]
-    _ils = position_value_ils
-
-    # CASH IS NOT A CLASS THIS FUNCTION MAY REBALANCE.
-    #
-    # `_book_target` returns investable weights only -- Grow is
-    # {Equities .80, Fixed Income .10, Commodities .10} and there is no `Cash`
-    # key on any objective. The cash row classifies as "Cash", so
-    # `target.get("Cash", 0.0)` was 0.0, `desired` was 0.0, and accepting the
-    # card set the balance to zero and spread it across the equity legs.
-    #
-    # Measured on the seeded USD book: 621.79 ILS of cash -> 0.00, silently.
-    # NAV was conserved, so the guard below passed and so did every test. What
-    # it actually did was BUY 621.79 ILS of equities -- with no trade legs, no
-    # ledger entry, no tax, and a card that says only "Sell about X of Equities
-    # to move toward 80%" and never mentions cash. That is the card-claim
-    # invariant: a card may not produce a change it does not claim. It also
-    # drove the balance straight through the app's own cash floor
-    # (`funding_service.cash_floor_ils` -> 419.69 ILS on that book), a policy
-    # this function never consulted.
-    #
-    # A rebalance is a reshuffle of INVESTED value between investable classes.
-    # Turning cash into securities is a purchase and belongs to the funded-buy
-    # path, which writes legs and says what it bought. So cash is excluded from
-    # both the classes being scaled and the NAV they are scaled against.
     investable = [p for p in rows
                   if not is_cash_position(p.ticker, p.meta if isinstance(p.meta, dict) else None)]
     nav = book_nav_ils(investable)
+    empty = {"sells": [], "buys": [], "tax_ils": 0.0, "gross_sold_ils": 0.0,
+             "net_proceeds_ils": 0.0, "buy_ils": 0.0, "buy_scale": 1.0, "nav_ils": nav}
     if not nav:
-        return
+        return empty
     byc = defaultdict(list)
     for p in investable:
         byc[classify_holding(p)].append(p)
     present_weight = sum(w for c, w in target.items() if c in byc) or 1.0
+    sells, buys = [], []
     for c, rowsc in byc.items():
         w = target.get(c, 0.0)
         desired = (w / present_weight) * nav  # classes absent from target -> 0 (sold down)
-        cur = sum(_ils(p) for p in rowsc)
+        cur = sum(position_value_ils(p) for p in rowsc)
         for p in rowsc:
             price = float(p.current_price or 0)
             if price <= 0:
                 continue
-            rate = fx_rate(price_currency(p.market, p.meta if isinstance(p.meta, dict) else {}))
-            share = (_ils(p) / cur) if cur > 0 else 1.0 / len(rowsc)
-            # desired * share is ILS; convert back to shares through the same rate.
-            # NOT rounded here: `update_position` quantises to the MONEY column's
-            # own scale. Rounding to six places first was worse than useless --
-            # the column keeps four, so the extra two digits lived in the
-            # identity-mapped object, where the check below could see them, and
-            # nowhere else. The check measured a book the database never had.
-            await update_position(session, user, str(p.id),
-                                  quantity=desired * share / (price * rate))
+            meta = p.meta if isinstance(p.meta, dict) else {}
+            rate = fx_rate(price_currency(p.market, meta))
+            share = (position_value_ils(p) / cur) if cur > 0 else 1.0 / len(rowsc)
+            new_qty = desired * share / (price * rate)
+            old_qty = float(p.quantity or 0)
+            delta = new_qty - old_qty
+            if abs(delta) * price * rate < 0.01:          # under an agora: nothing to trade
+                continue
+            leg = {"id": str(p.id), "ticker": p.ticker, "market": p.market,
+                   "asset_class": c, "price": price, "rate": rate, "old_qty": old_qty}
+            if delta < 0:
+                shares = min(old_qty, -delta)
+                gross, tax = _sale_value_ils(shares, price, float(p.cost_basis or 0),
+                                             p.market, meta)
+                sells.append({**leg, "shares": shares, "value_ils": gross, "tax_ils": tax})
+            else:
+                buys.append({**leg, "shares": delta, "value_ils": delta * price * rate})
+    gross = sum(s["value_ils"] for s in sells)
+    tax = sum(s["tax_ils"] for s in sells)
+    net = gross - tax
+    want = sum(b["value_ils"] for b in buys)
+    scale = min(1.0, net / want) if want > 0 else 1.0
+    for b in buys:
+        b["shares"] *= scale
+        b["value_ils"] *= scale
+    return {"sells": sells, "buys": buys, "tax_ils": round(tax, 2),
+            "gross_sold_ils": round(gross, 2), "net_proceeds_ils": round(net, 2),
+            "buy_ils": round(sum(b["value_ils"] for b in buys), 2),
+            "buy_scale": round(scale, 6), "nav_ils": nav}
 
-    # A reshuffle is not a source of money. Quantising each leg to the stored
-    # scale is the only licensed drift; anything larger means the arithmetic
-    # moved value and the book must not be left holding it.
-    #
-    # This is an assertion rather than a restatement only because every writer
-    # of a MONEY column now quantises to the column's own scale before the
-    # assignment (`app.models.tables.money`). The identity-mapped object and the
-    # stored row therefore hold the same number, so re-reading through the
-    # session measures the book the database has -- which, before that change,
-    # it did not: the extra two decimal places lived only in memory.
+
+async def _rebalance_to(session, user, rows, objective: str) -> dict:
+    """Rebalance the book to its target mix WITH REAL TRADES. Returns the legs.
+
+    Reads the same `_book_target` the card does, and sizes through the same
+    `_rebalance_plan` -- one sizing, two callers. Sells first (they raise the
+    money), then buys out of the net proceeds; anything the buys could not use
+    lands in cash. The returned detail is what `_record_apply` writes to the
+    ledger, so every share this moves is a Buy or Sell row with its price, value
+    and tax. See `_rebalance_plan` for why that was not true before PR 73.
+
+    **Every value here is ILS.** (PR 1: summing native prices against an ILS cash
+    row minted shares out of the arithmetic.) The NAV check below now expects
+    the book to fall by exactly the tax the sales owe -- the invariant
+    `_conservation_report` states for every other accept -- and refuses anything
+    else.
+    """
+    from app.services.fx import book_nav_ils
+    from app.services.intake_service import buy_into_book
+
+    target = (await _book_target(session, user, objective))["target"]
+    total_before = book_nav_ils(rows)
+    plan = _rebalance_plan(rows, target)
+    # BY ROW, NEVER BY TICKER. The plan sizes each ROW; a ticker can have two
+    # (two accounts). Keyed by ticker, the first review of this PR sold one
+    # row's leg out of the other, drove it negative, and `delete_position`
+    # (which removes every row of the ticker) deleted ~48k ILS of BND with no
+    # ledger row -- committed before the NAV check could object. Each leg now
+    # touches exactly the row it was sized on, and a row sold to zero is
+    # removed on its own (`update_position(quantity=0)` deletes that row only).
+    by_id = {str(p.id): p for p in rows}
+
+    sold, bought = [], []
+    for s in plan["sells"]:
+        p = by_id.get(s["id"])
+        if p is None:
+            continue
+        remaining = float(p.quantity) - s["shares"]
+        # NOT rounded here: `update_position` quantises to the MONEY column's
+        # own scale, so the object and the stored row hold the same number.
+        await update_position(session, user, str(p.id),
+                              quantity=(0.0 if remaining <= 1e-9 else remaining))
+        sold.append({"ticker": s["ticker"], "shares": round(s["shares"], 6),
+                     "price": s["price"], "value_ils": round(s["value_ils"], 2),
+                     "tax_ils": round(s["tax_ils"], 2), "market": s["market"]})
+    spent = 0.0
+    for b in plan["buys"]:
+        if b["shares"] <= 0:
+            continue
+        await buy_into_book(session, user, ticker=b["ticker"], market=b["market"],
+                            price=b["price"], shares=b["shares"],
+                            asset_class=b.get("asset_class"))
+        spent += b["value_ils"]
+        bought.append({"ticker": b["ticker"], "shares": round(b["shares"], 6),
+                       "price": b["price"], "amount_ils": round(b["value_ils"], 2),
+                       "market": b["market"]})
     await session.flush()
+    leftover = round(plan["net_proceeds_ils"] - spent, 2)
+    credited = 0.0
+    if leftover >= 0.01:
+        # Sales with nothing to buy (a class sold down to zero, say): the net
+        # proceeds are the user's money and land in cash, visibly.
+        credited = await credit_cash(session, user, leftover)
+
     fresh = await list_positions(session, user)
-    after = book_nav_ils([p for p in fresh
-                          if not is_cash_position(p.ticker,
-                                                  p.meta if isinstance(p.meta, dict) else None)])
-    if abs(after - nav) > max(1.0, nav * 1e-6):
+    total_after = book_nav_ils(fresh)
+    expected = total_before - plan["tax_ils"]
+    if abs(total_after - expected) > max(1.0, total_before * 1e-6):
         raise ValueError(
-            f"rebalance would have moved NAV by {after - nav:+.2f} ILS with no trade "
-            f"({nav:.2f} -> {after:.2f}); refusing to write it")
+            f"rebalance moved NAV by {total_after - total_before:+.2f} ILS against "
+            f"{-plan['tax_ils']:+.2f} of tax ({total_before:.2f} -> {total_after:.2f}); "
+            f"refusing to write it")
+    return {"sold": sold, "bought": bought, "tax_ils": plan["tax_ils"],
+            "cash_added_ils": round(credited, 2) if credited else 0.0,
+            "rebalance": {"gross_sold_ils": plan["gross_sold_ils"],
+                          "net_proceeds_ils": plan["net_proceeds_ils"],
+                          "bought_ils": round(spent, 2), "buy_scale": plan["buy_scale"]}}
 
 
 def _sale_value_ils(qty: float, price: float, basis: float, market, meta) -> tuple[float, float]:
@@ -4627,6 +4703,14 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     from app.services.fx import book_nav_ils
     nav_before = book_nav_ils(rows)
     book_before = _book_snapshot(rows)
+    ledger_before = await _ledger_net(session, user)
+    # Summed over EVERY row. `_book_snapshot` is keyed by ticker and keeps one
+    # row, so a ticker held in two accounts read as a phantom gap on every
+    # accept (found in review of PR 73).
+    shares_before: dict[str, float] = {}
+    for _p in rows:
+        _k = (_p.ticker or "").upper()
+        shares_before[_k] = shares_before.get(_k, 0.0) + float(_p.quantity or 0)
 
     if kind == "trim":
         p = by_ticker.get(spec["ticker"])
@@ -4695,12 +4779,25 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         for tk in spec.get("tickers", []):
             p = by_ticker.get(tk)
             if p:
-                gross, tax = _sale_value_ils(float(p.quantity), float(p.current_price or 0),
-                                             float(p.cost_basis or 0), p.market, p.meta)
+                # EVERY ROW `delete_position` REMOVES IS VALUED, AND THE SHARES ARE
+                # REPORTED. This valued one row and reported a bare ticker, so the
+                # ledger wrote a 0-share Sell (PR 73's guard caught it in review:
+                # TQQQ -19.1041 unexplained) and a ticker held in two rows lost the
+                # second row's value outright.
+                same = [r for r in rows if r.ticker == tk and r.market == p.market]
+                shares = sum(float(r.quantity or 0) for r in same)
+                gross = tax = 0.0
+                for r in same:
+                    g, t_ = _sale_value_ils(float(r.quantity or 0), float(r.current_price or 0),
+                                            float(r.cost_basis or 0), r.market, r.meta)
+                    gross += g
+                    tax += t_
                 await delete_position(session, user, tk, p.market)
                 proceeds += (gross - tax)
                 tax_total += tax
-                sold.append(tk)
+                sold.append({"ticker": tk, "shares": round(shares, 6),
+                             "price": float(p.current_price or 0),
+                             "value_ils": round(gross, 2), "tax_ils": round(tax, 2)})
         credited = await credit_cash(session, user, proceeds)
         detail = {"sold": sold, "cash_added_ils": round(credited, 2), "tax_ils": round(tax_total, 2)}
     elif kind == "fee_swap":
@@ -4729,12 +4826,12 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await fund_plan(session, user, dry_run=False)
     elif kind == "rebalance_to_objective":
         plan = await get_plan(session, user)
-        await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
+        detail = await _rebalance_to(session, user, rows, plan.objective if plan else "Balanced")
     elif kind == "set_objective_and_rebalance":
         await upsert_plan(session, user, objective=spec["objective"])
         await session.commit()
         rows = await list_positions(session, user)
-        await _rebalance_to(session, user, rows, spec["objective"])
+        detail = await _rebalance_to(session, user, rows, spec["objective"])
     elif kind == "set_plan":
         await upsert_plan(session, user, **spec.get("fields", {}))
         await session.commit()
@@ -4804,9 +4901,79 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     # that a new handler silently opts out of. Anything that reaches this line
     # changed the book, so anything that reaches this line is recorded.
     await _record_apply(session, user, kind, rec_id, detail)
+    detail["unrecorded"] = await _guard_every_share_is_a_trade(
+        session, user, kind, rec_id, shares_before, ledger_before)
     conservation = await _conservation_report(
         session, user, kind, rec_id, nav_before, book_before, detail)
     return {"applied": kind, "title": rec["title"], **detail, **conservation}
+
+
+async def _ledger_net(session, user) -> dict[str, float]:
+    """ticker -> the share count the LEDGER explains (Buy +, Sell -, Adjust signed)."""
+    from sqlalchemy import select
+
+    from app.models.tables import Transaction
+    out: dict[str, float] = {}
+    try:
+        rows = (await session.execute(
+            select(Transaction.ticker, Transaction.txn_type, Transaction.quantity)
+            .where(Transaction.subject == user.email))).all()
+    except Exception:  # noqa: BLE001 -- the guard must never cost a trade
+        return out
+    for tk, typ, q in rows:
+        q = float(q or 0)
+        d = abs(q) if typ == "Buy" else -abs(q) if typ == "Sell" else q if typ == "Adjust" else 0.0
+        k = (tk or "").upper()
+        out[k] = out.get(k, 0.0) + d
+    return out
+
+
+async def _guard_every_share_is_a_trade(session, user, kind: str, rec_id: str,
+                                        shares_before: dict, ledger_before: dict) -> list[dict]:
+    """NO SHARE COUNT CHANGES ON ACCEPT WITHOUT A LEDGER ROW. Enforced, not hoped.
+
+    PR 73. `_rebalance_to` rewrote share counts for sixteen accepts with no row,
+    and nothing noticed: the ledger write is best-effort, NAV was conserved so the
+    rebalance's own check passed, and the only reader that could tell -- the
+    per-holding chart -- fell back to the price without complaint. "Each handler
+    records its own" is the rule that failed; this measures instead.
+
+    For every ticker, the change in the book's share count across this accept is
+    compared with the change in what the ledger explains. Any remainder is
+    written as an `Adjust` leg naming the kind and card, and logged at ERROR --
+    so the history can still be rebuilt, and the silent writer is named the day
+    it appears instead of weeks later on a chart. Cash is not a share count.
+    """
+    from app.services import ledger_service as ledger
+
+    after_rows = await list_positions(session, user)
+    after = {}
+    for p in after_rows:
+        k = (p.ticker or "").upper()
+        after[k] = after.get(k, 0.0) + float(p.quantity or 0)
+    before = dict(shares_before or {})
+    ledger_after = await _ledger_net(session, user)
+    healed = []
+    for tk in sorted(set(before) | set(after)):
+        if tk in ("", "CASH"):
+            continue
+        d_book = after.get(tk, 0.0) - before.get(tk, 0.0)
+        d_ledger = ledger_after.get(tk, 0.0) - ledger_before.get(tk, 0.0)
+        gap = d_book - d_ledger
+        # Both sides are stored at 4 decimals, so honest arithmetic can differ by
+        # one rounding step (1e-4). Anything past 1.5e-4 is a share nobody recorded.
+        if abs(gap) <= 1.5e-4:
+            continue
+        logger.error("UNRECORDED SHARE CHANGE on accept: %s %s (%s) moved %+.6f shares, "
+                     "ledger explains %+.6f; writing an Adjust for %+.6f",
+                     kind, rec_id, tk, d_book, d_ledger, gap)
+        await ledger.record_leg(session, user, ticker=tk, txn_type="Adjust",
+                                quantity=round(gap, 6), source=kind[:40],
+                                note=f"unrecorded by {kind} on card {rec_id}"[:255])
+        healed.append({"ticker": tk, "shares": round(gap, 6)})
+    if healed:
+        await session.commit()
+    return healed
 
 
 async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> None:

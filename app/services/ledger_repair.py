@@ -313,12 +313,16 @@ async def preview(session: AsyncSession, user: User) -> dict:
              "at": _aware(t.executed_at).isoformat() if t.executed_at else None,
              "note": "recorded as a whole number by int(); the true fraction was never stored"}
             for t in truncated],
+        "unrecorded_rebalances": await unrecorded_rebalances(
+            session, user, data, voided, set(rows), ledger_start),
         "writes_by_default": ["duplicates -> Void", "blind sells with confidence 'measured'"],
+        "writes_on_request": ["blind sells with confidence 'estimate' (include_estimates)",
+                              "unrecorded rebalances -> Adjust legs (include_rebalances)"],
     }
 
 
 async def apply(session: AsyncSession, user: User, *, confirm: bool,
-                include_estimates: bool = False) -> dict:
+                include_estimates: bool = False, include_rebalances: bool = False) -> dict:
     """Write what `preview` proposes. Refuses without `confirm=True`."""
     if not confirm:
         return {"ok": False, "reason": "confirm is required -- run the preview first"}
@@ -353,7 +357,269 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
                   f"was 0 shares")[:255]
         written.append({"id": r["id"], "ticker": r["ticker"], "shares": r["shares"],
                         "confidence": r["confidence"]})
+    rebalanced = []
+    if include_rebalances:
+        # One Adjust per holding per rebalance step, dated AT the accept, so the
+        # position chart replays the change where it happened. value_ils stays 0:
+        # an Adjust with a value is read as external money by `net_flows_ils`,
+        # and a rebalance moved no money in or out.
+        from app.models.tables import money
+        for a in (plan.get("unrecorded_rebalances") or {}).get("adjusts", []):
+            row = Transaction(
+                subject=user.email, ticker=a["ticker"], txn_type="Adjust",
+                quantity=money(a["shares"]), source="rebalance_repair",
+                executed_at=datetime.fromisoformat(a["at"]),
+                note=(f"{REBAL_TAG}: x{a['factor']} ({a['confidence']}; factor from "
+                      f"{', '.join(a['factor_from'])}) {'; '.join(a['cards'])}")[:255])
+            session.add(row)
+            rebalanced.append({"ticker": a["ticker"], "shares": a["shares"], "at": a["at"],
+                               "confidence": a["confidence"]})
     await session.commit()
     return {"ok": True, "voided": voided, "written": written, "skipped": skipped,
-            "summary": plan["summary"]}
+            "rebalances_written": rebalanced, "summary": plan["summary"]}
 
+
+
+# --------------------------------------------------------------------------- #
+# PR 73 -- rebalances that moved shares and recorded nothing
+# --------------------------------------------------------------------------- #
+REBAL_TAG = "rebalance reconstructed 2026-09-28"
+_REBAL_CLASSES = ("Equities", "Fixed Income", "Commodities", "Cash", "Real Estate",
+                  "Crypto", "Alternatives")
+
+
+def _rebalance_card_ids() -> set[str]:
+    """Every card id whose Accept ran `_rebalance_to` before PR 73.
+
+    Card ids are content hashes (`recommendations._rid`), so the set is exact:
+    one per class, every merged combination `_reconcile` can build, and the
+    behind-your-goal "shift to Grow" card (`set_objective_and_rebalance`).
+    """
+    from itertools import combinations
+
+    from app.services.recommendations import _rid
+    ids = {_rid("rebal", c) for c in _REBAL_CLASSES}
+    for n in range(2, len(_REBAL_CLASSES) + 1):
+        for combo in combinations(_REBAL_CLASSES, n):
+            ids.add(_rid("rebal_merged", *sorted(combo)))
+    ids.add(_rid("behind", "grow"))
+    return ids
+
+
+async def _rebalance_accepts(session: AsyncSession, txs: list) -> list[dict]:
+    """Rebalance accepts that recorded no trade, oldest first.
+
+    From `audit_log` -- every request the app served, which is the only record of
+    WHEN a pre-PR 73 rebalance ran (it wrote nothing else). The audit log is not
+    per-user; this app has one owner, and the preview names every accept it used
+    so that assumption is checkable. An accept that DID record legs (PR 73
+    onwards: source `rebalance_to_objective` within a minute) is not unrecorded
+    and is skipped.
+    """
+    from app.models.tables import AuditLog
+
+    ids = _rebalance_card_ids()
+    rows = (await session.execute(
+        select(AuditLog.created_at, AuditLog.route)
+        .where(AuditLog.method == "POST", AuditLog.route.like("/api/v1/recommendations/%/accept"))
+        .order_by(AuditLog.created_at.asc()))).all()
+    recorded = [_aware(t.executed_at) for t in txs
+                if (t.source or "") in ("rebalance_to_objective", "set_objective_and_rebalance")
+                and t.executed_at]
+    out = []
+    for at, route in rows:
+        card = route.split("/")[-2]
+        if card not in ids:
+            continue
+        at = _aware(at)
+        if any(abs((r - at).total_seconds()) <= 60 for r in recorded):
+            continue
+        out.append({"card": card, "at": at})
+    return out
+
+
+def _simulate(legs: list, events: list, factors: dict, cls: str) -> float:
+    """Share count today, replaying legs and rebalances in time order."""
+    q = 0.0
+    timeline = ([(_aware(t.executed_at), 0, t) for t in legs]
+                + [(g["at"], 1, g) for g in events])
+    for _when, kind, item in sorted(timeline, key=lambda x: (x[0], x[1])):
+        if kind == 0:
+            q += _signed(item)
+        else:
+            q *= factors.get((item["key"], cls), 1.0)
+    return q
+
+
+async def unrecorded_rebalances(session: AsyncSession, user: User, data: dict,
+                                voided: set, blind_ids: set,
+                                ledger_start) -> dict:
+    """Reconstruct the share change each unrecorded rebalance made, per holding.
+
+    A rebalance multiplied every holding in a class by ONE factor. So for a
+    holding opened inside the ledger with no blind sell in its episode, today's
+    count is a known function of its recorded legs and the factors of the
+    rebalances it lived through. A holding that lived through exactly one
+    unknown factor SOLVES it; every other holding in that class that lived
+    through the same rebalance must AGREE, or nothing is written. Measured on
+    production 2026-09-28: 09-26 13:14:49 Equities from SOXL 1.002681 and VTI
+    1.002685, Commodities from USO and UGA both 1.0295.
+
+    Rebalances with no leg of the holding between them cannot be told apart and
+    are merged into one step (their factors multiply); the note names each.
+    Nothing here writes -- `apply(include_rebalances=True)` does.
+    """
+    from app.services.allocation_mix import classify_holding
+
+    txs, positions = data["txs"], data["positions"]
+    accepts = await _rebalance_accepts(session, txs)
+    episodes = []
+    for pos in positions:
+        tk = (pos.ticker or "").upper()
+        if tk == "CASH" or pos.created_at is None or ledger_start is None:
+            continue
+        opened = _aware(pos.created_at)
+        if opened < ledger_start:
+            continue
+        legs = [t for t in txs if (t.ticker or "").upper() == tk and t.executed_at
+                and _aware(t.executed_at) >= opened - timedelta(seconds=90)
+                and str(t.id) not in voided and t.txn_type in ("Buy", "Sell", "Adjust")]
+        if not any(t.txn_type == "Buy" and abs(_aware(t.executed_at) - opened)
+                   <= timedelta(seconds=90) for t in legs):
+            continue
+        if any(str(t.id) in blind_ids for t in legs):
+            continue                                 # a blind sell already muddies it
+        if any(REBAL_TAG in (t.note or "") or REPAIR_TAG in (t.note or "") for t in legs):
+            # Already repaired, or carrying a blind sell sized by the 09-21
+            # repair: an ESTIMATED leg must not solve a factor another holding's
+            # history is then rewritten with. Clean episodes only.
+            continue
+        evs = [a for a in accepts if a["at"] > opened]
+        if not evs:
+            continue
+        # merge rebalances with no leg of this holding between them
+        groups, cur = [], []
+        leg_times = sorted(_aware(t.executed_at) for t in legs)
+        for a in evs:
+            if cur and any(cur[-1]["at"] < lt < a["at"] for lt in leg_times):
+                groups.append(cur)
+                cur = []
+            cur.append(a)
+        if cur:
+            groups.append(cur)
+        events = [{"at": g[-1]["at"], "key": tuple(x["card"] + "@" + x["at"].isoformat()
+                                                   for x in g), "members": g}
+                  for g in groups]
+        episodes.append({"ticker": tk, "class": classify_holding(pos), "legs": legs,
+                         "events": events, "now": float(pos.quantity or 0),
+                         "opened": opened})
+
+    factors: dict = {}
+    sources: dict = {}
+    progress = True
+    while progress:
+        progress = False
+        for ep in episodes:
+            unknown = [e for e in ep["events"] if (e["key"], ep["class"]) not in factors]
+            if len(unknown) != 1:
+                continue
+            key = (unknown[0]["key"], ep["class"])
+            f1 = _simulate(ep["legs"], ep["events"], {**factors, key: 1.0}, ep["class"])
+            f2 = _simulate(ep["legs"], ep["events"], {**factors, key: 2.0}, ep["class"])
+            a = f2 - f1
+            if abs(a) < 1e-9:
+                continue
+            factors[key] = 1.0 + (ep["now"] - f1) / a
+            sources[key] = [ep["ticker"]]
+            progress = True
+    # AGREEMENT: every other holding that lived through a solved step -- but only
+    # a holding that SOLVED NOTHING itself is an independent check. A holding
+    # that solved one of its own steps USING a factor has absorbed any error in
+    # that factor into its own solve, and then reproduces its count by
+    # construction. Review of this PR: 0.3 unrecorded VTI shares made QQQ
+    # "confirm" VTI's poisoned 09-26 factor and both were written as measured.
+    solvers = {src[0] for src in sources.values() if src}
+    disagree = []
+    for ep in episodes:
+        if ep["ticker"] in solvers:
+            continue
+        for e in ep["events"]:
+            key = (e["key"], ep["class"])
+            if key not in factors or ep["ticker"] in sources.get(key, []):
+                continue
+            unknown = [x for x in ep["events"] if (x["key"], ep["class"]) not in factors]
+            if unknown:
+                continue
+            got = _simulate(ep["legs"], ep["events"], factors, ep["class"])
+            # 2e-4 shares: every count is stored at 4 decimals, so two holdings
+            # replaying one factor can differ by a rounding step each.
+            if abs(got - ep["now"]) <= max(2e-4, 1e-5 * ep["now"]):
+                sources[key].append(ep["ticker"])
+            else:
+                disagree.append({"ticker": ep["ticker"], "step": list(e["key"]),
+                                 "expected_now": round(got, 6), "now": ep["now"]})
+
+    # A DISAGREEMENT VOIDS THE FACTOR FOR EVERYONE. Review of this PR: marking
+    # only the disagreeing holding left the holding that SOLVED the factor free
+    # to write it -- and which one solves first is just the order positions come
+    # back in, so the written one could be the wrong one. Every holding that
+    # lived through a disputed step is left alone.
+    bad_keys = set()
+    for ep in episodes:
+        for d in disagree:
+            if d["ticker"] == ep["ticker"]:
+                bad_keys |= {(e["key"], ep["class"]) for e in ep["events"]}
+    for k in bad_keys:
+        factors.pop(k, None)
+    adjusts, unresolved = [], []
+    for ep in episodes:
+        unknown = [e for e in ep["events"] if (e["key"], ep["class"]) not in factors]
+        recorded = sum(_signed(t) for t in ep["legs"])
+        gap = round(ep["now"] - recorded, 6)
+        if abs(gap) <= 1e-6 and not unknown:
+            continue                                   # nothing to repair
+        if unknown or any((e["key"], ep["class"]) in bad_keys for e in ep["events"]):
+            unresolved.append({"ticker": ep["ticker"], "gap_shares": gap,
+                               "why": ("a rebalance step no holding could solve, or holdings "
+                                       "disagree on its factor")})
+            continue
+        # per-step share change = count just before the step x (factor - 1)
+        q = 0.0
+        timeline = ([(_aware(t.executed_at), 0, t) for t in ep["legs"]]
+                    + [(e["at"], 1, e) for e in ep["events"]])
+        rows = []
+        for _when, kind, item in sorted(timeline, key=lambda x: (x[0], x[1])):
+            if kind == 0:
+                q += _signed(item)
+                continue
+            f = factors[(item["key"], ep["class"])]
+            delta = q * (f - 1.0)
+            q *= f
+            if abs(delta) <= 1e-6:
+                continue
+            src = sources.get((item["key"], ep["class"]), [])
+            rows.append({"ticker": ep["ticker"], "asset_class": ep["class"],
+                         "at": item["at"].isoformat(), "shares": round(delta, 6),
+                         "factor": round(f, 6),
+                         "cards": [m["card"] + " " + m["at"].isoformat(timespec="seconds")
+                                   for m in item["members"]],
+                         "factor_from": src,
+                         "confidence": "measured" if len(src) >= 2 else "exact_total"})
+        residual = round(gap - sum(r["shares"] for r in rows), 6)
+        if abs(residual) > 2e-4 or not rows:
+            unresolved.append({"ticker": ep["ticker"], "gap_shares": gap,
+                               "why": "the steps do not add up to the gap"})
+            continue
+        # A factor shared across holdings reproduces each one only to the 4th
+        # decimal each count is stored at. The repair must close THIS holding's
+        # gap exactly, or its chart stays off by the remainder -- so the rounding
+        # remainder (at most 2e-4 shares, said so in the row) joins the last step.
+        if residual:
+            rows[-1]["shares"] = round(rows[-1]["shares"] + residual, 6)
+            rows[-1]["rounding_shares"] = residual
+        adjusts.extend(rows)
+    return {"accepts": [{"card": a["card"], "at": a["at"].isoformat()} for a in accepts],
+            "adjusts": adjusts, "unresolved": unresolved, "disagreements": disagree,
+            "note": ("confidence 'measured' = the factor was solved by one holding and "
+                     "reproduced by another in the same class; 'exact_total' = the "
+                     "holding's total gap is exact, and its steps were solved from itself")}

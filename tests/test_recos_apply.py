@@ -73,7 +73,11 @@ def test_accept_sell_losers_credits_cash():
         recs = c.get("/api/v1/recommendations").json()["recommendations"]
         sell = next(r for r in recs if r["apply"]["kind"] == "sell_losers")
         res = c.post(f"/api/v1/recommendations/{sell['id']}/accept").json()
-        assert res["applied"] == "sell_losers" and "LOSER" in res["sold"]
+        # PR 73: `sold` reports what was sold, shares included -- it was a bare
+        # ticker, and the ledger wrote a 0-share Sell from it.
+        assert res["applied"] == "sell_losers"
+        assert [(x["ticker"], x["shares"]) for x in res["sold"]] == [("LOSER", 100.0)]
+        assert res["unrecorded"] == [], "every share it sold is in the ledger"
         # loss harvested -> no CGT owed -> full proceeds (100 x 80 ILS) become cash
         assert res["cash_added_ils"] == 8000.0 and res["tax_ils"] == 0.0
         port = c.get("/api/v1/portfolio").json()["positions"]

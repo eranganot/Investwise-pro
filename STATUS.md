@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-28 by Claude (PR 72, items 1+5 of the six-item plan). Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-28 by Claude (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -154,6 +154,104 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 73 — a rebalance is trades; the history it never wrote, reconstructed
+
+_2026-09-28. Eran's item 2 ("what is the difference between my position to the ticker price?"), plan
+section 3 (B1-B4), approved 16:04 after the B1 investigation report._
+
+**The answer to his question.** "Your position" is the shekel value of the shares he actually held each
+day; "Ticker price" is the quote. They looked identical because the position line could not be built
+for QQQ (+0.0441 shares no trade explains), so the endpoint fell back to the price -- under the "Your
+position" header, with the price's % as if it were his.
+
+**Root cause (PROVEN -- reproduced, and matched live to five decimals).** `_rebalance_to`, the handler
+behind every rebalance card ("Buy Equities" is one), computed ONE factor per asset class and wrote the
+new share counts straight into the book: no sale, no purchase, no tax, no ledger row (`detail` stayed
+`{}`, so `_record_apply` wrote nothing). Reproduced on a book shaped like his: Equities x1.584, Fixed
+Income x0.2475, Commodities x1.1, **0 transactions**, 75% of BND "sold" with no tax. Live, the
+2026-09-26 13:14:49 accept of `rec_547b55` scaled USO and UGA by **1.0295** and SOXL (count from its
+take-profit's 25% slice, 09-25) and VTI by **1.002681 / 1.002685** -- two holdings per class agreeing.
+QQQ lived through that one plus two on 09-20 (07:02:54, 14:17:51). 16 rebalance accepts since 08-21,
+none recorded.
+
+**Ruled out:** the edit pencil (no `PUT /portfolio/position` in the audit log since June); every other
+Accept path (a SQLAlchemy hook over the full suite recorded every share-count change and every ledger
+row: only `_rebalance_to` and the manual edit change shares without a matching row; the five
+`_apply_buy_funded` misses were tests calling the handler directly, bypassing Accept); background jobs
+(no scheduled job writes a quantity -- the Today build's `load_basket` is `dry_run=True`); rounding (4
+decimals); duplicates (preview: 0). **My plan's "second VTI writer" was wrong** -- VTI's gap is the 09-26
+rebalance; QQQ is the holding with two causes.
+
+**Why silent:** the ledger write is best-effort; NAV was conserved, so the rebalance's own check passed;
+the only reader that can tell -- the per-holding chart -- fell back to the price without complaint.
+
+**Fix:**
+* **B2 -- a rebalance is real trades.** `_rebalance_plan` is the one sizing (card and Accept): every
+  holding whose count falls is a Sell valued and taxed through `_sale_value_ils`; every rise is a Buy
+  funded only by the net proceeds (scaled when tax takes a share); leftover lands in cash. The NAV check
+  now expects the book to fall by exactly the tax. Eran's Q3: rebalance sales owe tax. The card quotes
+  the plan's sales, buys and tax before the tap (`rebalance_tax_ils`). Without gains it reaches exactly
+  the mix the old executor did.
+* **B2 -- the guard.** `_guard_every_share_is_a_trade` runs at the Accept boundary: per ticker, the
+  change in the book's share count must equal the change the ledger explains; any remainder becomes an
+  `Adjust` leg naming the kind and card, logged at ERROR. The next silent writer is named the day it
+  appears. (Plan said "a test-time hook"; this enforces it in production too, and a test pins it.)
+* **B3 -- the repair, preview first.** `ledger_repair.unrecorded_rebalances` reads rebalance accepts
+  from `audit_log` (card ids are content hashes, so the set is exact; accepts that recorded legs are
+  skipped), and solves one factor per class per rebalance by elimination: a holding with one unknown
+  solves it, every other holding that lived through it must reproduce its own count (else nothing is
+  written for it). Rebalances with no leg of the holding between them are one merged step (QQQ's two
+  on 09-20). It writes one `Adjust` per holding per step, dated at the accept, `value_ils` 0 (so
+  `net_flows_ils` never reads it as money). Episodes with estimated or repaired legs never solve a
+  factor. `scripts/ops/repair-ledger-pr73.ps1` shows the preview and writes on "y" (Eran's Q4: exact
+  reconstructions + the 8 estimate blind sells).
+* **B4 -- the chart says when it cannot draw.** "Can't draw your position yet" with the reason, and the
+  number below labelled "QQQ price (not your position)".
+
+**Independent review of this PR (a separate agent, before shipping) found four real defects in my
+first version, each reproduced with a probe:** (1) the executor looked rows up BY TICKER, so a ticker
+held in two accounts had one row's sell applied to the other, went negative, and `delete_position`
+removed every BND row -- ~48k ILS gone with no ledger row, committed before the NAV check could object
+(a regression; the old code updated by row id). Now every leg is keyed by row id and a row sold to zero
+is removed on its own. (2) The guard's "before" kept one row per ticker, so a two-row ticker wrote a
+phantom Adjust on every accept -- now summed over rows. (3) `sell_losers` (pre-existing) reported bare
+tickers, so the ledger wrote 0-share Sells and valued only one row -- now it reports shares and values
+every row it deletes. (4) In the repair, a disagreement voided only the disagreeing holding while the
+one that solved the factor still wrote it -- now a disputed factor is written for nobody. Plus: a
+source-name typo that re-counted post-PR 73 "Grow" rebalances as unrecorded, zero-gap holdings listed
+as unresolved, and the guard's tolerance sitting exactly on one rounding step. Regression tests for each
+fail without the fix. **A second review round** confirmed the four fixes and found two more: the repair
+could "confirm" a factor circularly (QQQ solved its 09-20 step USING VTI's 09-26 factor, then counted as
+agreeing with it) -- now only a holding that solved nothing itself can confirm, so on the live shape VTI
+and QQQ are `exact_total` and only USO/UGA are `measured`; and, **pre-existing and not fixed here**, the
+funded-buy and other sell paths (`recommendations.py` `_apply_buy_funded`, `_apply_core_to_basket`,
+the trim/sell_position branches; `strategy_service._execute_funded_sleeve`) sell a ticker's row to zero
+with `delete_position(ticker, market)`, which removes EVERY row of that ticker -- a second account's
+shares vanish with no proceeds. Eran's book holds one row per ticker today (checked live), so it is not
+biting; the PR 73 guard now records it as an Adjust and an ERROR the moment it happens. Next PR.
+(The SOXL take-profit's 25% slice independently gives the same 09-26 Equities factor as VTI -- 1.002681
+vs 1.002685 -- but SOXL is excluded from the tool for its blind sells, so that confirmation lives here.)
+
+**Finding for the next PR, not fixed here.** Every rebalance card says "Your sleeves hold N% ... and are
+not touched by this", but the executor moves every holding in the class, sleeves included (SOXL x1.0027
+on 09-26). A card claiming a change it does not produce. Making the executor honour it changes what a
+rebalance does, so it is Eran's call.
+
+**Open, not explained:** SOXL grew 0.2233 shares on 09-18 between 20:05 (take-profit planned 25% of
+25.6547) and 20:08:22 (trim of 25% of 25.878) with no accept between. One occurrence, before PR 73, in
+a holding whose history cannot be rebuilt anyway (blind sells). Recorded rather than guessed.
+
+`tests/test_a_rebalance_is_real_trades.py` (10), `tests/test_unrecorded_rebalances_are_reconstructed.py`
+(5, replaying the live episode: legs, timestamps, accepts; the live "+0.0441 ... cannot be right"
+reproduced before the repair and gone after). Smoke: `scripts/smoke/smoke-pr73-a-rebalance-is-trades.ps1`
+-- FAILED 4 checks on `ea8029e` before this deploy. Updated deliberately: `test_recos_apply.py`
+(`sold` is now `{ticker, shares, ...}`, not a bare ticker; the Today confirmation already read both).
+
+**Gate (sandbox, Python 3.12):** SQLite **1984 passed, 0 failed**; Postgres 16 **1984 passed, 0 failed**
+(full runs; the one test file changed after them re-run on both); ruff clean on `app` and `tests`.
 
 ---
 

@@ -1708,7 +1708,17 @@ function renderHist(){
       ${Math.abs(tr)>=1?`<div class="mk">${tr>0?'+':'\u2212'}${ils(Math.abs(tr))} from ${tr>0?'buying':'selling'} &mdash; money moved, not a gain</div>`:""}`;
   }else{
     const c=pr.change_pct;
-    head=`<div class="nm" style="font-size:20px">${fmt(ys[ys.length-1])}</div>
+    // PR 73: on the "Your position" tab with no position line, this header used
+    // to show the PRICE and its % exactly where your position's value goes --
+    // so the two tabs looked identical and the price read as your position
+    // (Eran, 2026-09-28: "what is the difference between my position to the
+    // ticker price?"). It now says it cannot draw your position, and why, and
+    // labels the number underneath as the ticker's price.
+    const cant=HIST.mode==="value"&&!v.available;
+    head=(cant?`<div class="mk" style="margin-bottom:6px;padding:6px 8px;border-left:3px solid #fbbf24;background:rgba(251,191,36,.08);border-radius:4px">
+        <b>Can't draw your position yet.</b> ${v.reason||"There is no record of your position in this range."}</div>`:"")
+      +`<div class="mk">${cant?`${HIST.tk} price (not your position)`:`${HIST.tk} price`}</div>
+      <div class="nm" style="font-size:20px">${fmt(ys[ys.length-1])}</div>
       <div class="${c>=0?'up':'down'}">${c>=0?'\u25B2':'\u25BC'} ${Math.abs(c||0).toFixed(2)}%</div>`;
   }
   $("h_head").innerHTML=head;
@@ -1723,7 +1733,7 @@ function renderHist(){
     {plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)+(useVal?` \u00b7 ${pts[c.dataIndex].shares} sh`:"")}}},
      scales:{x:{ticks:{color:"#8b97a8",maxTicksLimit:5,maxRotation:0,autoSkipPadding:14},grid:{display:false}},y:{ticks:{color:"#8b97a8",callback:n=>useVal?ils(n):n},grid:{color:"#1f2a3a"}}}});
   const notes=[];
-  if(HIST.mode==="value" && !v.available) notes.push(`Showing the ticker price: ${v.reason||"no record of your position in this range yet"}.`);
+  if(HIST.mode==="value" && !v.available) notes.push("The line above is the ticker's price, shown because your position cannot be drawn.");
   else if(useVal && v.clipped) notes.push(`Your line starts ${_soDate((v.starts_at||"").slice(0,10))} &mdash; ${v.starts_because}.`);
   if(useVal) notes.push(`Converted at today's rate (${j.fx_rate} ${j.base_currency}/${cur}).`);
   if(j.granularity==="daily_fallback") notes.push("Intraday prices were unavailable, so this uses daily closes.");
