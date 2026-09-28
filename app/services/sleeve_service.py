@@ -226,6 +226,42 @@ async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, flo
     return out
 
 
+async def sleeves_holding(session: AsyncSession, user: User, ticker: str) -> list[dict]:
+    """Every sleeve whose target includes `ticker`, with how much of it.
+
+    `ticker_pct` is that ticker's share of NAV inside the sleeve (the same
+    number `all_sleeve_targets` sums), so shrinking the sleeve by
+    `sold_pct / ticker_pct` of its size removes exactly `sold_pct` of the ticker.
+    Largest holder first -- the one a "sell and lower the sleeve" choice resizes.
+    """
+    from app.services.strategy_service import sleeve_targets
+
+    tk = (ticker or "").upper()
+    live = await live_sleeve_targets(session, user)
+    out = []
+    for s in await list_sleeves(session, user):
+        w = {k.upper(): float(v) for k, v in (sleeve_targets(
+            s.strategy_id, s.sleeve_pct, live=_live_for(live, s.strategy_id)) or {}).items()}
+        if w.get(tk):
+            out.append({"strategy_id": s.strategy_id, "sleeve_pct": float(s.sleeve_pct or 0),
+                        "ticker_pct": w[tk] * 100.0,
+                        "n_tickers": sum(1 for v in w.values() if v)})
+    out.sort(key=lambda d: -d["ticker_pct"])
+    return out
+
+
+def shrunk_sleeve_pct(sleeve_pct: float, ticker_pct: float, sold_pct: float) -> float:
+    """The sleeve size that holds `sold_pct` points less of its ticker.
+
+    All three are percent of NAV. Pure, so the card and Accept compute the same
+    number: a 40% SOXL sleeve selling a quarter of a 40.1% position lands at
+    about 30%.
+    """
+    if ticker_pct <= 0 or sleeve_pct <= 0:
+        return round(max(0.0, sleeve_pct), 2)
+    return round(max(0.0, sleeve_pct * (1.0 - min(1.0, sold_pct / ticker_pct))), 2)
+
+
 async def sleeve_tickers(session: AsyncSession, user: User) -> set[str]:
     """Just the names. The exclusion set, for callers that do not need weights."""
     return set(await all_sleeve_targets(session, user))

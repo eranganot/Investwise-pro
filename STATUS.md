@@ -1,15 +1,19 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-22 by Claude (PR 71; built on PR 70)._
+_Last updated: 2026-09-28 by Claude (PR 72, items 1+5 of the six-item plan). Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
 
 ## 📍 Where this repo actually is — 2026-09-21
 
-**HEAD is `aa7826c` = PR 68** (2026-09-20) — cash is not a bank stock; standing orders (migration
-`0023`); per-holding chart; redeploy card follows sleeve targets. Three PRs landed since the 09-14
-review: PR 67, PR 67.1, PR 68. _(This block read "HEAD is PR 66" until 2026-09-21 — two PRs stale;
+**HEAD is `e556b64` = PR 71** (2026-09-22) — one target mix, holding the 10% Commodities. Ten
+commits since the 09-21 review: PR 68.1–68.7 (cash card in ₪, the historical ledger repair —
+preview first, measure don't balance, a measured size needs two agreeing records), PR 69 (the
+server alone decides which cards show), PR 70 (health = On plan + On track; one priority scale),
+PR 71. _(2026-09-28: this line read "PR 68" — the spine lagged three PRs again; corrected from the
+reflog. No commits 09-23 → 09-28.)_ Earlier: PR 68 (`aa7826c`, 09-20) — cash is not a bank stock;
+standing orders (migration `0023`); per-holding chart; redeploy card follows sleeve targets. _(This block read "HEAD is PR 66" until 2026-09-21 — two PRs stale;
 the per-PR sections below were current throughout, it was the spine that lagged, the same failure
 mode the 08-31 restructure was supposed to end.)_ PR 47 is reverted (see PR 48); production came back on `6f3cc4f` and is
 stamped at `0020_solver_verdicts` — the first time the migrations have ever run against it,
@@ -50,12 +54,12 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **7 weeks** | Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
-| 2026-08-03 | **7 weeks** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
-| 2026-07-13 | **10 weeks** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. At ten weeks this is the oldest item on any of the four boards. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **6 weeks** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **forty-one PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
-| 2026-08-31 | **3 weeks** | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-21: unchanged for a **third** week — same two files, same 2026-08-25 mtime. The repo shipped three PRs this week, so it is neither too busy nor idle; the file is simply not being decided about. Land it or `rm` it.)_ |
-| 2026-09-14 | **resolved same day** | ✅ Stale `.git/index.lock` left here by the weekly review's own sandbox `git status`; Eran cleared it, confirmed empty. Kept as a one-line record because the rule is permanent: **weekly runs must use `git --no-optional-locks status`** — plain `git status` writes a lock the sandbox cannot remove. |
+| 2026-08-03 | **8 weeks — BLOCKING** | ⬆️ **Led the 2026-09-28 digest as the one UNBLOCK item.** Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
+| 2026-08-03 | **8 weeks — BLOCKING** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
+| 2026-07-13 | **11 weeks — BLOCKING** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. At ten weeks this is the oldest item on any of the four boards. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **7 weeks — BLOCKING** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **forty-one PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | **4 weeks — BLOCKING** _(not re-checked 09-28: sandbox down)_ | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-21: unchanged for a **third** week — same two files, same 2026-08-25 mtime. The repo shipped three PRs this week, so it is neither too busy nor idle; the file is simply not being decided about. Land it or `rm` it.)_ |
+| 2026-09-14 | **resolved; recurred 09-21; cleared again (confirmed absent 2026-09-28)** | ✅ Stale `.git/index.lock` left here by the weekly review's own sandbox `git status`; Eran cleared it, confirmed empty. Kept as a one-line record because the rule is permanent: **weekly runs must use `git --no-optional-locks status`** — plain `git status` writes a lock the sandbox cannot remove. |
 
 ---
 
@@ -150,6 +154,87 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 72 — a triggered rule always has a card; the ladder climbs; history is read-only
+
+_2026-09-28. Eran's items 1 and 5 from the six-item review (`PLAN_2026-09-28_six_items.md`, approved
+10:10): "I have trading rule triggered but no recommendation card to act", and "when I click show
+hidden/marked done I don't have any indication that they are old/approved/rejected/hidden"._
+
+**Root cause, item 1 (PROVEN on production `e556b64`, 09:39).** Rule `8cd9f1ff`, SOXL take-profit
+148.52, price 151.45, `triggered: true`. `/recommendations` returned `rule_banner.carded =
+["8cd9f1ff"]` AND `contradictions = [{kind: sells_a_sleeve_at_target, card: rule_8cd9f1ff, "SOXL is
+40.1% of the book against a sleeve target of 40.0%", suppressed: true}]`. The banner reconciliation
+ran at ~L2593, `contradictions.check` at ~L2635, so the banner counted a card the next pass removed.
+`index.html` never reads `contradictions`, so the removal was invisible.
+
+**Second root cause (PROVEN, `/rules/events`).** The take-profit ladder never ran. `resolve_rule`
+re-armed on `outcome == "accepted"`; Accept sends `"executed"`, and nothing sends "accepted". Rule
+8cd9f1ff: executed 09-22 18:40:45 at target 148.52; fired again 09-25 13:33 and 14:33 at target
+**148.52**. And Accept resolves a rule card twice (`executed`, then `acknowledged` from
+`complete_recommendation`), and the second call would have switched a re-armed ladder off as a
+one-shot. `test_the_take_profit_ladder.py` pinned the dead branch by asserting the source contained
+`== "accepted"`.
+
+**The cost, from the ledger.** SOXL trimmed 09-18 20:08:22 and bought back by `sleeve_fund` at
+20:09:25; trimmed 09-22 18:40:45 and bought back at 18:41:03. Tax booked both times, for nothing.
+
+**Ruled out:** the rule card not being built (`carded` has it); the rules agent degrading (`degraded`
+empty, `skipped_reason` null); the dismiss/done filter (the card is in neither map); the frontend
+filtering it (PR 69: the server alone decides).
+
+**Why silent:** the banner's own invariant ("a triggered rule with no visible card is a
+contradiction") was checked against the wrong list, and it passed. The one reader of the ladder's
+outcome string was a source-text test.
+
+**Root cause, item 5 (PROVEN, code + audit log).** "show them" called `POST /recommendations/restore`
+/ `restore-completed`, which EMPTY the ignored and done maps and put every card back live with a
+working Accept. Audit log: `/recommendations/restore` at 09-22 18:43, accepts after. The payload
+already carried `hidden_cards[].how` and `hidden_at`; the screen dropped both. Also: the "N hidden"
+line printed titles from ALL hidden cards (13) beside a count of the ignored ones (2).
+
+**Fix (Eran's decisions, 2026-09-28):**
+* A rule sell card blocked by its sleeve target becomes a **decision card** (`rule_vs_sleeve`, same
+  id): **Sell & lower sleeve** trims the rule's 25% slice and resizes the sleeve by exactly the weight
+  sold (`sleeve_service.shrunk_sleeve_pct`: 40% -> ~30%), so the funder does not re-buy it; **Keep &
+  update rule** moves the rule (it is never retired) to `keep_level` = max(next rung, one step above
+  today) -- 163.37 for SOXL -- and refuses any level already breached. Other suppressions stand and
+  are listed as **Blocked** with the reason.
+* The banner is reconciled after the contradiction pass and the conversion.
+* Ladder: re-arms on `executed` (`_LADDER_OUTCOMES`); an `acknowledged` on an already-resolved rule is
+  a no-op.
+* History: one read-only list -- ✅ Done / 🙈 Ignored / ⚖️ Blocked, when, amount, reason -- with a
+  per-card **Restore** (`POST /recommendations/{id}/restore`, removes one mark). No Accept in it.
+* Accept now finds cards in `more_recommendations` too (PR 70 served them with an Accept that 404'd).
+
+**Independent review of this PR (a separate agent, run before shipping) found two real defects in
+my first version, both from moving the banner:** a rule whose card the contradiction pass BLOCKED
+looked like an orphan, so the heal acknowledged it -- a 30% cap on the 40% SOXL sleeve would have been
+acknowledged on every Today load (the churn the self-heal comment says was fixed), and a take-profit
+whose conversion hit a transient error would have been switched off. Reproduced through the full
+`build_recommendations`. Fixed: blocked rule cards are neither carded (no banner for a card you cannot
+tap) nor healed; `rule_banner.blocked` lists them and the history shows them. Also from review: the
+sleeve cut is sized from the shekels sold / NAV (it used one row's share count against a weight that
+sums every row), a partial fill moves the sleeve partially, a multi-ticker sleeve's card says all its
+targets shrink, and the card now says truthfully that Ignore switches a take-profit off (Keep is the
+button that updates it). The two regression tests fail without the fix and pass with it.
+
+**Observation, not fixed here (INFERRED):** rule 8cd9f1ff was `active` again after its 09-22
+execution although take_profit is one-shot. `create_rule` re-levels and re-activates an existing rule
+of the same type, so a later "arm a take-profit" card most likely re-armed it at the stale level.
+Keep-and-update closes the loop for this case; a create that re-arms BELOW today's price is worth a
+guard of its own.
+
+`tests/test_a_rule_that_fights_a_sleeve_is_a_decision.py` (17, five through the full Today build),
+`tests/test_history_is_read_only.py` (4). Updated deliberately: `test_the_take_profit_ladder.py` (the "accepted" pin became the
+`_LADDER_OUTCOMES` pin). Smoke: `scripts/smoke/smoke-pr72-a-rule-always-has-a-card.ps1` -- run against production BEFORE this
+deploy it FAILED 7 checks on `e556b64` (the card-less banner, the unlisted suppression, no decision card,
+no history, no per-card restore), i.e. it reproduces both bugs; after the deploy it must pass.
+
+**Gate (sandbox, Python 3.12):** SQLite **1969 passed, 0 failed**; Postgres 16 **1969 passed, 0
+failed**; ruff clean on `app` and `tests`. Baseline before the change: 1948 passed on the same tree.
 
 ---
 

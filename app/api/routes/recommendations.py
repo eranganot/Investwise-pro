@@ -1,5 +1,5 @@
 """Actionable recommendations endpoint (Today view)."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,7 +8,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.services.recommendations import (
     apply_recommendation, build_recommendations, complete_recommendation,
-    dismiss_recommendation, restore_completed, restore_dismissed,
+    dismiss_recommendation, restore_completed, restore_dismissed, restore_one,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
@@ -38,12 +38,22 @@ async def recommendations(session: AsyncSession = Depends(get_session),
 
 @router.post("/recommendations/{rec_id}/accept")
 async def accept_recommendation(rec_id: str, state: CardState | None = None,
+                                choice: str | None = Query(None, pattern="^(sell|keep)$"),
+                                level: float | None = Query(None, gt=0),
                                 session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
-    """Apply a recommendation to the portfolio/plan immediately."""
-    result = await apply_recommendation(session, user, rec_id)
+    """Apply a recommendation to the portfolio/plan immediately.
+
+    `choice` (and, for "keep", an optional `level`) answer a decision card --
+    a trading rule that fights a sleeve target. Other cards ignore both.
+    """
+    result = await apply_recommendation(session, user, rec_id, choice=choice, level=level)
     if result is None:
         raise HTTPException(status_code=404, detail="Recommendation not found (it may have changed).")
+    # A decision that was not taken is not done. Marking the card complete here
+    # would hide a question the user has not answered yet.
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=result.get("error") or "Not applied.")
     # Accepting/completing is NOT the same as ignoring: it goes in the completed
     # bucket so the card is gone rather than parked in the ignored list.
     await complete_recommendation(session, user, rec_id,
@@ -73,3 +83,16 @@ async def restore_completed_recommendations(session: AsyncSession = Depends(get_
                                             user: User = Depends(acting_user)) -> dict:
     """Bring back cards previously marked as done."""
     return {"ok": True, "restored": await restore_completed(session, user)}
+
+
+@router.post("/recommendations/{rec_id}/restore")
+async def restore_one_recommendation(rec_id: str, session: AsyncSession = Depends(get_session),
+                                     user: User = Depends(acting_user)) -> dict:
+    """Bring back ONE ignored or done card, and nothing else.
+
+    PR 72: "show them" used to call the bulk restores above, which erased every
+    mark and put every card back live with a working Accept -- so looking at
+    what you had done made it possible to do it twice. Looking is now read-only
+    (the history list), and bringing a card back is this, one card at a time.
+    """
+    return {"ok": True, **(await restore_one(session, user, rec_id))}

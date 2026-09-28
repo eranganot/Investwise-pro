@@ -645,6 +645,96 @@ async def list_events(session: AsyncSession, user: User, limit: int = 50) -> lis
 # standing condition, so it re-arms instead.
 _ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip"}
 
+# The outcomes that mean "the slice was sold". `executed` is what Accept sends;
+# `accepted` is kept for any older caller.
+_LADDER_OUTCOMES = {"executed", "accepted"}
+
+# Rule types a "Keep & update" choice can re-level, and which way the level
+# moves. Only take-profit reaches the rule-vs-sleeve decision today (it is the
+# only rule whose card is a `trim`); the others are here so the helper answers
+# honestly if one ever does.
+_KEEP_UPWARD = {"take_profit", "price_above"}
+_KEEP_DOWNWARD = {"stop_loss", "price_below"}
+
+
+def keep_level(rule, price: float, cost: float) -> float | None:
+    """Where a rule re-arms when the user keeps the position instead of selling.
+
+    Eran, 2026-09-28: when a sell rule fights a sleeve target, "Keep" must UPDATE
+    the rule, not retire it. The update has one hard requirement: the new level
+    must not already be breached, or the rule fires again on the next
+    30-minute evaluation and the decision was for nothing -- which is exactly
+    what happened on SOXL, re-armed at 148.52 with the price above it.
+
+    Upward rules take the ladder's next rung, or one full step above today,
+    whichever is higher. Downward rules sit one step below today. Returns the
+    level in the rule's OWN unit (price, or % against cost in `pct` mode), or
+    None for a rule type this does not re-level.
+    """
+    rt, mode = getattr(rule, "rule_type", None), str(getattr(rule, "mode", "price"))
+    lvl = float(getattr(rule, "level", 0) or 0)
+    price, cost = float(price or 0), float(cost or 0)
+    step = TAKE_PROFIT_LADDER_STEP
+    if rt in _KEEP_UPWARD:
+        if mode == "pct":
+            gain_now = ((price / cost) - 1.0) * 100.0 if cost > 0 and price > 0 else lvl
+            return round(max(next_rung(lvl, "pct"), gain_now + step * 100.0), 4)
+        return round(max(next_rung(lvl, "price"), price * (1.0 + step)), 4)
+    if rt in _KEEP_DOWNWARD:
+        if mode == "pct":
+            loss_now = (1.0 - (price / cost)) * 100.0 if cost > 0 and price > 0 else abs(lvl)
+            return round(max(0.0, loss_now + step * 100.0), 4)
+        return round(price * (1.0 - step), 4)
+    return None
+
+
+async def keep_and_relevel(session: AsyncSession, user: User, rule_id_or_prefix: str,
+                           level: float, *, reason: str = "") -> dict:
+    """Resolve a firing as KEPT: the position stays, the rule moves to `level`.
+
+    The rule stays active and is un-latched, the open event is stamped `kept`
+    with the old and new level, and nothing in the book changes. A level that
+    is already breached is refused rather than written, for the reason in
+    `keep_level`.
+    """
+    rid = str(rule_id_or_prefix)
+    rule = None
+    for r in (await session.scalars(
+            select(TradingRule).where(TradingRule.subject == user.email))).all():
+        if str(r.id) == rid or str(r.id).startswith(rid):
+            rule = r
+            break
+    if rule is None:
+        return {"ok": False, "error": "rule not found"}
+    idx = await _positions_index(session, user)
+    pos = idx.get(str(rule.ticker).upper()) or {}
+    price, cost = float(pos.get("price") or 0), float(pos.get("cost") or 0)
+    level = float(level)
+    if level <= 0:
+        return {"ok": False, "error": "the new level must be positive"}
+    # Would the new level fire straight away? Evaluate it exactly as the
+    # 30-minute job would, rather than re-deriving the comparison here.
+    old = float(rule.level)
+    rule.level = level
+    still, _t, _a, _tgt = _evaluate(rule, price, cost, float(pos.get("weight_pct") or 0),
+                                    float(pos.get("value_ils") or 0.0))
+    if still:
+        rule.level = old
+        return {"ok": False, "error": (
+            f"{level:g} is already reached at today's price ({price:,.2f}), so the rule "
+            f"would fire again immediately. Pick a level past today's price.")}
+    await record_outcome(session, user, str(rule.id), "kept",
+                         {"kind": "keep_and_relevel", "old_level": old,
+                          "new_level": level, "reason": reason[:200]})
+    rule.triggered = False
+    rule.active = True
+    unit = "%" if rule.mode == "pct" else ""
+    rule.note = (f"Kept {rule.ticker}; moved from {old:g}{unit} to {level:g}{unit}.")[:160]
+    await session.commit()
+    return {"ok": True, "rule_id": str(rule.id), "ticker": rule.ticker,
+            "rule_type": rule.rule_type, "old_level": old, "new_level": level,
+            "mode": rule.mode}
+
 
 async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str,
                        outcome: str, action: dict | None = None) -> bool:
@@ -669,17 +759,32 @@ async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str
     if rule is None or rule.subject != user.email:
         return False
 
+    # A FIRING THAT WAS ALREADY DEALT WITH IS NOT DEALT WITH TWICE.
+    #
+    # Accept resolves a rule card twice: `apply_recommendation` stamps it
+    # `executed` (and re-arms a take-profit on the next rung), then
+    # `complete_recommendation` stamps the same card `acknowledged`. The second
+    # call used to fall through to the one-shot branch and switch the freshly
+    # re-armed ladder OFF. Nothing is open any more, so there is nothing to do.
+    if str(outcome) == "acknowledged" and not rule.triggered:
+        return True
+
     await record_outcome(session, user, str(rule.id), outcome, action)
     rule.triggered = False
-    if rule.rule_type == "take_profit" and str(outcome) == "accepted":
+    if rule.rule_type == "take_profit" and str(outcome) in _LADDER_OUTCOMES:
         # THE LADDER. A take-profit that fired sold a SLICE, not the position,
         # so the rule is not spent -- it has a next rung. Re-arming it higher is
         # what makes a winner get sold into strength in stages instead of either
         # being liquidated at the first rung or never trimmed again.
         #
-        # Only on `accepted`. A rule the user DECLINED is one they disagreed
-        # with, and moving its level up would quietly re-ask the same question
-        # from a worse place; that still latches off, as before.
+        # Only when the user SOLD the slice. A rule the user DECLINED is one
+        # they disagreed with, and moving its level up would quietly re-ask the
+        # same question from a worse place; that still latches off, as before.
+        #
+        # PR 72: this read `== "accepted"`, and nothing in the app ever sends
+        # "accepted" -- Accept on a rule card sends "executed". So the ladder
+        # never ran. Measured live on rule 8cd9f1ff (SOXL): executed at 148.52
+        # on 2026-09-22 18:40, still 148.52 when it fired again on 09-25.
         rule.level = next_rung(rule.level, rule.mode)
         rule.active = True
         rule.note = (f"Ladder: next slice if it reaches "

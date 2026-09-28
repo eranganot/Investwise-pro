@@ -51,9 +51,14 @@ def test_a_fired_take_profit_rearms_higher_instead_of_switching_off():
     src = inspect.getsource(rs.resolve_rule)
     assert 'rule.rule_type == "take_profit"' in src
     assert "next_rung" in src
-    assert 'str(outcome) == "accepted"' in src, (
-        "only an ACCEPTED firing may move the level -- re-asking a question the "
-        "user declined, from a higher level, is nagging")
+    assert "str(outcome) in _LADDER_OUTCOMES" in src, (
+        "only a firing whose slice was SOLD may move the level -- re-asking a "
+        "question the user declined, from a higher level, is nagging")
+    # PR 72: this asserted `== "accepted"`, a string nothing in the app sends --
+    # Accept sends "executed" -- so the ladder never ran and this test pinned the
+    # dead branch in place. The outcome that means "sold" must be in the set.
+    assert "executed" in rs._LADDER_OUTCOMES
+    assert not ({"dismissed", "acknowledged", "kept"} & rs._LADDER_OUTCOMES)
 
 
 def test_the_slice_and_the_rung_are_consistent_over_four_firings():
@@ -81,7 +86,7 @@ def test_a_declined_take_profit_still_latches_off():
     """Unchanged behaviour, asserted so the ladder cannot quietly widen."""
     import inspect
     src = inspect.getsource(rs.resolve_rule)
-    accepted_at = src.index('str(outcome) == "accepted"')
+    accepted_at = src.index("str(outcome) in _LADDER_OUTCOMES")
     elif_at = src.index("elif rule.rule_type in _ONE_SHOT")
     assert accepted_at < elif_at, (
         "anything that is not an accepted take-profit must fall through to the "

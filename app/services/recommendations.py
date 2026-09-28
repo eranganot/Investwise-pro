@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +47,11 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
                      "fund_plan", "relevel_sleeve_caps", "core_to_basket",
-                     "set_standing_order"}
+                     "set_standing_order",
+                     # PR 72: a rule that fights a sleeve. Accept carries a
+                     # choice -- sell the slice and lower the sleeve, or keep
+                     # the position and move the rule. Either changes something.
+                     "rule_vs_sleeve"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -607,6 +612,27 @@ async def restore_dismissed(session: AsyncSession, user: User) -> int:
 async def restore_completed(session: AsyncSession, user: User) -> int:
     """Bring back everything the user marked done."""
     return await _clear(session, _done_key(user), _DONE_TTL_DAYS)
+
+
+async def restore_one(session: AsyncSession, user: User, rec_id: str) -> dict:
+    """Remove ONE card's ignored/done mark. Returns which marks it removed.
+
+    Nothing else in either map is touched. Restoring a done card does not undo
+    what Accept did -- the trade stays in the book; the card simply becomes
+    eligible to show again if the situation still calls for it.
+    """
+    removed = []
+    for how, key in (("ignored", _dismiss_key(user)), ("done", _done_key(user))):
+        m = await _load_map(session, key)
+        if rec_id in m:
+            m.pop(rec_id, None)
+            row = await session.get(KVSetting, key)
+            if row:
+                row.value = json.dumps(m)
+            removed.append(how)
+    if removed:
+        await session.commit()
+    return {"id": rec_id, "removed": removed}
 
 
 
@@ -2560,55 +2586,6 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
         recs = [r for r in recs if r.get("id") not in completed]
         done_count = _n - len(recs)
 
-    # FINAL RECONCILIATION. The red banner counts rules whose `triggered` flag is
-    # set; the cards come from triggered_rule_recs. Two sources, so they can
-    # drift for any reason -- and every reason ends the same way: a banner
-    # counting work with nothing left to click, forever, because only a card can
-    # clear it. The heal above fixes the case where a card existed and was
-    # hidden. This catches every other case, whatever caused it, by asserting
-    # the invariant directly: a triggered rule with no visible card is a
-    # contradiction, so resolve it.
-    #
-    # Guarded on the rules agent having succeeded. If it degraded, the absence
-    # of cards says nothing about the rules and retiring them would destroy real
-    # pending work over a transient provider failure.
-    rule_banner = {"triggered": [], "carded": [], "healed": [], "skipped_reason": None}
-    if "trading_rules" in degraded:
-        # Say so, rather than leaving a silent no-op. A banner that disagrees
-        # with the cards while the rules agent is down looks identical to a
-        # reconciliation that ran and failed, and that ambiguity cost several
-        # wrong hypotheses about exactly this failure.
-        rule_banner["skipped_reason"] = (
-            "the trading-rules agent degraded, so missing cards say nothing "
-            "about the rules and nothing was retired")
-    if "trading_rules" not in degraded:
-        try:
-            from app.services.rules_service import resolve_rule
-            from sqlalchemy import select as _select
-
-            from app.models.tables import TradingRule as _TR
-            _live = (await session.scalars(
-                _select(_TR).where(_TR.subject == user.email, _TR.active.is_(True),
-                                   _TR.triggered.is_(True)))).all()
-            _carded = {str(r.get("id", ""))[5:] for r in recs
-                       if str(r.get("id", "")).startswith("rule_")}
-            for _r in _live:
-                _short = str(_r.id)[:8]
-                rule_banner["triggered"].append(_short)
-                if _short in _carded:
-                    rule_banner["carded"].append(_short)
-                    continue
-                try:
-                    await resolve_rule(session, user, _short, "acknowledged",
-                                       {"reason": "triggered with no visible card"})
-                    rule_banner["healed"].append(_short)
-                    logger.info("healed a rule triggered with no card: %s %s",
-                                _r.ticker, _short)
-                except Exception:  # noqa: BLE001 -- never break Today over cleanup
-                    logger.warning("could not heal orphaned rule %s", _short, exc_info=False)
-        except Exception:  # noqa: BLE001
-            logger.warning("rule banner reconciliation failed", exc_info=False)
-
     # PR 70: by priority score; within 5 points your own rule or a protective
     # card first. Falls back to the severity order when a card was not scored.
     from app.services.card_priority import sort_key as _prio_key
@@ -2654,8 +2631,13 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
                       * _fxr2(_pcy2(_p.market, _meta)))
                 _tk = str(_p.ticker or "").upper()
                 _w[_tk] = _w.get(_tk, 0.0) + _v / nav
+        _pre_contra = {r.get("id"): r for r in recs}
         recs, contradictions = _contra(recs, sleeve_targets=_sleeve_tgts, nav=nav,
                                        weights=_w, book_target=btgt["target"])
+        # PR 72: a rule you armed that fights a sleeve you chose is a DECISION,
+        # not something to hide. See `_rule_conflicts_to_decisions`.
+        recs, contradictions = await _rule_conflicts_to_decisions(
+            session, user, recs, contradictions, _pre_contra, _w, nav=nav)
         if contradictions:
             logger.info("today: %d contradiction(s), %d card(s) suppressed",
                         len(contradictions), sum(1 for c in contradictions if c.get("suppressed")))
@@ -2665,6 +2647,94 @@ async def build_recommendations(session: AsyncSession, user: User) -> dict:
             _r.setdefault("scope", {"kind": "book", "strategy_id": None,
                                     "name": None, "label": "Whole book"})
     _tm.mark("scope_and_contradictions")
+
+    # A CARD THE CONTRADICTION PASS HID IS LISTED, NOT LOST. It goes into the
+    # same history list as ignored and done cards, badged "blocked", with the
+    # reason -- so "why is there no card about X" has an answer on screen.
+    for _c in contradictions:
+        if _c.get("suppressed") and _c.get("card"):
+            _hidden_cards.append({
+                "id": _c.get("card"), "title": _c.get("title"), "severity": None,
+                "dimension": None, "how": "blocked", "hidden_at": None,
+                "est_amount": None, "reason": _c.get("detail")})
+
+    # PR 72: THIS BLOCK USED TO RUN BEFORE THE CONTRADICTION PASS, and that
+    # ordering was the whole of Eran's 2026-09-28 item 1. It recorded
+    # `rule_8cd9f1ff` (SOXL take-profit) as carded; `contradictions.check` then
+    # dropped that card because SOXL sat at its 40% sleeve target -- so the
+    # banner said "1 trading rule triggered" over a list with nothing to tap.
+    # It now runs on the cards that are actually served. Moving it alone would
+    # have been worse: the heal below would then have silently RETIRED the rule.
+    # `_rule_conflicts_to_decisions` is what prevents that -- a rule that fights
+    # a sleeve comes back as a decision card, which this block counts.
+    #
+    # FINAL RECONCILIATION. The red banner counts rules whose `triggered` flag is
+    # set; the cards come from triggered_rule_recs. Two sources, so they can
+    # drift for any reason -- and every reason ends the same way: a banner
+    # counting work with nothing left to click, forever, because only a card can
+    # clear it. The heal above fixes the case where a card existed and was
+    # hidden. This catches every other case, whatever caused it, by asserting
+    # the invariant directly: a triggered rule with no visible card is a
+    # contradiction, so resolve it.
+    #
+    # Guarded on the rules agent having succeeded. If it degraded, the absence
+    # of cards says nothing about the rules and retiring them would destroy real
+    # pending work over a transient provider failure.
+    rule_banner = {"triggered": [], "carded": [], "blocked": [], "healed": [],
+                   "skipped_reason": None}
+    if "trading_rules" in degraded:
+        # Say so, rather than leaving a silent no-op. A banner that disagrees
+        # with the cards while the rules agent is down looks identical to a
+        # reconciliation that ran and failed, and that ambiguity cost several
+        # wrong hypotheses about exactly this failure.
+        rule_banner["skipped_reason"] = (
+            "the trading-rules agent degraded, so missing cards say nothing "
+            "about the rules and nothing was retired")
+    if "trading_rules" not in degraded:
+        try:
+            from app.services.rules_service import resolve_rule
+            from sqlalchemy import select as _select
+
+            from app.models.tables import TradingRule as _TR
+            _live = (await session.scalars(
+                _select(_TR).where(_TR.subject == user.email, _TR.active.is_(True),
+                                   _TR.triggered.is_(True)))).all()
+            _carded = {str(r.get("id", ""))[5:] for r in recs
+                       if str(r.get("id", "")).startswith("rule_")}
+            # A RULE WHOSE CARD THE CONTRADICTION PASS HELD BACK IS NOT AN ORPHAN.
+            #
+            # It had a card; the app chose not to serve it, and the history lists
+            # it as blocked with the reason. Healing it would retire the rule on
+            # the strength of the app's own suppression -- found in review of
+            # this PR, reproduced through the full build: a 30% cap on a 40%
+            # sleeve ticker (a stale cap; `max_weight` cannot become a decision)
+            # was acknowledged on every Today load, the churn the self-heal
+            # comment above says was fixed; and a take-profit whose conversion
+            # hit a transient error was switched off for good. Before this PR the
+            # banner ran BEFORE the pass, so these counted as carded and nothing
+            # was healed. Now they are neither carded (the banner may not count
+            # a card you cannot tap) nor healed.
+            _blocked = {str(c.get("card", ""))[5:] for c in contradictions
+                        if c.get("suppressed") and str(c.get("card", "")).startswith("rule_")}
+            for _r in _live:
+                _short = str(_r.id)[:8]
+                rule_banner["triggered"].append(_short)
+                if _short in _carded:
+                    rule_banner["carded"].append(_short)
+                    continue
+                if _short in _blocked:
+                    rule_banner["blocked"].append(_short)
+                    continue
+                try:
+                    await resolve_rule(session, user, _short, "acknowledged",
+                                       {"reason": "triggered with no visible card"})
+                    rule_banner["healed"].append(_short)
+                    logger.info("healed a rule triggered with no card: %s %s",
+                                _r.ticker, _short)
+                except Exception:  # noqa: BLE001 -- never break Today over cleanup
+                    logger.warning("could not heal orphaned rule %s", _short, exc_info=False)
+        except Exception:  # noqa: BLE001
+            logger.warning("rule banner reconciliation failed", exc_info=False)
 
     return {"count": len(recs), "objective": objective, "recommendations": recs[:12],
             # PR 70: past the first 12 a card used to vanish without a trace, and
@@ -4366,19 +4436,187 @@ async def _conservation_report(session, user, kind: str, rec_id: str,
             "nav_drift_ils": round(drift, 2)}
 
 
-async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -> dict | None:
+async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: list[dict],
+                                       contradictions: list[dict], pre: dict,
+                                       weights: dict, *, nav: float = 0.0
+                                       ) -> tuple[list[dict], list[dict]]:
+    """Turn "your rule wants to sell a sleeve that is on target" into a choice.
+
+    Eran, 2026-09-28, item 1: "I have trading rule triggered but no recommendation
+    card to act". `contradictions.check` rule 1 was right that the sale moves the
+    book away from a strategy he chose -- and wrong to settle that by hiding it.
+    Both are decisions he made: the take-profit and the sleeve. Only he can say
+    which one is stale. His answer to what the choices are:
+
+      * SELL: take the slice the rule planned, and lower the sleeve by exactly
+        the weight sold, so the sleeve funder does not buy it straight back.
+        That round trip is measured on this book: SOXL trimmed 09-18 20:08:22
+        and re-bought by `sleeve_fund` at 20:09:25; trimmed 09-22 18:40:45 and
+        re-bought at 18:41:03 -- tax booked each time for nothing.
+      * KEEP: the position stays and the rule is UPDATED ("instead of retire
+        the rule --> update the rule"), to a level today's price has not
+        reached, so it does not fire again on the next evaluation.
+
+    Only rule cards are converted, and only rules `keep_level` can re-level.
+    Every other suppression stands and is listed in the history as "blocked".
+    Never raises: a failure leaves the suppression exactly as it was.
+    """
+    try:
+        from sqlalchemy import select as _select
+
+        from app.models.tables import TradingRule as _TR
+        from app.services import sleeve_service as _sv
+        from app.services.rules_service import _positions_index, keep_level
+    except Exception:  # noqa: BLE001
+        return recs, contradictions
+    out_recs = list(recs)
+    idx = None
+    for c in contradictions:
+        if c.get("kind") != "sells_a_sleeve_at_target" or not c.get("suppressed"):
+            continue
+        card = pre.get(c.get("card"))
+        if not card or not str(card.get("id", "")).startswith("rule_"):
+            continue
+        spec = card.get("apply") or {}
+        if spec.get("kind") != "trim" or not spec.get("rule_id"):
+            continue
+        try:
+            rule = await session.get(_TR, uuid.UUID(str(spec["rule_id"])))
+            if rule is None:
+                rule = (await session.scalars(_select(_TR).where(
+                    _TR.subject == user.email))).all()
+                rule = next((r for r in rule if str(r.id) == str(spec["rule_id"])), None)
+            if rule is None:
+                continue
+            if idx is None:
+                idx = await _positions_index(session, user)
+            tk = str(spec.get("ticker") or rule.ticker).upper()
+            pos = idx.get(tk) or {}
+            price, cost = float(pos.get("price") or 0), float(pos.get("cost") or 0)
+            new_level = keep_level(rule, price, cost)
+            holders = await _sv.sleeves_holding(session, user, tk)
+            if new_level is None or not holders:
+                continue
+            sl = holders[0]
+            shares = float(spec.get("shares") or 0)
+            w_now = float(weights.get(tk, 0.0)) * 100.0
+            gross, tax = _sale_value_ils(shares, price, cost, pos.get("market"), pos.get("meta"))
+            # THE WEIGHT SOLD, FROM THE SHEKELS SOLD. It was shares / qty x
+            # weight, and `qty` comes from `_positions_index`, which keeps ONE
+            # row per ticker while `weights` sums every row -- so a ticker held
+            # in two accounts halved the denominator and the sleeve would have
+            # been cut twice as far as the sale (found in review). Value over
+            # NAV has no per-row term to get wrong.
+            if not nav or nav <= 0:
+                continue
+            sold_pct = gross / float(nav) * 100.0
+            new_sleeve = _sv.shrunk_sleeve_pct(sl["sleeve_pct"], sl["ticker_pct"], sold_pct)
+            # A sleeve is resized as a whole. When it holds more than this
+            # ticker the other legs' targets shrink too, and the card says so
+            # rather than implying only the slice moves.
+            _others = ("" if sl.get("n_tickers", 1) <= 1 else
+                       f" The sleeve holds {sl['n_tickers']} tickers; all of their targets "
+                       f"shrink in proportion.")
+            unit = "%" if rule.mode == "pct" else ""
+            name = sl["strategy_id"]
+            decision = {
+                **card,
+                "title": (f"{tk} hit your take-profit — but it's on your "
+                          f"{sl['sleeve_pct']:g}% sleeve target. Your call."),
+                "why": (f"Two of your own decisions disagree. The rule says take a slice at "
+                        f"{float(rule.level):g}{unit} (now {price:,.2f}). The sleeve says hold "
+                        f"{sl['ticker_pct']:.1f}% of the book in {tk}, and you hold {w_now:.1f}%. "
+                        f"Selling without lowering the sleeve gets bought straight back."),
+                "action": (f"Sell {shares:g} {tk} (~₪{gross:,.0f}) and lower the sleeve to "
+                           f"{new_sleeve:g}% — or keep it and move the rule to "
+                           f"{new_level:g}{unit}."),
+                "impact": (f"Sell: about ₪{max(0.0, gross - tax):,.0f} lands in cash after an "
+                           f"estimated ₪{tax:,.0f} of tax; the {name} sleeve goes "
+                           f"{sl['sleeve_pct']:g}% → {new_sleeve:g}% and the core takes the rest."
+                           f"{_others} "
+                           f"Keep: nothing is sold; the rule re-arms at {new_level:g}{unit}."),
+                "how": [f"Sell & lower sleeve: trims {shares:g} {tk} in your InvestWise book, "
+                        f"credits the net proceeds to cash, and resizes the sleeve so the "
+                        f"funder does not re-buy it.",
+                        f"Keep & update rule: nothing is sold; the take-profit moves to "
+                        f"{new_level:g}{unit} (you can type a different level).",
+                        "No brokerage order is placed — mirror a sale at your broker.",
+                        # Honest about Ignore: dismissing a take-profit has always
+                        # latched it off (a declined firing is not re-asked). Keep
+                        # is the button that updates the rule instead.
+                        "Ignore hides this and switches the take-profit off, as with any "
+                        "declined take-profit. Use Keep to hold the position AND keep a "
+                        "take-profit."],
+                "est_amount": round(gross, 2),
+                "apply": {"kind": "rule_vs_sleeve", "rule_id": str(rule.id), "ticker": tk,
+                          "options": {
+                              "sell": {"apply": dict(spec), "strategy_id": name,
+                                       "sleeve_pct_from": sl["sleeve_pct"],
+                                       "sleeve_pct_to": new_sleeve,
+                                       "gross_ils": round(gross, 2), "tax_ils": round(tax, 2)},
+                              "keep": {"level": new_level, "old_level": float(rule.level),
+                                       "mode": rule.mode, "rule_type": rule.rule_type}}},
+                "actionable": True,
+                "decision": True,
+                "notes": [],
+            }
+            out_recs.insert(0, decision)
+            c["suppressed"] = False
+            c["converted_to"] = decision["id"]
+        except Exception:  # noqa: BLE001 -- the suppression stands; never break Today
+            logger.warning("could not convert rule conflict %s", c.get("card"), exc_info=True)
+    return out_recs, contradictions
+
+
+async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
+                               choice: str | None = None,
+                               level: float | None = None) -> dict | None:
     """Accept = apply the recommendation to holdings/plan immediately.
 
     Sales don't just delete holdings — the net-of-tax proceeds are credited to a
     visible CASH position, so accepting a 'sell' shows up as liquidity you can see
     and redeploy (rather than value silently vanishing).
+
+    `choice` / `level` are only read by a `rule_vs_sleeve` decision card: "sell"
+    or "keep", and for "keep" an optional level of the user's own.
     """
     built = await build_recommendations(session, user)
-    rec = next((r for r in built.get("recommendations", []) if r["id"] == rec_id), None)
+    # BOTH LISTS. Since PR 70 anything past the first 12 is served under
+    # "N more lower-priority suggestions" with a working Accept button -- and
+    # this looked only in the first 12, so Accept on one of those returned 404
+    # ("no longer applies") for a card that was plainly on screen.
+    rec = next((r for r in (built.get("recommendations", [])
+                            + built.get("more_recommendations", []))
+                if r["id"] == rec_id), None)
     if rec is None:
         return None
     spec = rec.get("apply") or {"kind": "none"}
     kind = spec.get("kind")
+    _sleeve_after = None
+    if kind == "rule_vs_sleeve":
+        opts = spec.get("options") or {}
+        if choice not in ("sell", "keep"):
+            return {"ok": False, "applied": "none", "needs_choice": True, "title": rec["title"],
+                    "error": "This card needs a choice: sell & lower the sleeve, or keep & update the rule."}
+        if choice == "keep":
+            from app.services.rules_service import keep_and_relevel
+            lvl = float(level) if level is not None else float(opts["keep"]["level"])
+            res = await keep_and_relevel(session, user, spec["rule_id"], lvl,
+                                         reason="rule vs sleeve: kept the position")
+            if not res.get("ok"):
+                return {"applied": "none", "title": rec["title"], **res}
+            unit = "%" if res.get("mode") == "pct" else ""
+            return {"applied": "keep_and_relevel", "title": rec["title"], **res,
+                    "note": (f"Kept {res['ticker']}. Your take-profit moved from "
+                             f"{res['old_level']:g}{unit} to {res['new_level']:g}{unit}. "
+                             f"Nothing was sold.")}
+        # SELL: the rule's own trim, then the sleeve resize below.
+        _sleeve_after = opts.get("sell") or {}
+        spec = dict(_sleeve_after.get("apply") or {})
+        kind = spec.get("kind")
+        if kind != "trim":
+            return {"ok": False, "applied": "none", "title": rec["title"],
+                    "error": "the sell option carries no trade"}
     rows = await list_positions(session, user)
     by_ticker = {p.ticker: p for p in rows}
     detail: dict = {}
@@ -4523,6 +4761,27 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str) -
         detail = {"rules_created": created}
     # A rule-driven card closes the loop on its own audit trail: the firing that
     # produced this card is stamped with what was actually done.
+    # THE SLEEVE MOVES WITH THE SALE, or the funder buys it back. See
+    # `_rule_conflicts_to_decisions` for the two measured round trips.
+    if _sleeve_after and detail.get("shares"):
+        from app.services import sleeve_service as _sv
+        _from = float(_sleeve_after["sleeve_pct_from"])
+        _to = float(_sleeve_after["sleeve_pct_to"])
+        # A PARTIAL FILL MOVES THE SLEEVE PARTIALLY. The trim sells
+        # min(planned, held); if it sold less than the card planned, the cut is
+        # scaled to what was actually sold.
+        _planned = float((_sleeve_after.get("apply") or {}).get("shares") or 0)
+        _sold = float(detail.get("shares") or 0)
+        if _planned > 0 and 0 < _sold < _planned:
+            _to = round(_from - (_from - _to) * (_sold / _planned), 2)
+        if _to > 0:
+            detail["sleeve"] = await _sv.add_or_resize(
+                session, user, _sleeve_after["strategy_id"], _to)
+        else:
+            # Only `retire_sleeve` may drop a sleeve: it re-levels the caps too.
+            from app.services.strategy_service import retire_sleeve
+            detail["sleeve"] = await retire_sleeve(session, user, _sleeve_after["strategy_id"])
+        await session.commit()
     rule_id = spec.get("rule_id")
     if rule_id:
         from app.services.rules_service import resolve_rule

@@ -980,10 +980,13 @@ async function loadToday(){
     const done=r.completed_count||0;
     const degraded=r.degraded||[];
     const hiddenCards=r.hidden_cards||[];
+    // PR 72: ignored, done and blocked cards are ONE read-only history list.
+    // "show them" used to call the bulk restores, which erased every mark and
+    // put every card back live -- accept-able twice -- with no sign of what
+    // it had been. Looking is now read-only; Restore is per card.
     $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
-      + (hidden&&recs.length?ignoredNote(hidden,hiddenCards):"")
       + (more.length?(MORE_HTML=more.map(recCard).join(""),moreNote(more)):"")
-      + (done&&recs.length?doneNote(done):"") + degradedNote(degraded);
+      + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -1024,43 +1027,61 @@ function moreNote(more){
     <span class="link" onclick="document.getElementById('moreRecs').outerHTML=MORE_HTML">show ${more.length>1?"them":"it"}</span></div>`;
 }
 let MORE_HTML="";
-function doneNote(done){
-  return `<div class="card center muted" style="font-size:13px">
-    ✅ ${done} ${done>1?"suggestions":"suggestion"} marked done ·
-    <span class="link" onclick="restoreCompleted()">show ${done>1?"them":"it"}</span></div>`;
-}
-async function restoreCompleted(){
-  try{await fetch("/api/v1/recommendations/restore-completed",{method:"POST"});}catch(e){}
-  loadToday();
-}
 function emptyRecs(hidden,done,cards){
   if(!hidden&&done>0) return `<div class="card center"><div style="font-size:22px">✅</div>
-    <b>All done.</b><div class="muted">You've worked through everything — ${done} ${done>1?"items":"item"} marked done.</div>
-    <button class="soft" style="margin-top:10px" onclick="restoreCompleted()">↩︎ Show completed</button></div>`;
+    <b>All done.</b><div class="muted">You've worked through everything — ${done} ${done>1?"items":"item"} marked done.</div></div>`
+    + historyNote(cards,hidden,done);
   if(hidden>0) return `<div class="card center"><div style="font-size:22px">🙈</div>
     <b>Nothing showing — but ${hidden} ${hidden>1?"suggestions are":"suggestion is"} ignored.</b>
-    <div class="muted">You hid ${hidden>1?"them":"it"} earlier. They aren't gone — bring ${hidden>1?"them":"it"} back to review.</div>
-    ${_hiddenTitles(cards)}
-    <button class="soft" style="margin-top:10px" onclick="restoreIgnored()">↩︎ Show ignored ${hidden>1?"suggestions":"suggestion"}</button></div>`;
+    <div class="muted">You hid ${hidden>1?"them":"it"} earlier. They aren't gone — open the list below to review or restore one.</div></div>`
+    + historyNote(cards,hidden,done);
   return `<div class="card center"><div style="font-size:22px">✅</div><b>Nothing to do right now.</b>
-    <div class="muted">You're tracking your plan.</div></div>`;
+    <div class="muted">You're tracking your plan.</div></div>` + historyNote(cards,hidden,done);
 }
-// A COUNT CANNOT ANSWER "WHY IS THERE NO CARD ABOUT MY MIX".
-// This line already existed and already rendered next to live cards -- it said
-// "4 other suggestions are ignored" while the two rebalance cards were inside
-// that 4, and nothing on the screen said so. Naming them is the fix; the count
-// never was the problem.
-function _hiddenTitles(cards){
-  if(!cards||!cards.length) return "";
-  const names=cards.slice(0,4).map(c=>`<b>${c.title}</b>`).join(", ");
-  const more=cards.length>4?`, and ${cards.length-4} more`:"";
-  return `<div style="margin-top:4px">${names}${more}</div>`;
+// ---- PR 72: the history list ---------------------------------------------
+// Every card that is not on screen, and WHY: done (you accepted it), ignored
+// (you hid it) or blocked (the app held it back because it contradicted your
+// plan -- the reason is shown). Read-only: no Accept here, ever. Restore brings
+// back ONE card; it undoes nothing that Accept already did.
+let HIST_CARDS=[];
+const _HIST_BADGE={done:["✅ Done","#34d399"],ignored:["🙈 Ignored","#fbbf24"],blocked:["⚖️ Blocked","#f87171"]};
+function historyNote(cards,hidden,done){
+  cards=cards||[]; if(!cards.length) return "";
+  HIST_CARDS=cards;
+  const nb=cards.filter(c=>c.how==="blocked").length;
+  const parts=[]; if(done)parts.push(`${done} done`); if(hidden)parts.push(`${hidden} ignored`); if(nb)parts.push(`${nb} blocked`);
+  return `<div class="card muted" style="font-size:13px" id="histNote">🗂 Earlier suggestions: ${parts.join(" · ")} ·
+    <span class="link" onclick="showHistory()">view the list</span></div>`;
 }
-function ignoredNote(hidden,cards){
-  return `<div class="card center muted" style="font-size:13px">
-    ${hidden} other ${hidden>1?"suggestions are":"suggestion is"} hidden ·
-    <span class="link" onclick="restoreIgnored()">show ${hidden>1?"them":"it"}</span>
-    ${_hiddenTitles(cards)}</div>`;
+function _histWhen(iso){
+  if(!iso) return "";
+  const d=new Date(iso); if(isNaN(d)) return "";
+  return d.toLocaleString(undefined,{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+}
+function showHistory(){
+  const e=$("histNote"); if(!e) return;
+  const rows=HIST_CARDS.map(c=>{
+    const [lab,col]=_HIST_BADGE[c.how]||[c.how,"#9ca3af"];
+    const when=_histWhen(c.hidden_at);
+    const amt=c.est_amount!=null?` · ₪${Math.round(c.est_amount).toLocaleString()}`:"";
+    const why=c.reason?`<div class="mk" style="margin-top:2px">${c.reason}</div>`:"";
+    const btn=c.how==="blocked"?"":`<button class="ghost" style="font-size:11px;padding:2px 8px" onclick="restoreOne('${c.id}','${c.how}')">↩︎ Restore</button>`;
+    return `<div class="hist-row" style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;padding:7px 0;border-top:1px solid rgba(148,163,184,.15)">
+      <div style="min-width:0"><span style="color:${col};font-size:11px;font-weight:600;white-space:nowrap">${lab}</span>
+        <span style="color:var(--fg,#e5e7eb)"> ${c.title||c.id}</span>
+        <div class="mk">${when?(c.how==="done"?"accepted ":"hidden ")+when:""}${amt}</div>${why}</div>${btn}</div>`;
+  }).join("");
+  e.outerHTML=`<div class="card" id="histList" style="font-size:13px"><b>Earlier suggestions</b>
+    <div class="mk" style="margin:2px 0 4px">Read-only. Restoring a card only lets it show again if it still applies — it never undoes a trade.</div>
+    ${rows}<div style="margin-top:6px"><span class="link" onclick="loadToday()">hide the list</span></div></div>`;
+}
+async function restoreOne(id,how){
+  const msg=how==="done"
+    ? "Bring this card back to Today?\n\nYou already accepted it. Restoring does NOT undo that — it only lets the card show again if it still applies."
+    : "Bring this card back to Today?";
+  if(!confirm(msg)) return;
+  try{await fetch(`/api/v1/recommendations/${encodeURIComponent(id)}/restore`,{method:"POST"});}catch(e){}
+  loadToday();
 }
 function degradedNote(list){
   if(!list||!list.length) return "";
@@ -1070,10 +1091,6 @@ function degradedNote(list){
   return `<div class="card" style="border-left:3px solid #fbbf24;font-size:13px">
     <b>⚠️ Some checks didn't run.</b>
     <div class="muted" style="margin-top:4px">Couldn't evaluate: ${txt}. There may be advice you're not seeing — try refreshing prices.</div></div>`;
-}
-async function restoreIgnored(){
-  try{await fetch("/api/v1/recommendations/restore",{method:"POST"});}catch(e){}
-  loadToday();
 }
 function plainRisk(a){
   if(a.vector==="single_position")return a.detail.replace(/\(.*\)/,"— too much in one holding.");
@@ -1184,6 +1201,15 @@ function _applyMsg(j){
   return parts.length?("Done \u2014 "+parts.join(" \u00b7 ")):"Done \u2014 applied.";
 }
 function actBtn(o){
+  // PR 72: a rule that fights a sleeve target is a decision with two answers.
+  const ap=o.apply||{};
+  if(ap.kind==="rule_vs_sleeve"&&ap.options){
+    const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
+    return `<button class="acc" onclick="decideRule('${o.id}','sell')">Sell &amp; lower sleeve to ${s.sleeve_pct_to}%</button>
+      <span style="display:inline-flex;gap:4px;align-items:center;flex-wrap:nowrap">
+        <button class="acc" onclick="decideRule('${o.id}','keep')">Keep &amp; move rule to</button>
+        <input id="lvl_${o.id}" type="number" step="any" value="${k.level}" style="width:86px"/>${u}</span>`;
+  }
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
@@ -1205,6 +1231,25 @@ async function acceptRec(id,actionable){
     if(!r.ok){throw new Error(j.detail||"Failed to apply");}
     alert(_applyMsg(j));
     HMAP={};loadToday();  // clear cached holdings so the sale/cash shows immediately
+  }catch(e){alert(e.message||e);}
+}
+async function decideRule(id,choice){
+  let q=`choice=${choice}`, msg;
+  if(choice==="keep"){
+    const v=parseFloat(($("lvl_"+id)||{}).value);
+    if(!(v>0)){alert("Enter the level to move the rule to.");return;}
+    q+=`&level=${v}`;
+    msg=`Keep the position and move the rule to ${v}?\n\nNothing is sold.`;
+  } else {
+    msg="Sell the slice and lower the sleeve?\n\nThis updates your InvestWise book and your plan. No brokerage order is placed.";
+  }
+  if(!confirm(msg))return;
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept?${q}`,_statePost(_cardState(id)));
+    const j=await r.json().catch(()=>({}));
+    if(r.status===404){alert("That decision no longer applies, so I've removed it.");HMAP={};loadToday();return;}
+    if(!r.ok){alert(j.detail||"Not applied.");return;}
+    alert(j.note||_applyMsg(j)+(j.sleeve&&j.sleeve.ok?` · sleeve ${j.sleeve.previous_pct}% \u2192 ${j.sleeve.sleeve_pct}%`:""));
+    HMAP={};loadToday();
   }catch(e){alert(e.message||e);}
 }
 async function snooze(id){
