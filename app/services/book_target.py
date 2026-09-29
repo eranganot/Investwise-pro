@@ -91,6 +91,16 @@ def carved_classes(core_mix: dict | None, objective: str | None,
     return {"Commodities"} if want > 0 else set()
 
 
+def cap_held(held: dict[str, float], cap: float) -> dict[str, float]:
+    """Scale the held-back weights so they sum to at most `cap` (a fraction of
+    NAV): the cash a hold can actually reserve. Pure; see `book_target`."""
+    tot = sum(max(0.0, float(v)) for v in (held or {}).values())
+    if tot <= cap + 1e-12 or tot <= 0:
+        return dict(held or {})
+    f = max(0.0, cap) / tot
+    return {k: float(v) * f for k, v in held.items() if float(v) * f > 1e-9}
+
+
 def compose(*, sleeve_targets: dict[str, float], core_mix: dict[str, float] | None,
             objective: str, cash_pct: float = 0.0,
             commodities_pct: float | None = None,
@@ -222,6 +232,7 @@ async def book_target(session, user, objective: str) -> dict:
     # (`target_roi_pct` is 30.0 for 30%). Converted to a fraction exactly once,
     # here, so no other reader has to know which unit it is in.
     cash_pct = 0.0
+    plan = None
     try:
         plan = await get_plan(session, user)
         from app.services.funding_service import cash_target_ils_of
@@ -253,7 +264,23 @@ async def book_target(session, user, objective: str) -> dict:
             _rows = await list_positions(session, user)
             _act = bh.active(_holds, _rows)
             if _act:
-                targets, held = bh.apply_holds(targets, _act, bh.weights_of(_rows, book_nav_ils(_rows)))
+                _nav_h = book_nav_ils(_rows)
+                targets, held = bh.apply_holds(targets, _act, bh.weights_of(_rows, _nav_h))
+                # PR 86: a hold reserves cash that EXISTS. The held-cash card
+                # already caps its reserve at the cash above the floor
+                # (`spendable_cash`); the target did not, so after Eran invested
+                # part of the reserve elsewhere (2026-09-30: cash 1,863 -> 703,
+                # ₪553 kept) the target still parked all 8.5% (₪1,996) in Cash
+                # and the rebalancer asked him to sell ₪758 of Equities -- the
+                # VTI he had just bought -- to rebuild money he chose not to keep.
+                # The held ticker's target stays at its weight (still no buy);
+                # the part not backed by cash flows to the core as normal.
+                if held and _nav_h > 0:
+                    from app.services.funding_service import spendable_cash
+                    from app.services.intake_service import get_cash
+                    _sp = spendable_cash(await get_cash(session, user), _nav_h,
+                                         getattr(plan, "objective", None) or objective, plan)
+                    held = cap_held(held, max(0.0, float(_sp)) / _nav_h)
     except Exception:  # noqa: BLE001 - a hold read must not cost the book target
         targets, held = planned, {}
 

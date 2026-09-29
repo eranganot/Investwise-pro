@@ -5781,8 +5781,6 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     spec = rec.get("apply") or {"kind": "none"}
     kind = spec.get("kind")
     _sleeve_after = None
-    if kind == "held_cash":
-        return await _apply_held_cash(session, user, rec, spec, choice, alloc)
     if kind == "rule_vs_sleeve":
         opts = spec.get("options") or {}
         if choice not in ("sell", "keep"):
@@ -5826,6 +5824,23 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     for _p in rows:
         _k = (_p.ticker or "").upper()
         shares_before[_k] = shares_before.get(_k, 0.0) + float(_p.quantity or 0)
+
+    if kind == "held_cash":
+        # PR 86: dispatched HERE, after the before-snapshot, and run through the
+        # same boundary as every other trade. PR 83 returned before this point,
+        # so its buys reached the book but never the ledger, the share guard or
+        # the conservation report (production 2026-09-30: VTI 620, USO 270,
+        # BND 270 bought, cash 1,863 -> 703, zero ledger rows) -- the exact
+        # "a new handler silently opts out" failure `_record_apply` warns about.
+        out = await _apply_held_cash(session, user, rec, spec, choice, alloc)
+        if out.get("bought"):
+            _k2 = out.get("applied") or kind
+            await _record_apply(session, user, _k2, rec_id, out)
+            out["unrecorded"] = await _guard_every_share_is_a_trade(
+                session, user, _k2, rec_id, shares_before, ledger_before)
+            out.update(await _conservation_report(
+                session, user, _k2, rec_id, nav_before, book_before, out))
+        return out
 
     if kind == "trim":
         # PR 77: sells across EVERY row of the ticker (see `_sell_shares`).

@@ -1,4 +1,4 @@
-# SMOKE - PR 83 (+ PR 84): cash a buy-back hold keeps back gets a choice card;
+# SMOKE - PR 83 (+ 84/85/86): cash a buy-back hold keeps back gets a choice card;
 # every hold is a visible, editable buy_back rule.
 #
 #   .\scripts\smoke\smoke-pr83-held-cash-and-buy-back-rules.ps1
@@ -190,6 +190,30 @@ if ($hc.Count -eq 0) {
             else { Bad "$($d.ticker) labelled '$($d.plan_label)', expected '$want'" }
             if ((Num $d.suggested_ils) -le (Num $d.max_ils) + 0.01) { Ok "$($d.ticker) suggestion $($d.suggested_ils) within its limit $($d.max_ils)" }
             else { Bad "$($d.ticker) suggestion $($d.suggested_ils) above its limit $($d.max_ils)" }
+        }
+    }
+}
+
+# =========================================================================== #
+Sec "2b PR 86: a hold reserves only cash that exists"
+# =========================================================================== #
+$mix = Api GET '/api/v1/mix'
+if ($null -eq $mix) { Bad "GET /mix failed" }
+elseif ($heldBack.Count -eq 0) { Skip "nothing held back - no reserve to check" }
+else {
+    $hbSum = 0.0; foreach ($v in $heldBack.Values) { $hbSum += $v }
+    $resIls = [math]::Round($hbSum * (Num $mix.nav), 2)
+    $cashIls = Num $mix.cash_ils
+    Note "target reserves $resIls for holds; cash is $cashIls"
+    if ($resIls -le $cashIls + 1.0) { Ok "the hold reserve ($resIls) is backed by cash ($cashIls)" }
+    else { Bad "the target reserves $resIls for holds but cash is only $cashIls - the rebalancer will sell to rebuild it" }
+}
+foreach ($c in $cards) {
+    if ($c.apply -and $c.apply.kind -eq 'rebalance_to_objective') {
+        Note "rebalance card present: '$($c.title)' - $($c.why)"
+        if ($null -ne $mix -and $heldBack.Count -gt 0) {
+            $cd = Num $mix.drift_percentage.Cash
+            if ($null -ne $cd -and $cd -lt -0.03) { Bad "rebalance driven by a Cash shortfall ($cd) while a hold is on - the PR 86 undo" }
         }
     }
 }

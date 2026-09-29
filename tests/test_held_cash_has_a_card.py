@@ -326,3 +326,75 @@ def test_an_unlikely_touch_recommends_putting_it_to_work():
                            ideas=[])
     assert c["apply"]["recommended"] == "redeploy"
     assert c["apply"]["options"]["redeploy"]["destinations"][0]["suggested_ils"] == 400.0
+
+
+# --------------------------------------------------------------------------- #
+# PR 86 -- production 2026-09-30 00:21, Eran: "I chose to re-invest the money
+# waiting for SOXL but now, I'm getting this card to undo my action" ("Sell
+# Equities ₪758"). Two faults, both measured live:
+#   1. the book target still parked the WHOLE SOXL gap (8.5%, ₪1,996) in Cash
+#      although only ₪553 of cash was left above the floor -- so the rebalancer
+#      asked him to sell what he had just bought to rebuild it;
+#   2. the accept returned before the ledger boundary: three buys, zero rows.
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_investing_part_elsewhere_is_recorded_and_not_undone(ils_quotes, monkeypatch):
+    from sqlalchemy import select
+
+    from app.models.tables import Transaction
+    from app.services.book_target import book_target
+    from app.services.fx import book_nav_ils
+    ideas = [{"ticker": "CVX", "name": "Chevron", "score": 73.2, "reasons": ["value"]},
+             {"ticker": "JPM", "name": "JPMorgan", "score": 70.1, "reasons": ["ROE"]}]
+    monkeypatch.setattr(rr, "_buy_ideas", lambda *a, **k: ideas)
+    eng, S = _session()
+    try:
+        async with S() as s:
+            user = await _book(s, "held_undo@example.com")
+            c, _ = await _card(s, user)
+            reserved = c["apply"]["reserved_ils"]
+            alloc = "CVX:700,JPM:600"
+            out = await rr.apply_recommendation(s, user, c["id"], choice="redeploy", alloc=alloc)
+            assert out["applied"] == "held_cash_redeploy", out
+            # 2. every buy is in the ledger, once, under this card
+            rows = (await s.execute(select(Transaction).where(
+                Transaction.subject == user.email, Transaction.txn_type == "Buy"))).scalars().all()
+            got = sorted(r.ticker for r in rows if "held_cash" in (r.source or ""))
+            assert got == ["CVX", "JPM"], [(r.ticker, r.source) for r in rows]
+            assert not out.get("unrecorded"), out.get("unrecorded")
+            assert abs(float(out.get("nav_drift_ils") or 0.0)) < 1.0, out
+            # 1. the reserve the target keeps is the cash that is left for it
+            nav = book_nav_ils(await list_positions(s, user))
+            bt = await book_target(s, user, "Grow")
+            kept_ils = sum(bt["held_back"].values()) * nav
+            spendable = (await get_cash(s, user)) - 150.0
+            assert kept_ils <= spendable + 1.0, (kept_ils, spendable)
+            # the hold's gap (~₪1,545) is larger than the ₪413 left above the floor,
+            # so all of that cash -- and no more -- stays reserved for SOXL
+            assert reserved > spendable
+            assert kept_ils == pytest.approx(spendable, abs=2.0)
+            # ... so nothing asks him to SELL the class he just bought into
+            # (CVX, JPM: Equities) to rebuild cash he chose not to keep. The
+            # fixture's own pre-existing Fixed Income overweight (BND 15.9% vs
+            # 5.9%) may still surface a rebalance -- that is not an undo.
+            built = await rr.build_recommendations(s, user)
+            undo = []
+            for r in built["recommendations"] + built.get("more_recommendations", []):
+                ap = r.get("apply") or {}
+                if ap.get("kind") != "rebalance_to_objective":
+                    continue
+                legs = ap.get("legs") or [{"asset_class": ap.get("asset_class"),
+                                            "direction": ap.get("direction")}]
+                undo += [lg for lg in legs if lg.get("asset_class") == "Equities"
+                         and lg.get("direction") == "sell"]
+            assert undo == [], undo
+    finally:
+        await eng.dispose()
+
+
+def test_cap_held_scales_to_the_cash_that_exists():
+    from app.services.book_target import cap_held
+    assert cap_held({"SOXL": 0.085}, 0.0236) == pytest.approx({"SOXL": 0.0236})
+    assert cap_held({"A": 0.02, "B": 0.02}, 0.02) == pytest.approx({"A": 0.01, "B": 0.01})
+    assert cap_held({"SOXL": 0.01}, 0.5) == {"SOXL": 0.01}
+    assert cap_held({"SOXL": 0.05}, 0.0) == {}

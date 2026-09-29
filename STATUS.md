@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 85, the invest-elsewhere tile is always pre-filled). Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger). Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,38 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 86 — investing part of a buy-back reserve elsewhere was undone by the rebalancer, and never recorded
+
+_2026-09-30 00:21, Eran (screenshot): "I chose to re-invest the money waiting for SOXL but now, I'm
+getting this card to undo my action" — "Sell Equities ₪758", right after he invested ₪1,160 of the
+₪1,713 SOXL reserve (VTI 620, USO 270, BND 270) and kept ₪553._
+
+**1. The undo card — root cause (PROVEN, live `/mix` + `/recommendations`).** Target Cash 9.14% =
+0.64% floor + **8.50% SOXL hold** (`book_target.held_back`, the whole gap, ₪1,996). Cash after the
+accept: ₪703.49 = 3.0%. Drift: Cash −6.14%, Equities +3.23% (over the 3% threshold) → "Sell ₪758 of
+Equities", i.e. sell the VTI just bought to rebuild a reserve he chose not to keep. The held-cash
+CARD already capped its reserve at `spendable_cash` (cash above the floor); the TARGET did not.
+Before the accept the held-cash card also hid the rebalance card (`_competes`); once cash fell under
+the ₪1,500 trigger it surfaced. **Fix:** `book_target` caps the held-back weights at spendable cash /
+NAV (`cap_held`, scaled per ticker). The held ticker's target still stays at its weight (no re-buy);
+the part of its gap no cash backs flows to the core as any other shortfall does. Live, by the same
+arithmetic: held 8.50% → 2.36% (₪553); targets Equities 72.4% / FI 14.6% / Commodities 10% / Cash
+3.0% vs actual 71.95 / 13.83 / 11.23 / 3.0 — every drift under 1.3 points, so no card.
+**Ruled out:** the plan-leg VTI buy itself (it was sized to keep the mix: +0.46 points after the fix);
+the idea buys (USO/BND, +1.2 points each, under the threshold); a stale target (the `/mix` target
+matched the payload's `book_target` to four decimals).
+
+**2. No ledger rows — root cause (PROVEN, live `/portfolio/ledger`).** Newest entry 2026-09-29 09:49;
+cash fell 1,863.49 → 703.49 = the three buys; zero rows. `apply_recommendation` dispatched
+`held_cash` BEFORE the before-snapshot and returned, so it skipped `_record_apply`, the
+every-share-is-a-trade guard and the conservation report — the "a new handler silently opts out"
+failure the boundary comment names. **Fix:** dispatched after the snapshot and run through the same
+boundary. **Not repaired:** the three live buys remain unrecorded (positions and cash are right;
+the ledger is the audit trail) — `ledger_repair` has no "missing buy" mode; pending Eran's call.
+
+Tests: `test_investing_part_elsewhere_is_recorded_and_not_undone` (fails without either fix,
+verified separately), `test_cap_held_scales_to_the_cash_that_exists`.
 
 ## PR 85 — the invest-elsewhere tile is always pre-filled
 
