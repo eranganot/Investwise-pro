@@ -1264,12 +1264,12 @@ function decisionBlock(o){
     <div class="dopt${r==="sell"?" rec":""}">${tag("sell")}
       <div class="dt">Sell ${sh!=null?f(sh)+" ":""}${esc(tk)}</div>
       <div class="dd">~${ils(s.gross_ils||0)}${s.tax_ils?` \u00b7 est. tax ${ils(s.tax_ils)}`:""} \u00b7 ${esc(tk)} ${f(s.weight_now_pct)}% \u2192 ${f(s.weight_after_pct)}% of the book.
-        Your ${f(s.sleeve_pct)}% sleeve target stays; not bought back until it trades below ${f(s.hold_above)}.</div>
+        ${s.target_label?esc(s.target_label):`Your ${f(s.sleeve_pct)}% sleeve target`} stays; not bought back until it trades below ${f(s.hold_above)}.</div>
       ${why("sell")}
       <div class="dgo"><button onclick="decideRule('${o.id}','sell')">Sell</button></div></div>
     <div class="dopt${r==="keep"?" rec":""}">${tag("keep")}
       <div class="dt">Keep the shares</div>
-      <div class="dd">Nothing is sold. Your take-profit moves up from ${f(k.old_level)}${u}.</div>
+      <div class="dd">Nothing is sold. Your ${esc(k.rule_word||"take-profit")} moves up from ${f(k.old_level)}${u}.</div>
       ${why("keep")}
       <div class="dgo"><label class="lvl" title="New take-profit level"><input id="lvl_${o.id}" type="number" step="any" value="${k.level}" aria-label="New take-profit level"/>${u?`<span>${u}</span>`:""}</label>
         <button onclick="decideRule('${o.id}','keep')">Keep &amp; move rule</button></div></div>
@@ -1541,8 +1541,8 @@ function renderRules(){
       } else { mid=`<span class="rdist"><div class="dtxt">armed</div></span>`; }
       const acts=x._dupe
         ? `<span class="racts"><button class="del" title="Delete duplicate" onclick="deleteRule('${x.id}')">✕</button></span>`
-        : `<span class="racts"><button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
-      return `<div class="rrow${x.triggered?' trig':''}">${badge}${lvl}${mid}${acts}</div>`;
+        : `<span class="racts">${x.unit!=="signal"?`<button class="del" title="Edit rule" onclick="editRule('${x.id}')">✏️</button>`:""}<button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
+      return `<div class="rrow${x.triggered?' trig':''}">${badge}${lvl}${mid}${acts}</div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
     }).join("");
     return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
   }).join("");
@@ -1584,12 +1584,49 @@ async function addRule(){
   o.textContent="Saving…";
   try{const r=await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,rule_type,mode,level})});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed");}
-    $("r_level").value=""; o.innerHTML='<span class="ok">Rule added.</span>'; loadRules();
+    const jj=await r.json().catch(()=>({}));
+    $("r_level").value=""; o.innerHTML=jj.warning
+      ? `<span class="ok">Rule added.</span> <span class="bad">⚠️ ${esc(jj.warning)}</span> Use ✏️ on the rule to change it.`
+      : '<span class="ok">Rule added.</span>'; loadRules();
   }catch(e){o.innerHTML=`<span class="bad">${e.message||e}</span>`;}
 }
 async function deleteRule(id){
   if(!confirm("Delete this rule?"))return;
   try{await fetch(`/api/v1/rules/${id}`,{method:"DELETE"}); loadRules();}catch(e){}
+}
+// PR 79 -- edit a rule in place (Eran: "I can't edit existing rules"). Level and
+// note only; a different rule TYPE is delete + create. A max-weight cap below
+// the plan's own target comes back as a warning with a suggested level first.
+function editRule(id){
+  const box=$("redit_"+id); if(!box) return;
+  if(box.style.display!=="none"){box.style.display="none";box.innerHTML="";return;}
+  const x=(RULES||[]).find(r=>String(r.id)===String(id)); if(!x) return;
+  const u=x.mode==="price"?"":"%";
+  box.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0">
+    <label>Level <input id="re_lvl_${id}" type="number" step="any" value="${x.level}" style="width:90px"/>${u}</label>
+    <input id="re_note_${id}" type="text" maxlength="160" placeholder="Note (optional)" value="${esc(x.note||"").replace(/"/g,"&quot;")}" style="flex:1;min-width:140px"/>
+    <button onclick="saveRule('${id}',false)">Save</button>
+    <button class="del" onclick="editRule('${id}')">Cancel</button></div>
+    <div id="re_out_${id}" class="small"></div>`;
+  box.style.display="block";
+}
+async function saveRule(id,force,levelOverride){
+  const o=$("re_out_"+id);
+  const level=levelOverride!=null?levelOverride:parseFloat($("re_lvl_"+id).value);
+  const note=$("re_note_"+id)?$("re_note_"+id).value:null;
+  if(isNaN(level)){o.innerHTML='<span class="bad">Enter a level.</span>';return;}
+  o.textContent="Saving…";
+  try{const r=await fetch(`/api/v1/rules/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({level,note,force:!!force})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.detail||"Failed");
+    if(j.needs_confirm){
+      o.innerHTML=`<div class="bad" style="margin:6px 0">⚠️ ${esc(j.warning)}</div>
+        <button onclick="saveRule('${id}',true,${j.suggested_level})">Use ${j.suggested_level}%</button>
+        <button class="del" onclick="saveRule('${id}',true,${level})">Save ${level}% anyway</button>`;
+      return;
+    }
+    loadRules(); if(typeof loadToday==="function") loadToday();
+  }catch(e){o.innerHTML=`<span class="bad">${esc(e.message||String(e))}</span>`;}
 }
 async function toggleRule(id){
   try{await fetch(`/api/v1/rules/${id}/toggle`,{method:"POST"}); loadRules();}catch(e){}

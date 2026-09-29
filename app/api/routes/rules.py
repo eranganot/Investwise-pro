@@ -48,7 +48,29 @@ async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session)
             mode=body.mode, level=body.level, note=body.note)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, "id": str(r.id)}
+    warn = await rules_service.cap_below_plan(session, user, body.ticker, body.rule_type,
+                                              body.level)
+    return {"ok": True, "id": str(r.id), **(warn or {})}
+
+
+class RuleEdit(BaseModel):
+    level: float | None = None
+    note: str | None = None
+    force: bool = False      # save a cap below the plan target after the warning
+
+
+@router.patch("/{rule_id}")
+async def edit_rule(rule_id: str, body: RuleEdit, session: AsyncSession = Depends(get_session),
+                    user: User = Depends(acting_user)) -> dict:
+    """PR 79: change a rule's level and note in place. A max-weight cap below the
+    plan's target returns `needs_confirm` with a suggested level; resend with
+    `force: true` to save it anyway."""
+    out = await rules_service.update_rule(session, user, rule_id, level=body.level,
+                                          note=body.note, force=body.force)
+    if not out.get("ok") and not out.get("needs_confirm"):
+        raise HTTPException(status_code=404 if out.get("error") == "rule not found" else 400,
+                            detail=out.get("error"))
+    return out
 
 
 @router.delete("/{rule_id}")

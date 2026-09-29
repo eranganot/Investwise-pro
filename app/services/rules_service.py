@@ -1218,10 +1218,14 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
     #
     # Suggesting a cap under the target is not a judgement call the user should
     # have to catch. It is the app disagreeing with itself.
+    #
+    # PR 79: and never below the CORE's target either. The VTI cap at 15% was
+    # suggested at VTI 12% with an 18.2% core target, and fought the core
+    # realign for days. The floor is now the whole plan (sleeves + core).
     try:
-        from app.services import sleeve_service as _sv
+        from app.services.recommendations import plan_ticker_targets
         sleeve_floor = {tk.upper(): round(w * 100.0, 1)
-                        for tk, w in (await _sv.all_sleeve_targets(session, user)).items()}
+                        for tk, w in (await plan_ticker_targets(session, user)).items()}
     except Exception:  # noqa: BLE001 -- a floor is never worth failing suggestions over
         sleeve_floor = {}
     # Everything above is DB work; everything in _suggestions_from is 200 days
@@ -1272,13 +1276,13 @@ def _suggestions_from(idx: dict[str, dict], have: set,
         if weight >= 12:
             cap = float(max(15.0, 5 * math.ceil(weight / 5)))
             floor = sleeve_floor.get(tk.upper())
-            if floor and floor > cap:
+            if floor and floor + 1.5 > cap:
                 # A sleeve wants MORE of this than the weight-derived cap allows.
                 # The cap is not wrong about concentration; it is wrong about
                 # THIS book, where the concentration is the strategy. Lift it
                 # above the target and name the reason on the suggestion.
-                cap = float(5 * math.ceil(floor / 5))
-                why = (f"Your sleeve targets {floor:g}% of the book in {tk}, so this caps it at "
+                cap = float(5 * math.ceil((floor + 1.5) / 5))
+                why = (f"Your plan targets {floor:g}% of the book in {tk}, so this caps it at "
                        f"{cap:.0f}% — above the target, firing only if it runs past it.")
             else:
                 why = f"It's {weight:.0f}% of your book — trim back toward {cap:.0f}% if it grows."
@@ -1293,6 +1297,71 @@ def _suggestions_from(idx: dict[str, dict], have: set,
                         "weight_pct": weight, "rules": fresh})
     out.sort(key=lambda h: h["weight_pct"], reverse=True)
     return out
+
+
+async def plan_target_pct(session: AsyncSession, user: User, ticker: str) -> float | None:
+    """The plan's target for one ticker, in % of the book (sleeves + core), or None."""
+    try:
+        from app.services.recommendations import plan_ticker_targets
+        t = (await plan_ticker_targets(session, user)).get(str(ticker).upper())
+    except Exception:  # noqa: BLE001
+        return None
+    return round(float(t) * 100.0, 2) if t else None
+
+
+async def cap_below_plan(session: AsyncSession, user: User, ticker: str,
+                         rule_type: str, level: float) -> dict | None:
+    """PR 79 guard (Eran: warn, let me save). A max-weight cap under the plan's
+    own target for that ticker trims the plan every time it fires. Returns the
+    warning and a suggested level, or None when there is nothing to warn about."""
+    if rule_type != "max_weight":
+        return None
+    t = await plan_target_pct(session, user, ticker)
+    if t is None or float(level) >= t + 0.5:
+        return None
+    suggested = float(math.ceil(t + 1.5))
+    return {"warning": (f"Your plan targets {ticker.upper()} at {t:.1f}% of the book. A "
+                        f"{float(level):g}% cap will keep trimming it below your own plan, and "
+                        f"the app will buy it back. Suggested: {suggested:g}%."),
+            "plan_target_pct": t, "suggested_level": suggested}
+
+
+async def update_rule(session: AsyncSession, user: User, rule_id: str, *,
+                      level: float | None = None, note: str | None = None,
+                      force: bool = False) -> dict:
+    """PR 79 -- edit a rule's level and note in place (Eran: "I can't edit
+    existing rules"). The rule keeps its id, type and history; it is re-armed
+    (un-latched and active) so the next evaluation judges the NEW level. A cap
+    below the plan target is refused once with a warning; `force` saves it."""
+    try:
+        rid = uuid.UUID(str(rule_id))
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "error": "rule not found"}
+    r = await session.get(TradingRule, rid)
+    if not r or r.subject != user.email:
+        return {"ok": False, "error": "rule not found"}
+    if level is not None:
+        level = float(level)
+        if r.rule_type == "strategy_signal":
+            return {"ok": False, "error": "a strategy-signal rule has no level to edit"}
+        if level <= 0:
+            return {"ok": False, "error": "the level must be positive"}
+        if r.mode == "pct" and level >= 100:
+            return {"ok": False, "error": "a percentage level must be below 100"}
+        if not force:
+            warn = await cap_below_plan(session, user, r.ticker, r.rule_type, level)
+            if warn:
+                return {"ok": False, "needs_confirm": True, **warn}
+    old = float(r.level)
+    if level is not None:
+        r.level = level                  # a trailing stop keeps its high-water mark
+    if note is not None:
+        r.note = note.strip()[:160] or None
+    r.triggered = False
+    r.active = True
+    await session.commit()
+    return {"ok": True, "id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
+            "mode": r.mode, "old_level": old, "level": float(r.level), "note": r.note}
 
 
 async def delete_rule(session: AsyncSession, user: User, rule_id: str) -> bool:

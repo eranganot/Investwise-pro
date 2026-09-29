@@ -237,6 +237,46 @@ async def _book_target(session, user, objective: str) -> dict:
     return await book_target(session, user, objective)
 
 
+async def plan_ticker_targets(session, user, objective: str | None = None,
+                              btgt: dict | None = None) -> dict[str, float]:
+    """PR 79 -- what YOUR PLAN wants of each ticker, as a share of NAV.
+
+    Sleeve targets (summed across sleeves, as planned -- not the buy-back-held
+    view) plus the core basket scaled to the core's share of the book. This is
+    the number a sell rule must not trim through: before PR 79 only the sleeve
+    half was checked, so a 15% cap on VTI trimmed straight through the core's
+    18.2% target and the realign card bought it back an hour later (09-26,
+    09-29 -- measured in the ledger).
+    """
+    from app.services.strategies import core_weights
+    try:
+        if btgt is None:
+            if objective is None:
+                plan = await get_plan(session, user)
+                objective = getattr(plan, "objective", None) or "Balanced"
+            btgt = await _book_target(session, user, objective)
+    except Exception:  # noqa: BLE001 - no target is "no conflict known", never a crash
+        return {}
+    out: dict[str, float] = {}
+    planned = btgt.get("planned_sleeve_targets")
+    if planned is None:
+        try:
+            from app.services import sleeve_service as _sv
+            planned = await _sv.all_sleeve_targets(session, user)
+        except Exception:  # noqa: BLE001
+            planned = {}
+    for tk, w in (planned or {}).items():
+        out[str(tk).upper()] = out.get(str(tk).upper(), 0.0) + float(w or 0.0)
+    core_id, core_pct = btgt.get("core_strategy_id"), float(btgt.get("core_pct") or 0.0)
+    basket = core_weights(core_id) if core_id else None
+    if basket and core_pct > 0:
+        bsum = sum(w for w in basket.values() if w > 0)
+        for tk, w in basket.items():
+            if w > 0 and bsum > 0:
+                out[tk.upper()] = out.get(tk.upper(), 0.0) + (w / bsum) * core_pct
+    return out
+
+
 def _ils(x) -> str:
     return f"₪{round(x):,}"
 
@@ -2773,6 +2813,8 @@ async def build_recommendations(session: AsyncSession, user: User,
         # not something to hide. See `_rule_conflicts_to_decisions`.
         recs, contradictions = await _rule_conflicts_to_decisions(
             session, user, recs, contradictions, _pre_contra, _w, nav=nav)
+        # PR 79: the same decision for CORE targets, and for trims that overshoot.
+        recs = await _rule_vs_plan_decisions(session, user, recs, _w, nav=nav, btgt=btgt)
         if contradictions:
             logger.info("today: %d contradiction(s), %d card(s) suppressed",
                         len(contradictions), sum(1 for c in contradictions if c.get("suppressed")))
@@ -5211,6 +5253,152 @@ async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: 
     return out_recs, contradictions
 
 
+def cap_keep_level(weight_pct: float, target_pct: float) -> float:
+    """Where a max-weight cap moves when you KEEP a holding its plan wants.
+
+    Above both today's weight and the plan's target, by 1.5 points, rounded up
+    to a whole percent -- VTI at 18.1% with an 18.2% core target -> 20%. The
+    same headroom a sleeve cap gets, so the cap guards against a RUN past the
+    plan instead of trimming the plan itself.
+    """
+    import math
+    return float(math.ceil(max(float(weight_pct or 0), float(target_pct or 0)) + 1.5))
+
+
+_RULE_WORDS = {"take_profit": "take-profit", "max_weight": "max-weight cap",
+               "stop_loss": "stop-loss", "trailing_stop": "trailing stop",
+               "price_above": "price alert", "price_below": "price alert"}
+
+
+async def _rule_vs_plan_decisions(session: AsyncSession, user: User, recs: list[dict],
+                                  weights: dict, *, nav: float, btgt: dict
+                                  ) -> list[dict]:
+    """PR 79 -- a rule trim that would leave a holding BELOW ITS PLAN TARGET is a decision.
+
+    `_rule_conflicts_to_decisions` (PR 72) covers one shape: a rule selling a
+    SLEEVE ticker already at or under its sleeve target. Two shapes escaped it,
+    and the first one was live on 2026-09-29:
+
+      * a CORE ticker. VTI's plan target is 18.2% (60% of a 30.4% core); a 15%
+        max-weight cap -- suggested by the app when VTI was 12% -- trimmed it to
+        15%, and the realign card bought it straight back (ledger: 09-26 12:26
+        buy, 13:14 trim; 09-29 07:42 buy, 08:46 trim).
+      * a trim that OVERSHOOTS: the ticker is above target, but the trim takes
+        it below.
+
+    Same card as PR 72, same two answers (Eran, 2026-09-29): SELL keeps the plan
+    target and records a buy-back hold at today's price; KEEP updates the rule
+    so it stops fighting the plan. Stop-losses and trailing stops are NOT
+    converted: a protective exit is supposed to overrule a target.
+    Never raises: on any failure the card stays as it was.
+    """
+    try:
+        from app.services import sleeve_service as _sv
+        from app.services.rules_service import _positions_index, keep_level
+        from app.models.tables import TradingRule as _TR
+        targets = await plan_ticker_targets(session, user, btgt=btgt)
+        claimed = {str(t).upper() for t in await _sv.sleeve_tickers(session, user)}
+    except Exception:  # noqa: BLE001
+        logger.warning("plan targets unavailable for rule conflicts", exc_info=True)
+        return recs
+    if not targets or not nav or nav <= 0:
+        return recs
+    out, idx = [], None
+    for card in recs:
+        spec = card.get("apply") or {}
+        if (card.get("decision") or not str(card.get("id", "")).startswith("rule_")
+                or spec.get("kind") not in ("trim", "sell_position") or not spec.get("rule_id")):
+            out.append(card)
+            continue
+        try:
+            rule = await session.get(_TR, uuid.UUID(str(spec["rule_id"])))
+            tk = str(spec.get("ticker") or getattr(rule, "ticker", "")).upper()
+            t = float(targets.get(tk) or 0.0)
+            if rule is None or t <= 0 or rule.rule_type in ("stop_loss", "trailing_stop"):
+                out.append(card)
+                continue
+            if idx is None:
+                idx = await _positions_index(session, user)
+            pos = idx.get(tk) or {}
+            price, cost = float(pos.get("price") or 0), float(pos.get("cost") or 0)
+            shares = float(spec.get("shares") or 0)
+            if pos.get("lots"):
+                _pl = _plan_sale(pos["lots"], shares)
+                gross, tax = _pl["gross"], _pl["tax"]
+            else:
+                gross, tax = _sale_value_ils(shares, price, cost, pos.get("market"), pos.get("meta"))
+            w_now = float(weights.get(tk, 0.0)) * 100.0
+            w_after = max(0.0, w_now - gross / float(nav) * 100.0)
+            t_pct = t * 100.0
+            if w_after >= t_pct - 0.5:
+                out.append(card)            # the trim stays at or above the plan: it stands
+                continue
+            if rule.rule_type == "max_weight":
+                new_level = cap_keep_level(w_now, t_pct)
+            else:
+                new_level = keep_level(rule, price, cost)
+            if new_level is None:
+                out.append(card)
+                continue
+            core_id = btgt.get("core_strategy_id")
+            where = ("sleeve" if tk in claimed else "core")
+            owner = None
+            if where == "sleeve":
+                holders = await _sv.sleeves_holding(session, user, tk)
+                owner = holders[0]["strategy_id"] if holders else None
+            else:
+                owner = core_id
+            owner_name = (btgt.get("core_strategy_name") or core_id or "core") if where == "core" else (owner or "sleeve")
+            word = _RULE_WORDS.get(rule.rule_type, "rule")
+            unit = "%" if rule.mode == "pct" else ""
+            rec_choice = "keep"
+            rec_why = (f"Your plan targets {t_pct:.1f}% in {tk}. Selling to "
+                       f"{w_after:.1f}% puts it below that, and the {where} would buy it back.")
+            out.append({
+                **card,
+                "title": (f"{tk}: your {word} fights your plan's {t_pct:.1f}% target. Your call."),
+                "why": (f"Two of your own decisions disagree. The {word} at "
+                        f"{float(rule.level):g}{unit} says sell; your {where} "
+                        f"({owner_name}) targets {t_pct:.1f}% of the book in {tk}, and you hold "
+                        f"{w_now:.1f}%."),
+                "action": (f"Sell {shares:g} {tk} (~₪{gross:,.0f}) and keep the {t_pct:.1f}% "
+                           f"target — or keep the shares and move the {word} to "
+                           f"{new_level:g}{unit}."),
+                "impact": (f"Sell: {tk} goes from {w_now:.1f}% to about {w_after:.1f}%; the "
+                           f"target stays {t_pct:.1f}% and nothing re-buys {tk} while it trades "
+                           f"at or above {price:,.2f}. Keep: nothing is sold; the {word} moves to "
+                           f"{new_level:g}{unit}."),
+                "how": [f"Sell: trims {shares:g} {tk} in your InvestWise book, credits the net "
+                        f"proceeds to cash, and holds re-buys of {tk} until it trades below "
+                        f"{price:,.2f}.",
+                        f"Keep & update rule: nothing is sold; the {word} moves from "
+                        f"{float(rule.level):g}{unit} to {new_level:g}{unit} (you can type another).",
+                        "No brokerage order is placed — mirror a sale at your broker."],
+                "est_amount": round(gross, 2),
+                "apply": {"kind": "rule_vs_sleeve", "rule_id": str(rule.id), "ticker": tk,
+                          "recommended": rec_choice, "recommended_why": rec_why,
+                          "conflict": where,
+                          "options": {
+                              "sell": {"apply": dict(spec), "strategy_id": owner,
+                                       "sleeve_pct": round(t_pct, 2),
+                                       "target_label": (f"Your {t_pct:.1f}% {where} target"
+                                                        f" ({owner_name})"),
+                                       "weight_now_pct": round(w_now, 2),
+                                       "weight_after_pct": round(w_after, 2),
+                                       "hold_above": round(price, 6),
+                                       "gross_ils": round(gross, 2), "tax_ils": round(tax, 2)},
+                              "keep": {"level": new_level, "old_level": float(rule.level),
+                                       "mode": rule.mode, "rule_type": rule.rule_type,
+                                       "rule_word": word}}},
+                "actionable": True,
+                "decision": True,
+            })
+        except Exception:  # noqa: BLE001 -- the card stands as it was
+            logger.warning("rule-vs-plan conversion failed for %s", card.get("id"), exc_info=True)
+            out.append(card)
+    return out
+
+
 async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                                choice: str | None = None,
                                level: float | None = None) -> dict | None:
@@ -5250,7 +5438,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                 return {"applied": "none", "title": rec["title"], **res}
             unit = "%" if res.get("mode") == "pct" else ""
             return {"applied": "keep_and_relevel", "title": rec["title"], **res,
-                    "note": (f"Kept {res['ticker']}. Your take-profit moved from "
+                    "note": (f"Kept {res['ticker']}. Your "
+                             f"{_RULE_WORDS.get(res.get('rule_type'), 'rule')} moved from "
                              f"{res['old_level']:g}{unit} to {res['new_level']:g}{unit}. "
                              f"Nothing was sold.")}
         # SELL: the rule's own trim, then the sleeve resize below.
@@ -5894,11 +6083,18 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
 
     from app.core.config import get_settings
     plan_row = await get_plan(session, user)   # module-level import; one loader
+    # PR 79: honour buy-back holds -- the realign bought VTI straight back after
+    # every rule trim. Read-only here; the Today build releases retreated holds.
+    try:
+        from app.services import buyback_hold as _bh
+        _no_buy = set(_bh.active(await _bh.load(session, user), rows))
+    except Exception:  # noqa: BLE001 - a hold read must not cost the plan
+        _no_buy = set()
     out = core_realign.plan_realign(
         basket=basket, core_pct=core_pct, nav=nav, held=held,
         cash_ils=cash_ils, cash_floor_ils=cash_floor_ils(nav, objective, plan_row),
         sleeve_over_ils=over, cgt_rate=float(get_settings().cgt_rate),
-        gain_frac=gain, deferred=deferred)
+        gain_frac=gain, deferred=deferred, no_buy=_no_buy)
     out["core_strategy_id"] = core_id
     out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
     out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}

@@ -69,7 +69,8 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
                  sleeve_over_ils: float = 0.0, cgt_rate: float = 0.0,
                  gain_frac: dict[str, float] | None = None,
                  allow_sleeve_trim: bool = True,
-                 deferred: list[dict] | None = None) -> dict:
+                 deferred: list[dict] | None = None,
+                 no_buy: set[str] | None = None) -> dict:
     """What it would take to bring the core back to the basket it names.
 
     ``held`` is the CORE REGION only -- what no sleeve claims and is not cash,
@@ -120,7 +121,12 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
                           "why": f"above its {want[tk] / nav:.1%} leg", "full_exit": False})
 
     # 3) EVERY LEG HELD BELOW ITS SHARE. What the plan is FOR.
+    # PR 79: a ticker on a buy-back hold (you chose SELL on a rule-vs-plan card)
+    # is not re-bought here until its price retreats below the sale price.
+    _no_buy = {t.upper() for t in (no_buy or set())}
     for tk in sorted(want):
+        if tk in _no_buy:
+            continue
         under = want[tk] - have.get(tk, 0.0)
         if under >= MIN_LEG_ILS:
             buys.append({"ticker": tk, "ils": _round2(under),

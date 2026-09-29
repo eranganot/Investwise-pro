@@ -289,7 +289,7 @@ def test_a_suggested_cap_is_never_below_the_sleeve_target_it_would_fight():
     caps = [r for h in out for r in h["rules"] if r["rule_type"] == "max_weight"]
     assert caps, "no cap suggested at all"
     assert caps[0]["level"] >= 38.4, f"suggested {caps[0]['level']}% against a 38.4% sleeve"
-    assert "sleeve targets" in caps[0]["why"].lower()
+    assert "plan targets" in caps[0]["why"].lower()  # PR 79: sleeves + core
 
 
 def test_without_a_sleeve_the_cap_formula_is_unchanged():

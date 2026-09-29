@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 78, phantom cash in the core realign). Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 79, editable rules; rules vs the core target). Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,33 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 79 — rules are editable; a rule may not trim a holding through its own plan's target
+
+_2026-09-29, Eran: "I can't edit existing rules — give me an edit button, across all my holdings" and
+"fix this gap". Decisions: edit = level + note; Sell on a core conflict keeps the target and holds
+re-buys (as PR 75 for sleeves); a cap below the plan target warns and lets him save._
+
+**The gap (PROVEN from the ledger).** VTI max-weight cap 15% vs a plan target of 18.2% (60% of a
+30.4% Classic 60/40 core). The core realign bought VTI and the cap sold it within the hour: 09-26
+12:26 buy → 13:14 trim 0.7; 09-29 07:42 buy → 08:46 trim 0.2203. PR 72's rule-vs-plan decision only
+read SLEEVE targets (`contradictions.check` rule 1), so core tickers were never checked. The cap
+itself came from `suggest_rules_for_holdings` ("It's 12% of your book"), whose floor was sleeves only.
+
+**Fix.**
+- `plan_ticker_targets()` — sleeve targets + core basket × core share, per ticker. The one answer to
+  "what does the plan want of X".
+- `_rule_vs_plan_decisions()` — after PR 72's pass: any rule trim/sell (not stop-loss / trailing stop)
+  that would leave its ticker below its plan target becomes the same `rule_vs_sleeve` decision card
+  (`conflict: core|sleeve`). Keep moves a max-weight cap to `cap_keep_level` = ceil(max(weight,
+  target) + 1.5) → VTI 20%.
+- `plan_realign(no_buy=)` — the core realign honours buy-back holds, so Sell is not undone.
+- Suggestions floor = the whole plan (+1.5 pts headroom).
+- `PATCH /api/v1/rules/{id}` {level, note, force} + ✏️ on every rule row. A cap below the plan target
+  returns `needs_confirm` with a suggested level (UI: "Use 20%" / "Save anyway"). Creating one returns
+  the same warning after saving.
+
+Tests: `tests/test_a_rule_may_not_trim_through_the_plan.py` (7), applying each choice.
 
 ## PR 78 — realigning the core paid for its buys with money that did not exist
 
