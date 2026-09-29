@@ -77,6 +77,17 @@ Revisit if B leaves good single names unused; switching is removing the `_same_k
 
 ### B-sells-trend. Sell cards on trend alone, flagged unmeasured (Eran Q5, 2026-09-28) -- for PR E.
 
+PR 77 shipped the measured-edge bar instead. A holding in Trim/Exit without an edge gets a stop-loss card.
+
+### B-review-ratio. Revisit the measured-edge bar once the card mix is visible (Eran, 2026-09-28)
+
+PR 77 lets a review card SELL only when selling on its signal beat holding on the same window with no
+deeper drawdown; otherwise the card arms a stop. Eran: "for now it's ok, but it might change, depending
+on the amount of the guidance cards vs action cards". Measure: over a few weeks, note from Today's
+`holding_review` rows how often a Trim/Exit holding had `edge` false (stop card, id `review_g`) vs true
+(sell card, id `review`; these are HIGH, so each also lands in `notified_events` when pushed). If nearly
+every card is a stop, revisit the bar (e.g. CAGR edge alone, or B-sells-trend).
+
 ### B1. PR 55.1's `sigma/sqrt(f)` scaling was WRONG — **WITHDRAWN in PR 56.** Evidence kept.
 
 **Closed as a defect; open as a question.** The scaling is gone from the code and pinned out by
@@ -168,6 +179,86 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 77 — a holding review per holding; it sells only when selling has paid, otherwise it arms a stop
+
+_2026-09-28/29, plan item 6 ("PR E"), approved ("ok continue to the next PR"); in-build decisions:
+#2 kept, with a backlog entry (B-review-ratio); #5 "the card should be actionable"; #7 "yes, fix it";
+#3 option (a) "measure on demand"._
+
+**What it does.** `services/holding_review.py`. Every non-cash holding gets a row on Today (folded
+"Holding review"): 20/50/200-day averages, 1/6/12-month returns, distance from the 52-week high, and a
+state. Hold = both trends up; Trim = 20-day below 50-day; Exit = that plus 50-day below 200-day;
+Protect = long trend broken, short recovering. Two signals are MEASURED per ticker with
+`strategy_backtest` on the ticker's own ~10 years, net of costs and 25% CGT, against holding it on the
+same dates: `review.signal.short@1` (20/50) and `review.signal.long@1` (50/200).
+* **Sell only with an edge (Q5).** A Trim/Exit card SELLS (HIGH; `trim` of `review.trim_fraction@1` = 50%,
+  or `sell_position`) only if the measurement is fresh (3 days or less, same `ENGINE_VERSION`) and the
+  rule's CAGR beat holding's with no deeper worst drawdown. The sale records a buy-back hold at the sale
+  price (as in PR 75).
+* **Otherwise the card arms a stop (#5).** A MEDIUM card, `create_rules` stop-loss at 1.5x the
+  holding's 10-day volatility below today, clamped 8-15%. It says why it is not a sale, with the numbers.
+  One trend card per holding: the old momentum card for that ticker is dropped.
+* **Sleeves defer.** A sleeve holding gets no card; its row reports the sleeve rule's stored signal.
+* **Measurement timing (#3).** The trend STATE is recomputed on every Today load from live closes. The
+  backtest is nightly (scheduler `holding_review`, 04:40; one more day moves a 10-year CAGR by about
+  1/2,500), plus `POST /api/v1/holding-review/refresh`. It is also run ON DEMAND: the build hands every
+  unmeasured or stale holding to a background thread (`kick_background`). One pass per ticker at a time,
+  no retry within 30 minutes (the providers rate-limit). The row and card say "Measuring now". The
+  thread is off where the scheduler is off (tests), because it is a second writer.
+* Known bias, stated on the card: the rule counts its first 200 days as cash, which favours holding.
+* Versioned, `owner_reviewed=False`: the trim fraction and both signals.
+
+**Root cause fixed on the way (#7) -- PROVEN by reproduction on the PR 76 code.** A ticker held in two
+accounts (6 @ 100 in Main, 4 @ 140 in Second, price 150): applying a `trim` of 5 LEFT NO ROWS and
+credited ₪590. `apply_recommendation` resolved the ticker through `by_ticker = {p.ticker: p}` (the last
+row only), sized the sale on that row's 4 shares, found "remaining 0", and called
+`delete_position(ticker, market)`, which removes EVERY row of the ticker. ₪900 of NAV left the book. The
+same happened with `sell_position` of 10: 4 valued, 10 deleted, tax on the wrong basis.
+* Silent because the NAV guard logs `NAV CONSERVATION BREACH` and the share guard writes a balancing
+  Adjust; neither blocks the commit.
+* Blast radius: every take-profit trim and stop sale on a ticker held in more than one account, both
+  in Accept and (found in review, see below) in the rules index that sizes those cards.
+* Ruled out: `_sale_value_ils` (right for the row it was given); `update_position` (keyed by row id,
+  correct); the ledger (it recorded what the branch reported).
+* Fix: `_sell_shares` sells across every row oldest-first, each at its own basis. It updates a row by
+  id, and a row reaching 0 is deleted by `update_position` on its own. After the fix the same probe
+  sells exactly 5 (₪687.50 net, ₪62.50 tax, 1 + 4 shares left), and 10 on a full exit (₪1,415 net).
+  Pinned by `tests/test_reviewer_card_claims.py` on a two-account book (review sell cards, the
+  stop-loss and take-profit rule cards), applied and re-measured.
+
+**Independent review (fresh agent, each finding reproduced with a probe), fixed:**
+1. The card valued rows in `list_positions` order (no ORDER BY) while Accept sold oldest-first. Probe
+   (older 6 @ 100 returned second): the card said ₪22 of tax, Accept took ₪62.50. Now one pure
+   `_plan_sale` (oldest `created_at`, then row id) decides the lots for the card estimate and for
+   Accept; `load_positions` carries `id` and `created_at`.
+2. The SAME multi-row fault lived in the rules index (`rules_service._positions_index_and_nav`, last
+   row wins). A stop's "Sell all" on a 6 + 4 holding sold 4, then the rule was consumed with 6 shares
+   left unprotected; a take-profit sized its slice from one account. Now the index sums quantity over
+   rows, uses the quantity-weighted basis, and carries the lots. The rule card and the decision card
+   value through `_plan_sale`.
+3. A ticker too young to backtest (`measured: False`) had its reason printed as a verdict ("selling
+   NEWX on this signal 230 overlapping sessions..."). It now says it could not be measured.
+4. "12 months None%" on about 251 bars: now "n/a".
+5. The buy-back claim was wider than the code. The hold only binds the cash card (and sleeve
+   funding), and after a full Exit there is no row to price it, so it never released. Now only a Trim
+   records a hold, and its card says exactly that ("the cash card will not top X back up while...").
+   An Exit makes no buy-back claim.
+Noted, not changed: `judge` has no minimum margin (on a flat series 0.0%/yr beats -0.02%/yr), which
+belongs to B-review-ratio. A ticker listed on two markets takes the hold level from the last lot sold.
+
+**Test clock fixed on the way -- PROVEN.** `test_position_history` (2 tests) failed here and in the
+review, on the base code too: the fixtures date the ledger from `NOW = datetime.now(timezone.utc)`,
+and the assertions compared against the LOCAL `date.today()`. The sandbox runs with
+`TZ=Asia/Jerusalem`, so between 00:00 and 03:00 local the dates differ by a day. All 16 pass with
+`TZ=UTC` on the same code. CI runs in UTC, so it was not affected. Ruled out: the endpoint (right for
+the UTC ledger). The assertions now use `NOW.date()`; green in both timezones.
+
+**Tests (fail on the PR 76 code, pass here):** `test_reviewer_states`,
+`test_reviewer_sell_requires_measured_edge`, `test_reviewer_defers_to_sleeve_rule`,
+`test_reviewer_card_claims` (Exit, Trim, the stop card, and the nightly job run for real),
+`test_reviewer_measures_on_demand`. The source-reading ghost-row test was replaced by a behavioural one.
+**Smoke:** `scripts/smoke/smoke-pr77-holding-review.ps1` (read-only).
 
 ## PR 76 — a compound return is projected as a compound return, once; cash swaps are like for like
 

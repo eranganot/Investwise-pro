@@ -1876,6 +1876,62 @@ async def build_recommendations(session: AsyncSession, user: User,
         _sleeve_share = {}
     _sleeve_floor = {t: round(w * 100.0, 1) for t, w in _sleeve_share.items()}
     recs += await _offload(_momentum_recs, rows, snap, _sleeve_floor)
+    # PR 77 -- THE HOLDING REVIEW (plan item 6). Reads the nightly measurements;
+    # never backtests here. A holding gets at most one trend card: where the
+    # review speaks, the older momentum card for the same ticker steps aside.
+    _review: list[dict] = []
+    try:
+        from app.agents.screener_agent import OpportunityAgent as _OA
+        from app.services import holding_review as _hr
+        from app.services import sleeve_service as _sv_rev
+        from app.services.intake_service import is_cash_position as _is_cash
+        _rtks = sorted({p.ticker.upper() for p in rows
+                        if not _is_cash(p.ticker, p.meta if isinstance(p.meta, dict) else None)})
+
+        def _closes(tks):
+            ag, out = _OA(), {}
+            for t in tks:
+                cl, st = ag._history(t, 260)
+                out[t] = cl if st == "ok" else []
+            return out
+        _cl = await _offload(_closes, _rtks)
+        _meas = await _hr.stored(session, _rtks)
+        _sleeve_notes: dict[str, str] = {}
+        for _t in _rtks:
+            if _t in {k.upper() for k in (_sleeve_share or {})} or _t in {
+                    k.upper() for k in (await _sv_rev.all_sleeve_targets(session, user))}:
+                _hs = await _sv_rev.sleeves_holding(session, user, _t)
+                if _hs:
+                    _c, _w = await _decision_recommendation(session, user, _hs[0]["strategy_id"], _t)
+                    _sleeve_notes[_t] = f"Sleeve holding: its own rule decides. {_w}"
+        _trig = getattr(plan, "cash_redeploy_at_ils", None) if plan is not None else None
+        _review, _rcards = _holding_review_recs(
+            rows, snap, _cl, _meas, _sleeve_notes, _cash_ils,
+            float(_trig) if _trig is not None else None)
+        # Eran, 2026-09-29 (option a): a holding the nightly run has not
+        # measured -- bought today, or the run missed it -- is measured now in
+        # the background; the next Today load reads the result.
+        _kicked = set(_hr.kick_background(
+            [r["ticker"] for r in _review if not r["sleeve"] and not r["measurement_usable"]]))
+        _later = " Measuring now: reopen Today in a minute or two."
+        for _r in _review:
+            if _r["ticker"] in _kicked:
+                _r["measuring"] = True
+                _r["measurement_note"] = (_r["measurement_note"] or "") + _later
+        for _c in _rcards:
+            if _c["meta"]["ticker"] in _kicked:
+                _c["action"] = _c["action"] + _later
+        _rt = {c["meta"]["ticker"] for c in _rcards}
+        if _rt:
+            recs = [r for r in recs if not (
+                r.get("dimension") == "momentum"
+                and any(str(x.get("ticker", "")).upper() in _rt
+                        for x in ((r.get("apply") or {}).get("rules") or [])))]
+        recs += _rcards
+    except Exception:  # noqa: BLE001 - the review must never cost the Today view
+        logger.warning("holding review failed", exc_info=True)
+        degraded.append("holding_review")
+    _tm.mark("holding_review")
     # The FLOOR above is the plan (a cap may not sit below the planned sleeve);
     # the SHARE the cash card sizes buys against honours a take-profit hold.
     if _holds_active and _sleeve_share:
@@ -2836,6 +2892,8 @@ async def build_recommendations(session: AsyncSession, user: User,
             # ...and WHICH ones. The count was always here and the screen always
             # showed it; a count cannot tell you the rebalance pair is inside it.
             "hidden_cards": _hidden_cards,
+            # PR 77: one row per non-cash holding, every number behind its state.
+            "holding_review": _review,
             "degraded": degraded, "rule_banner": rule_banner,
             # Where the time actually went, per agent (ms). Cheap to compute and
             # it turns "the endpoint is slow" into a specific culprit.
@@ -3518,6 +3576,142 @@ def stop_buffer_pct(closes: list[float], *, horizon_days: int = 10, k: float = 1
         return lo
     raw = k * v * math.sqrt(horizon_days)
     return float(min(hi, max(lo, round(raw))))
+
+
+def _holding_review_recs(rows, snap, closes_by_ticker: dict, measured: dict,
+                         sleeve_notes: dict, cash_ils: float,
+                         trigger_ils: float | None) -> tuple[list[dict], list[dict]]:
+    """PR 77 -- (review rows, cards). Pure: every input is already fetched.
+
+    One row per non-cash holding with every number that produced its state; a
+    card only for Trim/Exit on a holding no sleeve owns. ACTIONABLE only when the
+    stored measurement is fresh and the signal beat holding (`holding_review`);
+    otherwise guidance that says why, with the numbers.
+    """
+    from app.services import holding_review as hr
+    from app.services.intake_service import is_cash_position
+
+    by_tk: dict[str, list] = {}
+    for p in rows:
+        if is_cash_position(p.ticker, p.meta if isinstance(p.meta, dict) else None):
+            continue
+        by_tk.setdefault(p.ticker.upper(), []).append(p)
+    review, cards = [], []
+    frac = float(hr.TRIM_FRACTION["value"])
+    for tk, held in sorted(by_tk.items()):
+        m = hr.metrics(closes_by_ticker.get(tk) or [])
+        state = hr.state_of(m)
+        meas = measured.get(tk)
+        ok_fresh, stale_why = hr.fresh(meas)
+        row = {"ticker": tk, "state": state, "metrics": m,
+               "sleeve": sleeve_notes.get(tk), "measurement": meas,
+               "measurement_usable": ok_fresh, "measurement_note": stale_why}
+        review.append(row)
+        if tk in sleeve_notes:
+            row["note"] = sleeve_notes[tk]
+            continue                      # the sleeve's own rule decides
+        if state not in ("Trim", "Exit"):
+            continue
+        sig = "long" if state == "Exit" else "short"
+        s = hr.SIGNALS[sig]
+        j = (meas or {}).get(sig) or {}
+        shares_total = sum(float(p.quantity or 0) for p in held)
+        fraction = 1.0 if state == "Exit" else frac
+        shares = round(shares_total * fraction, 6)
+        _pl = _plan_sale(held, shares)          # the lots Accept will take
+        gross, tax = _pl["gross"], _pl["tax"]
+        net = gross - tax
+        def _pc(v):
+            return "n/a" if v is None else f"{v}%"
+        m_line = (f"Short term: 20-day {m['sma20']:,.2f} vs 50-day {m['sma50']:,.2f}, "
+                  f"1 month {_pc(m['ret_1m_pct'])}. Long term: 50-day {m['sma50']:,.2f} vs 200-day "
+                  f"{m['sma200'] if m['sma200'] is not None else 'n/a'}, 6 months {_pc(m['ret_6m_pct'])}, "
+                  f"12 months {_pc(m['ret_12m_pct'])}, {_pc(m['drawdown_52w_pct'])} from its 52-week high.")
+        bt_line = (f"On {tk}'s own history ({j.get('start')} to {j.get('end')}), selling when "
+                   f"{s['words']} returned {j.get('rule_cagr_pct')}%/yr after costs and 25% CGT "
+                   f"vs {j.get('hold_cagr_pct')}%/yr holding; worst drop {j.get('rule_max_drawdown_pct')}% "
+                   f"vs {j.get('hold_max_drawdown_pct')}%. (The first 200 days count as cash for the "
+                   f"rule, which favours holding.)") if j.get("measured") else None
+        actionable = bool(ok_fresh and j.get("edge"))
+        cash_after = cash_ils + net
+        lands = (f"{_ils(net)} lands in cash (about {_ils(cash_after)} after). "
+                 + (f"Above your {_ils(trigger_ils)} trigger, the cash card researches where it goes."
+                    if trigger_ils is not None and cash_after > trigger_ils else
+                    "It stays in cash."))
+        what = ("all" if state == "Exit" else f"{fraction:.0%}")
+        horizon = "both horizons" if state == "Exit" else "the short horizon"
+        if actionable:
+            cards.append({
+                "id": _rid("review", tk, state), "dimension": "holding_review",
+                "severity": "HIGH",
+                "title": f"Sell {what} of {tk} — trend broke on {horizon}",
+                "why": f"{m_line} {bt_line}",
+                "action": (f"Sell {shares:g} {tk} (~{_ils(gross)}, estimated CGT {_ils(tax)}). "
+                           f"{lands}"),
+                "impact": (f"Measured on {tk}'s own ~{j.get('years')} years: this signal "
+                           f"{j.get('why')}."
+                           # A trim keeps the row, so the hold can be priced and
+                           # released; an exit leaves nothing to price, and a
+                           # hold that never releases would block the name for
+                           # good (found in review). The cash card is the reader.
+                           + (f" The cash card will not top {tk} back up while it trades at "
+                              f"or above today's price." if state == "Trim" else "")),
+                "how": [f"Accept sells {shares:g} {tk} in your InvestWise book at the live price "
+                        f"and credits the net proceeds to cash",
+                        "No brokerage order is placed — mirror the sale at your broker",
+                        f"Signal: {s['words']} ({s['id']}@{s['version']}); "
+                        + (f"the trim size is {hr.TRIM_FRACTION['id']}@{hr.TRIM_FRACTION['version']} "
+                           f"(not owner-reviewed); the backtest measured a full exit"
+                           if state == "Trim" else "exit = the whole position"),
+                        "Not financial advice."],
+                "est_amount": round(gross, 2),
+                "actionable": True,
+                "apply": ({"kind": "trim", "ticker": held[0].ticker, "shares": shares,
+                           "hold_after_sale": True} if state == "Trim" else
+                          {"kind": "sell_position", "ticker": held[0].ticker, "shares": shares}),
+                "meta": {"ticker": tk, "state": state, "measurement": j,
+                         "assumptions": (meas or {}).get("assumptions")}})
+        elif m.get("ok"):
+            # Eran, 2026-09-28: "the card should be actionable". Without a
+            # measured edge the card may not SELL (Q5), so its action is the
+            # protection a broken trend calls for: a stop-loss scaled to the
+            # holding's own volatility -- the card this one replaces
+            # (`_momentum_recs`) offered the same kind of rule.
+            closes = closes_by_ticker.get(tk) or []
+            buf = stop_buffer_pct(closes, k=1.5, lo=8.0, hi=15.0)
+            last = float(m["price"])
+            stop = round(last * (1 - buf / 100.0), 2)
+            if not ok_fresh:
+                not_sell = (f"The measurement is not usable ({stale_why}), so without a fresh "
+                            f"measured edge this cannot be a sell card.")
+            elif not j.get("measured"):
+                not_sell = (f"Selling {tk} on this signal could not be measured "
+                            f"({j.get('why') or 'no backtest'}), so this is not a sell.")
+            else:
+                not_sell = (f"Historically, selling {tk} on this signal {j.get('why')}, so this "
+                            f"is not a sell.")
+            cards.append({
+                "id": _rid("review_g", tk, state), "dimension": "holding_review",
+                "severity": "MEDIUM",
+                "title": f"{tk}'s trend turned down on {horizon} — protect it with a stop",
+                "why": m_line + (f" {bt_line}" if bt_line else ""),
+                "action": (f"{not_sell} Arm a stop-loss at {stop:,.2f} (~{buf:.0f}% below "
+                           f"today's {last:,.2f}) instead."),
+                "impact": (f"Accept arms a stop-loss on {tk} at {stop:,.2f}. Nothing is sold now; "
+                           f"if {tk} falls to there you get an alert and a Today to-do to sell."),
+                "how": [f"Accept arms a stop-loss at {stop:,.2f} (~{buf:.0f}% below today; "
+                        f"1.5x the holding's 10-day volatility, clamped 8-15%)",
+                        "Nothing is bought or sold, and no brokerage order is placed",
+                        "Adjust or remove it any time under Trading rules",
+                        "Not financial advice."],
+                "est_amount": None, "actionable": True,
+                "apply": {"kind": "create_rules", "rules": [{
+                    "ticker": held[0].ticker, "rule_type": "stop_loss", "mode": "price",
+                    "level": stop,
+                    "note": f"From holding review ({state}; ~{buf:.0f}% below {last:.2f})"}]},
+                "meta": {"ticker": tk, "state": state, "measurement": j or None,
+                         "stop": stop, "buffer_pct": buf}})
+    return review, cards
 
 
 def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
@@ -4707,6 +4901,62 @@ async def _rebalance_to(session, user, rows, objective: str) -> dict:
                           "bought_ils": round(spent, 2), "buy_scale": plan["buy_scale"]}}
 
 
+def _lot(r, k):
+    """A position row's field, whether it is an ORM row or a `load_positions` dict."""
+    return r.get(k) if isinstance(r, dict) else getattr(r, k, None)
+
+
+def _plan_sale(lots: list, shares: float) -> dict:
+    """Which lots a sale of `shares` takes, and what it is worth. PURE.
+
+    ONE place decides the order (oldest row first, by `created_at`, then id),
+    so the card that ESTIMATES a sale and the Accept that EXECUTES it take the
+    same lots at the same bases. PR 77's first version valued the card in
+    `list_positions` order (no ORDER BY) and sold oldest-first: on a book with
+    an older 6 @ 100 and a newer 4 @ 140 the card said ₪22 of tax and Accept
+    took ₪62.50 (found in review, reproduced).
+    """
+    def _age(r):
+        at = _lot(r, "created_at")
+        at_s = at.isoformat() if hasattr(at, "isoformat") else str(at or "")
+        return (at is None, at_s, str(_lot(r, "id") or ""))
+    left = max(0.0, float(shares or 0))
+    legs, sold, gross, tax, price = [], 0.0, 0.0, 0.0, None
+    total = sum(float(_lot(r, "quantity") or 0) for r in lots)
+    for r in sorted(lots, key=_age):
+        if left <= 1e-9:
+            break
+        qty = float(_lot(r, "quantity") or 0)
+        take = min(left, qty)
+        if take <= 0:
+            continue
+        g, t = _sale_value_ils(take, float(_lot(r, "current_price") or 0),
+                               float(_lot(r, "cost_basis") or 0), _lot(r, "market"),
+                               _lot(r, "meta"))
+        legs.append((r, take))
+        gross, tax, sold, left = gross + g, tax + t, sold + take, left - take
+        price = float(_lot(r, "current_price") or 0)
+    return {"legs": legs, "shares": sold, "gross": gross, "tax": tax, "price": price,
+            "full_exit": total - sold <= 1e-9}
+
+
+async def _sell_shares(session, user, rows_of_ticker: list, shares: float) -> dict:
+    """Sell `shares` of one ticker across ALL its rows, oldest first.
+
+    PR 77 -- the defect recorded after PR 73: `trim` and `sell_position` valued
+    ONE row (`by_ticker` keeps the last) and, on a full exit, `delete_position`
+    removed EVERY row of the ticker+market. A ticker held in two accounts lost
+    the second account's shares with no proceeds and no ledger leg. Here each
+    row is valued with its own cost basis and only what is sold leaves it; a
+    row sold to zero is removed by `update_position` (the ghost-row rule).
+    """
+    plan = _plan_sale(rows_of_ticker, shares)
+    for r, take in plan["legs"]:
+        await update_position(session, user, str(r.id),
+                              quantity=max(0.0, float(r.quantity or 0) - take))
+    return {k: plan[k] for k in ("shares", "gross", "tax", "price", "full_exit")}
+
+
 def _sale_value_ils(qty: float, price: float, basis: float, market, meta) -> tuple[float, float]:
     """Value a full sale of `qty` shares in ILS: (gross_ils, estimated_tax_ils).
 
@@ -4886,7 +5136,11 @@ async def _rule_conflicts_to_decisions(session: AsyncSession, user: User, recs: 
             sl = holders[0]
             shares = float(spec.get("shares") or 0)
             w_now = float(weights.get(tk, 0.0)) * 100.0
-            gross, tax = _sale_value_ils(shares, price, cost, pos.get("market"), pos.get("meta"))
+            if pos.get("lots"):
+                _pl = _plan_sale(pos["lots"], shares)    # the lots Accept will take
+                gross, tax = _pl["gross"], _pl["tax"]
+            else:
+                gross, tax = _sale_value_ils(shares, price, cost, pos.get("market"), pos.get("meta"))
             # THE WEIGHT SOLD, FROM THE SHEKELS SOLD. It was shares / qty x
             # weight, and `qty` comes from `_positions_index`, which keeps ONE
             # row per ticker while `weights` sums every row -- so a ticker held
@@ -5026,65 +5280,44 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         shares_before[_k] = shares_before.get(_k, 0.0) + float(_p.quantity or 0)
 
     if kind == "trim":
-        p = by_ticker.get(spec["ticker"])
-        if p:
-            shares = min(float(spec["shares"]), float(p.quantity))
-            gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
-                                         float(p.cost_basis or 0), p.market, p.meta)
-            # A TRIM THAT TAKES EVERYTHING IS AN EXIT, AND AN EXIT DELETES.
-            #
-            # This branch was the only sell path in the app without this test.
-            # `sell_position` has it, `sell_losers` has it, `_sell_ils` has it,
-            # the core realign has it, `_execute_funded_sleeve` has it -- and
-            # this one wrote `max(0.0, qty - shares)` and kept the row.
-            #
-            # MEASURED on this book, 2026-09-14: USO sat in the portfolio at
-            # quantity 0.0 with its cost basis intact, counted in `positions`,
-            # rendered as a card reading "0 shares ... +9.1% since you bought",
-            # holding Commodities at 0% of the book -- which is what the live
-            # COMT buy card is reacting to -- and still carrying THREE armed
-            # trading rules: take-profit 168.17, trailing stop 16%, stop-loss
-            # 124.92. A rule armed on a position you do not own can fire and
-            # propose selling something that is not there.
-            # Deleting the row is the WHOLE fix, including for the rules.
-            # `rules_service.purge_orphan_rules` already deletes rules for
-            # tickers that are not held -- it was working perfectly and being
-            # fed a lie, because a zero-quantity row is still returned by
-            # `load_positions`, so USO was "held" and its rules were not
-            # orphans. Fix the cause; do not add a second mechanism beside a
-            # correct one.
-            remaining = max(0.0, float(p.quantity) - shares)
-            if remaining <= 0:
-                await delete_position(session, user, p.ticker, p.market)
-            else:
-                await update_position(session, user, str(p.id), quantity=remaining)
-            credited = await credit_cash(session, user, gross - tax)
-            # `shares` IS WHAT THE LEDGER RECORDS. Without it `_record_apply`
-            # fell back to `detail.get("shares") or 0` and every trim on
-            # production went into `transactions` as a 0-share sell (observed
-            # 2026-09-21: 15 trim rows, all quantity 0.0) -- so the ledger
-            # could not say how many shares a holding had on any past day.
-            detail = {"sold": [spec["ticker"]], "shares": round(shares, 6),
+        # PR 77: sells across EVERY row of the ticker (see `_sell_shares`).
+        # The long comment that lived here (why an exit deletes the row: USO
+        # at 0 shares still carried three armed rules) is honoured there --
+        # a row sold to zero is removed by `update_position`.
+        _held = [x for x in rows if x.ticker == spec["ticker"]]
+        if _held:
+            res = await _sell_shares(session, user, _held, float(spec["shares"]))
+            credited = await credit_cash(session, user, res["gross"] - res["tax"])
+            # `shares` IS WHAT THE LEDGER RECORDS (a 0-share sell hid 15 trims).
+            detail = {"sold": [spec["ticker"]], "shares": round(res["shares"], 6),
                       "cash_added_ils": round(credited, 2),
-                      "tax_ils": round(tax, 2), "full_exit": remaining <= 0}
+                      "tax_ils": round(res["tax"], 2), "full_exit": res["full_exit"]}
+            if spec.get("hold_after_sale") and res["shares"] > 0:
+                from app.services import buyback_hold as _bh
+                detail["buyback_hold"] = await _bh.record(
+                    session, user, ticker=spec["ticker"], sold_price=res["price"],
+                    shares=res["shares"], strategy_id=None, rule_id=None)
+                await session.commit()
     elif kind == "sell_position":
         # A stop-loss / trailing stop / take-profit is a full exit by definition.
         # The position leaves the book and the net-of-CGT proceeds land in cash,
         # so the money is visible and redeployable rather than vanishing.
-        p = by_ticker.get(spec["ticker"])
-        if p:
-            shares = min(float(spec.get("shares") or 0) or float(p.quantity), float(p.quantity))
-            gross, tax = _sale_value_ils(shares, float(p.current_price or 0),
-                                         float(p.cost_basis or 0), p.market, p.meta)
-            remaining = max(0.0, float(p.quantity) - shares)
-            if remaining <= 0:
-                await delete_position(session, user, p.ticker, p.market)
-            else:
-                await update_position(session, user, str(p.id), quantity=remaining)
-            credited = await credit_cash(session, user, gross - tax)
-            detail = {"sold": [spec["ticker"]], "shares": round(shares, 6),
-                      "cash_added_ils": round(credited, 2), "tax_ils": round(tax, 2),
+        _held = [x for x in rows if x.ticker == spec["ticker"]]
+        if _held:
+            _total = sum(float(x.quantity or 0) for x in _held)
+            res = await _sell_shares(session, user, _held,
+                                     float(spec.get("shares") or 0) or _total)
+            credited = await credit_cash(session, user, res["gross"] - res["tax"])
+            detail = {"sold": [spec["ticker"]], "shares": round(res["shares"], 6),
+                      "cash_added_ils": round(credited, 2), "tax_ils": round(res["tax"], 2),
+                      "full_exit": res["full_exit"],
                       "broker_note": "Tracked book updated — no brokerage order was placed."}
+            if spec.get("hold_after_sale") and res["shares"] > 0:
+                from app.services import buyback_hold as _bh
+                detail["buyback_hold"] = await _bh.record(
+                    session, user, ticker=spec["ticker"], sold_price=res["price"],
+                    shares=res["shares"], strategy_id=None, rule_id=None)
+                await session.commit()
         else:
             detail = {"sold": [], "note": f"{spec['ticker']} is no longer held."}
     elif kind == "sell_losers":

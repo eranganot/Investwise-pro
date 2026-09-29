@@ -213,6 +213,18 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Backtest refresh job not scheduled.", exc_info=False)
 
+    # PR 77: the holding review's backtests (each holding's own ~10 years, both
+    # sell signals against holding). Nightly, after the strategy backtests, so the
+    # history they fetched is cached; the Today build only reads the results.
+    try:
+        from app.services.holding_review import run_holding_review_blocking
+        _scheduler.add_job(_guarded("holding_review", run_holding_review_blocking),
+                           "cron", hour=4, minute=40, id="holding_review",
+                           misfire_grace_time=21600)
+        logger.info("Holding review measurement scheduled (04:40 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Holding review job not scheduled.", exc_info=False)
+
     # Evaluate the active rule-based strategy once a day, after the US close has
     # settled into the daily feed. Hourly would not help: these rules read daily
     # closes, so an intraday re-evaluation can only repeat itself or react to a

@@ -24,22 +24,46 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from app.services import recommendations as rec
 from app.services import rules_service as rs
 
 
-def test_the_trim_branch_deletes_at_zero_like_every_other_sell_path():
-    """`sell_position`, `sell_losers`, `_sell_ils`, the core realign and
-    `_execute_funded_sleeve` all test `remaining <= 0`. This one did not."""
-    src = inspect.getsource(rec)
-    start = src.index('if kind == "trim":')
-    # Bounded by the NEXT branch rather than a character count, so a comment
-    # cannot push the assertion off the end of the window it is checking.
-    branch = src[start:src.index('elif kind == "sell_position":', start)]
-    assert "delete_position" in branch, (
-        "a trim that takes the whole position must delete it, not write "
-        "quantity 0 and keep the row")
-    assert "remaining <= 0" in branch
+@pytest.mark.asyncio
+async def test_the_trim_branch_leaves_no_ghost_row_at_zero():
+    """A trim that takes the whole position removes the row -- asserted on the
+    book, not the source. PR 77 moved trim onto `_sell_shares`, which sells row
+    by row and lets `update_position(quantity=0)` delete a row sold to zero;
+    the old version of this test read the source for `delete_position`."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
+    from app.schemas.intake import IntakePosition
+    from app.schemas.state_machine import Market
+    from app.services.feed_service import ensure_user
+    from app.services.intake_service import (
+        ensure_account, ensure_entity, list_positions, upsert_positions)
+
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    S = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with S() as s:
+            user = await ensure_user(s, "ghost_trim@example.com")
+            ent = await ensure_entity(s, user, "Personal", "Personal")
+            acc = await ensure_account(s, ent, "Main")
+            await upsert_positions(s, acc, [IntakePosition(
+                ticker="GHST", market=Market.TASE, depth=2, spot_price=10.0,
+                listing_price=10.0, quantity=5.0, cost_basis=8.0, asset_class="Equities")])
+            await s.commit()
+            rows = [p for p in await list_positions(s, user) if p.ticker == "GHST"]
+            res = await rec._sell_shares(s, user, rows, 5.0)
+            left = [p for p in await list_positions(s, user) if p.ticker == "GHST"]
+    finally:
+        await eng.dispose()
+    assert res["full_exit"] is True and res["shares"] == pytest.approx(5.0)
+    assert left == [], "a trim to zero must not leave a quantity-0 row behind"
 
 
 def test_the_rules_index_ignores_a_zero_quantity_row():

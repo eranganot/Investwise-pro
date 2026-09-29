@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
+from app.core.auth import Role, require_role
 from app.core.database import get_session
 from app.models.tables import User
 from app.services.recommendations import (
@@ -99,3 +100,17 @@ async def restore_one_recommendation(rec_id: str, session: AsyncSession = Depend
     (the history list), and bringing a card back is this, one card at a time.
     """
     return {"ok": True, **(await restore_one(session, user, rec_id))}
+
+
+@router.post("/holding-review/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def refresh_holding_review(session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """PR 77: measure your holdings now instead of at 04:40. A MEASUREMENT --
+    it backtests each holding's two sell signals and stores the result; nothing
+    in the book changes. Takes a while: ~10 years of prices per holding."""
+    from app.services import holding_review as hr
+    from app.services.intake_service import is_cash_position, list_positions
+    rows = await list_positions(session, user)
+    tks = {p.ticker.upper() for p in rows
+           if not is_cash_position(p.ticker, p.meta if isinstance(p.meta, dict) else None)}
+    return {"measured": await hr.measure_for(session, tks)}

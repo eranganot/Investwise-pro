@@ -1013,7 +1013,8 @@ async function loadToday(){
     // it had been. Looking is now read-only; Restore is per card.
     $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
       + (more.length?(MORE_HTML=more.map(recCard).join(""),moreNote(more)):"")
-      + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded);
+      + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
+      + reviewTable(r.holding_review||[]);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${(p.goal&&p.goal.deadline)||p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -1072,6 +1073,25 @@ function emptyRecs(hidden,done,cards){
 // back ONE card; it undoes nothing that Accept already did.
 let HIST_CARDS=[];
 const _HIST_BADGE={done:["✅ Done","#34d399"],ignored:["🙈 Ignored","#fbbf24"],blocked:["⚖️ Blocked","#f87171"]};
+// PR 77: every holding's review state, with the numbers behind it. Folded by
+// default; the cards above are where anything actionable appears.
+function reviewTable(rows){
+  if(!rows.length) return "";
+  const col={Hold:"ok",Protect:"warn",Trim:"warn",Exit:"bad",Unmeasured:"muted"};
+  const n=v=>v==null?"\u2014":`${v>0?"+":""}${v}%`;
+  const meas=r=>{const m=r.measurement||{};
+    if(r.sleeve) return esc(r.sleeve);
+    if(!r.measurement_usable) return esc(r.measurement_note||"not measured");
+    const one=(k,lbl)=>{const j=m[k]||{};return j.measured?`${lbl}: ${j.rule_cagr_pct}%/yr vs hold ${j.hold_cagr_pct}% \u2014 ${j.edge?"beat holding":"did not beat holding"}`:`${lbl}: not measured`;};
+    return one("short","20/50 sell")+"<br>"+one("long","50/200 exit");};
+  return `<details class="card" style="margin-top:12px"><summary class="nm" style="cursor:pointer">Holding review \u00b7 ${rows.length} holdings</summary>
+    <div class="mk" style="margin:6px 0 8px">Trend on two horizons per holding, and whether selling on it has beaten holding on that holding's own history (after costs and 25% CGT). Sleeve holdings follow their own strategy rule. Not financial advice.</div>
+    ${rows.map(r=>{const m=r.metrics||{};return `<div style="padding:8px 0;border-top:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(r.ticker)}</b><span class="${col[r.state]||"muted"}" style="font-weight:700">${esc(r.state)}</span></div>
+      ${m.ok?`<div class="mk">Short: ${m.short} (1m ${n(m.ret_1m_pct)}) \u00b7 Long: ${m.long||"\u2014"} (6m ${n(m.ret_6m_pct)}, 12m ${n(m.ret_12m_pct)}) \u00b7 ${n(m.drawdown_52w_pct)} from 52-week high</div>`:`<div class="mk">${esc(m.why||"no price history")}</div>`}
+      <div class="mk" style="margin-top:2px">${meas(r)}</div></div>`;}).join("")}
+  </details>`;
+}
 function historyNote(cards,hidden,done){
   cards=cards||[]; if(!cards.length) return "";
   HIST_CARDS=cards;

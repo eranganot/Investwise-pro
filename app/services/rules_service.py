@@ -255,18 +255,33 @@ async def _positions_index_and_nav(session: AsyncSession, user: User) -> tuple[d
         # the rules machinery immune to the next path that gets it wrong.
         if float(p.get("quantity") or 0) <= 0:
             continue
-        _w = weights.get(p["ticker"], 0) or 0
-        out[tk] = {"price": float(p.get("current_price") or 0),
-                   "cost": float(p.get("cost_basis") or 0),
-                   "qty": float(p.get("quantity") or 0),
-                   "weight_pct": round(_w * 100, 1),
-                   # Carried so the cap card can value its own trim through the
-                   # SAME `_sale_value_ils` Accept runs, rather than a second
-                   # arithmetic that could disagree about FX or tax.
-                   "market": p.get("market"), "meta": p.get("meta") or {},
-                   # FX-normalised, from the snapshot -- price x quantity would be
-                   # the position's native currency.
-                   "value_ils": _w * float(snap.get("nav") or 0.0)}
+        # ONE ENTRY PER TICKER, SUMMED OVER EVERY ROW (PR 77). This kept the
+        # LAST row: a ticker held 6 in one account and 4 in another read as 4
+        # shares, so a stop's "Sell all" sold 4 and the rule was then consumed
+        # with 6 shares left unprotected, and a take-profit sized its slice
+        # from one account (found in review, reproduced). `cost` is the
+        # quantity-weighted basis the thresholds compare against; `lots` are the
+        # rows, so a sale is valued lot by lot (`_plan_sale`) exactly as Accept
+        # executes it.
+        q = float(p.get("quantity") or 0)
+        e = out.get(tk)
+        if e is None:
+            _w = weights.get(p["ticker"], 0) or 0
+            e = out[tk] = {"price": float(p.get("current_price") or 0),
+                           "cost": 0.0, "qty": 0.0,
+                           "weight_pct": round(_w * 100, 1),
+                           # Carried so the cap card can value its own trim through
+                           # the SAME `_sale_value_ils` Accept runs, rather than a
+                           # second arithmetic that could disagree about FX or tax.
+                           "market": p.get("market"), "meta": p.get("meta") or {},
+                           # FX-normalised, from the snapshot -- price x quantity
+                           # would be the position's native currency.
+                           "value_ils": _w * float(snap.get("nav") or 0.0),
+                           "lots": []}
+        e["cost"] = ((e["cost"] * e["qty"] + float(p.get("cost_basis") or 0) * q)
+                     / (e["qty"] + q))
+        e["qty"] += q
+        e["lots"].append(p)
     return out, float(snap.get("nav") or 0.0)
 
 
@@ -927,9 +942,13 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
             # "~737" while Accept credits about 2,700 to cash. Same defect as
             # `_rebalance_to`'s "sell 4,324" against a 12,139 execution, one
             # order of magnitude quieter.
-            from app.services.recommendations import _sale_value_ils
-            gross, tax = _sale_value_ils(shares, price, float(pos.get("cost") or 0.0),
-                                         pos.get("market"), pos.get("meta"))
+            from app.services.recommendations import _plan_sale, _sale_value_ils
+            if pos.get("lots"):
+                _pl = _plan_sale(pos["lots"], shares)    # the lots Accept will take
+                gross, tax = _pl["gross"], _pl["tax"]
+            else:
+                gross, tax = _sale_value_ils(shares, price, float(pos.get("cost") or 0.0),
+                                             pos.get("market"), pos.get("meta"))
             net = max(0.0, gross - tax)
             action = (f"{verb} {shares:g} {r.ticker} at {price:,.2f} "
                       f"— about ₪{gross:,.0f}, the rule you set.")

@@ -123,7 +123,7 @@ def test_the_value_line_never_starts_before_the_position_existed(client):
     v = body["value"]
     assert v["clipped"] is True
     first = v["points"][0]["t"]
-    assert first >= (date.today() - timedelta(days=10)).isoformat(), first
+    assert first >= (NOW.date() - timedelta(days=10)).isoformat(), first
     assert len(body["price"]["points"]) > len(v["points"]), "price goes back further than the record"
 
 
@@ -178,7 +178,7 @@ def test_the_value_line_never_starts_before_the_ledger_did(client):
     _backdate_position(60)
     _ledger_began(8)
     v = _get(c, "3M").json()["value"]
-    assert v["points"][0]["t"] >= (date.today() - timedelta(days=8)).isoformat()
+    assert v["points"][0]["t"] >= (NOW.date() - timedelta(days=8)).isoformat()
     assert "ledger" in v["starts_because"]
 
 

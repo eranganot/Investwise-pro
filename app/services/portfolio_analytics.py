@@ -182,6 +182,9 @@ async def load_positions(session: AsyncSession, user: User, entity: str | None =
             # meta overrides the currency would be valued one way on the card
             # and another by Accept -- the two-sizings failure, in the tax term.
             "meta": m,
+            # Row identity and age, so a sale planned from these dicts takes
+            # the same lots, in the same order, as Accept (`_plan_sale`, PR 77).
+            "id": str(p.id), "created_at": getattr(p, "created_at", None),
         })
     return out
 
