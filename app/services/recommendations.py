@@ -54,7 +54,9 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "rule_vs_sleeve",
                      # PR 81: a tuning card edits a rule; the one-time card
                      # converts caps into rebalance bands.
-                     "edit_rule", "caps_to_bands"}
+                     "edit_rule", "caps_to_bands",
+                     # PR 83: cash a buy-back hold is keeping back -- a choice.
+                     "held_cash"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -1240,7 +1242,8 @@ def _fund_action(sleeve_ids: list[str]) -> dict:
 
 
 async def build_recommendations(session: AsyncSession, user: User,
-                                simulate_cash_ils: float | None = None) -> dict:
+                                simulate_cash_ils: float | None = None,
+                                ignore_cash_reserve: bool = False) -> dict:
     """`simulate_cash_ils` (PR 75): the cash card is sized as if you held that
     much cash, NAV raised by the difference. Only the cash card reads it; the
     route that passes it returns only that card, marked simulated, with no
@@ -2056,10 +2059,21 @@ async def build_recommendations(session: AsyncSession, user: User,
                 "recommendations": [{**r, "apply": {"kind": "none", "simulated": True,
                                                     "legs": (r.get("apply") or {}).get("legs")}}
                                     for r in _redeploy]}
-    _reserve = round(sum((btgt.get("held_back") or {}).values()) * (snap.get("nav") or 0.0), 2)
+    _reserve = (0.0 if ignore_cash_reserve else
+                round(sum((btgt.get("held_back") or {}).values()) * (snap.get("nav") or 0.0), 2))
+    # PR 83: a hold's own volatility sizes the held-cash card's suggested split.
+    if _holds_active and not ignore_cash_reserve:
+        try:
+            from app.services import holding_review as _hrv
+            _st = await _hrv.stored(session, list(_holds_active))
+            for _tk in _holds_active:
+                _holds_active[_tk]["vol_20d_pct"] = (
+                    ((_st.get(_tk) or {}).get("metrics") or {}).get("vol_20d_pct"))
+        except Exception:  # noqa: BLE001 - the card says it does not know
+            pass
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"], _name_caps,
-                               _sleeve_share, _holds_active, _reserve)
+                               _sleeve_share, _holds_active, _reserve, _ideas)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"], _name_caps)
 
@@ -2591,7 +2605,8 @@ async def build_recommendations(session: AsyncSession, user: User,
     # (₪971 into SCHD) alongside "Add to SCHD — ₪7,899" and left the user to
     # work out which one to follow. One pot of money, one card.
     if _redeploy:
-        _legs = {x["ticker"] for x in _redeploy[0]["apply"]["legs"]}
+        # PR 83: the held-cash card has options, not legs.
+        _legs = {x["ticker"] for x in (_redeploy[0]["apply"].get("legs") or [])}
 
         def _competes(r: dict) -> bool:
             if r.get("id") == _rid("cashdrag"):
@@ -2616,6 +2631,38 @@ async def build_recommendations(session: AsyncSession, user: User,
                       and (r.get("apply") or {}).get("kind") in ("buy_funded", "buy")}
         if not (_rule_buys & _legs):
             recs += _redeploy
+
+    # PR 83: a buy-back rule that FIRED owns the buy-back. Below its level the
+    # hold no longer cuts the sleeve, so the sleeve top-up and the cash card would
+    # also buy the same ticker -- two cards for one decision, and accepting the
+    # wrong one leaves the rule latched and the hold on. The rule's card wins.
+    _bb_tks = {str((r.get("meta") or {}).get("ticker") or "").upper() for r in recs
+               if (r.get("meta") or {}).get("rule_type") == "buy_back"
+               and str(r.get("id", "")).startswith("rule_")}
+    if _bb_tks:
+        from app.services.funding_service import MIN_TRADE_ILS as _MIN_BB
+        _kept = []
+        for r in recs:
+            _ap = r.get("apply") or {}
+            _k = _ap.get("kind")
+            if str(r.get("id", "")).startswith("rule_") or _k in (
+                    "trim", "sell", "sell_losers", "rule_vs_sleeve", "none", None):
+                _kept.append(r)
+                continue
+            _tk = str((r.get("meta") or {}).get("ticker") or _ap.get("ticker") or "").upper()
+            if _k == "redeploy_cash":
+                _l = [x for x in (_ap.get("legs") or [])
+                      if str(x.get("ticker") or "").upper() not in _bb_tks]
+                if len(_l) != len(_ap.get("legs") or []):
+                    if sum(float(x.get("amount_ils") or 0) for x in _l) < _MIN_BB:
+                        continue
+                    _ap["legs"] = _l
+                _kept.append(r)
+                continue
+            if _tk in _bb_tks:
+                continue
+            _kept.append(r)
+        recs = _kept
 
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
@@ -3995,12 +4042,161 @@ def _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, ca
                         f"every holding is at its target, so new money keeps the mix on plan")
 
 
+IDEAS_SHOWN = 5          # Eran, 2026-09-29: "Top 5"
+
+
+def _touch_probability(now: float | None, level: float, vol_pct: float | None,
+                       days: int = 21) -> float | None:
+    """Chance the price touches `level` from `now` within `days` trading days,
+    driftless lognormal (reflection principle): 2 x (1 - N(z)). None when the
+    inputs are missing -- the caller then says it does not know."""
+    import math
+    if not now or not level or level <= 0 or not vol_pct:
+        return None
+    if now <= level:
+        return 1.0
+    sig = float(vol_pct) / 100.0 * math.sqrt(days / 252.0)
+    if sig <= 0:
+        return 0.0
+    z = math.log(float(now) / float(level)) / sig
+    return max(0.0, min(1.0, 2.0 * (1.0 - 0.5 * (1.0 + math.erf(z / math.sqrt(2.0))))))
+
+
+def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
+                    trigger_ils: float, *, nav: float = 0.0, mix: dict | None = None,
+                    target: dict | None = None, under_legs: list | None = None,
+                    ideas: list | None = None) -> dict:
+    """PR 83 -- cash above the trigger that a buy-back hold is keeping back.
+
+    Three answers (Eran, 2026-09-29): keep waiting; buy it back now; invest SOME
+    of it elsewhere and keep the rest -- with the places, the reasons, and a
+    suggested split that is argued, not 50/50.
+    """
+    from app.services import funding_service as _fund
+    mix, target = mix or {}, target or {}
+    tks = sorted(holds)
+    each = round(reserved_ils / len(tks), 2)
+
+    def _lvl(tk):
+        return float((holds.get(tk) or {}).get("level") or 0.0)
+
+    def _now(tk):
+        return (holds.get(tk) or {}).get("price_now")
+    names = ", ".join(tks)
+    waits = "; ".join(
+        (f"{tk} until it trades below {_lvl(tk):,.2f} (now {float(_now(tk)):,.2f})"
+         if _lvl(tk) > 0 and _now(tk) is not None else
+         f"{tk} until your drawdown guard re-arms")
+        for tk in tks)
+
+    # ---- where else, and why -------------------------------------------------
+    held_set = {t.upper() for t in tks}
+    dests: list[dict] = []
+    for leg in (under_legs or []):
+        tk = str(leg.get("ticker") or "").upper()
+        if tk and tk not in held_set:
+            cls = leg.get("asset_class") or classify(tk, None)
+            dests.append({"ticker": tk, "name": tk, "kind": "under_target", "asset_class": cls,
+                          "why": [leg.get("reason") or f"{cls} is under its target"],
+                          "max_ils": float(leg.get("amount_ils") or 0.0)})
+    seen = {d["ticker"] for d in dests} | held_set
+    for idea in sorted((ideas or []), key=lambda x: -float(x.get("score") or 0)):
+        tk = str(idea.get("ticker") or "").upper()
+        if not tk or tk in seen:
+            continue
+        cls = classify(tk, None)
+        dests.append({"ticker": tk, "name": idea.get("name") or tk, "kind": "idea",
+                      "asset_class": cls, "score": idea.get("score"),
+                      "why": (list(idea.get("reasons") or [])[:3]
+                              or [f"screener score {idea.get('score')}"]),
+                      "flags": list(idea.get("flags") or [])})
+        seen.add(tk)
+        if sum(1 for d in dests if d["kind"] == "idea") >= IDEAS_SHOWN:
+            break
+    for d in dests:
+        cls = d["asset_class"]
+        d["class_now_pct"] = round(float(mix.get(cls, 0.0)) * 100.0, 2)
+        d["class_target_pct"] = round(float(target.get(cls, 0.0)) * 100.0, 2)
+
+    # ---- the suggested split -------------------------------------------------
+    # Keep what the held ticker is LIKELY to need: the chance it touches its
+    # buy-back level within a month, from its own volatility. The rest is
+    # suggested elsewhere -- under-target holdings first, then the two
+    # best-scored ideas in proportion to their scores.
+    probs = [_touch_probability(_now(tk), _lvl(tk), (holds.get(tk) or {}).get("vol_20d_pct"))
+             for tk in tks]
+    known = [p for p in probs if p is not None]
+    p_touch = (sum(known) / len(known)) if known else None
+    keep_frac = p_touch if p_touch is not None else 0.5
+    keep = round(reserved_ils * keep_frac / 10.0) * 10.0
+    invest = max(0.0, round(reserved_ils - keep, 2))
+    left = invest
+    for d in dests:
+        d["suggested_ils"] = 0.0
+    for d in [x for x in dests if x["kind"] == "under_target"]:
+        amt = round(min(left, d["max_ils"]) / 10.0) * 10.0
+        if amt >= _fund.MIN_TRADE_ILS:
+            d["suggested_ils"] = amt
+            left = round(left - amt, 2)
+    top = [x for x in dests if x["kind"] == "idea"][:2]
+    tot = sum(float(x.get("score") or 1) for x in top) or 1.0
+    for d in top:
+        amt = round(left * float(d.get("score") or 1) / tot / 10.0) * 10.0
+        if amt >= _fund.MIN_TRADE_ILS:
+            d["suggested_ils"] = amt
+    suggested = round(sum(d["suggested_ils"] for d in dests), 2)
+    keep = round(reserved_ils - suggested, 2)
+    if p_touch is None:
+        split_why = ("No volatility measurement for " + names + " yet, so the suggestion keeps "
+                     "about half reserved.")
+    else:
+        split_why = (f"{names} would have to fall "
+                     + ", ".join(f"{(float(_now(tk)) / _lvl(tk) - 1) * 100:.1f}%"
+                                 for tk in tks if _lvl(tk) > 0 and _now(tk))
+                     + f" to reach your buy-back level; on its own volatility that has about a "
+                     f"{p_touch:.0%} chance within a month. So the suggestion keeps "
+                     f"{_ils(keep)} reserved for it and puts {_ils(suggested)} to work.")
+    over = [d for d in dests if d["class_now_pct"] >= d["class_target_pct"]]
+    honesty = (" Every class is already at or over its plan target (the reserve is the only "
+               "gap), so anything invested elsewhere moves the mix above plan — each place "
+               "shows by how much." if dests and len(over) == len(dests) else "")
+
+    return {
+        "id": _rid("held_cash", *tks), "dimension": "cash", "severity": "MEDIUM",
+        "title": f"{_ils(reserved_ils)} of your cash is waiting for {names}",
+        "why": (f"You hold {_ils(cash_ils)} in cash, above your {_ils(trigger_ils)} trigger. "
+                f"{_ils(reserved_ils)} of it is reserved: when you sold, the app agreed not to "
+                f"buy back {waits}. The Rules tab shows this as a buy-back rule you can edit."),
+        "action": ("Keep waiting, buy it back now (ends the hold), or invest part of it "
+                   "elsewhere and keep the rest reserved."),
+        "impact": split_why + honesty,
+        "how": ["Keep: the card goes quiet until the amount changes",
+                f"Buy back: ends the hold and buys {names} from cash at the live price",
+                f"Elsewhere: invests the amounts you set; the rest stays reserved and "
+                f"{names} stays on hold",
+                "No brokerage order is placed — mirror it at your broker"],
+        "est_amount": round(reserved_ils, 2), "actionable": True, "decision": True,
+        "apply": {"kind": "held_cash", "tickers": tks, "reserved_ils": round(reserved_ils, 2),
+                  "recommended": "redeploy" if suggested >= _fund.MIN_TRADE_ILS else "keep",
+                  "nav_ils": round(float(nav or 0.0), 2),
+                  "options": {"keep": {}, "buy": {"legs": [
+                      {"ticker": tk, "amount_ils": each} for tk in tks]},
+                      "redeploy": {"destinations": dests, "suggested_keep_ils": keep,
+                                   "split_why": split_why,
+                                   "touch_probability": p_touch,
+                                   "min_leg_ils": _fund.MIN_TRADE_ILS}},
+                  "holds": {tk: {"level": _lvl(tk), "price_now": _now(tk)} for tk in tks}},
+        "meta": {"tickers": tks}}
+
+
 def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         book_mix: dict | None = None,
                         name_caps: dict | None = None,
                         sleeve_targets: dict | None = None,
                         holds: dict | None = None,
-                        reserved_ils: float = 0.0) -> list[dict]:
+                        reserved_ils: float = 0.0,
+                        ideas: list | None = None,
+                        _inner: bool = False) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     PR 75 -- `holds` are tickers under a take-profit buy-back hold and
@@ -4054,6 +4250,26 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     _reserved = round(max(0.0, min(float(reserved_ils or 0.0), spendable)), 2)
     spendable = round(spendable - _reserved, 2)
     if spendable < _fund.MIN_TRADE_ILS:
+        # PR 83 -- ABOVE THE TRIGGER, BUT THE MONEY IS SPOKEN FOR. Eran,
+        # 2026-09-29: "I have more than 1500 in cash but still no
+        # recommendation card". Measured: ₪1,863 cash, ₪150 floor, and a SOXL
+        # buy-back hold (sold at 142.29 on a rule-vs-sleeve card, SOXL 147.86)
+        # parking the sleeve's 8.37% shortfall -- ₪1,969 -- in cash. So the
+        # spendable ₪1,713 was all reserved and this returned [] in silence.
+        # His answer: a card with a choice -- keep waiting, buy it back now, or
+        # invest it elsewhere.
+        if _reserved >= _fund.MIN_TRADE_ILS and _held and not _inner:
+            # Where ELSE the reserved cash could go, and why (Eran: "I want to
+            # see the other places the app recommends"): what is under target
+            # with the reserve ignored (the held tickers stay excluded), plus
+            # the screener's top ideas.
+            under = _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils, book_mix,
+                                        name_caps, sleeve_targets, holds, 0.0, None, True)
+            return [_held_cash_card(holds, _reserved, cash_ils, float(_trigger or 0.0),
+                                    nav=nav, mix=current_mix(rows)[0], target=book_mix or {},
+                                    under_legs=((under[0].get("apply") or {}).get("legs") or [])
+                                    if under else [],
+                                    ideas=ideas or [])]
         return []
 
     mix, _ = current_mix(rows)
@@ -5440,9 +5656,84 @@ async def _rule_vs_plan_decisions(session: AsyncSession, user: User, recs: list[
     return out
 
 
+async def _apply_held_cash(session: AsyncSession, user: User, rec: dict, spec: dict,
+                           choice: str | None, alloc: str | None = None) -> dict:
+    """PR 83 -- keep waiting / buy it back now / invest it elsewhere."""
+    from app.services import buyback_hold as _bh
+    if choice not in ("keep", "buy", "redeploy"):
+        return {"ok": False, "applied": "none", "needs_choice": True, "title": rec["title"],
+                "error": "Choose: keep waiting, buy it back now, or invest it elsewhere."}
+    if choice == "keep":
+        return {"applied": "keep_waiting", "title": rec["title"],
+                "note": "Kept. The cash stays reserved; nothing was bought."}
+    tks = [str(t).upper() for t in (spec.get("tickers") or [])]
+    if choice == "buy":
+        released = await _bh.release(session, user, tks)
+        await session.commit()
+        detail = await _apply_redeploy_cash(session, user, (spec.get("options") or {}).get("buy") or {})
+        return {"applied": "held_cash_buy", "title": rec["title"], "released": released,
+                **detail, "note": (f"Hold ended on {', '.join(released) or ', '.join(tks)}; bought "
+                                   + ", ".join(f"{b['shares']:g} {b['ticker']}" for b in detail["bought"])
+                                   + "." if detail.get("bought") else
+                                   f"Hold ended on {', '.join(tks)}; nothing could be bought "
+                                   f"({'; '.join(x['reason'] for x in detail.get('skipped', []))}).")}
+    # "redeploy" = ELSEWHERE, IN THE AMOUNTS YOU SET (Eran: "invest some of the
+    # money and hold some"). Only places the card offered; each leg at least the
+    # minimum trade; the total at most the reserve and the cash above the floor.
+    # The hold on the held ticker STAYS; what is not invested stays reserved.
+    from app.services import funding_service as _fund
+    from app.services.intake_service import get_cash
+    opt = (spec.get("options") or {}).get("redeploy") or {}
+    offered = {str(d.get("ticker")).upper(): d for d in (opt.get("destinations") or [])}
+    legs, bad = [], []
+    for part in [x for x in (alloc or "").split(",") if x.strip()]:
+        tk, _, amt = part.partition(":")
+        tk = tk.strip().upper()
+        try:
+            a_ils = round(float(amt), 2)
+        except ValueError:
+            bad.append(part)
+            continue
+        if a_ils <= 0:
+            continue
+        if tk not in offered:
+            bad.append(f"{tk} was not one of the offered places")
+            continue
+        if a_ils < _fund.MIN_TRADE_ILS:
+            bad.append(f"{tk} ₪{a_ils:,.0f} is under the ₪{_fund.MIN_TRADE_ILS:,.0f} minimum")
+            continue
+        legs.append({"ticker": tk, "amount_ils": a_ils,
+                     "asset_class": offered[tk].get("asset_class")})
+    if bad:
+        return {"ok": False, "applied": "none", "title": rec["title"], "error": "; ".join(bad)}
+    if not legs:
+        return {"ok": False, "applied": "none", "title": rec["title"],
+                "error": "Enter an amount for at least one place."}
+    total = round(sum(x["amount_ils"] for x in legs), 2)
+    plan = await get_plan(session, user)
+    cash = await get_cash(session, user)
+    rows = await list_positions(session, user)
+    from app.services.fx import book_nav_ils
+    spendable = _fund.spendable_cash(cash, book_nav_ils(rows),
+                                     getattr(plan, "objective", None), plan)
+    limit = round(min(float(spec.get("reserved_ils") or 0.0), spendable), 2)
+    if total > limit + 0.5:
+        return {"ok": False, "applied": "none", "title": rec["title"],
+                "error": f"₪{total:,.0f} is more than the ₪{limit:,.0f} that can be invested."}
+    detail = await _apply_redeploy_cash(session, user, {"legs": legs})
+    kept = round(float(spec.get("reserved_ils") or 0.0) - sum(
+        b["amount_ils"] for b in detail.get("bought", [])), 2)
+    return {"applied": "held_cash_redeploy", "title": rec["title"], **detail,
+            "kept_reserved_ils": kept,
+            "note": ("Invested: " + ", ".join(f"₪{b['amount_ils']:,.0f} {b['ticker']}"
+                                              for b in detail.get("bought", []))
+                     + f". ₪{kept:,.0f} stays reserved for {', '.join(spec.get('tickers') or [])}.")}
+
+
 async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                                choice: str | None = None,
-                               level: float | None = None) -> dict | None:
+                               level: float | None = None,
+                               alloc: str | None = None) -> dict | None:
     """Accept = apply the recommendation to holdings/plan immediately.
 
     Sales don't just delete holdings — the net-of-tax proceeds are credited to a
@@ -5465,6 +5756,8 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     spec = rec.get("apply") or {"kind": "none"}
     kind = spec.get("kind")
     _sleeve_after = None
+    if kind == "held_cash":
+        return await _apply_held_cash(session, user, rec, spec, choice, alloc)
     if kind == "rule_vs_sleeve":
         opts = spec.get("options") or {}
         if choice not in ("sell", "keep"):

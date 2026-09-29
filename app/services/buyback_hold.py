@@ -40,23 +40,84 @@ def _key(user: User) -> str:
     return f"buyback_holds:{user.email}"[:80]
 
 
-async def load(session: AsyncSession, user: User) -> dict[str, dict]:
+# PR 83 -- A HOLD IS A RULE YOU CAN SEE. Eran, 2026-09-29: "I don't see any rule
+# created to hold reserve money for buy-back in different price". Holds lived
+# in `kv_settings`, invisible and uneditable. They are now `trading_rules` rows
+# of type `buy_back` (level = the buy-back price), so the Rules tab lists them,
+# the edit button moves the price and the delete button ends the hold. The KV
+# blob is migrated into rows the first time it is read. The API below is
+# unchanged, so every buyer that reads holds is untouched.
+BUY_BACK = "buy_back"
+
+
+async def _rows(session: AsyncSession, user: User) -> list:
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+    return list((await session.scalars(select(TradingRule).where(
+        TradingRule.subject == user.email, TradingRule.rule_type == BUY_BACK,
+        TradingRule.active.is_(True)))).all())
+
+
+async def _migrate_kv(session: AsyncSession, user: User) -> None:
     row = await session.get(KVSetting, _key(user))
     if not row:
-        return {}
+        return
     try:
         data = json.loads(row.value)
     except Exception:  # noqa: BLE001
-        return {}
-    return {str(k).upper(): v for k, v in data.items()} if isinstance(data, dict) else {}
+        data = {}
+    have = {r.ticker.upper() for r in await _rows(session, user)}
+    from app.models.tables import TradingRule
+    for tk, v in (data.items() if isinstance(data, dict) else []):
+        if str(tk).upper() in have or not isinstance(v, dict):
+            continue
+        session.add(TradingRule(subject=user.email, ticker=str(tk).upper(), rule_type=BUY_BACK,
+                                mode="price", level=float(v.get("level") or 0.0),
+                                params=_params_of(v), note=_note_for(str(tk).upper(), v)))
+    await session.delete(row)
+    await session.commit()
+
+
+def _params_of(v: dict) -> dict:
+    return {k: v.get(k) for k in ("shares", "strategy_id", "rule_id", "until_rule", "at")
+            if v.get(k) is not None}
+
+
+def _note_for(tk: str, v: dict) -> str:
+    if v.get("until_rule"):
+        return f"Holds {tk} re-buys until your drawdown guard re-arms"
+    return f"Holds {tk} re-buys until it trades below {float(v.get('level') or 0):,.2f}"
+
+
+async def load(session: AsyncSession, user: User) -> dict[str, dict]:
+    await _migrate_kv(session, user)
+    out: dict[str, dict] = {}
+    for r in await _rows(session, user):
+        p = r.params if isinstance(r.params, dict) else {}
+        out[r.ticker.upper()] = {"level": float(r.level or 0.0), **p,
+                                 "hold_rule_id": str(r.id)}
+    return out
 
 
 async def _save(session: AsyncSession, user: User, data: dict) -> None:
-    row = await session.get(KVSetting, _key(user))
-    if row is None:
-        session.add(KVSetting(key=_key(user), value=json.dumps(data)))
-    else:
-        row.value = json.dumps(data)
+    from app.models.tables import TradingRule
+    rows = {r.ticker.upper(): r for r in await _rows(session, user)}
+    for tk, r in rows.items():
+        if tk not in data:
+            await session.delete(r)
+    for tk, v in data.items():
+        r = rows.get(tk.upper())
+        if r is None:
+            session.add(TradingRule(subject=user.email, ticker=tk.upper(), rule_type=BUY_BACK,
+                                    mode="price", level=float(v.get("level") or 0.0),
+                                    params=_params_of(v), note=_note_for(tk.upper(), v)))
+        else:
+            r.level = float(v.get("level") or 0.0)
+            r.params = _params_of(v)
+            r.note = _note_for(tk.upper(), v)
+            r.triggered = False
+    await session.flush()
 
 
 async def record(session: AsyncSession, user: User, *, ticker: str, sold_price: float,
@@ -87,6 +148,17 @@ async def record(session: AsyncSession, user: User, *, ticker: str, sold_price: 
                 "at": datetime.now(timezone.utc).isoformat()}
     await _save(session, user, data)
     return data[tk]
+
+
+async def release(session: AsyncSession, user: User, tickers) -> list[str]:
+    """End the holds on these tickers now (PR 83: you chose to buy back or
+    invest the reserved cash elsewhere)."""
+    want = {str(t).upper() for t in (tickers or [])}
+    holds = await load(session, user)
+    gone = sorted(k for k in holds if k in want)
+    if gone:
+        await _save(session, user, {k: v for k, v in holds.items() if k not in gone})
+    return gone
 
 
 async def release_for_rule(session: AsyncSession, user: User, rule_id: str) -> list[str]:
@@ -121,17 +193,11 @@ def active(holds: dict[str, dict], rows) -> dict[str, dict]:
 
 
 async def release_retreated(session: AsyncSession, user: User, rows) -> list[str]:
-    """Drop every hold whose price has fallen below the sale price.
-    Called from the Today build, which already writes; `active` alone is
-    read-only and already ignores a retreated hold."""
-    holds = await load(session, user)
-    if not holds:
-        return []
-    still = active(holds, rows)
-    gone = sorted(set(holds) - set(still))
-    if gone:
-        await _save(session, user, {k: v for k, v in holds.items() if k in still})
-    return gone
+    """PR 83: a no-op. A retreated hold is no longer deleted in silence: its
+    `buy_back` rule FIRES (the 30-minute evaluator), which pushes an alert and a
+    buy-back card (Eran's decision). `active` already ignores a retreated hold,
+    so the reserve is freed the moment the price is below the level."""
+    return []
 
 
 def weights_of(rows, nav: float) -> dict[str, float]:

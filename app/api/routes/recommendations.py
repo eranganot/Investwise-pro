@@ -42,8 +42,9 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
 
 @router.post("/recommendations/{rec_id}/accept")
 async def accept_recommendation(rec_id: str, state: CardState | None = None,
-                                choice: str | None = Query(None, pattern="^(sell|keep)$"),
+                                choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy)$"),
                                 level: float | None = Query(None, gt=0),
+                                alloc: str | None = Query(None, max_length=600),
                                 session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
     """Apply a recommendation to the portfolio/plan immediately.
@@ -51,7 +52,8 @@ async def accept_recommendation(rec_id: str, state: CardState | None = None,
     `choice` (and, for "keep", an optional `level`) answer a decision card --
     a trading rule that fights a sleeve target. Other cards ignore both.
     """
-    result = await apply_recommendation(session, user, rec_id, choice=choice, level=level)
+    result = await apply_recommendation(session, user, rec_id, choice=choice, level=level,
+                                        alloc=alloc)
     if result is None:
         raise HTTPException(status_code=404, detail="Recommendation not found (it may have changed).")
     # A decision that was not taken is not done. Marking the card complete here

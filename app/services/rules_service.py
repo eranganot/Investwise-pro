@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
               "price_below", "buy_dip", "max_weight", "strategy_signal",
               # PR 81: the advanced rules (see app/services/advanced_rules.py)
-              "rebalance_band", "profit_protect", "trend_break", "drawdown_guard"}
+              "rebalance_band", "profit_protect", "trend_break", "drawdown_guard",
+              # PR 83: a buy-back hold (buyback_hold.py) -- visible and editable
+              "buy_back"}
 
 # An entry/exit rule is a SUBSCRIPTION to one strategy's own signal, not a
 # reimplementation of it.
@@ -702,7 +704,8 @@ async def list_events(session: AsyncSession, user: User, limit: int = 50) -> lis
 # A fired stop-loss / take-profit / trailing stop / buy-dip is a ONE-SHOT order:
 # once you've dealt with it, it's spent. A max-weight cap or a price alert is a
 # standing condition, so it re-arms instead.
-_ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip", "profit_protect"}
+_ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip", "profit_protect",
+             "buy_back"}
 
 # The outcomes that mean "the slice was sold". `executed` is what Accept sends;
 # `accepted` is kept for any older caller.
@@ -1305,6 +1308,17 @@ def _adv_status(r, pos: dict) -> str | None:
         edge = (tr.get(sig) or {}).get("edge")
         return (f"{'50/200' if sig == 'long' else '20/50'}-day trend {m.get(sig)}"
                 f" · selling on it {'has' if edge else 'has not'} beaten holding")
+    if r.rule_type == "buy_back":
+        if float(r.level or 0) <= 0:
+            return "holds re-buys until your drawdown guard re-arms"
+        cur = float(pos.get("price") or 0)
+        t = pos.get("plan_target_pct")
+        held = ""
+        if t is not None and pos.get("nav"):
+            amt = max(0.0, (float(t) - float(pos.get("weight_pct") or 0)) / 100.0 * float(pos["nav"]))
+            held = f"₪{amt:,.0f} of cash waiting · "
+        gap = (cur / float(r.level) - 1.0) * 100.0 if r.level else 0.0
+        return f"{held}{cur:,.2f} now ({gap:+.1f}% vs the level)"
     if r.rule_type == "drawdown_guard":
         b = pos.get("book") or {}
         if b.get("dd_pct") is None:

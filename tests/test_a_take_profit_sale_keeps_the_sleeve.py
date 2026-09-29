@@ -110,7 +110,9 @@ async def test_after_the_sale_nothing_buys_it_back_until_the_price_retreats(monk
                 if p.ticker == "SOXL":
                     p.current_price = 151.0
             await s.commit()
-            await rr.build_recommendations(s, user)
+            from app.services import rules_service as _rs
+            fired = await _rs.evaluate_user(s, user)
+            retreat_build = await rr.build_recommendations(s, user)
         # A FRESH session: the release must be COMMITTED (review, CONFIRMED:
         # the build never committed, so a released hold came back).
         async with Session() as s2:
@@ -126,7 +128,16 @@ async def test_after_the_sale_nothing_buys_it_back_until_the_price_retreats(monk
                   if (r.get("apply") or {}).get("kind") == "redeploy_cash"]
     for c in cash_cards:
         assert any("stays in cash for SOXL" in h for h in c["how"]), c["how"]
-    assert after_retreat == {}, "a retreat releases the hold"
+    # PR 83 (Eran: "push + buy-back card"): the hold is a buy_back RULE now. A
+    # retreat FIRES it -- it is not dropped silently -- and exactly ONE card buys
+    # SOXL back (the rule's), not the rule's card plus the cash card again.
+    assert [f for f in fired if f["rule_type"] == "buy_back"], fired
+    soxl = _buys_soxl(retreat_build)
+    assert len(soxl) == 1, soxl
+    assert "SOXL" in after_retreat, "the hold ends when he acts on the card, not before"
+    for c in retreat_build["recommendations"] + retreat_build.get("more_recommendations", []):
+        if (c.get("apply") or {}).get("kind") == "redeploy_cash" and not c["id"].startswith("rule_"):
+            assert "SOXL" not in {x["ticker"] for x in c["apply"]["legs"]}, c["apply"]["legs"]
 
 
 @pytest.mark.asyncio

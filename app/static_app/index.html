@@ -156,6 +156,10 @@
   .dopt .dw{color:#9fe3c4;font-size:12px;line-height:1.45}
   .dopt .tag{align-self:flex-start;font-size:11px;font-weight:700;color:var(--green);background:#123024;border-radius:999px;padding:2px 9px}
   .dopt .dgo{margin-top:auto;padding-top:4px;display:flex;gap:8px;align-items:stretch}
+  .hcrow{border-top:1px solid var(--line);padding:8px 0;display:flex;flex-direction:column;gap:4px;min-width:0}
+  .hcname{font-size:13px;min-width:0;overflow-wrap:anywhere}
+  .hcamt{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .hcamt input{width:96px}
   .dopt .dgo button{flex:1;padding:9px 12px;border-radius:9px;font-weight:700;font-size:13px;cursor:pointer;border:1px solid #1f6f4a;background:transparent;color:var(--green);white-space:nowrap}
   .dopt .dgo button:hover{background:#0f2619}
   .dopt.rec .dgo button{background:var(--green);color:#05261a;border-color:var(--green)}
@@ -1270,6 +1274,7 @@ function _applyMsg(j){
 // highlighted, still a click), and the Sell no longer changes the sleeve.
 function decisionBlock(o){
   const ap=o.apply||{};
+  if(ap.kind==="held_cash"&&ap.options) return heldCashBlock(o);
   if(!(ap.kind==="rule_vs_sleeve"&&ap.options)) return "";
   const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
   const sh=(s.apply||{}).shares, tk=ap.ticker||"", r=ap.recommended||"sell";
@@ -1291,8 +1296,71 @@ function decisionBlock(o){
         <button onclick="decideRule('${o.id}','keep')">Keep &amp; move rule</button></div></div>
   </div>`;
 }
+// PR 83: cash above your trigger that a buy-back hold is keeping back. Three
+// answers (Eran, 2026-09-29): keep waiting / buy it back now / invest SOME of it
+// elsewhere -- with the places, why, what each does to the mix, a suggested
+// split, and amounts you can change. Whatever is not invested stays reserved.
+function heldCashBlock(o){
+  const ap=o.apply||{}, tks=(ap.tickers||[]).join(", "), r=ap.recommended||"keep";
+  const rd=(ap.options||{}).redeploy||{}, ds=rd.destinations||[], id=o.id;
+  (window.__cards=window.__cards||{})[id]=o;
+  const tag=c=>r===c?`<span class="tag">Recommended</span>`:"";
+  const tile=(c,t,d,btn)=>`<div class="dopt${r===c?" rec":""}">${tag(c)}<div class="dt">${t}</div><div class="dd">${d}</div><div class="dgo"><button onclick="decideCash('${id}','${c}')">${btn}</button></div></div>`;
+  const rows=ds.map((d,i)=>`<div class="hcrow">
+      <div class="hcname"><b>${esc(d.ticker)}</b>${d.name&&d.name!==d.ticker?` <span class="muted">${esc(d.name)}</span>`:""}
+        <span class="muted"> · ${d.kind==="idea"?`screener idea${d.score!=null?" "+Number(d.score).toFixed(0):""}`:"under target"} · ${esc(d.asset_class||"")}</span></div>
+      <div class="dd">${(d.why||[]).map(esc).join(" · ")}</div>
+      <div class="hcamt"><label>₪ <input type="number" min="0" step="10" id="hc_${id}_${i}" value="${d.suggested_ils||""}" placeholder="0" oninput="hcUpdate('${id}')"/></label>
+        <span class="dd" id="hcmix_${id}_${i}"></span></div></div>`).join("");
+  const elsewhere=`<div class="dopt${r==="redeploy"?" rec":""}">${tag("redeploy")}
+      <div class="dt">Invest part of it elsewhere</div>
+      <div class="dd">${esc(rd.split_why||"")}</div>
+      ${ds.length?rows:`<div class="dd">Nothing else is under target and the screener has no ideas right now.</div>`}
+      <div class="dd" id="hctot_${id}"></div>
+      <div class="dgo"><button onclick="decideCash('${id}','redeploy')" ${ds.length?"":"disabled"}>Invest these amounts</button></div></div>`;
+  setTimeout(()=>hcUpdate(id),0);
+  return `<div class="dec">
+    ${tile("keep","Keep waiting",`The cash stays reserved for ${esc(tks)}. Nothing is bought.`,"Keep waiting")}
+    ${tile("buy",`Buy ${esc(tks)} back now`,`Ends the hold and buys ~${ils(ap.reserved_ils||0)} of ${esc(tks)} from cash.`,"Buy back")}
+    ${elsewhere}
+  </div>`;
+}
+function _hcCard(id){ return (window.__cards||{})[id]||null; }
+function hcUpdate(id){
+  const o=_hcCard(id); if(!o) return;
+  const ap=o.apply||{}, rd=(ap.options||{}).redeploy||{}, ds=rd.destinations||[], nav=ap.nav_ils||0;
+  let tot=0;
+  ds.forEach((d,i)=>{const el=$(`hc_${id}_${i}`); const v=Math.max(0,parseFloat(el&&el.value)||0); tot+=v;
+    const m=$(`hcmix_${id}_${i}`); if(m){
+      if(!v){m.textContent="";return;}
+      const after=d.class_now_pct+(nav?v/nav*100:0);
+      m.textContent=`${d.asset_class} ${d.class_now_pct.toFixed(1)}% → ${after.toFixed(1)}% (plan ${d.class_target_pct.toFixed(1)}%)`+(v&&v<(rd.min_leg_ils||250)?` · under the ₪${rd.min_leg_ils||250} minimum`:"");}});
+  const t=$(`hctot_${id}`); if(t){const keep=(ap.reserved_ils||0)-tot;
+    t.innerHTML=keep<-0.5?`<span class="bad">₪${tot.toFixed(0)} is more than the ₪${(ap.reserved_ils||0).toFixed(0)} reserved</span>`
+      :`Invest <b>₪${tot.toFixed(0)}</b> · keep <b>₪${keep.toFixed(0)}</b> reserved for ${esc((ap.tickers||[]).join(", "))}`;}
+}
+async function decideCash(id,choice){
+  let q=`choice=${choice}`;
+  const msg={keep:"Keep the cash reserved?",
+    buy:"End the hold and buy it back from cash now?\n\nThis updates your InvestWise book only. No brokerage order is placed.",
+    redeploy:"Invest these amounts? The rest stays reserved and the hold stays on.\n\nThis updates your InvestWise book only. No brokerage order is placed."}[choice];
+  if(choice==="redeploy"){
+    const o=_hcCard(id), ds=(((o||{}).apply||{}).options||{}).redeploy?.destinations||[];
+    const parts=ds.map((d,i)=>{const v=parseFloat(($(`hc_${id}_${i}`)||{}).value)||0;return v>0?`${d.ticker}:${v}`:null;}).filter(Boolean);
+    if(!parts.length){alert("Enter an amount for at least one place.");return;}
+    q+=`&alloc=${encodeURIComponent(parts.join(","))}`;
+  }
+  if(!confirm(msg))return;
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept?${q}`,_statePost(_cardState(id)));
+    const j=await r.json().catch(()=>({}));
+    if(r.status===404){alert("That no longer applies, so I've removed it.");HMAP={};loadToday();return;}
+    if(!r.ok){alert(j.detail||"Not applied.");return;}
+    alert(j.note||_applyMsg(j)); HMAP={};loadToday();
+  }catch(e){alert(e.message||e);}
+}
 function actBtn(o){
   const ap=o.apply||{};
+  if(ap.kind==="held_cash"&&ap.options) return "";
   if(ap.kind==="rule_vs_sleeve"&&ap.options) return "";
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
@@ -1456,7 +1524,8 @@ const RULE_META={
   rebalance_band:{label:"Band",cls:"blue",icon:"⚖️"},
   profit_protect:{label:"Protect",cls:"green",icon:"🛡️"},
   trend_break:{label:"Trend break",cls:"amber",icon:"📉"},
-  drawdown_guard:{label:"Drawdown",cls:"red",icon:"🧯"}
+  drawdown_guard:{label:"Drawdown",cls:"red",icon:"🧯"},
+  buy_back:{label:"Buy back below",cls:"blue",icon:"↩️"}
 };
 const _DCOLOR={red:"var(--red)",green:"var(--green)",blue:"#60a5fa",amber:"var(--amber)"};
 function _ruleStatus(x){return x.triggered?"triggered":(x.active?"armed":"paused");}
@@ -1539,12 +1608,14 @@ function renderRules(){
         : x.rule_type==="rebalance_band"?`${m.label} ±${x.level}`
         : x.rule_type==="profit_protect"?`${m.label} ${x.level}% from +${((x.params||{}).activation_pct)||20}%`
         : x.rule_type==="trend_break"?`${m.label} ${Number(x.level)>=100?"50/200":"20/50"}`
-        : x.rule_type==="drawdown_guard"?`${m.label} ${x.level}%`:m.label;
+        : x.rule_type==="drawdown_guard"?`${m.label} ${x.level}%`
+        : x.rule_type==="buy_back"?(Number(x.level)>0?`${m.label} ${Number(x.level).toFixed(2)}`:"Re-buys on hold"):m.label;
       // A weight cap's target is 15 PERCENT OF THE BOOK, and `toFixed(2)` on it
       // renders "15.00" -- indistinguishable from a price, on a row that sits
       // directly under a stop-loss showing "65.70". Same units bug as the
       // triggered branch below, one line earlier.
-      const tgt=(x.unit==="pct_drawdown") ? `${Number(x.level)}% drawdown`
+      const tgt=(x.rule_type==="buy_back") ? (Number(x.level)>0?`buy back < ${Number(x.level).toFixed(2)}`:"until the guard re-arms")
+        : (x.unit==="pct_drawdown") ? `${Number(x.level)}% drawdown`
         : (x.unit==="trend") ? (Number(x.level)>=100?"50/200-day":"20/50-day")
         : (x.unit==="pct_of_portfolio")
         ? `${Number(x.target!=null?x.target:x.level).toFixed(0)}% of book`

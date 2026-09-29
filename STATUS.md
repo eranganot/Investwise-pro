@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 82, Rules layout + drawdown measurement). Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 83, a card for cash a hold keeps back; holds are buy-back rules). Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,56 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 83 — cash above the trigger that a buy-back hold keeps back gets a card
+
+_2026-09-29 21:46, Eran: "I have more than 1500 in cash but still no recommendation card on how to
+utilize it". Decision: a card with a choice — keep waiting / buy it back now / invest it elsewhere._
+
+**Root cause (PROVEN from the live payload).** Cash ₪1,863; plan `cash_target_ils` 150,
+`cash_redeploy_at_ils` 1,500; `/recommendations.book_target.held_back == {"SOXL": 0.0837}` —
+the SOXL sleeve's shortfall (8.37% × NAV = ₪1,969) parked in the Cash target by the PR 75 buy-back
+hold created when he chose SELL on the SOXL rule-vs-sleeve card (04:53, 142.29; SOXL now 147.86,
+so the hold is active). `_redeploy_cash_recs`: spendable 1,863 − 150 = 1,713, reserve
+min(1,969, 1,713) = 1,713, left 0 < `MIN_TRADE_ILS` → `return []`. Working as designed, silently.
+**Ruled out:** the trigger (1,863 > 1,500); stale prices (SOXL quote 148.23 live, positions
+re-priced); dismissal/mute (`hidden_cards` holds no cash card; `dismissed_count` 0); a failed
+agent (`degraded: []`).
+**Fix (first cut).** When the reserve eats the spendable cash, `_held_cash_card` returns a
+decision card (`kind: held_cash`): **keep** (nothing changes), **buy** (`buyback_hold.release` + buy
+the held ticker from cash), **redeploy** (invest elsewhere; the hold stays).
+
+**Revision before deploy (Eran, 2026-09-29): "I don't see any rule created to hold reserve money
+for buy-back"; the elsewhere button must show WHERE and WHY, allow investing some and holding some,
+and be actionable.** Answers: push + buy-back card below the level; top 5 ideas; suggest a split
+that need not be 50/50.
+- **A hold is now a rule** (`rule_type: buy_back`, level = the buy-back price, params
+  `shares/strategy_id/rule_id/until_rule/at`). Visible in Rules ("↩️ Buy back below 142.29",
+  status "₪X of cash waiting · price now (+x% vs the level)"), editable with ✏️ (PATCH moves the
+  level the hold uses), deletable (ends the hold). The old `kv_settings buyback_holds:<email>` blob
+  is migrated into rows on first read and the KV row deleted (`buyback_hold._migrate_kv`), so the
+  live SOXL 142.29 hold appears as a rule after deploy with no manual step.
+- **It fires** (evaluator, every 30 min) when the price is BELOW the level: push + a buy-back card
+  (`advanced_rules._buy_back_card`, `redeploy_cash` legs sized to the plan target, capped by spendable
+  cash). Dealing with it (one-shot) ends the hold. `release_retreated` is retired: the rule is the
+  mechanism. Below the level the hold no longer cuts the sleeve, so the sleeve top-up and the cash
+  card would buy the same ticker too; the fired rule's card owns it (other buys of that ticker are
+  dropped, cash-card legs for it stripped). Caught by updating
+  `test_after_the_sale_nothing_buys_it_back_until_the_price_retreats` (it asserted the old silent
+  release; now: the rule fires, exactly one card buys SOXL, the hold ends only when he acts).
+- **Invest elsewhere** lists destinations: under-target classes first, then the top 5 screener ideas
+  by score (the held ticker excluded), each with its reasons and class now → target. A suggested
+  split: keep = reserved × P(price touches the buy-back level within ~21 trading days)
+  (`_touch_probability`, driftless lognormal reflection 2(1−N(z)), σ = the holding's 20-day vol;
+  0.5 if unknown); invest the rest across under-target legs, then the top 2 ideas by score.
+  Every amount is editable; the card recomputes each class's after-mix and the kept total live.
+  Accept sends `alloc=TK:amt,...` — every ticker must be one offered, each ≥ `MIN_TRADE_ILS`, total ≤
+  min(reserved, spendable) — executes only those buys and leaves the rest reserved with the hold on.
+  If every class is already at or over target, the card says so (ideas would add to an over-weight class).
+Tests: `tests/test_held_cash_has_a_card.py` (7): the live shape; buy ends the hold; keep changes
+nothing; elsewhere lists places + reasons and invests only the amount set (unoffered ticker refused);
+touch probability; the hold is a visible, editable rule that fires below its level, yields a
+buy-back card, and ends on resolve/delete; KV → rule migration.
 
 ## PR 82 — the Rules tab pushed the page wider than the phone; the drawdown guard fired at 5.3%
 

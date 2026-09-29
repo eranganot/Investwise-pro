@@ -38,7 +38,9 @@ import math
 logger = logging.getLogger(__name__)
 
 BOOK = "__BOOK__"
-ADV_TYPES = {"rebalance_band", "profit_protect", "trend_break", "drawdown_guard"}
+ADV_TYPES = {"rebalance_band", "profit_protect", "trend_break", "drawdown_guard",
+             # PR 83: a buy-back hold, as a rule you can see and edit
+             "buy_back"}
 # Protective exits: never negotiated against a plan target (PR 79 pass) and
 # never suppressed by the sleeve-at-target contradiction rule.
 PROTECTIVE = {"stop_loss", "trailing_stop", "profit_protect", "trend_break", "drawdown_guard"}
@@ -91,6 +93,10 @@ def validate(rule_type: str, level: float | None, params: dict | None) -> tuple[
         if not 2 <= lvl <= 60:
             raise ValueError("a drawdown guard is between 2% and 60%")
         p = {}
+    elif rule_type == "buy_back":
+        if lvl < 0:
+            raise ValueError("a buy-back level is a price, zero or above")
+        return lvl, (p or None)
     return lvl, (p or None)
 
 
@@ -144,6 +150,13 @@ def evaluate(rule, pos: dict) -> tuple[bool, str, str, float | None]:
             return False, "", "", None
         return (m.get(sig) == "down", f"📉 {tk}: the {_SIG_WORDS[sig]}",
                 f"Your trend-break rule on {tk} fired: the {_SIG_WORDS[sig]}.", None)
+    if rt == "buy_back":
+        # Level 0 = "until the drawdown guard re-arms": never a price event.
+        if L <= 0 or cur <= 0:
+            return False, "", "", (L or None)
+        return (cur < L, f"↩️ {tk} fell below your buy-back level {L:,.2f}",
+                (f"{tk} is {cur:,.2f}, under the {L:,.2f} you set when you sold. The cash "
+                 f"held for it is free — buy it back?"), L)
     if rt == "drawdown_guard":
         b = pos.get("book") or {}
         dd = b.get("dd_pct")
@@ -268,7 +281,7 @@ async def augment(session, user, idx: dict, nav: float, rules) -> dict:
         return idx
     for p in idx.values():
         p.setdefault("nav", nav)
-    if "rebalance_band" in types:
+    if types & {"rebalance_band", "buy_back"}:
         try:
             from app.services.recommendations import plan_ticker_targets
             tg = await plan_ticker_targets(session, user)
@@ -369,6 +382,11 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
                     c = _drawdown_card(r, pos, idx, nav)
                     if c:
                         out.append(c)
+                elif r.triggered and r.rule_type == "buy_back":
+                    c = await _buy_back_card(session, user, r, pos, nav=nav, cash=cash,
+                                             objective=objective, plan=plan)
+                    if c:
+                        out.append(c)
                 elif r.triggered and r.rule_type == "trend_break" and not execution_plan(r, pos):
                     c = _trend_stop_card(r, pos)
                     if c:
@@ -426,6 +444,42 @@ def _band_buy_card(rule, pos, *, rows, snap, plan, objective, cap, cash, book_ta
                     + ["No brokerage order is placed — mirror it at your broker"]),
             "est_amount": buy.amount_ils,
             "apply": {**buy.apply_spec, "rule_id": str(rule.id)}}
+
+
+async def _buy_back_card(session, user, rule, pos, *, nav, cash, objective, plan) -> dict | None:
+    """Eran, 2026-09-29: when the price drops under the buy-back level, "push +
+    buy-back card". Sized to the plan: target minus today's weight, paid from
+    cash above the floor only."""
+    from app.services import funding_service as fs
+    from app.services.allocation_mix import classify
+    from app.services.recommendations import plan_ticker_targets
+    tk = rule.ticker.upper()
+    t = float((await plan_ticker_targets(session, user)).get(tk) or 0.0) * 100.0
+    w = float(pos.get("weight_pct") or 0.0)
+    want = max(0.0, (t - w) / 100.0 * float(nav or 0.0))
+    spend = fs.spendable_cash(float(cash or 0.0), float(nav or 0.0), objective, plan)
+    amt = round(min(want, spend), 2)
+    rid = f"rule_{str(rule.id)[:8]}"
+    head = {"id": rid, "dimension": "rule", "severity": "HIGH", "rule_id": str(rule.id),
+            "title": f"↩️ {tk} is below your buy-back level {float(rule.level):,.2f}",
+            "meta": {"rule_type": "buy_back", "ticker": tk}}
+    if amt < fs.MIN_TRADE_ILS:
+        return {**head, "action": (f"The hold on {tk} has ended, but there is no cash above your "
+                                   f"floor to buy it back with (plan wants ~₪{want:,.0f})."),
+                "apply": {"kind": "none", "rule_id": str(rule.id)}, "est_amount": None}
+    cls = classify(tk, pos.get("market") or "", (pos.get("meta") or {}).get("asset_class"))
+    return {**head,
+            "why": (f"You sold {tk} and asked the app not to buy it back until it traded below "
+                    f"{float(rule.level):,.2f}. It is now {float(pos.get('price') or 0):,.2f}. "
+                    f"Your plan targets {t:.1f}% in {tk}; you hold {w:.1f}%."),
+            "action": f"Buy back ~₪{amt:,.0f} of {tk} from cash.",
+            "how": [f"Accept buys ~₪{amt:,.0f} of {tk} at the live price from cash",
+                    "The hold ends either way (Ignore ends it without buying)",
+                    "No brokerage order is placed — mirror it at your broker"],
+            "est_amount": amt, "actionable": True,
+            "apply": {"kind": "redeploy_cash", "rule_id": str(rule.id), "legs": [
+                {"ticker": tk, "amount_ils": amt, "asset_class": cls,
+                 "reason": f"buy-back level {float(rule.level):,.2f} reached"}]}}
 
 
 def _drawdown_card(rule, pos, idx, nav) -> dict | None:
