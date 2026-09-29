@@ -157,6 +157,18 @@ if ($hc.Count -eq 0) {
     if ($sumDiff -lt 1.0) { Ok "invest $sug + keep $($rd.suggested_keep_ils) = reserved $($ap.reserved_ils)" }
     else { Bad "invest $sug + keep $($rd.suggested_keep_ils) != reserved $($ap.reserved_ils)" }
     if ($rd.split_why) { Ok "the split is argued" } else { Bad "no split_why" }
+    # PR 85: the elsewhere tile is ALWAYS pre-filled when a place can take the minimum
+    # (Eran: "I asked you to suggest the amounts"); the touch chance only picks the option.
+    $canTake = @($dests | Where-Object { ($_.kind -eq 'idea') -or ((Num $_.max_ils) -ge $min) })
+    if ($canTake.Count -gt 0 -and (Num $ap.reserved_ils) -ge (2 * $min)) {
+        if ($sug -ge $min) { Ok "the elsewhere tile is pre-filled (invest $sug)" }
+        else { Bad "the elsewhere tile suggests nothing (every box 0) - the PR 84 regression" }
+    }
+    if ($null -ne $rd.touch_probability) {
+        $wantRec = 'redeploy'; if ([double]$rd.touch_probability -ge 0.5) { $wantRec = 'keep' }
+        if ($ap.recommended -eq $wantRec) { Ok ("recommended '{0}' fits a {1:P0} chance of reaching the level" -f $ap.recommended, [double]$rd.touch_probability) }
+        else { Bad "recommended '$($ap.recommended)' but the chance is $($rd.touch_probability)" }
+    }
     Note "split: $($rd.split_why)"
     Note "impact: $($c.impact)"
     $buyLegs = @($ap.options.buy.legs)

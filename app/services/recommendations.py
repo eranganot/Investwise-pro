@@ -4125,43 +4125,61 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
                                else "keeps the plan's mix")
 
     # ---- the suggested split -------------------------------------------------
-    # Keep what the held ticker is LIKELY to need: the chance it touches its
-    # buy-back level within a month, from its own volatility. The rest is
-    # suggested elsewhere -- under-target holdings first, then the two
-    # best-scored ideas in proportion to their scores.
+    # Eran, 2026-09-29 23:42 ("I asked you to suggest the amounts"): the chance
+    # the held ticker touches its buy-back level decides which option the card
+    # RECOMMENDS -- it must not zero the elsewhere amounts (PR 84 kept
+    # reserved x 92% and left ~130, under the 250 minimum, so every box said 0).
+    # His rule: plan legs first, up to their limits (they keep the mix on plan);
+    # then HALF of what is left across the two best-scored ideas, by score; the
+    # rest stays reserved.
     probs = [_touch_probability(_now(tk), _lvl(tk), (holds.get(tk) or {}).get("vol_20d_pct"))
              for tk in tks]
     known = [p for p in probs if p is not None]
     p_touch = (sum(known) / len(known)) if known else None
-    keep_frac = p_touch if p_touch is not None else 0.5
-    keep = round(reserved_ils * keep_frac / 10.0) * 10.0
-    invest = max(0.0, round(reserved_ils - keep, 2))
-    left = invest
+    _min = float(_fund.MIN_TRADE_ILS)
+    left = float(reserved_ils)
     for d in dests:
         d["suggested_ils"] = 0.0
     for d in [x for x in dests if x["kind"] == "plan"]:
         amt = math.floor(min(left, d["max_ils"]) / 10.0) * 10.0
-        if amt >= _fund.MIN_TRADE_ILS:
+        if amt >= _min:
             d["suggested_ils"] = amt
             left = round(left - amt, 2)
+    pool = left / 2.0
     top = [x for x in dests if x["kind"] == "idea"][:2]
     tot = sum(float(x.get("score") or 1) for x in top) or 1.0
-    for d in top:
-        amt = math.floor(left * float(d.get("score") or 1) / tot / 10.0) * 10.0
-        if amt >= _fund.MIN_TRADE_ILS:
+    amts = [math.floor(pool * float(d.get("score") or 1) / tot / 10.0) * 10.0 for d in top]
+    if top and any(a < _min for a in amts):
+        # too little for two buys: the best idea takes the pool, if it can
+        amts = [math.floor(pool / 10.0) * 10.0] + [0.0] * (len(top) - 1)
+    for d, amt in zip(top, amts):
+        if amt >= _min:
             d["suggested_ils"] = amt
     suggested = round(sum(d["suggested_ils"] for d in dests), 2)
     keep = round(reserved_ils - suggested, 2)
+    _plan_tks = [d["ticker"] for d in dests if d["kind"] == "plan" and d["suggested_ils"] > 0]
+    _idea_tks = [d["ticker"] for d in dests if d["kind"] == "idea" and d["suggested_ils"] > 0]
+    _how = []
+    if _plan_tks:
+        _how.append(f"{', '.join(_plan_tks)} first (it keeps your mix on plan)")
+    if _idea_tks:
+        _how.append(f"half of the rest into {' and '.join(_idea_tks)}, the best-scored ideas")
+    _split = (("Suggested split: " + ", then ".join(_how) + f"; {_ils(keep)} stays reserved "
+               f"for {names}. Change any amount.") if suggested >= _min else
+              "Nothing here reaches the minimum buy, so there is no split to suggest.")
+    wait_pick = p_touch is not None and p_touch >= 0.5
     if p_touch is None:
-        split_why = ("No volatility measurement for " + names + " yet, so the suggestion keeps "
-                     "about half reserved.")
+        split_why = ("No volatility measurement for " + names + " yet, so the chance of "
+                     "reaching the buy-back level is unknown. " + _split)
     else:
         split_why = (f"{names} would have to fall "
                      + ", ".join(f"{(float(_now(tk)) / _lvl(tk) - 1) * 100:.1f}%"
                                  for tk in tks if _lvl(tk) > 0 and _now(tk))
                      + f" to reach your buy-back level; on its own volatility that has about a "
-                     f"{p_touch:.0%} chance within a month. So the suggestion keeps "
-                     f"{_ils(keep)} reserved for it and puts {_ils(suggested)} to work.")
+                     f"{p_touch:.0%} chance within a month, so the app's pick is to "
+                     + (("keep waiting. If you would rather put some of it to work, the "
+                         + _split[0].lower() + _split[1:])
+                        if wait_pick else ("put part of it to work. " + _split)))
     over = [d for d in dests if d["class_now_pct"] >= d["class_target_pct"]]
     honesty = (" Every class is already at or over its plan target (the reserve is the only "
                "gap), so anything invested elsewhere moves the mix above plan — each place "
@@ -4183,7 +4201,8 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
                 "No brokerage order is placed — mirror it at your broker"],
         "est_amount": round(reserved_ils, 2), "actionable": True, "decision": True,
         "apply": {"kind": "held_cash", "tickers": tks, "reserved_ils": round(reserved_ils, 2),
-                  "recommended": "redeploy" if suggested >= _fund.MIN_TRADE_ILS else "keep",
+                  "recommended": ("keep" if wait_pick or suggested < _fund.MIN_TRADE_ILS
+                                  else "redeploy"),
                   "nav_ils": round(float(nav or 0.0), 2),
                   "options": {"keep": {}, "buy": {"legs": [
                       {"ticker": tk, "amount_ils": each} for tk in tks]},

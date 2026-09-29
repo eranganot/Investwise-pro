@@ -291,3 +291,38 @@ async def test_the_rule_row_does_not_call_the_plan_gap_cash(ils_quotes):
             assert "of cash waiting" not in (row.get("status") or ""), row.get("status")
     finally:
         await eng.dispose()
+
+
+def test_a_likely_touch_recommends_waiting_but_still_suggests_amounts():
+    """Eran 2026-09-29 23:42, on the live card (every box 0): "I asked you to
+    suggest the amounts". The touch chance picks the RECOMMENDED option; the
+    elsewhere tile is always pre-filled -- plan legs first, then half of the rest
+    across the top two ideas. His live numbers: 620 / 270 / 270, keep 553."""
+    holds = {"SOXL": {"level": 142.29, "price_now": 146.93, "vol_20d_pct": 115.7}}
+    legs = [{"ticker": "VTI", "amount_ils": 627.92, "asset_class": "Equities",
+             "reason": "at plan weight"}]
+    ideas = [{"ticker": "USO", "name": "Crude oil", "score": 85.4, "reasons": ["up 26%"]},
+             {"ticker": "BND", "name": "Total US bond", "score": 83.8, "reasons": ["6y"]},
+             {"ticker": "AGG", "name": "Agg", "score": 83.8, "reasons": ["6y"]}]
+    c = rr._held_cash_card(holds, 1713.49, 1863.0, 1500.0, nav=23474.46,
+                           mix={"Equities": .693, "Commodities": .1008, "Fixed Income": .1268},
+                           target={"Equities": .6871, "Commodities": .10, "Fixed Income": .1214},
+                           under_legs=legs, ideas=ideas)
+    rd = c["apply"]["options"]["redeploy"]
+    got = {d["ticker"]: d["suggested_ils"] for d in rd["destinations"]}
+    assert got == {"VTI": 620.0, "USO": 270.0, "BND": 270.0, "AGG": 0.0}, got
+    assert rd["suggested_keep_ils"] == pytest.approx(553.49)
+    assert rd["touch_probability"] > 0.9
+    assert c["apply"]["recommended"] == "keep", "92%: the pick is to wait"
+    assert "keep waiting" in rd["split_why"] and "VTI first" in rd["split_why"]
+
+
+def test_an_unlikely_touch_recommends_putting_it_to_work():
+    holds = {"SOXL": {"level": 100.0, "price_now": 150.0, "vol_20d_pct": 30.0}}
+    c = rr._held_cash_card(holds, 1000.0, 1500.0, 1200.0, nav=20000.0,
+                           mix={"Equities": .6}, target={"Equities": .7},
+                           under_legs=[{"ticker": "VTI", "amount_ils": 400.0,
+                                        "asset_class": "Equities", "reason": "under"}],
+                           ideas=[])
+    assert c["apply"]["recommended"] == "redeploy"
+    assert c["apply"]["options"]["redeploy"]["destinations"][0]["suggested_ils"] == 400.0

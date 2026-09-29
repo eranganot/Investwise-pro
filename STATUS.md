@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 84, the held-cash split reads the hold's volatility). Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 85, the invest-elsewhere tile is always pre-filled). Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -180,6 +180,26 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 85 — the invest-elsewhere tile is always pre-filled
+
+_2026-09-29 23:42, Eran, screenshot of PR 84 live: every amount in "Invest part of it elsewhere"
+was ₪0 — "I asked you to suggest the amounts for the elsewhere investment"._
+
+**Root cause (PROVEN: his live card + the code path).** PR 84 made the touch chance real (SOXL 3.3%
+above 142.29 at 115.7% vol → 92%). The split subtracted keep = reserved × 92% = ₪1,580 first,
+leaving ₪130; every leg is floored at `MIN_TRADE_ILS` ₪250, so every box got 0 and the text read
+"puts ₪0 to work". The chance was doing two jobs — picking the option AND sizing the elsewhere tile —
+and the second contradicts what he asked for (PR 83: "suggest a split"). Before PR 84 the 50/50
+fallback hid it (₪630 to VTI).
+**Fix (his rule, chosen 2026-09-29 23:44 from three previews):** the touch chance only picks the
+RECOMMENDED option (≥ 50% → keep waiting). The elsewhere tile is always pre-filled: plan legs first,
+up to their limit (they keep the mix on plan); then HALF of what is left across the two best-scored
+ideas by score (all of it to the best idea if two would fall under the minimum); the rest stays
+reserved. His live card: VTI ₪620, USO ₪270, BND ₪270, keep ₪553; pick: keep waiting (92%).
+Tests: `test_a_likely_touch_recommends_waiting_but_still_suggests_amounts` (his numbers),
+`test_an_unlikely_touch_recommends_putting_it_to_work`. The smoke script now fails a tile with
+places but no pre-filled amount.
+
 ## PR 84 — the held-cash split read no volatility; three honesty fixes found by the PR 83 smoke
 
 _2026-09-29 23:05, the first live read of PR 83 (smoke-pr83-held-cash-and-buy-back-rules.ps1:
@@ -193,8 +213,8 @@ long, short`) — it has no `metrics`, so the lookup was always None and the spl
 **Why silent:** the PR 83 tests never had price history, so the fallback was the only path they saw.
 Test: `test_the_split_uses_the_holds_measured_volatility` (fails without the fix, verified).
 **Consequence on the live book:** SOXL 146.93 vs level 142.29 at 115.7% vol → about a 92% chance of
-touching within a month, so the suggestion keeps most of the ₪1,713 reserved (the ₪630 VTI leg
-disappears when the remainder is under the ₪250 minimum). The user can still set any amounts.
+touching within a month; the split then kept ₪1,580 and every elsewhere box read ₪0 — a regression
+Eran caught the same evening, fixed in PR 85.
 
 **Also from the same payload (all observed, self-evident):**
 - VTI was labelled "under target" with Equities at 69.3% vs 68.71%. A plan leg is now `kind: plan`
