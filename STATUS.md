@@ -216,12 +216,27 @@ New read-only `GET /api/v1/portfolio/ledger` for auditing accepts without DB acc
 `POST /portfolio/cash {mode: adjust}`. NAV 28,246.86 → 24,568.37 (+22.84%) = the 09-28 snapshot
 less the SOXL trim's CGT.
 
-**Open: earlier realign accepts.** `rec_2d1727` was accepted 13 times (09-02 → 09-29). Buys at
-daily closes: 09-02 VTI ~3,431; 09-04 BND ~321; 09-06 VTI ~413 + ~713; 09-25 VTI ~595; 09-26 VTI
-~596 + ~1,566. Money created per accept = max(0, buys − net sale proceeds). 09-02 → 09-06 sold
-V/TQQQ/SOXL/BND/VTI at 0 recorded shares (blind sells), so their proceeds are unknown from the
-API; 09-25/26 need the ledger endpoint this PR adds. `unexplained_basis_ils` after the correction:
-3,441.77 (was 7,120.26).
+**Earlier realign accepts — audited 09-29 with `GET /portfolio/ledger` (after the deploy).**
+`rec_2d1727` was accepted 13 times. Rule: money created = cash_top = max(0, buys − net sale proceeds).
+| accept | legs | created | evidence |
+|---|---|---|---|
+| 09-02 19:28 | sold TQQQ/V/BND/SOXL, bought VTI 2.9716 | 0 | cash 618.65 < 3% floor (628): spendable 0, cash_top 0; cash unchanged |
+| 09-04 16:47 | sold VTI (tax 1.63), bought BND 1.4558 (~321) | 0 | tax 1.63 needs >= ~0.36 sh sold (>= ~419 raised) > 321 bought |
+| 09-06 17:04 + 19:32 | sold TQQQ / BND, bought VTI 0.3548 / 0.613 | ~0 | Sunday, prices fixed: NAV −24.25 vs tax 23.08 |
+| 09-12 19:06 | sold PDBC, VTI only | 0 | Saturday: NAV −5.62 vs tax 5.66 |
+| 09-14/18/21/22 | no legs recorded | 0 | nothing executed (a buy with cash_top would have been recorded) |
+| 09-25 03:26 | bought VTI 0.5118 only | **592.75** | buy with no sale; cash 739.88 unchanged, no other trade that day |
+| 09-26 12:23 | bought VTI 0.512 only | **595.63** | buy with no sale |
+| 09-26 12:26 | sold CVX (1,550.79 net), bought VTI 1.3465 (1,566.45) | **15.66** | buys exceeded proceeds |
+| 09-29 07:42 | bought BND 13.8723 + VTI 0.601 | **3,678.49** | see above |
+
+**Corrected 09-29 09:40 UTC:** cash −1,204.04 (on top of −3,678.49). NAV 23,364.33, +16.82% on
+20,000. Total phantom removed: 4,882.53.
+Cross-check: `unexplained_basis_ils` is now 2,237.73; the ledger's CGT total 754.96 implies ~3,020 of
+realized gains, ~2,265 net of the tax — the remaining basis gap is realized, reinvested gain, not phantom.
+**Not corrected (unproven):** a ~213 ILS residual on 09-26 (NAV at unchanged prices rose 824 vs 611
+explained). Most likely the Friday FX (snapshot) vs Monday FX (3.0633) used to reprice; the basis
+cross-check above leaves no room for a larger phantom.
 
 ## PR 77 — a holding review per holding; it sells only when selling has paid, otherwise it arms a stop
 
