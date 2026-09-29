@@ -161,6 +161,11 @@ def check(recs: list[dict], *, sleeve_targets: dict[str, float], nav: float,
     for r in recs:
         if _kind(r) not in _SELLS:
             continue
+        if (r.get("meta") or {}).get("protective"):
+            # PR 81: a stop, a profit-protect, a trend exit or a drawdown
+            # de-risk is SUPPOSED to overrule a target. Hiding it would be the
+            # PR 72 "rule fired, no card" failure with money at risk.
+            continue
         for tk in _tickers(r):
             want = sleeve_targets.get(tk)
             if want is None:

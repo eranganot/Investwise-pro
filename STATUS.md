@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 80, migration 0025 rule params). Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 81, four advanced trading rules). Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,43 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 81 — four advanced trading rules (band, profit-protect, trend break, drawdown guard)
+
+_2026-09-29, Eran: "add a few more trading rules (more advanced ones)"; chose all four in
+`PLAN_2026-09-29_advanced_rules.md` and decided 1a / 2a / 3a / defaults + "if they need to be changed
+a recommendation card should appear". Code: `app/services/advanced_rules.py`._
+
+- **rebalance_band** (level = ± points). Target read LIVE from `plan_ticker_targets`, never stored.
+  Above: trim back to the TARGET (not the edge). Below: a funded buy via `propose_funded_buy`.
+- **profit_protect** (level = trail %, `params.activation_pct` default 20). Dormant until price ≥
+  cost × (1+act); the evaluator then sets `activated` and ratchets `peak_price`; exits at peak × (1−trail).
+- **trend_break** (level 200 = 50/200 cross, 50 = 20/50) — the holding review's own signals.
+  `measure_ticker` now also stores `metrics` nightly, so the 30-minute evaluator never fetches.
+  Sell only with a fresh measured edge; otherwise the card arms a volatility-sized stop. One card per
+  ticker: the rule's replaces the holding-review card.
+- **drawdown_guard** (ticker `__BOOK__`, level %). Flow-adjusted drawdown via `time_weighted` over
+  the snapshots plus live NAV (a withdrawal is not a loss). Alerts, and the card sells 25% of the most
+  volatile holding (stored 20-day vol) into cash, with a buy-back hold that lasts **until the guard
+  re-arms** (`buyback_hold.record(until_rule=)`, `release_for_rule`) — a price-released hold would let
+  the realign re-buy mid-drawdown. `purge_orphan_rules` exempts `__BOOK__`.
+- **Standing rules wait after being dealt with**: `resolve_rule` sets `params.await_clear`; the
+  evaluator will not re-fire until `clears()` — or the guard would offer a de-risk every 30 minutes.
+- **Protective exits** (stop, trailing, profit-protect, trend, drawdown) are never suppressed by the
+  sleeve-at-target contradiction rule nor converted by PR 79's rule-vs-plan decision.
+- **Tuning cards** (decision 4): band tighter than a month of weight noise; trail inside the two-week
+  swing; activation too close to the trail; the other trend signal has the measured edge; drawdown
+  guard under 5%. Accept = `edit_rule` (by `target_rule_id` — a `rule_id` would resolve the rule).
+- **One-time caps→bands card** (decision 2) for core caps only (sleeve caps are re-armed by the
+  sleeve); KV flag `caps_to_bands_done:<email>` after Accept.
+- Suggestions: a plan ticker is offered a ±3 band instead of a cap.
+- **Found while testing:** the cash-redeploy card's "one pot, one card" filter dropped the band's buy
+  card (VTI was one of its legs), leaving the rule latched with no card — which the banner heal then
+  acknowledged silently. A `rule_…` card is no longer a competitor; when it overlaps, it is shown and
+  the redeploy card is not.
+
+Tests: `tests/test_advanced_rules.py` (16, applying each card and re-measuring NAV / holds / latches);
+two suggestion tests in `test_cards_know_their_strategy.py` updated from "cap ≥ target" to "band".
 
 ## PR 80 — migration 0025: `trading_rules.params` (add-only, ships alone)
 

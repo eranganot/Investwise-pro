@@ -142,6 +142,14 @@ def measure_ticker(ticker: str, series: dict) -> dict:
            "assumptions": [f"{s['id']}@{s['version']}" for s in SIGNALS.values()]}
     for name in SIGNALS:
         out[name] = judge(bt.run(series, spec_for(ticker, name)), hold)
+    # PR 81: today's trend state and volatility, stored with the measurement so
+    # the 30-minute rule evaluator (trend_break) and the tuning cards read it
+    # without fetching history.
+    try:
+        closes = [float(r[1]) for r in (series.get(ticker) or []) if r and r[1] is not None]
+        out["metrics"] = metrics(closes[-260:])
+    except Exception:  # noqa: BLE001 - the measurement stands without it
+        out["metrics"] = {"ok": False, "why": "could not read closes"}
     return out
 
 

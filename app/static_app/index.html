@@ -397,6 +397,10 @@
             <option value="price_above">🔔 Price above</option>
             <option value="price_below">🔔 Price below</option>
             <option value="max_weight">⚖️ Max % of portfolio</option>
+            <option value="rebalance_band">⚖️ Rebalance band (follows your plan)</option>
+            <option value="profit_protect">🛡️ Profit-protect trail</option>
+            <option value="trend_break">📉 Trend-break exit</option>
+            <option value="drawdown_guard">🧯 Whole-book drawdown guard</option>
           </select></div>
         </div>
         <div class="grid2">
@@ -406,6 +410,11 @@
             <option value="price">Price (₪)</option>
           </select></div>
         </div>
+        <div class="grid2" id="r_actrow" style="display:none">
+          <div><label>Arms at a gain of <span class="mk">(%)</span></label><input id="r_act" type="number" value="20"/></div>
+          <div class="muted" style="font-size:12px;align-self:end">Dormant until the holding is up this much, then it trails the peak.</div>
+        </div>
+        <div class="muted" id="r_advhint" style="font-size:12px;margin:4px 0"></div>
         <button class="primary" onclick="addRule()">＋ Add rule</button>
         <div class="muted" id="r_out" style="margin-top:8px"></div>
       </details>
@@ -1364,8 +1373,21 @@ async function addCommodity(ticker){
 }
 // --- Trading rules ---
 const RULE_LABEL={stop_loss:"🛑 Stop-loss",take_profit:"🎯 Take-profit",trailing_stop:"📉 Trailing stop",buy_dip:"🟢 Buy dip",price_above:"🔔 Price ≥",price_below:"🔔 Price ≤",max_weight:"⚖️ Max weight"};
+// PR 81: the advanced rules -- what their one number means, and the defaults
+// Eran approved (band 3, activation +20, trail 15, trend 200, drawdown 10).
+const ADV_HINT={
+  rebalance_band:["(± points)",3,"Trims above and tops up below your PLAN's target for this holding — it follows the plan, so it can't fight it."],
+  profit_protect:["(trail %)",15,"Dormant until the gain below is reached, then sells if it falls this % from its peak."],
+  trend_break:["(50 or 200)",200,"200 = the 50-day falls below the 200-day; 50 = the 20-day below the 50-day. Sells only where selling on that signal has beaten holding; otherwise arms a stop."],
+  drawdown_guard:["(% below peak)",10,"Watches the whole book (deposits and withdrawals excluded) and proposes a de-risk when it falls this far."]
+};
 function ruleModeHint(){
   const t=$("r_type").value, m=$("r_mode"), h=$("r_levelhint");
+  const adv=ADV_HINT[t];
+  if($("r_actrow")) $("r_actrow").style.display=t==="profit_protect"?"":"none";
+  if($("r_advhint")) $("r_advhint").textContent=adv?adv[2]:"";
+  if($("r_tk")) $("r_tk").disabled=(t==="drawdown_guard");
+  if(adv){ m.value="pct"; m.disabled=true; h.textContent=adv[0]; if(!$("r_level").value) $("r_level").placeholder=String(adv[1]); return; }
   if(t==="trailing_stop"||t==="max_weight"){ m.value="pct"; m.disabled=true; h.textContent="(%)"; }
   else if(t==="price_above"||t==="price_below"){ m.value="price"; m.disabled=true; h.textContent="(₪)"; }
   else { m.disabled=false; h.textContent=m.value==="price"?"(₪)":"(%)"; }
@@ -1423,7 +1445,11 @@ const RULE_META={
   buy_dip:{label:"Buy dip",cls:"green",icon:"🟢"},
   price_above:{label:"Price ≥",cls:"amber",icon:"🔔"},
   price_below:{label:"Price ≤",cls:"amber",icon:"🔔"},
-  max_weight:{label:"Max weight",cls:"amber",icon:"⚖️"}
+  max_weight:{label:"Max weight",cls:"amber",icon:"⚖️"},
+  rebalance_band:{label:"Band",cls:"blue",icon:"⚖️"},
+  profit_protect:{label:"Protect",cls:"green",icon:"🛡️"},
+  trend_break:{label:"Trend break",cls:"amber",icon:"📉"},
+  drawdown_guard:{label:"Drawdown",cls:"red",icon:"🧯"}
 };
 const _DCOLOR={red:"var(--red)",green:"var(--green)",blue:"#60a5fa",amber:"var(--amber)"};
 function _ruleStatus(x){return x.triggered?"triggered":(x.active?"armed":"paused");}
@@ -1438,6 +1464,7 @@ function _ruleStatus(x){return x.triggered?"triggered":(x.active?"armed":"paused
 // a price: 9.7% against a 10% cap is 0.3 points away, and calling that "3%"
 // would be a percentage of a percentage.
 function _ruleDist(x){
+  if(ADV_HINT[x.rule_type]) return null;   // PR 81: the status line says it better
   const cur = (x.current!=null) ? Number(x.current) : Number(x.current_price);
   if(cur==null||isNaN(cur)||!cur) return null;
   if(x.unit==="pct_of_portfolio"){
@@ -1499,7 +1526,11 @@ function renderRules(){
     const rows=rs.map(x=>{
       const m=RULE_META[x.rule_type]||{label:x.rule_type,cls:"blue",icon:"•"};
       const isPct=x.mode!=="price";
-      const blabel=(x.rule_type==="trailing_stop"||x.rule_type==="max_weight")?`${m.label} ${x.level}%`:m.label;
+      const blabel=(x.rule_type==="trailing_stop"||x.rule_type==="max_weight")?`${m.label} ${x.level}%`
+        : x.rule_type==="rebalance_band"?`${m.label} ±${x.level}`
+        : x.rule_type==="profit_protect"?`${m.label} ${x.level}% from +${((x.params||{}).activation_pct)||20}%`
+        : x.rule_type==="trend_break"?`${m.label} ${Number(x.level)>=100?"50/200":"20/50"}`
+        : x.rule_type==="drawdown_guard"?`${m.label} ${x.level}%`:m.label;
       // A weight cap's target is 15 PERCENT OF THE BOOK, and `toFixed(2)` on it
       // renders "15.00" -- indistinguishable from a price, on a row that sits
       // directly under a stop-loss showing "65.70". Same units bug as the
@@ -1530,6 +1561,7 @@ function renderRules(){
       else if(x._dupe){ mid=`<span class="rdupe">⧉ duplicate of another rule — remove</span>`; }
       else if(!x.active){ mid=`<span class="rdist"><div class="dtxt">paused</div></span>`; }
       else if(x.unit==="signal"){ mid=`<span class="rdist"><div class="dtxt">waits for the ${x.strategy_id||"strategy"} signal</div></span>`; }
+      else if(x.status){ mid=`<span class="rdist"><div class="dtxt">${esc(x.status)}</div></span>`; }
       else if(x._dist!=null){
         const p=x._dist, ap=Math.abs(p);
         // A weight cap's room is in points of portfolio, so scale the bar to the
@@ -1544,7 +1576,7 @@ function renderRules(){
         : `<span class="racts">${x.unit!=="signal"?`<button class="del" title="Edit rule" onclick="editRule('${x.id}')">✏️</button>`:""}<button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
       return `<div class="rrow${x.triggered?' trig':''}">${badge}${lvl}${mid}${acts}</div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
     }).join("");
-    return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
+    return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk==="__BOOK__"?"Whole book":tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
   }).join("");
 }
 async function loadRuleSuggestions(){
@@ -1577,12 +1609,15 @@ async function quickAddRules(list){
   loadRules();
 }
 async function addRule(){
-  const ticker=$("r_tk").value, rule_type=$("r_type").value, mode=$("r_mode").value, level=parseFloat($("r_level").value);
+  const rule_type=$("r_type").value, mode=$("r_mode").value;
+  const ticker=rule_type==="drawdown_guard"?"__BOOK__":$("r_tk").value;
+  const lv=$("r_level").value, level=parseFloat(lv!==""?lv:(ADV_HINT[rule_type]?ADV_HINT[rule_type][1]:NaN));
+  const params=rule_type==="profit_protect"?{activation_pct:parseFloat($("r_act").value)||20}:null;
   const o=$("r_out");
   if(!ticker){o.innerHTML='<span class="bad">Add a holding first.</span>';return;}
   if(isNaN(level)){o.innerHTML='<span class="bad">Enter a level.</span>';return;}
   o.textContent="Saving…";
-  try{const r=await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,rule_type,mode,level})});
+  try{const r=await fetch("/api/v1/rules",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ticker,rule_type,mode,level,params})});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||"Failed");}
     const jj=await r.json().catch(()=>({}));
     $("r_level").value=""; o.innerHTML=jj.warning
@@ -1604,6 +1639,7 @@ function editRule(id){
   const u=x.mode==="price"?"":"%";
   box.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 0">
     <label>Level <input id="re_lvl_${id}" type="number" step="any" value="${x.level}" style="width:90px"/>${u}</label>
+    ${x.rule_type==="profit_protect"?`<label>Arms at +<input id="re_act_${id}" type="number" step="any" value="${(x.params||{}).activation_pct||20}" style="width:70px"/>%</label>`:""}
     <input id="re_note_${id}" type="text" maxlength="160" placeholder="Note (optional)" value="${esc(x.note||"").replace(/"/g,"&quot;")}" style="flex:1;min-width:140px"/>
     <button onclick="saveRule('${id}',false)">Save</button>
     <button class="del" onclick="editRule('${id}')">Cancel</button></div>
@@ -1614,9 +1650,10 @@ async function saveRule(id,force,levelOverride){
   const o=$("re_out_"+id);
   const level=levelOverride!=null?levelOverride:parseFloat($("re_lvl_"+id).value);
   const note=$("re_note_"+id)?$("re_note_"+id).value:null;
+  const params=$("re_act_"+id)?{activation_pct:parseFloat($("re_act_"+id).value)}:null;
   if(isNaN(level)){o.innerHTML='<span class="bad">Enter a level.</span>';return;}
   o.textContent="Saving…";
-  try{const r=await fetch(`/api/v1/rules/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({level,note,force:!!force})});
+  try{const r=await fetch(`/api/v1/rules/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({level,note,params,force:!!force})});
     const j=await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(j.detail||"Failed");
     if(j.needs_confirm){

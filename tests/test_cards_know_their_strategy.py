@@ -286,10 +286,12 @@ def test_a_suggested_cap_is_never_below_the_sleeve_target_it_would_fight():
     # between when a cap is armed and when the sleeve is resized.
     idx = {"TQQQ": {"price": 69.01, "cost": 60.0, "weight_pct": 13.0}}
     out = _suggestions_from(idx, set(), {"TQQQ": 38.4})
+    # PR 81: a ticker the plan targets gets a BAND around the target instead of
+    # a cap -- which cannot sit below the target by construction.
     caps = [r for h in out for r in h["rules"] if r["rule_type"] == "max_weight"]
-    assert caps, "no cap suggested at all"
-    assert caps[0]["level"] >= 38.4, f"suggested {caps[0]['level']}% against a 38.4% sleeve"
-    assert "plan targets" in caps[0]["why"].lower()  # PR 79: sleeves + core
+    bands = [r for h in out for r in h["rules"] if r["rule_type"] == "rebalance_band"]
+    assert not caps, f"a cap was suggested on a plan ticker: {caps}"
+    assert bands and "plan targets 38.4%" in bands[0]["why"].lower()
 
 
 def test_without_a_sleeve_the_cap_formula_is_unchanged():
@@ -312,5 +314,9 @@ def test_the_lifted_cap_sits_ABOVE_the_target_not_on_it(weight, floor, expected_
 
     out = _suggestions_from({"TQQQ": {"price": 69.01, "cost": 60.0, "weight_pct": weight}},
                             set(), {"TQQQ": floor})
+    # PR 81: a plan ticker gets a band around its target instead of a cap -- it
+    # cannot fire at a correctly funded target by construction (±3 around it).
     caps = [r for h in out for r in h["rules"] if r["rule_type"] == "max_weight"]
-    assert caps[0]["level"] >= expected_min
+    bands = [r for h in out for r in h["rules"] if r["rule_type"] == "rebalance_band"]
+    assert not caps and bands and bands[0]["level"] > 0
+    assert expected_min > floor

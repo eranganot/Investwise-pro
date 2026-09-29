@@ -60,7 +60,8 @@ async def _save(session: AsyncSession, user: User, data: dict) -> None:
 
 
 async def record(session: AsyncSession, user: User, *, ticker: str, sold_price: float,
-                 shares: float, strategy_id: str | None, rule_id: str | None = None) -> dict:
+                 shares: float, strategy_id: str | None, rule_id: str | None = None,
+                 until_rule: str | None = None) -> dict:
     """Remember a take-profit sale. A second sale of the same ticker while a hold
     is active keeps the HIGHER price: the hold ends when the price falls back
     below what was actually sold, and the latest, higher sale is that price."""
@@ -68,14 +69,33 @@ async def record(session: AsyncSession, user: User, *, ticker: str, sold_price: 
     tk = ticker.upper()
     prev = data.get(tk)
     level = float(sold_price)
-    if prev and float(prev.get("level") or 0) > level:
+    if until_rule:
+        # PR 81 -- a drawdown de-risk holds until the BOOK recovers, not until
+        # this ticker's price dips: mid-drawdown the price keeps falling, and a
+        # price-released hold would let the realign buy it straight back.
+        # Level 0 never "retreats"; `release_for_rule` ends it.
+        level = 0.0
+    elif prev and not prev.get("until_rule") and float(prev.get("level") or 0) > level:
         level = float(prev["level"])
+    elif prev and prev.get("until_rule"):
+        until_rule = prev["until_rule"]
+        level = 0.0
     sh = float(shares) + (float(prev.get("shares") or 0) if prev else 0.0)
     data[tk] = {"level": round(level, 6), "shares": round(sh, 6),
                 "strategy_id": strategy_id, "rule_id": rule_id,
+                **({"until_rule": until_rule} if until_rule else {}),
                 "at": datetime.now(timezone.utc).isoformat()}
     await _save(session, user, data)
     return data[tk]
+
+
+async def release_for_rule(session: AsyncSession, user: User, rule_id: str) -> list[str]:
+    """End every hold a rule placed (PR 81: the drawdown guard re-armed)."""
+    holds = await load(session, user)
+    gone = sorted(k for k, v in holds.items() if str(v.get("until_rule")) == str(rule_id))
+    if gone:
+        await _save(session, user, {k: v for k, v in holds.items() if k not in gone})
+    return gone
 
 
 def _prices(rows) -> dict[str, float]:

@@ -28,7 +28,9 @@ from app.services.portfolio_analytics import compute_snapshot, load_positions
 logger = logging.getLogger(__name__)
 
 RULE_TYPES = {"stop_loss", "take_profit", "trailing_stop", "price_above",
-              "price_below", "buy_dip", "max_weight", "strategy_signal"}
+              "price_below", "buy_dip", "max_weight", "strategy_signal",
+              # PR 81: the advanced rules (see app/services/advanced_rules.py)
+              "rebalance_band", "profit_protect", "trend_break", "drawdown_guard"}
 
 # An entry/exit rule is a SUBSCRIPTION to one strategy's own signal, not a
 # reimplementation of it.
@@ -315,7 +317,8 @@ async def purge_orphan_rules(session: AsyncSession, user: User,
     held = set(idx)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email))).all()
-    gone = [r for r in rules if r.ticker.upper() not in held]
+    from app.services.advanced_rules import BOOK
+    gone = [r for r in rules if r.ticker.upper() not in held and r.ticker.upper() != BOOK]
     if not gone:
         return []
     removed = [{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
@@ -340,6 +343,9 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
     Price alerts carry no trade, and buy-the-dip needs a funding decision, so
     both stay advisory rather than inventing a size.
     """
+    from app.services import advanced_rules as _adv
+    if rule.rule_type in _adv.ADV_TYPES:
+        return _adv.execution_plan(rule, pos)
     qty = float(pos.get("qty") or 0.0)
     if qty <= 0:
         return None
@@ -415,9 +421,14 @@ def execution_plan(rule: TradingRule, pos: dict) -> dict | None:
 # Evaluation
 # --------------------------------------------------------------------------- #
 def _evaluate(rule: TradingRule, cur: float, cost: float, weight: float,
-              value_ils: float = 0.0) -> tuple[bool, str, str, float | None]:
+              value_ils: float = 0.0, pos: dict | None = None
+              ) -> tuple[bool, str, str, float | None]:
     """Return (hit, title, action, target)."""
     rt, mode, L, tk = rule.rule_type, rule.mode, rule.level, rule.ticker
+    from app.services import advanced_rules as _adv
+    if rt in _adv.ADV_TYPES:
+        return _adv.evaluate(rule, pos if pos is not None else {
+            "price": cur, "cost": cost, "weight_pct": weight, "value_ils": value_ils})
     if cur <= 0:
         return (False, "", "", None)
     if rt == "stop_loss":
@@ -484,13 +495,16 @@ def _signal_side(flip: dict, ticker: str) -> str | None:
 async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = False) -> list[dict]:
     """Update peaks, latch newly-triggered rules, optionally push. Returns the
     list of rules that newly triggered this run."""
-    idx = await _positions_index(session, user)
+    idx, _nav = await _positions_index_and_nav(session, user)
     # Delete rules for holdings that are gone before evaluating anything, so a
     # sold position can never fire a rule set against a price it no longer has.
     await purge_orphan_rules(session, user, idx)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
+    from app.services import advanced_rules as _adv
+    if any(r.rule_type in _adv.ADV_TYPES for r in rules):
+        await _adv.augment(session, user, idx, _nav, rules)
     newly = []
     retired: list[dict] = []
     _flips: dict[str, dict | None] = {}
@@ -559,7 +573,31 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
         cur, cost, w = pos["price"], pos["cost"], pos["weight_pct"]
         if r.rule_type == "trailing_stop" and cur > 0:
             r.peak_price = max(r.peak_price or cur, cur)
-        hit, title, action, target = _evaluate(r, cur, cost, w, pos.get("value_ils") or 0.0)
+        if r.rule_type in _adv.ADV_TYPES:
+            _p = _adv.params_of(r)
+            if r.rule_type == "profit_protect" and cur > 0 and cost > 0:
+                # Dormant until the gain is real; from then the peak ratchets.
+                _act = float(_p.get("activation_pct") or _adv.DEFAULTS["activation_pct"])
+                if not _p.get("activated") and cur >= cost * (1 + _act / 100.0):
+                    _p["activated"] = True
+                    _p["activated_at"] = _now().isoformat()
+                    r.params = dict(_p)
+                    r.peak_price = cur
+                elif _p.get("activated"):
+                    r.peak_price = max(r.peak_price or cur, cur)
+            if _p.get("await_clear"):
+                # A standing rule that was dealt with waits for its condition to
+                # clear before it may fire again -- or the drawdown guard would
+                # offer a de-risk every 30 minutes of the same drawdown.
+                if _adv.clears(r, pos):
+                    _p.pop("await_clear", None)
+                    r.params = dict(_p)
+                    if r.rule_type == "drawdown_guard":
+                        from app.services import buyback_hold as _bh
+                        await _bh.release_for_rule(session, user, str(r.id))
+                continue
+        hit, title, action, target = _evaluate(r, cur, cost, w, pos.get("value_ils") or 0.0,
+                                               pos=pos)
         if hit and not r.triggered:
             r.triggered = True
             r.last_triggered_at = _now()
@@ -578,7 +616,13 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
                           # Whether there is a trade behind the firing. A cap
                           # breached by 0.2 points produces a sub-minimum trim
                           # and no plan -- worth a card, not an interruption.
-                          "actionable": bool(_plan)})
+                          # PR 81: an advanced rule's card is built with more
+                          # context (a funded band buy, a de-risk, a stop) and is
+                          # always actionable -- so it always alerts.
+                          "actionable": bool(_plan) or r.rule_type in _adv.ADV_TYPES})
+        elif (not hit and r.triggered and r.rule_type in _adv.STANDING
+                and _adv.clears(r, pos)):
+            r.triggered = False
         elif (not hit and r.triggered
                 and r.rule_type in ("price_above", "price_below", "max_weight")
                 and clears_with_margin(r, cur, w, pos.get("value_ils") or 0.0)):
@@ -658,7 +702,7 @@ async def list_events(session: AsyncSession, user: User, limit: int = 50) -> lis
 # A fired stop-loss / take-profit / trailing stop / buy-dip is a ONE-SHOT order:
 # once you've dealt with it, it's spent. A max-weight cap or a price alert is a
 # standing condition, so it re-arms instead.
-_ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip"}
+_ONE_SHOT = {"stop_loss", "take_profit", "trailing_stop", "buy_dip", "profit_protect"}
 
 # The outcomes that mean "the slice was sold". `executed` is what Accept sends;
 # `accepted` is kept for any older caller.
@@ -805,6 +849,11 @@ async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str
         rule.note = (f"Ladder: next slice if it reaches "
                      f"{rule.level:.2f}{'%' if rule.mode == 'pct' else ''}.")[:160]
         logger.info("take_profit %s re-armed at %s", rule.ticker, rule.level)
+    elif rule.rule_type in ("rebalance_band", "trend_break", "drawdown_guard"):
+        # PR 81: standing, but dealt with -- wait for the condition to clear.
+        _p = dict(rule.params or {})
+        _p["await_clear"] = True
+        rule.params = _p
     elif rule.rule_type in _ONE_SHOT:
         # Spent: the exit it described has either happened or been declined.
         # Leaving it armed would re-fire on the same condition immediately.
@@ -878,6 +927,9 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                                   TradingRule.active.is_(True),
                                   TradingRule.triggered.is_(True)))).all()
     idx, _nav = (await _positions_index_and_nav(session, user)) if rules else ({}, 0.0)
+    from app.services import advanced_rules as _adv
+    if rules:
+        await _adv.augment(session, user, idx, _nav, rules)
     # WHERE THE MONEY LANDS. A trim credits cash; a card that does not say what
     # that leaves cash at has answered "how much to sell" and not "and then
     # what". Eran, 2026-09-06: "it doesn't tell me what do do instead (buy
@@ -902,7 +954,18 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
     for r in rules:
         pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0}
         hit, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"],
-                                           pos.get("value_ils") or 0.0)
+                                           pos.get("value_ils") or 0.0, pos=pos)
+        if r.rule_type in _adv.ADV_TYPES:
+            if not hit:
+                if r.rule_type in _adv.STANDING and _adv.clears(r, pos):
+                    r.triggered = False
+                    _cleared = True
+                continue
+            if execution_plan(r, pos) is None:
+                # A band BUY, a drawdown de-risk, or a trend with no measured
+                # edge: `advanced_rules.extra_cards` builds those with the
+                # context this function does not have.
+                continue
 
         # A standing condition that is no longer true must not still have a card.
         #
@@ -986,7 +1049,10 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                                               if r.last_triggered_at else None),
                              # PR 70: the priority score treats a fired stop as
                              # always Important, so the card says which rule it is.
-                             "rule_type": r.rule_type, "ticker": r.ticker},
+                             "rule_type": r.rule_type, "ticker": r.ticker,
+                             # PR 81: a protective exit is never suppressed or
+                             # negotiated against a plan target.
+                             "protective": r.rule_type in _adv.PROTECTIVE},
                     "how": how})
     if _cleared:
         # Persist the re-arm, or the next render latches it all over again and
@@ -1000,7 +1066,8 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
 # --------------------------------------------------------------------------- #
 async def create_rule(session: AsyncSession, user: User, *, ticker: str, rule_type: str,
                       mode: str, level: float, note: str | None = None,
-                      strategy_id: str | None = None) -> TradingRule:
+                      strategy_id: str | None = None,
+                      params: dict | None = None) -> TradingRule:
     if rule_type not in RULE_TYPES:
         raise ValueError(f"unknown rule_type '{rule_type}'")
     if rule_type == "strategy_signal":
@@ -1017,6 +1084,12 @@ async def create_rule(session: AsyncSession, user: User, *, ticker: str, rule_ty
             mode = "price"
         if rule_type in ("trailing_stop", "max_weight"):
             mode = "pct"
+    from app.services import advanced_rules as _adv
+    if rule_type in _adv.ADV_TYPES:
+        mode = "pct"
+        level, params = _adv.validate(rule_type, level, params)
+        if rule_type == "drawdown_guard":
+            ticker = _adv.BOOK          # the whole book, not a holding
     ticker = ticker.strip().upper()
 
     # Re-level rather than stack. See _ONE_PER_TICKER for why.
@@ -1030,12 +1103,15 @@ async def create_rule(session: AsyncSession, user: User, *, ticker: str, rule_ty
             existing.note = note[:160]
         if strategy_id:
             existing.strategy_id = strategy_id
+        if params is not None:
+            existing.params = dict(params)
         await session.commit()
         return existing
 
     rule = TradingRule(subject=user.email, ticker=ticker,
                        rule_type=rule_type, mode=mode, level=float(level),
-                       note=(note[:160] if note else note), strategy_id=strategy_id)
+                       note=(note[:160] if note else note), strategy_id=strategy_id,
+                       params=(dict(params) if params else None))
     session.add(rule)
     await session.commit()
     return rule
@@ -1126,7 +1202,7 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email)
         .order_by(TradingRule.created_at.desc()))).all()
-    idx = await _positions_index(session, user) if rules else {}
+    idx, _lnav = (await _positions_index_and_nav(session, user)) if rules else ({}, 0.0)
     # Remove rules for holdings that are gone, at READ time -- not only inside
     # evaluate_user, which runs in the 30-minute price job and left the Rules tab
     # showing them in between. Guarded: a purge never runs against an empty
@@ -1136,6 +1212,9 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
         _purged = await purge_orphan_rules(session, user, idx)
         if _purged:
             rules = [r for r in rules if str(r.id) not in {x["id"] for x in _purged}]
+    from app.services import advanced_rules as _adv
+    if rules:
+        await _adv.augment(session, user, idx, _lnav, rules)
     out = []
     for r in rules:
         pos = idx.get(r.ticker.upper())
@@ -1157,7 +1236,9 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
 
         cur = pos["price"] if pos else None
         hit, _title, _action, target = _evaluate(
-            r, pos["price"], pos["cost"], pos["weight_pct"]) if pos else (False, "", "", None)
+            r, pos["price"], pos["cost"], pos["weight_pct"], pos.get("value_ils") or 0.0,
+            pos=pos) if pos else (False, "", "", None)
+        status = _adv_status(r, pos) if (pos and r.rule_type in _adv.ADV_TYPES) else None
 
         # Report the quantity the rule ACTUALLY watches, and its unit.
         #
@@ -1166,8 +1247,12 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
         # percent-of-portfolio cap. Two different quantities on one row, and it
         # reads as a thirteenfold breach when the position is at 9.7% of a 10%
         # cap. The number was never wrong, it was never comparable.
-        if r.rule_type == "max_weight":
+        if r.rule_type in ("max_weight", "rebalance_band"):
             current, unit = ((pos["weight_pct"] if pos else None), "pct_of_portfolio")
+        elif r.rule_type == "drawdown_guard":
+            current, unit = (((pos or {}).get("book") or {}).get("dd_pct"), "pct_drawdown")
+        elif r.rule_type == "trend_break":
+            current, unit = (None, "trend")
         elif r.rule_type == "strategy_signal":
             current, unit = (None, "signal")
         else:
@@ -1187,8 +1272,45 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
                     # nothing.
                     "breached_now": bool(hit),
                     "target": target,
+                    # PR 81: what an advanced rule is doing right now, in words.
+                    "status": status, "params": r.params,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
     return out
+
+
+def _adv_status(r, pos: dict) -> str | None:
+    """One line for the Rules row of an advanced rule."""
+    from app.services import advanced_rules as _adv
+    L = float(r.level or 0)
+    if r.rule_type == "rebalance_band":
+        t = pos.get("plan_target_pct")
+        if t is None:
+            return "no plan target for this holding yet"
+        return f"{float(pos.get('weight_pct') or 0):.1f}% vs plan {t:.1f}% ±{L:g}"
+    if r.rule_type == "profit_protect":
+        p = _adv.params_of(r)
+        act = float(p.get("activation_pct") or _adv.DEFAULTS["activation_pct"])
+        cost, cur = float(pos.get("cost") or 0), float(pos.get("price") or 0)
+        if not p.get("activated"):
+            gain = ((cur / cost) - 1) * 100 if cost > 0 else 0.0
+            return f"dormant: {gain:+.1f}% of +{act:g}% to arm"
+        peak = float(r.peak_price or cur)
+        return f"armed: peak {peak:,.2f}, stop {peak * (1 - L / 100):,.2f}"
+    if r.rule_type == "trend_break":
+        tr = pos.get("trend") or {}
+        m = tr.get("metrics") or {}
+        if not tr.get("fresh") or not m.get("ok"):
+            return "waiting for tonight's measurement"
+        sig = _adv.signal_of(r)
+        edge = (tr.get(sig) or {}).get("edge")
+        return (f"{'50/200' if sig == 'long' else '20/50'}-day trend {m.get(sig)}"
+                f" · selling on it {'has' if edge else 'has not'} beaten holding")
+    if r.rule_type == "drawdown_guard":
+        b = pos.get("book") or {}
+        if b.get("dd_pct") is None:
+            return "needs a few days of snapshots"
+        return f"{b['dd_pct']:.1f}% below the peak ({b.get('peak_on')}) · guard {L:g}%"
+    return None
 
 
 async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[dict]:
@@ -1273,7 +1395,18 @@ def _suggestions_from(idx: dict[str, dict], have: set,
             cand.append({"rule_type": "take_profit", "mode": "price", "level": tp,
                          "label": f"\U0001f3af Take-profit {tp:g}\u20aa",
                          "why": f"Takes some off the table if it climbs ~{trail_buf:.0f}% more."})
-        if weight >= 12:
+        _plan_t = sleeve_floor.get(tk.upper())
+        if _plan_t and (tk, "max_weight") not in have:
+            # (a cap you already set is offered as a band by the one-time card)
+            # PR 81: a holding your plan targets gets a BAND around that target,
+            # not a cap -- a cap only trims, at a number set once; a band
+            # follows the plan both ways and cannot fight it.
+            cand.append({"rule_type": "rebalance_band", "mode": "pct", "level": 3.0,
+                         "label": "\u2696\ufe0f Rebalance band \u00b13",
+                         "why": (f"Your plan targets {_plan_t:g}% of the book in {tk}. Trims "
+                                 f"above {_plan_t + 3:g}% and tops up below {_plan_t - 3:g}%, "
+                                 f"back to the target.")})
+        elif weight >= 12:
             cap = float(max(15.0, 5 * math.ceil(weight / 5)))
             floor = sleeve_floor.get(tk.upper())
             if floor and floor + 1.5 > cap:
@@ -1328,7 +1461,7 @@ async def cap_below_plan(session: AsyncSession, user: User, ticker: str,
 
 async def update_rule(session: AsyncSession, user: User, rule_id: str, *,
                       level: float | None = None, note: str | None = None,
-                      force: bool = False) -> dict:
+                      force: bool = False, params: dict | None = None) -> dict:
     """PR 79 -- edit a rule's level and note in place (Eran: "I can't edit
     existing rules"). The rule keeps its id, type and history; it is re-armed
     (un-latched and active) so the next evaluation judges the NEW level. A cap
@@ -1346,7 +1479,13 @@ async def update_rule(session: AsyncSession, user: User, rule_id: str, *,
             return {"ok": False, "error": "a strategy-signal rule has no level to edit"}
         if level <= 0:
             return {"ok": False, "error": "the level must be positive"}
-        if r.mode == "pct" and level >= 100:
+        from app.services import advanced_rules as _adv
+        if r.rule_type in _adv.ADV_TYPES:
+            try:
+                level, _ = _adv.validate(r.rule_type, level, None)
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+        elif r.mode == "pct" and level >= 100:
             return {"ok": False, "error": "a percentage level must be below 100"}
         if not force:
             warn = await cap_below_plan(session, user, r.ticker, r.rule_type, level)
@@ -1357,11 +1496,21 @@ async def update_rule(session: AsyncSession, user: User, rule_id: str, *,
         r.level = level                  # a trailing stop keeps its high-water mark
     if note is not None:
         r.note = note.strip()[:160] or None
+    if params:
+        from app.services import advanced_rules as _adv
+        try:
+            _, clean = _adv.validate(r.rule_type, float(r.level), params)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        merged = dict(r.params or {})
+        merged.update(clean or {})
+        r.params = merged
     r.triggered = False
     r.active = True
     await session.commit()
     return {"ok": True, "id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
-            "mode": r.mode, "old_level": old, "level": float(r.level), "note": r.note}
+            "mode": r.mode, "old_level": old, "level": float(r.level), "note": r.note,
+            "params": r.params}
 
 
 async def delete_rule(session: AsyncSession, user: User, rule_id: str) -> bool:

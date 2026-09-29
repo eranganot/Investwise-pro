@@ -51,7 +51,10 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # PR 72: a rule that fights a sleeve. Accept carries a
                      # choice -- sell the slice and lower the sleeve, or keep
                      # the position and move the rule. Either changes something.
-                     "rule_vs_sleeve"}
+                     "rule_vs_sleeve",
+                     # PR 81: a tuning card edits a rule; the one-time card
+                     # converts caps into rebalance bands.
+                     "edit_rule", "caps_to_bands"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -2216,6 +2219,30 @@ async def build_recommendations(session: AsyncSession, user: User,
         logger.warning("triggered trading-rule recommendations failed", exc_info=True)
         degraded.append("trading_rules")
 
+    # PR 81 -- the advanced rules' own cards: a band BUY (funded through
+    # `propose_funded_buy`), the drawdown de-risk, a trend stop without a measured
+    # edge, tuning suggestions, and the one-time caps-to-bands offer.
+    try:
+        async with _agent_tx(session):
+            from app.services.advanced_rules import extra_cards
+            _adv_cards = await extra_cards(
+                session, user, rows=rows, snap=snap, plan=plan, objective=objective,
+                cap=cap, cash=_cash_ils, book_target=btgt.get("target"), name_caps=_name_caps,
+                ledger=_ledger)
+            # A trend-break rule is the user's own subscription to the signal the
+            # holding review also reads; one card per ticker, the rule's.
+            _trend_tks = {str((c.get("meta") or {}).get("ticker") or "").upper()
+                          for c in recs + _adv_cards
+                          if (c.get("meta") or {}).get("rule_type") == "trend_break"}
+            if _trend_tks:
+                recs = [r for r in recs if not (
+                    r.get("dimension") == "holding_review"
+                    and str((r.get("meta") or {}).get("ticker") or "").upper() in _trend_tks)]
+            recs += _adv_cards
+    except Exception:  # noqa: BLE001
+        logger.warning("advanced rule cards failed", exc_info=True)
+        degraded.append("advanced_rules")
+
     # The active rule-based strategy changing its mind is the same class of event
     # as a trading rule firing: a discipline the user chose, speaking. Acting
     # late on it is the main reason a rule underperforms its own backtest.
@@ -2572,11 +2599,23 @@ async def build_recommendations(session: AsyncSession, user: User,
             _ap = r.get("apply") or {}
             if _ap.get("kind") == "rebalance_to_objective":
                 return True
+            # PR 81: a buy YOUR RULE produced (a rebalance band below its
+            # target) is not a competitor to be dropped -- it is the user's own
+            # discipline, and dropping it left the rule latched with no card,
+            # which the banner heal then silently acknowledged.
+            if str(r.get("id", "")).startswith("rule_"):
+                return False
             # Any sized buy of a ticker the redeploy card already funds, whoever
             # emitted it (war room, commodities, momentum...).
             return _ap.get("kind") in ("buy_funded", "buy") and _ap.get("ticker") in _legs
         recs = [r for r in recs if not _competes(r)]
-        recs += _redeploy
+        # One pot of money, one card: when a rule's own buy spends into a ticker
+        # the redeploy card also funds, the rule's card is the one shown.
+        _rule_buys = {(r.get("apply") or {}).get("ticker") for r in recs
+                      if str(r.get("id", "")).startswith("rule_")
+                      and (r.get("apply") or {}).get("kind") in ("buy_funded", "buy")}
+        if not (_rule_buys & _legs):
+            recs += _redeploy
 
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
@@ -5314,7 +5353,9 @@ async def _rule_vs_plan_decisions(session: AsyncSession, user: User, recs: list[
             rule = await session.get(_TR, uuid.UUID(str(spec["rule_id"])))
             tk = str(spec.get("ticker") or getattr(rule, "ticker", "")).upper()
             t = float(targets.get(tk) or 0.0)
-            if rule is None or t <= 0 or rule.rule_type in ("stop_loss", "trailing_stop"):
+            from app.services.advanced_rules import PROTECTIVE as _PROT
+            if (rule is None or t <= 0 or rule.rule_type in _PROT
+                    or rule.rule_type == "rebalance_band"):
                 out.append(card)
                 continue
             if idx is None:
@@ -5487,6 +5528,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                     session, user, ticker=spec["ticker"], sold_price=res["price"],
                     shares=res["shares"], strategy_id=None, rule_id=None)
                 await session.commit()
+            if spec.get("hold_until_rule") and res["shares"] > 0:
+                from app.services import buyback_hold as _bh
+                detail["buyback_hold"] = await _bh.record(
+                    session, user, ticker=spec["ticker"], sold_price=res["price"],
+                    shares=res["shares"], strategy_id=None, rule_id=spec.get("rule_id"),
+                    until_rule=str(spec["hold_until_rule"]))
+                await session.commit()
     elif kind == "sell_position":
         # A stop-loss / trailing stop / take-profit is a full exit by definition.
         # The position leaves the book and the net-of-CGT proceeds land in cash,
@@ -5541,6 +5589,15 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await _apply_buy_funded(session, user, spec)
     elif kind == "core_to_basket":
         detail = await _apply_core_to_basket(session, user, spec)
+    elif kind == "edit_rule":
+        from app.services.rules_service import update_rule
+        detail = await update_rule(session, user, str(spec.get("target_rule_id")),
+                                   level=spec.get("level"), params=spec.get("params"),
+                                   force=True)
+        detail = {"rule_edited": detail}
+    elif kind == "caps_to_bands":
+        from app.services.advanced_rules import apply_caps_to_bands
+        detail = await apply_caps_to_bands(session, user, spec)
     elif kind == "redeploy_cash":
         detail = await _apply_redeploy_cash(session, user, spec)
     elif kind == "set_standing_order":

@@ -1,4 +1,4 @@
-# PR 80 plan: four advanced trading rules (for approval, nothing built yet)
+# Advanced trading rules: APPROVED 2026-09-29, built as PR 80 (migration) + PR 81 (rules)
 
 _2026-09-29. Eran asked for "a few more trading rules (more advanced ones)" and picked all four below.
 Builds on PR 79 (rule edit and plan-target conflicts). Nothing here gets coded until he approves it._
@@ -50,7 +50,10 @@ Builds on PR 79 (rule edit and plan-target conflicts). Nothing here gets coded u
   withdrawal isn't a drawdown). It uses the same flow-aware logic as the NAV chart.
 - **Fires:** an alert (push) plus a Today card. See Decision 3 for what the card offers.
 
-## Decisions needed
+## Decisions (Eran, 2026-09-29 13:38)
+1a (migration), 2a (one-time card), 3a (alert + actionable de-risk), 4 defaults approved **plus**: "if they need to be changed a recommendation card should appear" (tuning cards).
+
+## Decisions as they were asked
 1. **Where the second parameter lives.** (a) *Recommended:* an additive migration `0025` with a
    nullable `params` JSON column on `trading_rules`. The PR 47 history is why this is flagged: the
    migration is additive only and ships alone, and `/health.schema_revision` is verified before the

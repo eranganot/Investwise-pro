@@ -17,6 +17,7 @@ class RuleIn(BaseModel):
     mode: str = "pct"    # pct|price
     level: float
     note: str | None = None
+    params: dict | None = None     # PR 81: e.g. {"activation_pct": 20} on a profit-protect
 
 
 @router.get("")
@@ -45,7 +46,7 @@ async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session)
     try:
         r = await rules_service.create_rule(
             session, user, ticker=body.ticker, rule_type=body.rule_type,
-            mode=body.mode, level=body.level, note=body.note)
+            mode=body.mode, level=body.level, note=body.note, params=body.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     warn = await rules_service.cap_below_plan(session, user, body.ticker, body.rule_type,
@@ -56,6 +57,7 @@ async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session)
 class RuleEdit(BaseModel):
     level: float | None = None
     note: str | None = None
+    params: dict | None = None
     force: bool = False      # save a cap below the plan target after the warning
 
 
@@ -66,7 +68,8 @@ async def edit_rule(rule_id: str, body: RuleEdit, session: AsyncSession = Depend
     plan's target returns `needs_confirm` with a suggested level; resend with
     `force: true` to save it anyway."""
     out = await rules_service.update_rule(session, user, rule_id, level=body.level,
-                                          note=body.note, force=body.force)
+                                          note=body.note, force=body.force,
+                                          params=body.params)
     if not out.get("ok") and not out.get("needs_confirm"):
         raise HTTPException(status_code=404 if out.get("error") == "rule not found" else 400,
                             detail=out.get("error"))
