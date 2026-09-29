@@ -235,3 +235,59 @@ async def test_an_old_kv_hold_is_migrated_into_a_rule():
             assert await s.get(KVSetting, f"buyback_holds:{user.email}"[:80]) is None
     finally:
         await eng.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# Found on the live card after deploy (2026-09-29 23:05): SOXL's 20-day vol
+# (115.7%) sat in the review ROW, but the card read `holding_review.stored()`
+# (the stored backtest, no metrics) and said "no volatility measurement".
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_the_split_uses_the_holds_measured_volatility(ils_quotes, monkeypatch):
+    import math as _m
+
+    from app.agents.screener_agent import OpportunityAgent
+    closes = [100.0 * (1 + 0.04 * _m.sin(i / 2.0)) for i in range(260)]
+    monkeypatch.setattr(OpportunityAgent, "_history", lambda self, t, n: (closes, "ok"))
+    eng, S = _session()
+    try:
+        async with S() as s:
+            user = await _book(s, "held_vol@example.com")
+            c, built = await _card(s, user)
+            soxl = next(r for r in built["holding_review"] if r["ticker"] == "SOXL")
+            assert soxl["metrics"]["vol_20d_pct"] > 0, "setup: the review measured it"
+            rd = c["apply"]["options"]["redeploy"]
+            assert rd["touch_probability"] is not None, rd["split_why"]
+            assert "No volatility measurement" not in rd["split_why"]
+    finally:
+        await eng.dispose()
+
+
+def test_plan_legs_are_labelled_honestly_and_never_suggested_above_their_limit():
+    holds = {"SOXL": {"level": 142.29, "price_now": 146.93, "vol_20d_pct": None}}
+    legs = [{"ticker": "VTI", "amount_ils": 627.92, "asset_class": "Equities",
+             "reason": "at plan weight"},
+            {"ticker": "BND", "amount_ils": 400.0, "asset_class": "Fixed Income",
+             "reason": "under"}]
+    c = rr._held_cash_card(holds, 1713.49, 1863.0, 1500.0, nav=23474.46,
+                           mix={"Equities": 0.693, "Fixed Income": 0.10},
+                           target={"Equities": 0.6871, "Fixed Income": 0.1214},
+                           under_legs=legs, ideas=[])
+    d = {x["ticker"]: x for x in c["apply"]["options"]["redeploy"]["destinations"]}
+    assert d["VTI"]["plan_label"] == "keeps the plan's mix"
+    assert d["BND"]["plan_label"] == "under target"
+    for x in d.values():
+        assert x["suggested_ils"] <= x["max_ils"] + 1e-9, x
+
+
+@pytest.mark.asyncio
+async def test_the_rule_row_does_not_call_the_plan_gap_cash(ils_quotes):
+    from app.services import rules_service as rs
+    eng, S = _session()
+    try:
+        async with S() as s:
+            user = await _book(s, "held_status@example.com")
+            row = next(r for r in await rs.list_rules(s, user) if r["rule_type"] == "buy_back")
+            assert "of cash waiting" not in (row.get("status") or ""), row.get("status")
+    finally:
+        await eng.dispose()

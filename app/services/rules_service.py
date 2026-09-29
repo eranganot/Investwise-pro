@@ -1316,7 +1316,11 @@ def _adv_status(r, pos: dict) -> str | None:
         held = ""
         if t is not None and pos.get("nav"):
             amt = max(0.0, (float(t) - float(pos.get("weight_pct") or 0)) / 100.0 * float(pos["nav"]))
-            held = f"₪{amt:,.0f} of cash waiting · "
+            # The gap to the PLAN target, not cash: the cash actually reserved is
+            # capped by what you hold above the floor, and the Today card shows
+            # that (live: this row said "₪1,995 of cash waiting" beside a card
+            # reserving ₪1,713).
+            held = f"plan wants ₪{amt:,.0f} more · "
         gap = (cur / float(r.level) - 1.0) * 100.0 if r.level else 0.0
         return f"{held}{cur:,.2f} now ({gap:+.1f}% vs the level)"
     if r.rule_type == "drawdown_guard":

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 83, a card for cash a hold keeps back; holds are buy-back rules). Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 84, the held-cash split reads the hold's volatility). Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -180,6 +180,31 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 
 ---
 
+## PR 84 — the held-cash split read no volatility; three honesty fixes found by the PR 83 smoke
+
+_2026-09-29 23:05, the first live read of PR 83 (smoke-pr83-held-cash-and-buy-back-rules.ps1:
+24 pass / 0 fail) and its payload._
+
+**Volatility — root cause (PROVEN, live).** The card said "No volatility measurement for SOXL yet"
+while the same `/recommendations` payload carried `holding_review[SOXL].metrics.vol_20d_pct = 115.7`.
+PR 83 read `holding_review.stored()`, which is the STORED BACKTEST (`ticker, engine_version,
+long, short`) — it has no `metrics`, so the lookup was always None and the split fell back to
+50/50. **Fix:** read `vol_20d_pct` from the review rows Today already built in the same request.
+**Why silent:** the PR 83 tests never had price history, so the fallback was the only path they saw.
+Test: `test_the_split_uses_the_holds_measured_volatility` (fails without the fix, verified).
+**Consequence on the live book:** SOXL 146.93 vs level 142.29 at 115.7% vol → about a 92% chance of
+touching within a month, so the suggestion keeps most of the ₪1,713 reserved (the ₪630 VTI leg
+disappears when the remainder is under the ₪250 minimum). The user can still set any amounts.
+
+**Also from the same payload (all observed, self-evident):**
+- VTI was labelled "under target" with Equities at 69.3% vs 68.71%. A plan leg is now `kind: plan`
+  with `plan_label` "under target" only when its class is under, else "keeps the plan's mix".
+- VTI's suggestion ₪630 exceeded its ₪627.92 limit: amounts rounded to the nearest 10, now down.
+- The Rules row said "₪1,995 of cash waiting" beside a card reserving ₪1,713. The row shows the gap
+  to the plan target; the card shows cash (capped by cash above the floor). The row now says
+  "plan wants ₪1,995 more".
+Tests: `tests/test_held_cash_has_a_card.py` (+3).
+
 ## PR 83 — cash above the trigger that a buy-back hold keeps back gets a card
 
 _2026-09-29 21:46, Eran: "I have more than 1500 in cash but still no recommendation card on how to
@@ -204,7 +229,7 @@ and be actionable.** Answers: push + buy-back card below the level; top 5 ideas;
 that need not be 50/50.
 - **A hold is now a rule** (`rule_type: buy_back`, level = the buy-back price, params
   `shares/strategy_id/rule_id/until_rule/at`). Visible in Rules ("↩️ Buy back below 142.29",
-  status "₪X of cash waiting · price now (+x% vs the level)"), editable with ✏️ (PATCH moves the
+  status "plan wants ₪X more · price now (+x% vs the level)"; PR 84 relabel), editable with ✏️ (PATCH moves the
   level the hold uses), deletable (ends the hold). The old `kv_settings buyback_holds:<email>` blob
   is migrated into rows on first read and the KV row deleted (`buyback_hold._migrate_kv`), so the
   live SOXL 142.29 hold appears as a rule after deploy with no manual step.

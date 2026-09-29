@@ -2062,15 +2062,15 @@ async def build_recommendations(session: AsyncSession, user: User,
     _reserve = (0.0 if ignore_cash_reserve else
                 round(sum((btgt.get("held_back") or {}).values()) * (snap.get("nav") or 0.0), 2))
     # PR 83: a hold's own volatility sizes the held-cash card's suggested split.
+    # The volatility is in the review ROWS built above (`metrics`), not in
+    # `holding_review.stored()` -- that is the stored backtest (long/short), and
+    # reading `metrics` from it gave None on production (SOXL: 115.7% sat in
+    # the review row while the card said "no volatility measurement").
     if _holds_active and not ignore_cash_reserve:
-        try:
-            from app.services import holding_review as _hrv
-            _st = await _hrv.stored(session, list(_holds_active))
-            for _tk in _holds_active:
-                _holds_active[_tk]["vol_20d_pct"] = (
-                    ((_st.get(_tk) or {}).get("metrics") or {}).get("vol_20d_pct"))
-        except Exception:  # noqa: BLE001 - the card says it does not know
-            pass
+        _rv = {str(r.get("ticker") or "").upper(): r for r in (_review or [])}
+        for _tk in _holds_active:
+            _holds_active[_tk]["vol_20d_pct"] = (
+                ((_rv.get(_tk.upper()) or {}).get("metrics") or {}).get("vol_20d_pct"))
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"], _name_caps,
                                _sleeve_share, _holds_active, _reserve, _ideas)
@@ -4096,7 +4096,7 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
         tk = str(leg.get("ticker") or "").upper()
         if tk and tk not in held_set:
             cls = leg.get("asset_class") or classify(tk, None)
-            dests.append({"ticker": tk, "name": tk, "kind": "under_target", "asset_class": cls,
+            dests.append({"ticker": tk, "name": tk, "kind": "plan", "asset_class": cls,
                           "why": [leg.get("reason") or f"{cls} is under its target"],
                           "max_ils": float(leg.get("amount_ils") or 0.0)})
     seen = {d["ticker"] for d in dests} | held_set
@@ -4117,6 +4117,12 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
         cls = d["asset_class"]
         d["class_now_pct"] = round(float(mix.get(cls, 0.0)) * 100.0, 2)
         d["class_target_pct"] = round(float(target.get(cls, 0.0)) * 100.0, 2)
+        # Say which it is: a leg the plan itself would buy is "under target"
+        # only when its class IS under target (live: VTI was labelled under
+        # target with Equities at 69.3% vs 68.7%).
+        if d["kind"] == "plan":
+            d["plan_label"] = ("under target" if d["class_now_pct"] < d["class_target_pct"]
+                               else "keeps the plan's mix")
 
     # ---- the suggested split -------------------------------------------------
     # Keep what the held ticker is LIKELY to need: the chance it touches its
@@ -4133,15 +4139,15 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
     left = invest
     for d in dests:
         d["suggested_ils"] = 0.0
-    for d in [x for x in dests if x["kind"] == "under_target"]:
-        amt = round(min(left, d["max_ils"]) / 10.0) * 10.0
+    for d in [x for x in dests if x["kind"] == "plan"]:
+        amt = math.floor(min(left, d["max_ils"]) / 10.0) * 10.0
         if amt >= _fund.MIN_TRADE_ILS:
             d["suggested_ils"] = amt
             left = round(left - amt, 2)
     top = [x for x in dests if x["kind"] == "idea"][:2]
     tot = sum(float(x.get("score") or 1) for x in top) or 1.0
     for d in top:
-        amt = round(left * float(d.get("score") or 1) / tot / 10.0) * 10.0
+        amt = math.floor(left * float(d.get("score") or 1) / tot / 10.0) * 10.0
         if amt >= _fund.MIN_TRADE_ILS:
             d["suggested_ils"] = amt
     suggested = round(sum(d["suggested_ils"] for d in dests), 2)

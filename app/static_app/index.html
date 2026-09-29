@@ -1308,14 +1308,14 @@ function heldCashBlock(o){
   const tile=(c,t,d,btn)=>`<div class="dopt${r===c?" rec":""}">${tag(c)}<div class="dt">${t}</div><div class="dd">${d}</div><div class="dgo"><button onclick="decideCash('${id}','${c}')">${btn}</button></div></div>`;
   const rows=ds.map((d,i)=>`<div class="hcrow">
       <div class="hcname"><b>${esc(d.ticker)}</b>${d.name&&d.name!==d.ticker?` <span class="muted">${esc(d.name)}</span>`:""}
-        <span class="muted"> · ${d.kind==="idea"?`screener idea${d.score!=null?" "+Number(d.score).toFixed(0):""}`:"under target"} · ${esc(d.asset_class||"")}</span></div>
+        <span class="muted"> · ${d.kind==="idea"?`screener idea${d.score!=null?" "+Number(d.score).toFixed(0):""}`:esc(d.plan_label||"your plan")} · ${esc(d.asset_class||"")}</span></div>
       <div class="dd">${(d.why||[]).map(esc).join(" · ")}</div>
       <div class="hcamt"><label>₪ <input type="number" min="0" step="10" id="hc_${id}_${i}" value="${d.suggested_ils||""}" placeholder="0" oninput="hcUpdate('${id}')"/></label>
         <span class="dd" id="hcmix_${id}_${i}"></span></div></div>`).join("");
   const elsewhere=`<div class="dopt${r==="redeploy"?" rec":""}">${tag("redeploy")}
       <div class="dt">Invest part of it elsewhere</div>
       <div class="dd">${esc(rd.split_why||"")}</div>
-      ${ds.length?rows:`<div class="dd">Nothing else is under target and the screener has no ideas right now.</div>`}
+      ${ds.length?rows:`<div class="dd">The plan has nowhere else to put it and the screener has no ideas right now.</div>`}
       <div class="dd" id="hctot_${id}"></div>
       <div class="dgo"><button onclick="decideCash('${id}','redeploy')" ${ds.length?"":"disabled"}>Invest these amounts</button></div></div>`;
   setTimeout(()=>hcUpdate(id),0);
