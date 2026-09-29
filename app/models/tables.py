@@ -422,6 +422,9 @@ class TradingRule(Base, PKMixin, TimestampMixin):
     # 0.25); zero would mean a rule that sells nothing. Only `take_profit` reads
     # it -- a stop-loss and a trailing stop are full exits by definition.
     trim_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # PR 80: the advanced rules' second settings (activation gain, held-back
+    # tickers...). Null = house defaults. See alembic 0025_rule_params.
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     note: Mapped[str | None] = mapped_column(String(160), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     triggered: Mapped[bool] = mapped_column(Boolean, default=False)

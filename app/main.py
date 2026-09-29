@@ -116,6 +116,9 @@ async def lifespan(app: FastAPI):
                     # (25%), zero would mean a rule that sells nothing.
                     "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
                     "trim_fraction DOUBLE PRECISION",
+                    # PR 80: the advanced rules' second settings (0025).
+                    "ALTER TABLE trading_rules ADD COLUMN IF NOT EXISTS "
+                    "params JSON",
                     # PR 3: the trade ledger becomes writable. `transactions`
                     # already existed (unwritten), so create_all will not touch
                     # it -- these columns have to be added by hand, and

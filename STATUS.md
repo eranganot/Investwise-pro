@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 79, editable rules; rules vs the core target). Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 80, migration 0025 rule params). Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,15 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 80 — migration 0025: `trading_rules.params` (add-only, ships alone)
+
+_2026-09-29, Eran's decision 1 on the advanced-rules plan: "a small add-only database migration"._
+One nullable JSON column for the advanced rules' second settings (PR 81). Guarded like 0021–0024 and
+mirrored into `main.py`'s ADD COLUMN list. Shipped ALONE, before any code reads it, because of PR 47:
+`/health.schema_revision` must read `0025_rule_params` before PR 81 goes out.
+Sandbox check on Postgres 16: fresh `upgrade head`; 0024 → 0025 on a table WITHOUT the column (the
+production shape) adds it; `downgrade -1` removes it; upgrade again is clean.
 
 ## PR 79 — rules are editable; a rule may not trim a holding through its own plan's target
 
