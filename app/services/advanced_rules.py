@@ -204,7 +204,8 @@ def execution_plan(rule, pos: dict) -> dict | None:
 # --------------------------------------------------------------------------- #
 # Context: what the pure half reads
 # --------------------------------------------------------------------------- #
-def drawdown_from(points: list[dict], flows: list[dict], nav_now: float | None) -> dict | None:
+def drawdown_from(points: list[dict], flows: list[dict], nav_now: float | None,
+                  traded=None) -> dict | None:
     """Flow-adjusted drawdown from the daily snapshots (`time_weighted`), with
     today's live NAV appended as one more step when it is given."""
     from app.services.nav_history import time_weighted
@@ -220,15 +221,22 @@ def drawdown_from(points: list[dict], flows: list[dict], nav_now: float | None) 
             pts[-1] = {**pts[-1], "nav_ils": float(nav_now)}
     if len(pts) < 2:
         return None
-    tw = time_weighted(pts, flows)
-    pct = [p for p in (tw.get("pct") or []) if p is not None]
-    if len(pct) < 2:
+    # PR 82: WITH THE TRADE LEDGER, exactly as the NAV chart (`series_for`) calls
+    # it. Without `traded`, every day the holding COUNT changed was "unmeasured"
+    # -- 13 days on the live book, including the whole 09-17 -> 09-22 SOXL rally
+    # -- and dropping them kept the falls and lost the rises: 13.3% "drawdown"
+    # against a real 5.26%. And the Nones must be dropped as (date, pct) PAIRS:
+    # filtering pct alone shifted every later date (the peak read "09-03").
+    tw = time_weighted(pts, flows, traded=traded)
+    pairs = [(d, p) for d, p in zip(tw.get("dates") or [], tw.get("pct") or [])
+             if p is not None]
+    if len(pairs) < 2:
         return None
-    idx = [1.0 + p / 100.0 for p in pct]
+    idx = [1.0 + p / 100.0 for _d, p in pairs]
     peak_i = max(range(len(idx)), key=lambda i: idx[i])
     dd = max(0.0, (1.0 - idx[-1] / idx[peak_i]) * 100.0)
-    return {"dd_pct": round(dd, 2), "peak_on": (tw.get("dates") or [None] * len(idx))[peak_i],
-            "points": len(idx)}
+    return {"dd_pct": round(dd, 2), "peak_on": pairs[peak_i][0], "points": len(idx),
+            "unmeasured_days": len(tw.get("unmeasured_days") or [])}
 
 
 async def book_drawdown(session, user, nav_now: float | None = None) -> dict | None:
@@ -243,7 +251,13 @@ async def book_drawdown(session, user, nav_now: float | None = None) -> dict | N
                "invested_ils": float(r.invested_ils or 0.0),
                "positions": int(r.positions or 0)} for r in rows]
     flows = await list_contributions(session, user)
-    return drawdown_from(points, flows, nav_now)
+    from app.services.ledger_service import traded_dates
+    _traded = await traded_dates(session, user)
+
+    def traded(after: str, upto: str) -> bool:
+        # Half-open, matching `nav_history.series_for` and `net_flow_between`.
+        return any(after < d <= upto for d in _traded)
+    return drawdown_from(points, flows, nav_now, traded=traded)
 
 
 async def augment(session, user, idx: dict, nav: float, rules) -> dict:

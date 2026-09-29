@@ -78,7 +78,14 @@
   .ghead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:0 0 6px;padding:0 0 8px;border-bottom:1px solid var(--line)}
   .ghead .gtk{font-size:15px;font-weight:800;letter-spacing:.2px}
   .ghead .gsub{font-size:12px;color:var(--mut)}
-  .rrow{display:flex;align-items:center;gap:10px;padding:8px 0}
+  /* PR 82: two lines. The edit button (PR 79) made the action group 102px, which
+     overflowed a 360px phone row -> page 489px wide -> Chrome zoomed out and the
+     fixed bottom tab bar fell below the screen. Rule + level on top; status and
+     actions underneath, so nothing on a row can push the page wider. */
+  .rrow{display:flex;flex-direction:column;align-items:stretch;gap:5px;padding:8px 0;min-width:0}
+  .rtop{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+  .rbot{display:flex;align-items:center;gap:8px;min-width:0}
+  .rbot>.rdist,.rbot>.rtrigtxt,.rbot>.rdupe{flex:1 1 auto;min-width:0}
   .rrow+.rrow{border-top:1px solid var(--line)}
   .rrow.trig{background:#2a1414;margin:0 -13px;padding:8px 13px;border-radius:8px}
   .rbadge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;flex:0 0 auto}
@@ -88,7 +95,7 @@
   .dtrack{height:6px;border-radius:999px;background:var(--soft);overflow:hidden}
   .dfill{height:100%;border-radius:999px}
   .dtxt{font-size:11px;color:var(--mut);margin-top:3px}
-  .racts{display:flex;gap:6px;flex:0 0 auto}
+  .racts{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
   .rdupe{font-size:11px;font-weight:600;color:var(--amber);background:#3a2a14;border-radius:6px;padding:3px 8px;display:inline-flex;align-items:center;gap:4px;flex:1}
   .rtrigtxt{flex:1;font-size:12px;font-weight:700;color:var(--red)}
   details.addrule{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:0 14px;margin:0 0 10px}
@@ -1522,7 +1529,9 @@ function renderRules(){
   box.innerHTML=gkeys.map(tk=>{
     const rs=groups[tk];
     const now=rs.find(r=>r.current_price!=null);
-    const nowTxt=now?`now ${Number(now.current_price).toFixed(2)}`:"no live price";
+    const nowTxt=tk==="__BOOK__"
+      ? `value ₪${Number((now||{}).current_price||0).toLocaleString(undefined,{maximumFractionDigits:0})}`
+      : (now?`now ${Number(now.current_price).toFixed(2)}`:"no live price");
     const rows=rs.map(x=>{
       const m=RULE_META[x.rule_type]||{label:x.rule_type,cls:"blue",icon:"•"};
       const isPct=x.mode!=="price";
@@ -1535,7 +1544,9 @@ function renderRules(){
       // renders "15.00" -- indistinguishable from a price, on a row that sits
       // directly under a stop-loss showing "65.70". Same units bug as the
       // triggered branch below, one line earlier.
-      const tgt=(x.unit==="pct_of_portfolio")
+      const tgt=(x.unit==="pct_drawdown") ? `${Number(x.level)}% drawdown`
+        : (x.unit==="trend") ? (Number(x.level)>=100?"50/200-day":"20/50-day")
+        : (x.unit==="pct_of_portfolio")
         ? `${Number(x.target!=null?x.target:x.level).toFixed(0)}% of book`
         : (x.target!=null?Number(x.target).toFixed(2):(isPct?`${x.level}%`:Number(x.level).toFixed(2)));
       const badge=`<span class="rbadge rb-${m.cls}">${m.icon} ${blabel}</span>`;
@@ -1553,7 +1564,8 @@ function renderRules(){
         // (`_ruleDist`) was built for exactly this bug -- its own comment cites
         // SOXL's $137.61 against a 10% cap -- and this branch was never
         // converted. The one branch that matters most was the one left behind.
-        const nowTxt = (x.unit==="pct_of_portfolio" && x.current!=null)
+        const nowTxt = x.status ? x.status
+          : (x.unit==="pct_of_portfolio" && x.current!=null)
           ? `${Number(x.current).toFixed(1)}% of book vs a ${Number(x.level).toFixed(0)}% cap`
           : (now ? `now ${Number(now.current_price).toFixed(2)}` : "");
         mid=`<span class="rtrigtxt">${stale?"🟠":"🔴"} ${stale?"Fired earlier — now back inside":"Triggered"}${nowTxt?` · ${nowTxt}`:""}</span>`;
@@ -1574,7 +1586,7 @@ function renderRules(){
       const acts=x._dupe
         ? `<span class="racts"><button class="del" title="Delete duplicate" onclick="deleteRule('${x.id}')">✕</button></span>`
         : `<span class="racts">${x.unit!=="signal"?`<button class="del" title="Edit rule" onclick="editRule('${x.id}')">✏️</button>`:""}<button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
-      return `<div class="rrow${x.triggered?' trig':''}">${badge}${lvl}${mid}${acts}</div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
+      return `<div class="rrow${x.triggered?' trig':''}"><div class="rtop">${badge}${lvl}</div><div class="rbot">${mid}${acts}</div></div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
     }).join("");
     return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk==="__BOOK__"?"Whole book":tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
   }).join("");

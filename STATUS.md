@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 81, four advanced trading rules). Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 82, Rules layout + drawdown measurement). Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,32 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 82 — the Rules tab pushed the page wider than the phone; the drawdown guard fired at 5.3%
+
+_2026-09-29, Eran (Pixel screenshots): "the layout doesn't look good, the tabs section (in the bottom
+of the screen) is missing". The same screenshot showed the new drawdown guard Triggered at 13.3%._
+
+**Layout — root cause (PROVEN, reproduced).** Rendered the live Rules tab at 360px with Playwright
+(production data via agent key): `scrollWidth 489` on a 360 viewport. Every overflowing element was
+a rule row's `.racts` (3 × 30px buttons = 102px) — the ✏️ button PR 79 added. Chrome zooms a too-wide
+page out, and the `position:fixed` bottom nav lands below the visible screen. Home/Plan were 360 wide,
+which is why the tabs were only missing there. **Fix:** a rule row is two lines (rule + level; then
+status + actions). Verified at 360 and 412: `scrollWidth == clientWidth`, no element past the edge,
+nav visible. Also: the drawdown row said "→ 10.00 · now 23362.03" (a price format on a % rule) — it
+now reads "→ 10% drawdown", the status line, and "value ₪23,362".
+
+**Drawdown — root cause (PROVEN, reproduced from the live snapshots).** `advanced_rules.book_drawdown`
+called `time_weighted` WITHOUT `traded=` (the ledger), which `nav_history.series_for` passes. So
+every day the holding count changed was "unmeasured" — 13 of 35, including the 09-17 → 09-22 SOXL
+rally — and dropping them kept the falls and lost the rises. The Nones were also filtered from `pct`
+alone, shifting every later date (peak "09-03"). Old call on live data: 13.34%, 13 unmeasured; fixed:
+**5.26%, peak 09-28, 0 unmeasured**. Ruled out: the 08-22 spike (time_weighted already excludes it);
+the contributions ledger (one 20,000 row, no flow in the window).
+**Why silent:** the PR 81 tests built books whose position count never changed.
+**Still true:** the 5.26% is today's phantom-cash correction (PR 78), which the snapshots will carry
+as a −5% day. Under the 10% default, so it does not fire.
+Test: `test_drawdown_measures_a_day_the_book_changed_shape_when_the_ledger_explains_it`.
 
 ## PR 81 — four advanced trading rules (band, profit-protect, trend break, drawdown guard)
 

@@ -421,3 +421,22 @@ async def test_a_band_breached_below_becomes_a_funded_buy_on_today(ils_quotes):
             assert abs(after - before + float(out.get("tax_ils") or 0)) < 1.0, (before, after, out)
     finally:
         await eng.dispose()
+
+
+def test_drawdown_measures_a_day_the_book_changed_shape_when_the_ledger_explains_it():
+    """PR 82, the live 13.3% false trigger: without the trade ledger, a day the
+    holding COUNT changed was unmeasured and dropped -- the rise on it was lost,
+    the falls kept, and the remaining values were paired with the wrong dates."""
+    pts = [{"as_of": "2026-09-01", "nav_ils": 100.0, "invested_ils": 0, "positions": 3},
+           {"as_of": "2026-09-02", "nav_ils": 90.0, "invested_ils": 0, "positions": 3},
+           # +30%, and a holding was bought the same day (count 3 -> 4)
+           {"as_of": "2026-09-03", "nav_ils": 117.0, "invested_ils": 0, "positions": 4},
+           {"as_of": "2026-09-04", "nav_ils": 111.15, "invested_ils": 0, "positions": 4}]
+    def traded(a, u):
+        return a < "2026-09-03" <= u
+    dd = adv.drawdown_from(pts, [], None, traded=traded)
+    assert dd["unmeasured_days"] == 0
+    assert dd["peak_on"] == "2026-09-03", "the peak must carry its own date"
+    assert dd["dd_pct"] == pytest.approx(5.0, abs=0.01)
+    blind = adv.drawdown_from(pts, [], None)          # the PR 81 call shape
+    assert blind["dd_pct"] > dd["dd_pct"], "without the ledger the rise is lost"
