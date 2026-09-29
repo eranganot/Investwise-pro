@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-28 by Claude (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 78, phantom cash in the core realign). Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,49 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 78 — realigning the core paid for its buys with money that did not exist
+
+_2026-09-29, Eran: "fix it ASAP" after the book jumped to +41% overnight with no market open._
+
+**Symptom.** NAV 24,660.09 at the 09-28 22:10 snapshot → 28,246.86 at 09-29 08:50, US market
+closed the whole time. Headline +41.23% on the 20,000 contributed.
+
+**Root cause (PROVEN — live reconciliation + reproduction).** `_apply_core_to_basket` topped its
+buy budget up from cash with `credit_cash(session, user, -cash_top)`. `credit_cash` returns 0 and
+does nothing for any amount <= 0; the handler checked `credited is not None`, 0 passed, and the
+budget grew by `cash_top` while the balance never moved. Any unspent remainder was then credited to
+cash a second time. Live since PR 39 (`4076ef1`, 2026-09-02).
+- Live: today's trades (SOXL trim, BND full sell, core realign buying 13.8723 BND + 0.601 VTI, QQQ
+  redeploy, VTI trim) should have moved cash by about +965; it moved +4,643. The gap, 3,678.3, is the
+  realign's buy cost (3,678.49) to within the estimated tax.
+- Reproduced: `tests/test_realigning_the_core_pays_for_what_it_buys.py` — on the old code a 400 ILS
+  cash-funded realign left cash at 621.79 and NAV +400; a 5,000 plan against 621.79 of cash made
+  NAV +5,000. Four of four failed; all pass on the fix.
+
+**Ruled out.** Market movement (no session between snapshot and now; prices identical to the 09-28
+close, FX 3.0633 both sides). The contributions baseline (one 20,000 deposit, unchanged). The other
+five accepts: their share deltas × price account for every other shekel of cash.
+
+**Why silent.** Every earlier test of this path inspected the handler's SOURCE (`inspect.getsource`),
+never applied it to a book. The accept's `NAV CONSERVATION BREACH` log only reports. The NAV chart
+books any new holding as "money moved between your holdings", so the jump read as performance.
+
+**Fix.** Debit with `set_cash(balance - cash_top)`, clamped to today's balance. `credit_cash` now
+raises on a negative amount instead of ignoring it (it was the only such call). Realign buys now carry
+`value_ils`/`price` and `record_legs` reads `ils`, so the ledger stops recording them at 0 ILS.
+New read-only `GET /api/v1/portfolio/ledger` for auditing accepts without DB access.
+
+**Data correction (done 09-29 09:10 UTC, before the deploy):** cash adjusted −3,678.49 via
+`POST /portfolio/cash {mode: adjust}`. NAV 28,246.86 → 24,568.37 (+22.84%) = the 09-28 snapshot
+less the SOXL trim's CGT.
+
+**Open: earlier realign accepts.** `rec_2d1727` was accepted 13 times (09-02 → 09-29). Buys at
+daily closes: 09-02 VTI ~3,431; 09-04 BND ~321; 09-06 VTI ~413 + ~713; 09-25 VTI ~595; 09-26 VTI
+~596 + ~1,566. Money created per accept = max(0, buys − net sale proceeds). 09-02 → 09-06 sold
+V/TQQQ/SOXL/BND/VTI at 0 recorded shares (blind sells), so their proceeds are unknown from the
+API; 09-25/26 need the ledger endpoint this PR adds. `unexplained_basis_ils` after the correction:
+3,441.77 (was 7,120.26).
 
 ## PR 77 — a holding review per holding; it sells only when selling has paid, otherwise it arms a stop
 

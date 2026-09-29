@@ -349,6 +349,12 @@ async def credit_cash(session: AsyncSession, user: User, amount_ils: float,
     Returns the amount credited (0 if non-positive).
     """
     amount_ils = float(amount_ils or 0.0)
+    if amount_ils < -0.005:
+        # A negative credit is a debit, and this function has never performed
+        # one: it returned 0 and changed nothing. `_apply_core_to_basket` used
+        # it to pay for purchases, so they were paid for by nobody. Fail loudly;
+        # debits go through `set_cash(balance - amount)`.
+        raise ValueError(f"credit_cash cannot debit ({amount_ils}); use set_cash")
     if amount_ils <= 0:
         return 0.0
     rows = await list_positions(session, user)

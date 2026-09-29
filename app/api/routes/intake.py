@@ -684,6 +684,28 @@ async def ledger_repair_apply(body: LedgerRepairRequest,
     return out
 
 
+@router.get("/portfolio/ledger")
+async def read_ledger(limit: int = 200, session: AsyncSession = Depends(get_session),
+                      user: User = Depends(acting_user)) -> dict:
+    """READ-ONLY. The trade ledger, newest first: every leg an accept wrote,
+    with its source. The only way to audit what an accept did after the fact
+    without database access."""
+    from sqlalchemy import select
+
+    from app.models.tables import NavSnapshot
+    from app.services.ledger_service import recent
+    rows = await recent(session, user, limit=max(1, min(int(limit), 2000)))
+    # The daily snapshots' cash beside the trades: a day's cash change that the
+    # day's trades cannot explain is money an accept created or destroyed.
+    snaps = (await session.execute(
+        select(NavSnapshot).where(NavSnapshot.subject == getattr(user, "email", None))
+        .order_by(NavSnapshot.as_of))).scalars().all()
+    return {"count": len(rows), "entries": rows,
+            "snapshots": [{"as_of": n.as_of, "nav_ils": float(n.nav_ils or 0),
+                           "cash_ils": float(n.cash_ils or 0),
+                           "positions": n.positions} for n in snaps]}
+
+
 @router.get("/portfolio/position-history")
 async def read_position_history(ticker: str, range: str = "1M",
                                 session: AsyncSession = Depends(get_session),

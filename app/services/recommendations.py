@@ -5924,7 +5924,8 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
     from app.providers.registry import guarded_quote
     from app.schemas.state_machine import Market
     from app.services.fx import book_nav_ils, fx_rate, price_currency
-    from app.services.intake_service import buy_into_book, credit_cash
+    from app.services.intake_service import (
+        buy_into_book, credit_cash, get_cash, set_cash)
 
     objective = spec.get("objective")
     rows = await list_positions(session, user)
@@ -6002,10 +6003,20 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
     # Cash may top the buys up, but never below the floor the app enforces
     # everywhere else -- a realignment that leaves the book unable to pay for
     # anything is not an improvement.
+    #
+    # DEBIT IT FOR REAL. This used to call `credit_cash(-cash_top)`, which is a
+    # no-op for any amount <= 0, and then added `cash_top` to the budget anyway:
+    # every cash-funded realign bought its ETFs with money the book never had,
+    # and the unspent remainder was credited a second time below. Production,
+    # 2026-09-29: +3,678 ILS of NAV from one accept, no market open.
+    # Clamp to today's balance -- the plan may be sized on an older book.
     cash_top = float(plan.get("cash_used_ils") or 0.0)
     if cash_top > 0:
-        credited = await credit_cash(session, user, -cash_top)
-        budget += cash_top if credited is not None else 0.0
+        cash_before = await get_cash(session, user)
+        cash_top = min(cash_top, max(0.0, cash_before))
+        if cash_top > 0:
+            await set_cash(session, user, round(cash_before - cash_top, 2))
+            budget += cash_top
 
     for leg in sorted(buys, key=lambda x: -float(x["ils"])):
         tk = leg["ticker"]
@@ -6018,8 +6029,11 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
         await buy_into_book(session, user, ticker=tk, market=mk, price=px,
                             shares=native / px, asset_class=leg.get("asset_class"))
         budget -= spend
-        bought.append({"ticker": tk, "ils": round(spend, 2),
-                       "shares": round(native / px, 4)})
+        # `price` and `value_ils` so the ledger records what the buy cost: with
+        # only `ils`, every realign buy went in at 0 ILS and the audit of the
+        # phantom-cash defect had to re-price them from daily closes.
+        bought.append({"ticker": tk, "ils": round(spend, 2), "value_ils": round(spend, 2),
+                       "price": px, "shares": round(native / px, 4)})
 
     if budget > 0:
         await credit_cash(session, user, budget)

@@ -90,7 +90,8 @@ async def record_legs(session, user, *, sold=None, bought=None, source=None, not
         await record_leg(
             session, user, ticker=leg.get("ticker"), txn_type=BUY,
             quantity=leg.get("shares") or 0, price=leg.get("price") or 0,
-            value_ils=leg.get("amount_ils") or leg.get("value_ils") or 0,
+            value_ils=(leg.get("amount_ils") or leg.get("value_ils")
+                       or leg.get("ils") or 0),
             market=leg.get("market"), source=source, note=note)
 
 
