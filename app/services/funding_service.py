@@ -872,6 +872,14 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         return None
     if kind == "within_class_swap" and not allow_within_class_swap:
         return None
+    # PR 87: a class already at its target (gap under the minimum) admits ONLY
+    # a swap. The sizing above lets such a buy take the name's whole room so a
+    # same-class swap can be any size -- but when the funding came from cash or
+    # another class it is not a swap, it is an overshoot. Production 2026-09-30:
+    # Fixed Income 14.26% vs 14.60% (gap ~₪80) sized to ₪841 from cash + USO,
+    # taking it to 17.5% and labelled "toward target".
+    if gap < MIN_TRADE_ILS and kind != "within_class_swap":
+        return None
 
     # The buy can be right about its OWN class and still leave the book worse
     # off, because the money came out of a class that was already short.

@@ -1319,6 +1319,16 @@ async def build_recommendations(session: AsyncSession, user: User,
     # gone is re-sourced from what remains rather than dropped.
     from app.services import funding_service as _fs
     _ledger = _fs.FundingLedger()
+    # PR 87: a buy-back hold's reserve is cash already spoken for. Before this
+    # only the cash card subtracted it, so every funded buy saw the reserve as
+    # free -- production 2026-09-30: "Add to BND ₪841" funded with ₪553.49 from
+    # cash, the exact ₪553 Eran had kept for SOXL. Committing it to the shared
+    # ledger up front makes every card in this build plan around it (the cash
+    # card takes no ledger and subtracts the reserve itself, so no double count).
+    _hold_reserve = round(sum((btgt.get("held_back") or {}).values())
+                          * float(snap.get("nav") or 0.0), 2)
+    if _hold_reserve > 0:
+        _ledger.cash_ils = _hold_reserve
     # Which contributing agents failed this build. Each block below is defensive so a
     # data hiccup never breaks Today \u2014 but silence made a missing card
     # indistinguishable from "nothing to do", so failures are now logged and reported.

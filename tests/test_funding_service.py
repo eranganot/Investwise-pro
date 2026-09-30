@@ -345,3 +345,40 @@ def test_an_overweight_class_is_not_a_licence_to_sell_it_three_times():
     # 20 points of overweight on a 100k book is 20k of authorised selling, once.
     assert sold <= 20000 + 1000, f"raised {sold:,.0f} against a 20,000 budget"
     assert fund["shortfall_ils"] > 0, "and it must say it fell short, not pretend"
+
+
+
+# Eran's book on 2026-09-30 00:59, from production /portfolio, verbatim.
+_LIVE_0930 = [("QQQ", "NASDAQ", 2.0693, 737.93, 729.879, "Equities"),
+              ("BND", "NYSE", 15.1303, 70.23, 70.2758, "Fixed Income"),
+              ("VTI", "NYSE", 4.2114, 375.26, 378.5019, "Equities"),
+              ("USO", "NYSE", 3.2038, 143.35, 147.2347, "Commodities"),
+              ("CASH", "TASE", 703.49, 1.0, 1.0, "Cash"),
+              ("UGA", "NYSE", 2.878, 140.03, 142.31, "Commodities"),
+              ("SOXL", "NASDAQ", 16.4641, 147.0, 120.495, "Equities")]
+
+
+def test_a_class_at_target_admits_a_swap_but_not_an_overshoot_from_cash(monkeypatch):
+    """PR 87, replayed from production 2026-09-30: Fixed Income 14.26% against
+    14.60% (a ~₪80 gap, under the minimum) was sized to the name's whole room and
+    paid from ₪553.49 of cash + ₪287.26 of USO -- "Add to BND ₪841", taking it to
+    17.5% and labelled "toward target". Without the fix this call returns exactly
+    that card (verified); with a gap under the minimum only a same-class swap
+    may pass."""
+    from app.services import fx
+    monkeypatch.setattr(fx, "fx_rate", lambda c: 3.0561 if (c or "USD") == "USD" else 1.0)
+    rows = []
+    for tk, mkt, q, px, basis, cls in _LIVE_0930:
+        r = _Pos(tk, mkt, q, px, basis, cls)
+        r.meta["currency"] = "ILS" if tk == "CASH" else "USD"
+        rows.append(r)
+    nav = 23478.96
+    plan = SimpleNamespace(objective="Grow", cash_target_ils=150, cash_redeploy_at_ils=1500,
+                           cash_target_pct=None, concentration_cap=None)
+    buy = f.propose_funded_buy(
+        rows=rows, snap=_snap(nav), plan=plan, objective="Grow", cap=0.40,
+        ticker="BND", buying_class="Fixed Income", cash_ils=703.49,
+        book_target={"Equities": 0.724, "Fixed Income": 0.146, "Cash": 0.03, "Commodities": 0.1},
+        exclude={"SOXL", "QQQ", "VTI", "BND"}, allow_within_class_swap=True)
+    assert buy is None or buy.kind == "within_class_swap", (
+        buy and (buy.amount_ils, buy.kind, buy.class_before, buy.class_after, buy.fund))

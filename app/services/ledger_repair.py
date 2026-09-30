@@ -623,3 +623,136 @@ async def unrecorded_rebalances(session: AsyncSession, user: User, data: dict,
             "note": ("confidence 'measured' = the factor was solved by one holding and "
                      "reproduced by another in the same class; 'exact_total' = the "
                      "holding's total gap is exact, and its steps were solved from itself")}
+
+
+# --------------------------------------------------------------------------- #
+# PR 86 -- held-cash "invest elsewhere" buys that reached the book, not the ledger
+# --------------------------------------------------------------------------- #
+# Eran, 2026-09-30 00:52: "add a repair that fix those missing entries". PR 83's
+# held-cash accept returned before `_record_apply`, so its buys changed the book
+# and wrote nothing (production: VTI 620, USO 270, BND 270; cash 1,863.49 ->
+# 703.49, zero rows). The AMOUNTS are known exactly (the cash that left); the
+# SHARES are what the accept computed: amount / (quote at that moment x FX). The
+# accept ran after the US close, so the quote was the close -- `_price_at` at the
+# accept time returns that bar -- and FX is today's rate, the same limit every
+# repair here states. Measured check on production: BND 270 / (70.23 x 3.0561)
+# = 1.2580 and 15.1303 - 1.2580 = 13.8723, the ledger's own 07:42 basket buy,
+# to four decimals.
+HELD_CASH_TAG = "held-cash buy reconstructed (PR 86)"
+
+
+def parse_legs(spec: str) -> list[dict]:
+    """"VTI:620,USO:270" -> [{"ticker": "VTI", "amount_ils": 620.0}, ...]."""
+    out = []
+    for part in [x for x in (spec or "").split(",") if x.strip()]:
+        tk, _, amt = part.partition(":")
+        out.append({"ticker": tk.strip().upper(), "amount_ils": round(float(amt), 2)})
+    return out
+
+
+async def _accepted_at(session: AsyncSession, user: User, card: str) -> datetime | None:
+    kv = await session.get(KVSetting, f"completed_recs:{user.email}")
+    if not kv:
+        return None
+    try:
+        mark = (json.loads(kv.value) or {}).get(card)
+    except Exception:  # noqa: BLE001
+        return None
+    if mark is None:
+        return None
+    ts = mark.get("at") if isinstance(mark, dict) else mark
+    try:
+        return _aware(datetime.fromisoformat(str(ts)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def held_cash_preview(session: AsyncSession, user: User, *, card: str,
+                            legs: list[dict], at: str | None = None) -> dict:
+    """READ-ONLY. The Buy rows a held-cash accept should have written."""
+    return await _held_cash_plan(session, user, card=card, legs=legs, at=at)
+
+
+async def _held_cash_plan(session, user, *, card, legs, at):
+    import asyncio
+
+    from app.services.fx import fx_rate, price_currency
+    from app.services.intake_service import list_positions
+    when = (_aware(datetime.fromisoformat(at)) if at else await _accepted_at(session, user, card))
+    if when is None:
+        return {"ok": False, "reason": f"no accept time for {card}: pass at=<ISO time>"}
+    rows = await list_positions(session, user)
+    held: dict[str, dict] = {}
+    for p in rows:
+        k = (p.ticker or "").upper()
+        meta = p.meta if isinstance(p.meta, dict) else {}
+        h = held.setdefault(k, {"qty": 0.0, "currency": price_currency(p.market, meta),
+                                "market": p.market, "px": None, "px_at": None})
+        h["qty"] += float(p.quantity or 0)
+        if p.current_price and meta.get("price_as_of") and h["px"] is None:
+            h["px"], h["px_at"] = float(p.current_price), str(meta.get("price_as_of"))
+    done = {(t.ticker or "").upper() for t in (await session.execute(
+        select(Transaction).where(Transaction.subject == user.email,
+                                  Transaction.txn_type == "Buy",
+                                  Transaction.note.like(f"%{HELD_CASH_TAG}%{card}%")))).scalars()}
+    out = []
+    for lg in legs:
+        tk, amt = lg["ticker"], float(lg["amount_ils"])
+        h = held.get(tk)
+        row = {"ticker": tk, "amount_ils": amt, "at": when.isoformat()}
+        if tk in done:
+            out.append({**row, "status": "already recorded"})
+            continue
+        if not h or h["qty"] <= 0:
+            out.append({**row, "status": "not held - nothing to record"})
+            continue
+        # The EXACT quote the accept used, when it is still on the position: a
+        # price stamped before the accept and within the day before it (the
+        # market closed at 20:00 UTC and the accept ran after) has not been
+        # refreshed since. Otherwise the last 30-minute bar at the accept.
+        px, src = None, ""
+        try:
+            _pa = _aware(datetime.fromisoformat(h["px_at"])) if h.get("px_at") else None
+        except Exception:  # noqa: BLE001
+            _pa = None
+        if h.get("px") and _pa is not None and _pa <= when and when - _pa <= timedelta(hours=20):
+            px, src = h["px"], f"position quote as of {h['px_at']}"
+        else:
+            px, src = await asyncio.to_thread(_price_at, tk, when)
+        fx = float(fx_rate(h.get("currency") or "USD") or 0.0)
+        if not px or fx <= 0:
+            out.append({**row, "status": f"no price ({src})"})
+            continue
+        shares = round(amt / (px * fx), 4)
+        if shares > h["qty"] + 1e-9:
+            out.append({**row, "status": f"{shares} shares is more than the {h['qty']} held"})
+            continue
+        out.append({**row, "status": "to write", "shares": shares, "price": round(px, 4),
+                    "price_source": src, "fx": round(fx, 4), "market": h["market"],
+                    "held_now": round(h["qty"], 4), "held_before": round(h["qty"] - shares, 4)})
+    return {"ok": True, "read_only": True, "card": card, "at": when.isoformat(), "legs": out,
+            "to_write": sum(1 for x in out if x["status"] == "to write")}
+
+
+async def held_cash_apply(session: AsyncSession, user: User, *, card: str, legs: list[dict],
+                          at: str | None = None, confirm: bool = False) -> dict:
+    """Write the preview's "to write" rows, dated AT the accept. Idempotent."""
+    if not confirm:
+        return {"ok": False, "reason": "confirm is required -- run the preview first"}
+    plan = await _held_cash_plan(session, user, card=card, legs=legs, at=at)
+    if not plan.get("ok"):
+        return plan
+    from app.models.tables import money
+    written = []
+    for x in plan["legs"]:
+        if x["status"] != "to write":
+            continue
+        session.add(Transaction(
+            subject=user.email, ticker=x["ticker"], market=x.get("market"), txn_type="Buy",
+            quantity=money(x["shares"]), price=money(x["price"]), value_ils=money(x["amount_ils"]),
+            source="held_cash_redeploy", executed_at=datetime.fromisoformat(x["at"]),
+            note=(f"{HELD_CASH_TAG}: card {card}; {x['amount_ils']} ILS / "
+                  f"({x['price']} x FX {x['fx']}, {x['price_source']})")[:255]))
+        written.append({k: x[k] for k in ("ticker", "shares", "amount_ils", "at")})
+    await session.commit()
+    return {"ok": True, "written": written, "legs": plan["legs"]}

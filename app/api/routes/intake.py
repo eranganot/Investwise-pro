@@ -684,6 +684,37 @@ async def ledger_repair_apply(body: LedgerRepairRequest,
     return out
 
 
+class HeldCashRepairRequest(BaseModel):
+    card: str
+    legs: str            # "VTI:620,USO:270,BND:270"
+    at: str | None = None
+    confirm: bool = False
+
+
+@router.get("/portfolio/ledger/repair-held-cash")
+async def held_cash_repair_preview(card: str, legs: str, at: str | None = None,
+                                   session: AsyncSession = Depends(get_session),
+                                   user: User = Depends(acting_user)) -> dict:
+    """PR 86. READ-ONLY: the Buy rows a held-cash accept should have written
+    (shares = amount / (price at the accept x FX)), dated at the accept."""
+    from app.services.ledger_repair import held_cash_preview, parse_legs
+    return await held_cash_preview(session, user, card=card, legs=parse_legs(legs), at=at)
+
+
+@router.post("/portfolio/ledger/repair-held-cash",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def held_cash_repair_apply(body: HeldCashRepairRequest,
+                                 session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """PR 86. Write the preview's rows. Requires `confirm: true`; idempotent."""
+    from app.services.ledger_repair import held_cash_apply, parse_legs
+    out = await held_cash_apply(session, user, card=body.card, legs=parse_legs(body.legs),
+                                at=body.at, confirm=body.confirm)
+    if not out.get("ok"):
+        raise HTTPException(status_code=422, detail=out.get("reason"))
+    return out
+
+
 @router.get("/portfolio/ledger")
 async def read_ledger(limit: int = 200, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:

@@ -398,3 +398,37 @@ def test_cap_held_scales_to_the_cash_that_exists():
     assert cap_held({"A": 0.02, "B": 0.02}, 0.02) == pytest.approx({"A": 0.01, "B": 0.01})
     assert cap_held({"SOXL": 0.01}, 0.5) == {"SOXL": 0.01}
     assert cap_held({"SOXL": 0.05}, 0.0) == {}
+
+
+@pytest.mark.asyncio
+async def test_no_card_spends_the_cash_kept_for_the_hold(ils_quotes, monkeypatch):
+    """PR 87, production 2026-09-30 00:59, Eran: "it offers me to buy BND using
+    cash but if I do that I won't be able to buy-back SOXL". "Add to BND ₪841"
+    took ₪553.49 from cash -- the exact reserve he kept. The reserve is now
+    committed to the build's shared FundingLedger before any card is planned."""
+    ideas = [{"ticker": "CVX", "name": "Chevron", "score": 73.2, "reasons": ["value"]},
+             {"ticker": "JPM", "name": "JPMorgan", "score": 70.1, "reasons": ["ROE"]}]
+    monkeypatch.setattr(rr, "_buy_ideas", lambda *a, **k: ideas)
+    eng, S = _session()
+    try:
+        async with S() as s:
+            user = await _book(s, "held_keep@example.com")
+            c, _ = await _card(s, user)
+            await rr.apply_recommendation(s, user, c["id"], choice="redeploy",
+                                          alloc="CVX:700,JPM:600")
+            built = await rr.build_recommendations(s, user)
+            reserve = sum(built["book_target"]["held_back"].values()) * \
+                book_nav_ils_rows(await list_positions(s, user))
+            assert reserve > 250, "setup: something is still kept for SOXL"
+            spent = [(r["id"], r["title"], (r.get("apply") or {}).get("from_cash_ils"))
+                     for r in built["recommendations"] + built.get("more_recommendations", [])
+                     if not str(r["id"]).startswith("rule_")
+                     and float((r.get("apply") or {}).get("from_cash_ils") or 0) > 1.0]
+            assert spent == [], spent
+    finally:
+        await eng.dispose()
+
+
+def book_nav_ils_rows(rows):
+    from app.services.fx import book_nav_ils
+    return book_nav_ils(rows)

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger). Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-09-29 by Claude (PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -179,6 +179,45 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
 
 ---
+
+## PR 87 — no card spends the cash kept for a buy-back; no overshoot sized as "toward target"; the missing held-cash buys are written to the ledger
+
+_2026-09-30 00:59, Eran (screenshot "Add to BND — ₪841"): "it offers me to buy BND using cash but if
+I do that I won't be able to buy-back SOXL (in the last card I accepted I agreed to keep 553 as a
+reserve for SOXL)"._
+
+**1. Reserve spent by another card — root cause (PROVEN, live payload).** The card's
+`from_cash_ils` was 553.49 = cash 703.49 − floor 150 — the exact reserve PR 86's target keeps
+(`held_back` SOXL 2.36% × NAV = ₪554). Only the cash card subtracted a hold's reserve; every other
+funded buy plans against the build's shared `FundingLedger`, which started at 0 committed cash.
+**Fix:** the reserve is committed to that ledger before any card is planned (the cash card takes no
+ledger and subtracts it itself — no double count). Sleeve funding (an explicit user action) is
+untouched. Test: `test_no_card_spends_the_cash_kept_for_the_hold` (without the fix: "Add a
+commodities sleeve — ₪1,230 of PPLT" takes ₪413 of the reserve; verified).
+
+**2. ₪841 for an ₪80 gap — root cause (PROVEN, replayed exactly).** Fixed Income 14.26% vs 14.60%:
+gap ≈ ₪80, under `MIN_TRADE_ILS`, so `propose_funded_buy` sized to the name's whole room (the
+within-class-swap allowance) — but funded it from cash + USO, so it was no swap: 14.26% → 17.52%,
+labelled `toward_target`, and the drift guard let it through. **Fix:** with the gap under the
+minimum only a `within_class_swap` passes. Replaying his production positions through
+`propose_funded_buy`: without the fix → (840.75, toward_target, 0.1426 → 0.1752, cash 553.49, USO
+287.26), the production card to the shekel; with it → no card. Test:
+`test_a_class_at_target_admits_a_swap_but_not_an_overshoot_from_cash` (those positions verbatim).
+
+**3. The ledger repair** (Eran 2026-09-30 00:52: "add a repair that fix those missing entries").
+
+The VTI 620 / USO 270 / BND 270 buys from the SOXL reserve (PR 86, cause 2) reached the book but not
+the ledger.
+`ledger_repair.held_cash_preview/apply` + `GET/POST /portfolio/ledger/repair-held-cash` write the
+missing Buy rows, dated at the accept (the card's completion mark), source `held_cash_redeploy`.
+Shares = amount / (price x FX) — the accept's own arithmetic — using the position's stored quote
+when it predates the accept (the exact number the accept read), else the 30-minute bar at the
+accept. Positions and cash are not touched. Idempotent (a row tagged with the card is "already
+recorded"). Refuses a card with no accept time, a ticker not held, or more shares than held.
+`scripts/repair/repair-pr86-held-cash-ledger.ps1` previews, refuses unless BND's reconstructed
+"before" is 13.8723 — the ledger's own 07:42 basket buy, an independent anchor
+(270 / (70.23 x 3.0561) = 1.2580; 15.1303 − 1.2580 = 13.8723) — asks, writes, and re-reads the
+ledger. Tests: `tests/test_held_cash_ledger_repair.py` (4).
 
 ## PR 86 — investing part of a buy-back reserve elsewhere was undone by the rebalancer, and never recorded
 

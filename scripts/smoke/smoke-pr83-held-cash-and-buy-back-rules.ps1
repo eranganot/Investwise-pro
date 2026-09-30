@@ -195,7 +195,7 @@ if ($hc.Count -eq 0) {
 }
 
 # =========================================================================== #
-Sec "2b PR 86: a hold reserves only cash that exists"
+Sec "2b PR 86/87: a hold reserves only cash that exists, and nothing else spends it"
 # =========================================================================== #
 $mix = Api GET '/api/v1/mix'
 if ($null -eq $mix) { Bad "GET /mix failed" }
@@ -207,6 +207,26 @@ else {
     Note "target reserves $resIls for holds; cash is $cashIls"
     if ($resIls -le $cashIls + 1.0) { Ok "the hold reserve ($resIls) is backed by cash ($cashIls)" }
     else { Bad "the target reserves $resIls for holds but cash is only $cashIls - the rebalancer will sell to rebuild it" }
+}
+# PR 87: no other card may spend the cash a hold keeps (Eran 2026-09-30:
+# "Add to BND 841" took the 553 kept for SOXL).
+if ($null -ne $mix -and $heldBack.Count -gt 0) {
+    $hb2 = 0.0; foreach ($v in $heldBack.Values) { $hb2 += $v }
+    $keep = $hb2 * (Num $mix.nav)
+    $spenders = 0
+    foreach ($c in $cards) {
+        if (-not $c.apply) { continue }
+        if ("$($c.id)" -like 'rule_*' -or $c.apply.kind -eq 'held_cash') { continue }
+        $fc = Num $c.apply.from_cash_ils
+        if ($null -eq $fc -or $fc -le 1.0) { continue }
+        $spenders++
+        $floor = 0.0
+        if ($c.meta -and $c.meta.funding -and $null -ne $c.meta.funding.cash_floor_ils) { $floor = Num $c.meta.funding.cash_floor_ils }
+        $allowed = (Num $mix.cash_ils) - $floor - $keep
+        if ($fc -le $allowed + 1.0) { Ok ("'{0}' uses {1:N0} of cash, within the {2:N0} not kept for holds" -f $c.title, $fc, [math]::Max(0, $allowed)) }
+        else { Bad ("'{0}' uses {1:N0} of cash but only {2:N0} is not kept for holds - it spends the buy-back reserve" -f $c.title, $fc, [math]::Max(0, $allowed)) }
+    }
+    if ($spenders -eq 0) { Ok "no card spends cash (the reserve is untouched)" }
 }
 foreach ($c in $cards) {
     if ($c.apply -and $c.apply.kind -eq 'rebalance_to_objective') {
