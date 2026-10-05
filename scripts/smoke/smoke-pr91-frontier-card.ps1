@@ -78,9 +78,14 @@ else {
     Note "impact: $($card.impact)"
     Note "why: $($card.why)"
     if ($plan.target_roi_pct) {
-        if ("$($card.why)" -match ("{0}%/yr" -f $plan.target_roi_pct)) { Ok "the card names your ROI target" } else { Bad "the card does not mention your ROI target" }
+        # Compared as NUMBERS: PS 5.1 reads JSON 30.0 as a decimal and prints
+        # "30.0", the card prints "30" - a text match failed on the first run.
+        if ("$($card.why)" -match 'Your target is ([0-9.]+)%/yr' -and [double]$Matches[1] -eq [double]$plan.target_roi_pct) { Ok ("the card names your ROI target ({0}%/yr)" -f $Matches[1]) }
+        else { Bad "the card does not mention your ROI target" }
     }
-    if (@($card.apply.sells).Count -gt 0) { Bad 'card carries a sells funding leg' } else { Ok "no funding raid: the card resizes, it does not fund itself from a sleeve" }
+    # $null-guarded: in PS 5.1 @($null).Count is 1, so a MISSING key read as
+    # one sell leg on the first run.
+    if ($null -ne $card.apply.sells -and @($card.apply.sells).Count -gt 0) { Bad 'card carries a sells funding leg' } else { Ok "no funding raid: the card resizes, it does not fund itself from a sleeve" }
     $acting = @(@($v.sleeves) | Where-Object { $_.act } | ForEach-Object { $_.id })
     $cardIds = @(@($card.apply.resizes) | ForEach-Object { $_.strategy_id })
     if ((@(Compare-Object $acting $cardIds)).Count -eq 0) { Ok ("card resizes exactly the acting sleeves: {0}" -f ($cardIds -join ', ')) }
