@@ -87,11 +87,15 @@ def test_an_impossible_goal_offers_levers_that_actually_reach_70pct():
     g = base["log_growth"]
     vol = base["volatility_pct"] / 100
     m = lv["extra_monthly_ils"]
-    assert m and fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=m) >= 0.70 - 1e-6
-    assert fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=m - 10) < 0.70
-    # the amount reachable at 70% really is reached with 70%
-    amt = lv["amount_at_confidence"]
-    assert fr.goal_probability(10_000, amt, 5.0, g, vol) == pytest.approx(0.70, abs=0.01)
+    # PR 93: the lever is the LARGER of the model's and history's deposit, so
+    # "70%" holds on both; it is minimal on whichever of the two binds.
+    assert m == max(lv["extra_monthly_model_ils"], lv["extra_monthly_history_ils"])
+    assert fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=m) >= 0.70 - 1e-6
+    mm = lv["extra_monthly_model_ils"]
+    assert fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=mm - 10) < 0.70
+    # the amount is the SMALLER of the two, and the model's own is exact
+    assert lv["amount_at_confidence"] == min(lv["amount_at_confidence_model"], lv["amount_at_confidence_history"])
+    assert fr.goal_probability(10_000, lv["amount_at_confidence_model"], 5.0, g, vol) == pytest.approx(0.70, abs=0.01)
 
 
 def test_a_sleeve_may_grow_when_the_goal_needs_it():
@@ -254,6 +258,30 @@ async def test_accepting_a_grow_card_funds_the_sleeve_and_records_every_share(ow
             assert qqq_after > qqq_before
             assert not r.get("unrecorded")
             c.post("/api/v1/strategies/btm_qqq_hold/apply?sleeve_pct=0")
+    finally:
+        await _reset_plan(own_session)
+
+
+async def test_on_track_in_the_model_but_short_on_history_still_offers_levers(own_session):
+    """PR 93: 'on track' must hold on real-market paths too."""
+    try:
+        with TestClient(app) as c:
+            cur = _seed(c, 10)
+            m = {"goal_probability_pct": 75.0, "median_at_deadline": 95000, "growth_cagr_pct": 28.0,
+                 "volatility_pct": 30.0, "fraction_of_kelly": 0.6, "log_growth": 0.25}
+            t = {"p_goal_pct": 62.0, "median": 88000, "worst5_mean": 9000, "p_halve_pct": 31.0,
+                 "extra_monthly_needed": 210.0, "amount_at_confidence": 70000}
+            await _store_verdict(own_session, _goal_verdict(
+                cur, outcome=fs.GOAL_TAIL_SHORT, before=m, after=m,
+                tail={"before": t, "after": t, "gate": "SHORT_OF_TARGET_ON_HISTORY", "paths": 2000},
+                levers={"required_cagr_pct": 26.0, "on_track_cagr_pct": 28.0, "extra_monthly_ils": 210,
+                        "extra_monthly_model_ils": 0, "extra_monthly_history_ils": 210,
+                        "amount_at_confidence": 70000, "roi_at_confidence_pct": 27.0}))
+            dep = next((x for x in _cards(c) if (x.get("meta") or {}).get("lever") == "deposit"), None)
+            assert dep is not None
+            assert "on real-market paths it is 62.0%" in dep["why"]
+            assert "worst 5% of outcomes end near 9,000" in dep["why"]
+            assert "history 210" in dep["why"]
     finally:
         await _reset_plan(own_session)
 

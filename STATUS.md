@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 92, the goal is the objective — 70% chance, Kelly as a ceiling, actionable lever cards). Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 93, the goal checked on fat-tailed history — filtered historical paths gate cards and size levers). Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,36 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 93 — does the goal survive real markets? Filtered historical paths
+
+**Why.** PR 92 decides with a lognormal: no crash days, no volatility clustering, no 3× compounding drag through a
+drawdown, which is exactly where an 88%-vol leveraged sleeve's risk lives. The planned "mean-CVaR" step, re-aimed
+at the goal: every number a goal card states is checked a second way.
+
+**What.** `app/engines/paths.py` (pure): 2,000 stationary-block paths (21-day blocks) to the deadline, drawn from the
+book's **real ILS daily returns**, each asset **re-centred on the user's chosen estimate** (filtered historical
+simulation). History supplies the shape, his confidence the centre, so a 'shrunk' user is never shown 'measured' odds
+through the back door. Deposits are linear on a path (final = nav·C_T + c·S), so the deposit lever is an exact
+percentile with no search. In `goal_solve`:
+- a trade card is withdrawn if it **lowers the odds on history** (`TAIL_DISAGREES`, 1-pt tolerance);
+- "on track" needs ≥ 70% on **both** (`TAIL_SHORT` otherwise);
+- levers hold both ways: the **larger** deposit, the **smaller** reachable amount, and the deadline lever only if
+  history also reaches 70% at the new date.
+
+Cards state the history odds, the **worst-5% outcome** at the deadline, and the **chance the book halves** at some
+point.
+
+**On the live book (real data, 2026-10-05):**
+- **Shrunk:** model 23% / **history 15.8%**; **55% chance the book halves at some point**; worst 5% ≈ ₪7,850 from
+  ₪24,611. Deposit lever **₪720 → ₪890/month** (history binds). The deadline lever (+18.75y) does not survive.
+- **Blended:** 46% / 42%; deposit ₪320 → ₪400; +3.5y holds (71.5% on history).
+- **Measured:** 71% / 72.7%, on track on both.
+
+**Smoke.** `scripts/smoke/smoke-pr93-tail-check.ps1 -Sha <sha>`. **Tests.** `tests/test_paths.py` (6, closed forms) +
+goal tests updated (17).
 
 ---
 

@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 from app.engines import frontier as fr
+from app.engines import paths
 from app.services import frontier_inputs as fi
 from app.services.solver_store import FRONTIER_VERSION
 
@@ -137,6 +138,17 @@ def block_bootstrap(t: int, block: int, rng: np.random.Generator) -> np.ndarray:
     starts = rng.integers(0, max(1, t - block + 1), size=math.ceil(t / block))
     idx = np.concatenate([np.arange(s, min(s + block, t)) for s in starts])
     return idx[:t]
+
+
+def _expand(w_r: np.ndarray, sleeve_idx: list[int], core_vec: np.ndarray, cash_idx: int,
+            n: int) -> np.ndarray:
+    """[sleeves..., core, cash] -> weights over every asset: `_reduce` inverted."""
+    k = len(sleeve_idx)
+    w = core_vec * float(w_r[k])
+    for j, i in enumerate(sleeve_idx):
+        w[i] += float(w_r[j])
+    w[cash_idx] += float(w_r[k + 1])
+    return w[:n] if w.size >= n else np.pad(w, (0, n - w.size))
 
 
 def _reduce(mu: np.ndarray, cov: np.ndarray, sleeve_idx: list[int], core_vec: np.ndarray,
@@ -334,6 +346,11 @@ GOAL_REBALANCE = "REBALANCE"          # < 70% today; a mix within the cap reache
 GOAL_IMPROVE = "IMPROVE"              # < 70% everywhere within the cap; a mix raises the odds materially
 GOAL_OUT_OF_REACH = "OUT_OF_REACH"    # < 70% everywhere; no trade helps materially -- the levers do
 GOAL_NO_TARGET = "NO_TARGET"          # no ROI target / deadline: there is no goal to steer by
+# PR 93: verdicts the historical paths overrule.
+GOAL_TAIL_DISAGREES = "TAIL_DISAGREES"  # the model's trade lowers the odds on fat-tailed history
+GOAL_TAIL_SHORT = "TAIL_SHORT"          # >= 70% on the model, < 70% on history: not on track
+# Odds within this many points on 2,000 paths are sampling noise, not a verdict.
+TAIL_TOLERANCE_PTS = 1.0
 
 # A goal card must change the goal's odds or its risk: five points of
 # probability, or three of volatility with the odds still >= GOAL_CONFIDENCE.
@@ -501,12 +518,37 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         material = acting and dp >= MATERIAL_PROB_PTS
         outcome = GOAL_IMPROVE if material else GOAL_OUT_OF_REACH
 
+    # ---- PR 93: the same question on real, fat-tailed history -------------
+    # History's shape, the user's drift (see engines/paths.py). A trade card
+    # must not lower the goal's odds on these paths either, and "on track" has
+    # to hold on both. Seeded, so the same book gives the same numbers.
+    n_full = len(ids)
+    rf_daily = rf / paths.TRADING_DAYS
+    daily = np.column_stack([paths.recentre(ils, est0["mu"][:-1]), np.full(ils.shape[0], rf_daily)])
+
+    def tail_of(s):
+        w_full = _expand(book(s), sleeve_idx, core_vec, cash_idx, n_full)
+        return paths.goal_stats(paths.simulate(daily @ w_full, years=years), nav=nav, target=target,
+                                monthly=monthly, p_star=p_star)
+    tail_before = tail_of(now_s)
+    tail_after = tail_of(proposed) if acting else tail_before
+    tail_gate = None
+    if material and outcome in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE) \
+            and tail_after["p_goal_pct"] < tail_before["p_goal_pct"] - TAIL_TOLERANCE_PTS:
+        tail_gate = "TRADE_LOWERS_ODDS_ON_HISTORY"
+        material, outcome = False, GOAL_TAIL_DISAGREES
+    if outcome in (GOAL_ON_TRACK, GOAL_LESS_RISK) and min(
+            tail_before["p_goal_pct"], tail_after["p_goal_pct"] if material else 100.0) < star:
+        tail_gate = tail_gate or "SHORT_OF_TARGET_ON_HISTORY"
+        outcome = GOAL_TAIL_SHORT
+
     # ---- levers, on the book AFTER the card (or today's, without one) ----
     base = after if material else before
+    tail_base = tail_after if material else tail_before
     g_b, v_b = base["log_growth"], base["volatility"]
     levers = {"required_cagr_pct": round(math.expm1(g_req) * 100, 2) if g_req is not None else None,
               "on_track_cagr_pct": base["growth_cagr_pct"]}
-    if base["goal_probability_pct"] < star:
+    if min(base["goal_probability_pct"], tail_base["p_goal_pct"]) < star:
         def p_with(m=monthly, y=years):
             return fr.goal_probability(nav, target, y, g_b, v_b, m)
         lo_m, hi_m = 0.0, 10.0
@@ -524,6 +566,26 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         z = _z(1.0 - p_star)
         levers["amount_at_confidence"] = round(
             fr.fv_contributions(monthly, g_b, years) + nav * math.exp(g_b * years + v_b * math.sqrt(years) * z), 0)
+        # PR 93: a "70% chance" lever must hold on the historical paths too --
+        # the LARGER deposit and the SMALLER amount of the two methods.
+        model_extra = levers.get("extra_monthly_ils")
+        hist_extra = tail_base.get("extra_monthly_needed")
+        levers["extra_monthly_model_ils"] = model_extra
+        levers["extra_monthly_history_ils"] = (int(math.ceil(hist_extra / 10.0) * 10)
+                                               if hist_extra is not None else None)
+        if model_extra is not None and levers["extra_monthly_history_ils"] is not None:
+            levers["extra_monthly_ils"] = max(model_extra, levers["extra_monthly_history_ils"]) or None
+        levers["amount_at_confidence_model"] = levers["amount_at_confidence"]
+        levers["amount_at_confidence_history"] = tail_base["amount_at_confidence"]
+        levers["amount_at_confidence"] = min(levers["amount_at_confidence"], tail_base["amount_at_confidence"])
+        if levers.get("deadline_extra_years"):
+            later = years + levers["deadline_extra_years"]
+            w_full = _expand(book(proposed if material else now_s), sleeve_idx, core_vec, cash_idx, n_full)
+            later_stats = paths.goal_stats(paths.simulate(daily @ w_full, years=later), nav=nav,
+                                           target=target, monthly=monthly, p_star=p_star)
+            levers["deadline_history_p_goal_pct"] = later_stats["p_goal_pct"]
+            if later_stats["p_goal_pct"] < star:
+                levers["deadline_extra_years"] = None          # the model's year does not survive history
     for m in (before, after):
         m.pop("volatility", None)
     return {"ok": True, "mode": "goal", "outcome": outcome, "material": bool(material),
@@ -540,6 +602,9 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             "core_pct_before": round((free_total - now_s.sum()) * 100, 2),
             "core_pct_after": round((free_total - proposed.sum()) * 100, 2),
             "core_basket": core_basket, "before": before, "after": after, "levers": levers,
+            "tail": {"before": tail_before, "after": tail_after, "gate": tail_gate,
+                     "paths": paths.N_PATHS, "block_days": paths.BLOCK_DAYS,
+                     "basis": "historical daily returns re-centred on the chosen estimate"},
             "draws": draws, "block_days": BLOCK_DAYS, "band": list(BAND_PCT),
             "views": est0["views"], "shrinkage": round(est0["shrinkage"], 4),
             "window": {"start": prep["dates"][0], "end": prep["dates"][-1],
@@ -1007,6 +1072,13 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                  f"from {g['nav']:,.0f} today that needs ~{lv.get('required_cagr_pct')}%/yr compound. "
                  f"'On track' means at least a {star}% chance. Estimate: {conf}; risk capped at "
                  f"{v['kelly_ceiling']:g}x full Kelly ({v.get('kelly_source')}).")
+    # PR 93: the same goal on fat-tailed history, said on every goal card.
+    tl = v.get("tail") or {}
+    tb, ta = tl.get("before") or {}, tl.get("after") or {}
+    if tb:
+        goal_line += (f" On {tl.get('paths', 2000):,} paths built from real market days (centred on your "
+                      f"estimate): {tb['p_goal_pct']:g}% chance today; the worst 5% of outcomes end near "
+                      f"{tb['worst5_mean']:,.0f}; {tb['p_halve_pct']:g}% chance the book halves at some point.")
     cards = []
 
     if v.get("material") and v["outcome"] in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE):
@@ -1038,7 +1110,10 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                 "impact": (f"Chance of reaching your goal {b['goal_probability_pct']:g}% -> "
                            f"{a['goal_probability_pct']:g}%; median at the deadline {b['median_at_deadline']:,.0f} -> "
                            f"{a['median_at_deadline']:,.0f}; expected compound growth {b['growth_cagr_pct']}% -> "
-                           f"{a['growth_cagr_pct']}%/yr; volatility {b['volatility_pct']}% -> {a['volatility_pct']}%."),
+                           f"{a['growth_cagr_pct']}%/yr; volatility {b['volatility_pct']}% -> {a['volatility_pct']}%."
+                           + (f" On real-market paths: {tb['p_goal_pct']:g}% -> {ta['p_goal_pct']:g}% chance, "
+                              f"worst 5% {tb['worst5_mean']:,.0f} -> {ta['worst5_mean']:,.0f}, halving "
+                              f"{tb['p_halve_pct']:g}% -> {ta['p_halve_pct']:g}%." if tb and ta else "")),
                 "how": [f"Resize: {moves}", *([f"Sell: {sells_txt}"] if sells_txt else []),
                         f"Buy: {buys_txt}", f"Solved {when} ({v.get('version')})"],
                 "apply": {"kind": CARD_KIND, "verdict_id": row.id, "resizes": trades["resizes"],
@@ -1050,7 +1125,8 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
             })
 
     base = a if v.get("material") else b
-    if base["goal_probability_pct"] < star:
+    tail_base = (ta if v.get("material") else tb) or {}
+    if min(base["goal_probability_pct"], tail_base.get("p_goal_pct", 100.0)) < star:
         alt = []
         if lv.get("extra_monthly_ils"):
             alt.append(f"add {lv['extra_monthly_ils']:,}/month")
@@ -1062,7 +1138,17 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         head = (f"Even the best mix within your risk cap leaves a {base['goal_probability_pct']:g}% chance "
                 f"(target {star}%)." if v["outcome"] in (GOAL_OUT_OF_REACH, GOAL_IMPROVE) else
                 f"After the rebalance the chance is {base['goal_probability_pct']:g}% (target {star}%).")
-        common_why = goal_line + " " + head + f" Ways to close it: {others}. Solved {when}."
+        if v["outcome"] == GOAL_TAIL_SHORT:
+            head = (f"The model gives {base['goal_probability_pct']:g}%, but on real-market paths it is "
+                    f"{tail_base.get('p_goal_pct')}% - not on track (target {star}%).")
+        elif v["outcome"] == GOAL_TAIL_DISAGREES:
+            head += (" A trade that looked better in the model lowers the odds on real-market paths, so it is "
+                     "not offered.")
+        sized = ""
+        if lv.get("extra_monthly_model_ils") is not None and lv.get("extra_monthly_history_ils") is not None:
+            sized = (f" Deposit sized so {star}% holds both ways (model {lv['extra_monthly_model_ils']:,}, "
+                     f"history {lv['extra_monthly_history_ils']:,}).")
+        common_why = goal_line + " " + head + f" Ways to close it: {others}.{sized} Solved {when}."
         if lv.get("extra_monthly_ils"):
             new_total = round(float(g.get("monthly") or 0) + float(lv["extra_monthly_ils"]), 2)
             cards.append({
