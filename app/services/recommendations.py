@@ -325,39 +325,21 @@ def _unrealized_ils(rows, only: list[str] | None = None, sign: int = -1) -> floa
 # Plain-language fallbacks so every card explains *why* it fired and its *impact*,
 # even for the agent-built cards that don't set these fields explicitly. Kept
 # qualitative on purpose — the advisor never invents numbers it hasn't computed.
-_DIM_WHY = {
-    "diversification": "Too much of your portfolio rides on a single position, region or currency.",
-    "tax": "You're holding position(s) where a tax move could work in your favor.",
-    "allocation": "Your current mix has drifted from your plan's target.",
-    "goal": "On the current path your projection falls short of your goal.",
-    "fees": "You're paying more in fund fees than a comparable cheaper fund would cost.",
-    "macro": "The market backdrop has shifted, changing your near-term risk.",
-    "liquidity": "A large share of your book may be hard to sell quickly.",
-    "risk": "A risk metric is outside your comfort band.",
-}
-_DIM_IMPACT = {
-    "diversification": "Spreads your risk so no single holding can dominate your outcome.",
-    "tax": "Improves your after-tax return.",
-    "allocation": "Realigns your mix with your plan.",
-    "goal": "Moves you closer to reaching your goal on time.",
-    "fees": "Keeps more of your return instead of paying it away in fees.",
-    "macro": "Reduces your exposure to a near-term drawdown.",
-    "liquidity": "Improves how quickly you could raise cash if you need to.",
-    "risk": "Brings a risk measure back into your comfort band.",
-}
-
-
 def _ensure_why_impact(recs: list[dict]) -> list[dict]:
-    """Guarantee every recommendation carries a 'why', an 'impact', and an
-    'audit_trail' (the invariant every card must satisfy)."""
+    """Every recommendation carries an 'audit_trail'; 'why' and 'impact' are
+    the card's OWN text or empty.
+
+    PR 100: a missing why/impact used to be filled per dimension ("Moves your
+    portfolio closer to your plan."), so SOXL's gain card, 33% of the book
+    against a 40% target, told Eran that trimming it moved him toward his plan.
+    A sentence the card did not compute is a claim it cannot back, so the card
+    now says nothing there instead."""
     for r in recs:
         dim = r.get("dimension", "")
         r.setdefault("apply", {"kind": "none"})
         r["actionable"] = _is_actionable(r)
-        if not r.get("why"):
-            r["why"] = _DIM_WHY.get(dim, "This helps your portfolio track your plan.")
-        if not r.get("impact"):
-            r["impact"] = _DIM_IMPACT.get(dim, "Moves your portfolio closer to your plan.")
+        r["why"] = r.get("why") or ""
+        r["impact"] = r.get("impact") or ""
         if not r.get("audit_trail"):
             rd: dict = {"reason": r.get("why") or r.get("action") or r.get("title") or dim,
                         "severity": r.get("severity")}
@@ -445,6 +427,12 @@ def moved_on(entry, card: dict, *, done: bool = False) -> str | None:
     if then_sev and now_sev and _SEV_RANK.get(str(now_sev), -1) > _SEV_RANK.get(str(then_sev), -1):
         return (f"you filed it while it was {then_sev}; the app now calls it {now_sev}")
     if entry.get("amount") is None or card.get("est_amount") is None:
+        return None
+    # PR 100: only a card that ASKED for a trade has an amount "to move". QQQ's
+    # near-cap card carries its headroom and SOXL's gain card its unrealised
+    # gain; "you marked this done ... still 2,155 ILS to move" read those as
+    # trades nobody was asked to make.
+    if (card.get("apply") or {}).get("kind") == "none":
         return None
     try:
         then_amt = float(entry["amount"])
@@ -1933,7 +1921,11 @@ async def build_recommendations(session: AsyncSession, user: User,
         _user_rules = await _lr(session, user)
     except Exception:  # noqa: BLE001
         _user_rules = []
-    recs += await _offload(_profit_recs, rows, snap, _user_rules)
+    try:
+        _targets = await plan_ticker_targets(session, user)
+    except Exception:  # noqa: BLE001 -- without targets no gain card suggests a trim
+        _targets = {}
+    recs += await _offload(_profit_recs, rows, snap, _user_rules, _targets)
     _tm.mark("profit")
     recs += await _offload(_hedge_recs, rows, snap)
     _tm.mark("hedge")
@@ -3471,7 +3463,15 @@ _GAIN_CARD_PCT = 25.0
 _NEAR_CAP_PCT_POINTS = 2.0
 
 
-def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
+def _float_or_none(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> list[dict]:
     """Cards for taking money off the table -- the ones Eran had none of.
 
     2026-09-14: *"I'm holding assets that are moving which is great but I don't
@@ -3591,28 +3591,42 @@ def _profit_recs(rows, snap, rules: list[dict]) -> list[dict]:
                                                 else (price - target)) / price * 100.0, 2)}})
 
         # 2) IT HAS SIMPLY RUN A LONG WAY.
+        # PR 100: a gain is not a reason to trim. Under (or at) its plan target
+        # the card states the gain and what covers it -- one line, no trim
+        # suggestion: SOXL at 33% of a 40% target was told trimming "moves your
+        # portfolio closer to your plan" while its buy-back rule said the plan
+        # wanted 1,673 MORE. Over its target it says how much the plan wants
+        # trimmed, sized on the excess.
         if gain_pct >= _GAIN_CARD_PCT and cost > 0:
+            from app.services.funding_service import MIN_TRADE_ILS as _min_trade
             gain_ils = round(value_ils * (1.0 - cost / price), 2)
-            has_tp = any(r.get("rule_type") == "take_profit" for r in mine)
-            out.append({
-                "id": _rid("ran_up", tk), "dimension": "holding",
-                "severity": "MEDIUM",
-                "title": f"{tk} is up {gain_pct:.0f}% -- decide what to do with it",
-                "action": (f"{tk} has gone from {cost:,.2f} to {price:,.2f}, "
-                           f"{_pct(gain_pct)} above what you paid, and is "
-                           f"{w_pct:.0f}% of your book. About {_ils(gain_ils)} of "
-                           f"its value is gain you have not taken."
-                           + ("" if has_tp else " You have no take-profit on it.")),
-                "how": ([f"Trim a slice -- 25% of {tk} is about "
-                         f"{_ils(value_ils * 0.25)} -- and let the rest run"]
-                        + ([] if has_tp else
-                           [f"Or set a take-profit on {tk} so the app asks you "
-                            f"at a level you choose"])
-                        + ["Mind the tax on any realised gain",
-                           "Doing nothing is a decision too -- it is not a "
-                           "reason to sell"]),
-                "est_amount": gain_ils, "apply": {"kind": "none"},
-                "meta": {"ticker": tk, "gain_pct": round(gain_pct, 2)}})
+            tps = sorted(float(r["target"]) for r in mine
+                         if r.get("rule_type") == "take_profit" and _float_or_none(r.get("target")))
+            tgt = (targets or {}).get(tk)
+            t_pct = float(tgt) * 100.0 if tgt is not None else None
+            over_ils = round((w_pct - t_pct) / 100.0 * nav, 2) if t_pct is not None else 0.0
+            if t_pct is not None and over_ils >= _min_trade:
+                out.append({
+                    "id": _rid("ran_up", tk), "dimension": "holding", "severity": "MEDIUM",
+                    "title": f"Trim {tk} to target: {w_pct:.0f}% of your book vs {t_pct:.0f}%",
+                    "action": (f"{tk} is +{gain_pct:.0f}% since you bought ({_ils(gain_ils)} of gain). "
+                               f"Trimming to its {t_pct:.0f}% target sells about {_ils(over_ils)}."),
+                    "how": [f"Sell about {_ils(over_ils)} of {tk}", "Mind the tax on any realised gain"],
+                    "est_amount": over_ils, "apply": {"kind": "none"},
+                    "meta": {"ticker": tk, "gain_pct": round(gain_pct, 2), "weight_pct": round(w_pct, 2),
+                             "target_pct": round(t_pct, 2), "over_target_ils": over_ils}})
+            else:
+                cover = (f"Your take-profit at {tps[0]:,.2f} covers it." if tps else
+                         "You have no take-profit on it.")
+                out.append({
+                    "id": _rid("ran_up", tk), "dimension": "holding", "severity": "LOW",
+                    "title": f"{tk} +{gain_pct:.0f}% since you bought: {_ils(gain_ils)} of gain",
+                    "action": cover,
+                    "how": ([f"Your take-profit raises a card at {tps[0]:,.2f}"] if tps else
+                            [f"Set a take-profit on {tk} if you want the app to ask you at a level you choose"]),
+                    "est_amount": gain_ils, "apply": {"kind": "none"},
+                    "meta": {"ticker": tk, "gain_pct": round(gain_pct, 2),
+                             "target_pct": round(t_pct, 2) if t_pct is not None else None}})
 
         # 3) IT IS GROWING INTO ITS CAP.
         for r in mine:

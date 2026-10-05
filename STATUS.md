@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-06 by Claude (PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-06 by Claude (PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,41 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 100 — every number says what it measures
+
+**Eran's rule for this PR:** don't make the cards more complicated — no card gets a new sentence; each fix deletes
+a false one or replaces it with a shorter true one.
+
+**Root causes.**
+- **F4, the SOXL card.** `_ensure_why_impact` filled any missing why/impact from a per-dimension table, falling
+  back to *"Moves your portfolio closer to your plan."* The gain card ("SOXL is up 36% — decide what to do") has
+  dimension `holding` and no impact of its own, so it claimed a trim moved him toward his plan while SOXL sat at
+  33% of a 40% target and its buy-back rule said the plan wanted ₪1,673 **more**.
+- **F5, "still ₪187 / ₪2,155 to move".** `moved_on(done=True)` read `est_amount` as an ask on every card; the
+  near-cap card carries its headroom and the gain card its unrealised gain.
+- **F6, "(vs SPY +38.95%)".** The caption printed the **excess** where a reader sees SPY's return (SPY did +15.3%).
+- **F7, account history.** "Recorded every trading day" printed beside "Not recorded 17–24 Aug", 4-decimal
+  percentages, and a 13-date list inline.
+
+**What.**
+- No generic why/impact: a card without its own says nothing (`why`/`impact` = ""); the audit trail is unchanged.
+- `_profit_recs(targets=)` (from `plan_ticker_targets`): a gain card **under or at its plan target** (or with no
+  target known) is one line — *"SOXL +36% since you bought: ₪2,155 of gain"* / *"Your take-profit at 183.17 covers
+  it."* — no trim suggestion. **Over target** it is *"Trim SOXL to target: 48% of your book vs 40%"*, sized on
+  the excess (≥ `MIN_TRADE_ILS`); Accept for it comes in PR 102.
+- `moved_on`: a card whose `apply.kind` is `none` never says money is still to move.
+- Benchmark chart: *"You +54.5% · SPY +15.3%"* (and CAGR the same way); title *"If you had held today's holdings
+  for the past year"* (span from the data). Account history: *"Recorded since 16 Aug (one gap: 17–24 Aug)"*,
+  2 decimals on screen, change dates and multiple gaps behind *Details*. `sw.js` → `iw-v41`.
+
+**Smoke.** `scripts/smoke/smoke-pr100-true-labels.ps1 -Sha <sha>` (read-only; UI copy by eye). **Tests.**
+`tests/test_every_number_says_what_it_measures.py` (5); `test_the_app_says_when_to_take_profits` updated.
+
+**PR 99.1** (`5ff69b0`): live; CI green on all three jobs; `btm_vol_target_tqqq` re-measured → `yahoo:total_return`,
+benchmark SPY; goal cards back (views fresh).
 
 ---
 

@@ -96,7 +96,7 @@ def test_a_trailing_stop_card_says_the_whole_position_exits():
 def test_a_big_gain_earns_a_card_even_with_no_rule_on_it():
     up = _P("NVDA", 10.0, 200.0, 100.0)
     cards = _profit_recs([up], {"nav": 2000.0, "exposure_ticker": {"NVDA": 1.0}}, [])
-    c = next(c for c in cards if "up 100%" in c["title"])
+    c = next(c for c in cards if "+100% since you bought" in c["title"])
     assert "You have no take-profit on it." in c["action"]
     assert c["est_amount"] == 1000.0, "the unrealised gain, in shekels"
 
