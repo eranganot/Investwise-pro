@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 95, blended = prior worth 5 years is the default; the protective rules replayed on the goal's paths). Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 96, protection tuned for the goal — an actionable card that pauses the rules that cost the goal and re-levels the guard). Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,33 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 96 — protection tuned for the goal (actionable)
+
+**Why.** PR 95 measured the 28 armed rules on the goal's paths. As executed, they cut the odds from 32.9% to 0.5%:
+the sleeve stops' buy-back holds keep SOXL out 62% of days, while the drawdown guard alone does nearly all the
+crash protection. Eran, 2026-10-05: "continue to PR96".
+
+**What.**
+- `frontier_service._tune_protection`, on the same replay: {retire the sleeve exits (trailing / activated
+  profit-protect / hard stop on sleeve tickers), keep them} × {guard at today's level, 15%, 20%}. Take-profits stay
+  (measured neutral).
+- **The pick: the best goal odds among setups with ≤ 5% chance of halving** (`HALVE_FLOOR_PCT`). Card only if
+  ≥ +5 points.
+- Card `frontier_rules` ("Retune your protection for your goal") names every rule it pauses and the guard change.
+  `apply_rules_tuning` **pauses** (active=False, one tap re-arms on the Rules tab, never deleted), re-levels the guard
+  via `update_rule` (or arms one via `create_rule`), and refuses untouched if the rule set moved since the solve.
+  Nothing is bought or sold.
+- `rules_spec` carries the rule ids.
+
+**Expected on the live book (PR 95's measurement, blended):** retire the SOXL/QQQ exits and set the guard to **20%** →
+**24.7%** goal odds with **2.9%** chance of halving (today 0.5% / 0%). Guard 15% would be 22.7% / 0.8%. The 5% floor
+picks 20%; a stricter floor is a one-constant change if Eran prefers.
+
+**Smoke.** `scripts/smoke/smoke-pr96-protection-tuning.ps1 -Sha <sha>`. It does not accept. **Tests.**
+`tests/test_protection_tuning.py` (6), including accept → paused + guard moved, and a moved rule set refused untouched.
 
 ---
 

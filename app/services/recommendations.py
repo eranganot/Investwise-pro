@@ -51,6 +51,8 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "frontier_resize",
                      # PR 94: switch the core to the one that best serves the goal.
                      "frontier_core",
+                     # PR 96: retune the protective rules for the goal.
+                     "frontier_rules",
                      "set_standing_order",
                      # PR 72: a rule that fights a sleeve. Accept carries a
                      # choice -- sell the slice and lower the sleeve, or keep
@@ -5957,6 +5959,11 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await _apply_buy_funded(session, user, spec)
     elif kind == "core_to_basket":
         detail = await _apply_core_to_basket(session, user, spec)
+    elif kind == "frontier_rules":
+        from app.services.frontier_service import apply_rules_tuning
+        detail = await apply_rules_tuning(session, user, spec)
+        if detail.get("refused"):
+            return {"ok": False, "applied": "none", "title": rec["title"], **detail}
     elif kind == "frontier_core":
         from app.services.frontier_service import apply_core_switch
         detail = await apply_core_switch(session, user, spec)

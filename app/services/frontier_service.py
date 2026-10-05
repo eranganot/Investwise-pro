@@ -569,11 +569,14 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             vols = unit_daily[:, :k].std(axis=0)
             g_spec = {**rules["guard"], "col": int(np.argmax(vols))}
 
-        def run(**kw):
-            sim = paths.simulate_rules(unit_daily, book(now_s), years=years, sleeves=sl_specs, guard=g_spec,
+        def run(sl=None, gd="same", **kw):
+            sim = paths.simulate_rules(unit_daily, book(now_s), years=years,
+                                       sleeves=sl_specs if sl is None else sl,
+                                       guard=g_spec if gd == "same" else gd,
                                        monthly=monthly, nav=nav, rf_daily=rf_daily, **kw)
             return paths.rules_stats(sim, target=target)
         r_off, r_on, r_fix = run(rules_on=False), run(), run(reentry="rebound")
+        tuning = _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on)
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
@@ -581,6 +584,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                        "guard": rules.get("guard"),
                        "guard_target": sleeve_ids[g_spec["col"]] if g_spec else None,
                        "not_simulated": rules.get("not_simulated") or [],
+                       "tuning": tuning,
                        "assumptions": ["every rule card is accepted the day it fires",
                                        "sleeve rules act on the sleeve's own return stream",
                                        "the book is topped back to target monthly from cash",
@@ -785,6 +789,72 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
             "not_modelled": [c["id"] for c, _ in not_modelled], "draws": draws,
             "rule": (f"score = lower of model and history odds; switch only if +{MATERIAL_PROB_PTS:g} pts, "
                      f"no worse on either, and best in >= {CORE_MIN_WIN_SHARE:.0%} of {draws} redraws")}
+
+
+# --------------------------------------------------------------------------
+# PR 96: protection tuned for the goal
+# --------------------------------------------------------------------------
+#
+# PR 95 measured the user's 28 armed rules on the goal's paths: as the app
+# executes them they cut the goal's odds from 32.9% to 0.5% (the sleeve stops'
+# buy-back holds keep SOXL out 62% of days), while the drawdown guard alone
+# does nearly all the crash protection. Eran, 2026-10-05: "continue to PR96" --
+# turn that into a card that can act.
+#
+# The search is small and stated: retire the sleeve exits (trailing stop,
+# activated profit-protect, hard stop on sleeve tickers) or keep them, crossed
+# with the drawdown guard at its level, 15% or 20%. Take-profits stay: they
+# measured neutral. The pick is the best goal odds among setups whose chance
+# of HALVING stays <= HALVE_FLOOR -- protection from drops is a constraint the
+# user set, not something to trade away. Retiring a rule PAUSES it; one tap on
+# the Rules tab brings it back.
+
+HALVE_FLOOR_PCT = 5.0
+GUARD_LEVELS = (15.0, 20.0)
+RULES_CARD_KIND = "frontier_rules"
+
+
+def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on) -> dict | None:
+    has_exits = any(s.get("trail") for s in sl_specs)
+    if not has_exits and not g_spec:
+        return None
+    cur_guard = round(g_spec["level"] * 100, 2) if g_spec else None
+    guard_col = g_spec["col"] if g_spec else (int(np.argmax(unit_daily[:, :k].std(axis=0))) if k else None)
+    levels = [cur_guard] + [g for g in GUARD_LEVELS if g != cur_guard]
+    if cur_guard is None:
+        levels = [None] + list(GUARD_LEVELS)
+
+    def guard_at(lvl):
+        if lvl is None or guard_col is None:
+            return None
+        return {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
+                "fraction": (g_spec or {}).get("fraction", 0.25), "col": guard_col}
+
+    cands = []
+    for retire in ((False, True) if has_exits else (False,)):
+        sl = [dict(s, trail=None) if retire else s for s in sl_specs]
+        for lvl in levels:
+            stats = r_on if (not retire and lvl == cur_guard) else run(sl=sl, gd=guard_at(lvl))
+            cands.append({"retire_sleeve_exits": retire, "guard_pct": lvl, "stats": stats,
+                          "current": (not retire and lvl == cur_guard)})
+    ok = [c for c in cands if c["stats"]["p_halve_pct"] <= HALVE_FLOOR_PCT]
+    best = max(ok, key=lambda c: (c["stats"]["p_goal_pct"], -c["stats"]["p_halve_pct"])) if ok else None
+    material = bool(best and not best["current"]
+                    and best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= MATERIAL_PROB_PTS)
+    changes = {"pause_rule_ids": [], "pause_rules": [], "guard": None}
+    if material:
+        if best["retire_sleeve_exits"]:
+            for sid in sleeve_ids:
+                sp = (rules.get("sleeves") or {}).get(sid) or {}
+                changes["pause_rule_ids"] += sp.get("exit_rule_ids") or []
+                changes["pause_rules"] += [d for d in sp.get("rules") or [] if not d.startswith("take_profit")]
+        if best["guard_pct"] != cur_guard:
+            changes["guard"] = {"rule_id": (rules.get("guard") or {}).get("rule_id"),
+                                "from_pct": cur_guard, "to_pct": best["guard_pct"]}
+    return {"halve_floor_pct": HALVE_FLOOR_PCT, "material": material,
+            "current": {"guard_pct": cur_guard, "stats": r_on},
+            "best": best, "changes": changes if material else None,
+            "candidates": [{k2: v for k2, v in c.items()} for c in cands]}
 
 
 def plan_trades(verdict: dict, *, specs: dict[str, dict], holdings: list[dict]) -> dict:
@@ -1012,7 +1082,8 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
     from app.services.advanced_rules import DERISK_FRACTION
     from app.services.rules_service import TAKE_PROFIT_FRACTION
 
-    out = {sid: {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": []}
+    out = {sid: {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": [],
+                 "exit_rule_ids": []}
            for sid in sleeve_tickers}
     guard, not_sim = None, []
     for r in rules:
@@ -1021,6 +1092,8 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
         if rt == "drawdown_guard" and tk == "__BOOK__" and lvl > 0:
             guard = {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
                      "fraction": DERISK_FRACTION}
+            if r.get("id"):
+                guard["rule_id"] = str(r["id"])
             continue
         sid = next((s for s, ts in sleeve_tickers.items() if tk in ts), None)
         if sid is None:
@@ -1039,6 +1112,8 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
         if trail is not None and 0 < trail < 1:
             spec["trail"] = trail if spec["trail"] is None else min(spec["trail"], trail)
             spec["rules"].append(f"{rt} {tk} ({trail:.0%} below the peak)")
+            if r.get("id"):
+                spec["exit_rule_ids"].append(str(r["id"]))
         if rt == "take_profit" and px > 0:
             ratio = lvl / px if r.get("mode") == "price" else 1.0 + lvl / 100.0
             if ratio > 1.0:
@@ -1066,7 +1141,7 @@ async def _rules_context(session, user, sleeves: list[dict]) -> dict | None:
         if p.current_price:
             prices[(p.ticker or "").upper()] = float(p.current_price)
     tickers = {s["id"]: {t.upper() for t in blend.claimable_tickers(s["spec"])} for s in sleeves}
-    return rules_spec([{"ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode, "level": r.level,
+    return rules_spec([{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode, "level": r.level,
                         "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows],
                       prices=prices, sleeve_tickers=tickers)
 
@@ -1393,6 +1468,37 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       "from_strategy_id": cur_c["id"], "objective": v.get("objective")},
             "meta": {"core_choice": {"current": cur_c, "best": best_c}, "goal": g}})
 
+    # PR 96: retune the protective rules for the goal, under a halving floor.
+    tu = (v.get("rules") or {}).get("tuning") or {}
+    if tu.get("material") and tu.get("changes"):
+        ch, cur_s, best_s = tu["changes"], tu["current"]["stats"], tu["best"]["stats"]
+        steps = []
+        if ch["pause_rules"]:
+            steps.append("pause " + ", ".join(ch["pause_rules"]))
+        if ch.get("guard"):
+            gd = ch["guard"]
+            steps.append(f"set the drawdown guard to {gd['to_pct']:g}%" if gd.get("from_pct") is None
+                         else f"move the drawdown guard from {gd['from_pct']:g}% to {gd['to_pct']:g}%")
+        cards.append({
+            "id": f"rec_goal_protect_{row.id}", "dimension": "goal", "severity": "HIGH",
+            "title": (f"Retune your protection for your goal: odds {cur_s['p_goal_pct']:g}% -> "
+                      f"{best_s['p_goal_pct']:g}%, halving {cur_s['p_halve_pct']:g}% -> {best_s['p_halve_pct']:g}%"),
+            "why": (goal_line + f" Every setup of your protective rules was replayed on the same paths; this is the "
+                    f"one with the best goal odds that keeps the chance of halving at or under "
+                    f"{tu['halve_floor_pct']:g}%. Take-profits stay (they measured neutral)."),
+            "action": ("Accept will " + "; ".join(steps) + ". Paused rules stay on the Rules tab - one tap re-arms them. "
+                       "Nothing is bought or sold."),
+            "impact": (f"Chance of reaching your goal {cur_s['p_goal_pct']:g}% -> {best_s['p_goal_pct']:g}%; chance "
+                       f"the book halves {cur_s['p_halve_pct']:g}% -> {best_s['p_halve_pct']:g}%; median at the "
+                       f"deadline {cur_s['median']:,.0f} -> {best_s['median']:,.0f}; worst 5% "
+                       f"{cur_s['worst5_mean']:,.0f} -> {best_s['worst5_mean']:,.0f}."),
+            "how": [*(f"Pause: {d}" for d in ch["pause_rules"]),
+                    *([f"Drawdown guard: {ch['guard'].get('from_pct')}% -> {ch['guard']['to_pct']:g}%"]
+                      if ch.get("guard") else []),
+                    "Assumes every rule card is accepted the day it fires", f"Solved {when}"],
+            "apply": {"kind": RULES_CARD_KIND, "pause_rule_ids": ch["pause_rule_ids"], "guard": ch.get("guard")},
+            "meta": {"tuning": {"current": cur_s, "best": best_s, "changes": ch}, "goal": g}})
+
     if v.get("material") and v["outcome"] in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE):
         specs = {sid: strategy_catalog.get(sid) or {} for sid in live}
         trades = plan_trades(v, specs=specs, holdings=_holdings_for_sale(rows))
@@ -1663,3 +1769,61 @@ async def apply_core_switch(session, user, spec: dict) -> dict:
     detail["note"] = (f"Core switched from {res.get('previous')} to {res.get('strategy_id')}. "
                       + (detail.get("note") or "Core holdings realigned to its basket."))
     return detail
+
+
+async def apply_rules_tuning(session, user, spec: dict) -> dict:
+    """PR 96: pause the rules the goal is better without; re-level (or arm) the guard.
+
+    Refuses UNTOUCHED when the rule set moved since the solve: a rule to pause
+    is gone or already paused, or the guard is no longer at the level the
+    card measured. Pausing is reversible (one tap on the Rules tab); nothing is
+    bought or sold.
+    """
+    import uuid
+
+    from app.models.tables import TradingRule
+    from app.services.rules_service import create_rule, update_rule
+
+    rules = []
+    for rid in spec.get("pause_rule_ids") or []:
+        try:
+            r = await session.get(TradingRule, uuid.UUID(str(rid)))
+        except Exception:  # noqa: BLE001
+            r = None
+        if r is None or r.subject != user.email or not r.active:
+            return {"ok": False, "refused": "RULES_CHANGED",
+                    "error": "a rule this card would pause has changed since it was measured - nothing was changed."}
+        rules.append(r)
+    gd = spec.get("guard") or None
+    guard_rule = None
+    if gd and gd.get("rule_id"):
+        try:
+            guard_rule = await session.get(TradingRule, uuid.UUID(str(gd["rule_id"])))
+        except Exception:  # noqa: BLE001
+            guard_rule = None
+        if (guard_rule is None or guard_rule.subject != user.email
+                or abs(float(guard_rule.level) - float(gd.get("from_pct") or 0)) > 1e-6):
+            return {"ok": False, "refused": "RULES_CHANGED",
+                    "error": "your drawdown guard has changed since this was measured - nothing was changed."}
+    paused = []
+    for r in rules:
+        r.active = False
+        paused.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "level": float(r.level)})
+    await session.commit()
+    guard_out = None
+    if gd:
+        if guard_rule is not None:
+            res = await update_rule(session, user, str(guard_rule.id), level=float(gd["to_pct"]), force=True)
+            guard_out = {"from_pct": gd.get("from_pct"), "to_pct": res.get("level"), "ok": res.get("ok")}
+        else:
+            made = await create_rule(session, user, ticker="__BOOK__", rule_type="drawdown_guard", mode="pct",
+                                     level=float(gd["to_pct"]), note="armed by the goal's protection card")
+            await session.commit()
+            guard_out = {"from_pct": None, "to_pct": float(made.level), "ok": True}
+    steps = [f"paused {len(paused)} rule(s)"] if paused else []
+    if guard_out:
+        steps.append(f"drawdown guard {guard_out['from_pct'] if guard_out['from_pct'] is not None else 'armed'}"
+                     f" -> {guard_out['to_pct']:g}%")
+    return {"rules_paused": paused, "guard": guard_out,
+            "note": "Protection retuned for your goal: " + "; ".join(steps)
+                    + ". Paused rules stay on the Rules tab. Nothing was bought or sold."}
