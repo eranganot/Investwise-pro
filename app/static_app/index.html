@@ -3582,7 +3582,12 @@ function drawProjection(r){
   if(r.target_amount)ds.push({label:"Goal",data:tgt,borderColor:"#fbbf24",borderDash:[6,6],pointRadius:0});
   drawChart("ch_proj","line",{labels,datasets:ds});
   let cap;
-  if(r.target_amount&&r.probability_meets_target!=null){const p=Math.round(r.probability_meets_target*100);
+  const gh=r.goal_headline;
+  if(r.target_amount&&gh&&gh.p_goal_pct!=null){const p=Math.round(gh.p_goal_pct);
+    cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}`
+      +(gh.without_rules_pct!=null?` with your protective rules (${Math.round(gh.without_rules_pct)}% without them).`:".")
+      +(r.probability_meets_target!=null?` This chart runs without rules: ${Math.round(r.probability_meets_target*100)}%.`:"");}
+  else if(r.target_amount&&r.probability_meets_target!=null){const p=Math.round(r.probability_meets_target*100);
     cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}.`;}
   else if(r.target_amount){cap=`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`;}
   else{cap=`Likely between ${ils(p5)} and ${ils(p95)} in ${yrs} years. Set a goal in Plan to see your odds.`;}

@@ -29,7 +29,7 @@ async def test_book_expectation_is_the_current_goal_verdicts_numbers(own_session
                 fe = await fs.book_expectation(s, user)
             assert fe == {"expected_return_pct": 17.93, "volatility_pct": 50.32, "basis": "frontier",
                           "confidence": "blended", "regime": "risk_on", "recent_weight": 0.4,
-                          "age_hours": fe["age_hours"], "goal_probability_pct": 38.1}
+                          "age_hours": fe["age_hours"], "goal_probability_pct": 38.1, "headline": None}
             # a verdict about another plan is not this plan's number
             c.put("/api/v1/plan", json={"target_roi_pct": 25})
             async with own_session() as s:

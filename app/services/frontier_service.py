@@ -410,8 +410,14 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                target: float | None, years: float | None, monthly: float = 0.0,
                kelly_setting: float | None = None, sleeve_cap_pct: float = 40.0,
                volatility_cap_pct: float | None = None, p_star: float = GOAL_CONFIDENCE,
-               draws: int = GOAL_DRAWS, seed: int = SEED, rules: dict | None = None) -> dict:
+               draws: int = GOAL_DRAWS, seed: int = SEED, rules: dict | None = None,
+               goal_roi: float | None = None) -> dict:
     """Which mix best serves the user's goal. Pure.
+
+    ``goal_roi`` (PR 99) is the plan's yearly ROI when the goal is "this ROI on
+    every shekel put in": a deposit or a later deadline then RAISES the goal,
+    and the levers are solved against the goal as it would be after Accept.
+    None for a fixed amount, which no deposit or date changes.
 
     The OBJECTIVE is the goal: `target` (the amount his ROI implies) by his
     deadline (`years` from now), from today's `nav` plus active standing orders
@@ -548,6 +554,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
     # 15% rebound). The differences are what the rules -- and the fix -- are
     # worth to the goal. Reported, not yet a decision input.
     rules_block = None
+    run = sl_specs = g_spec = None
     if rules:
         a_rows = []
         for i in sleeve_idx:
@@ -569,12 +576,13 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             vols = unit_daily[:, :k].std(axis=0)
             g_spec = {**rules["guard"], "col": int(np.argmax(vols))}
 
-        def run(sl=None, gd="same", **kw):
-            sim = paths.simulate_rules(unit_daily, book(now_s), years=years,
+        def run(sl=None, gd="same", years_=None, monthly_=None, target_=None, **kw):
+            sim = paths.simulate_rules(unit_daily, book(now_s), years=years if years_ is None else years_,
                                        sleeves=sl_specs if sl is None else sl,
                                        guard=g_spec if gd == "same" else gd,
-                                       monthly=monthly, nav=nav, rf_daily=rf_daily, **kw)
-            return paths.rules_stats(sim, target=target)
+                                       monthly=monthly if monthly_ is None else monthly_,
+                                       nav=nav, rf_daily=rf_daily, **kw)
+            return paths.rules_stats(sim, target=target if target_ is None else target_, p_star=p_star)
         r_off, r_on, r_fix = run(rules_on=False), run(), run(reentry="rebound")
         tuning = _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on)
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
@@ -604,50 +612,128 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         stress = {"confidence": fi.CONFIDENCE_SHRUNK, "before_p_pct": p_s(now_s),
                   "after_p_pct": p_s(proposed) if acting else p_s(now_s)}
 
+    # ---- PR 99: one headline, and what the suggestions are sized on -------
+    # The headline is the chance with the user's rules as they work today, with
+    # the same replay's rules-off figure beside it (identical paths, so the gap
+    # is the rules and nothing else). Without a rules replay: the lower of the
+    # model and history, the same test "on track" uses.
+    tu = (rules_block or {}).get("tuning") or {}
+    if rules_block:
+        headline = {"p_goal_pct": rules_block["on"]["p_goal_pct"],
+                    "without_rules_pct": rules_block["off"]["p_goal_pct"], "basis": "rules"}
+    else:
+        headline = {"p_goal_pct": min(before["goal_probability_pct"], tail_before["p_goal_pct"]),
+                    "without_rules_pct": None, "basis": "model_and_history"}
+    # Eran (D1 b): size the suggestions on the book AFTER "Retune your
+    # protection" when that card exists, else on his rules as they are.
+    sizing_rules = None
+    if rules_block and tu.get("material") and tu.get("best"):
+        best_c = tu["best"]
+        sizing_rules = ([dict(x, trail=None) for x in sl_specs] if best_c["retire_sleeve_exits"] else None,
+                        _guard_spec(best_c["guard_pct"], g_spec, tu.get("guard_col")))
+        sized_on, sized_stats = "after_retune", best_c["stats"]
+    elif rules_block:
+        sizing_rules = (None, "same")
+        sized_on, sized_stats = "rules_as_they_are", rules_block["on"]
+    else:
+        sized_on, sized_stats = "no_rules", None
+
     # ---- levers, on the book AFTER the card (or today's, without one) ----
     base = after if material else before
     tail_base = tail_after if material else tail_before
     g_b, v_b = base["log_growth"], base["volatility"]
+    p_sized = (sized_stats["p_goal_pct"] if sized_stats
+               else min(base["goal_probability_pct"], tail_base["p_goal_pct"]))
     levers = {"required_cagr_pct": round(math.expm1(g_req) * 100, 2) if g_req is not None else None,
-              "on_track_cagr_pct": base["growth_cagr_pct"]}
-    if min(base["goal_probability_pct"], tail_base["p_goal_pct"]) < star:
-        def p_with(m=monthly, y=years):
-            return fr.goal_probability(nav, target, y, g_b, v_b, m)
-        lo_m, hi_m = 0.0, 10.0
-        while p_with(m=monthly + hi_m) < p_star and hi_m < 1e7:
-            lo_m, hi_m = hi_m, hi_m * 2
-        for _ in range(60):
-            mid = 0.5 * (lo_m + hi_m)
-            lo_m, hi_m = (lo_m, mid) if p_with(m=monthly + mid) >= p_star else (mid, hi_m)
-        levers["extra_monthly_ils"] = int(math.ceil(hi_m / 10.0) * 10) if hi_m < 1e7 else None
-        y = years
-        while p_with(y=y) < p_star and y < years + 40:
-            y += 0.25
-        levers["deadline_extra_years"] = round(y - years, 2) if y < years + 40 else None
-        # The largest goal amount reached with p_star by the deadline: P(W >= A) = p_star.
+              "on_track_cagr_pct": base["growth_cagr_pct"], "sized_on": sized_on,
+              "sized_p_goal_pct": p_sized}
+    if p_sized < star:
+        w_full_base = _expand(book(proposed if material else now_s), sleeve_idx, core_vec, cash_idx, n_full)
+        sim_base = paths.simulate(daily @ w_full_base, years=years)
+
+        def rules_p(t_amt, m, y):
+            """The lever's chance on the rules replay it is sized on (None without rules)."""
+            if sizing_rules is None:
+                return None
+            return run(sl=sizing_rules[0], gd=sizing_rules[1], years_=y, monthly_=m,
+                       target_=t_amt)["p_goal_pct"]
+
+        # A deposit raises the goal too: each one has to grow at the goal's ROI.
+        def goal_with_deposit(extra):
+            return target + (_fv_monthly(extra, goal_roi, years) if goal_roi is not None else 0.0)
+
+        def deposit_ok(extra):
+            t_amt = goal_with_deposit(extra)
+            if fr.goal_probability(nav, t_amt, years, g_b, v_b, monthly + extra) * 100 < star:
+                return False
+            return paths.goal_stats(sim_base, nav=nav, target=t_amt, monthly=monthly + extra,
+                                    p_star=p_star)["p_goal_pct"] >= star
+        dep, prev = None, 0.0
+        for i in range(20):
+            m_try = 10.0 * 2 ** i
+            if deposit_ok(m_try):
+                lo_m, hi_m = prev, m_try
+                for _ in range(25):
+                    mid = 0.5 * (lo_m + hi_m)
+                    lo_m, hi_m = (lo_m, mid) if deposit_ok(mid) else (mid, hi_m)
+                dep = int(math.ceil(hi_m / 10.0) * 10)
+                if not deposit_ok(dep):
+                    dep = int(math.ceil(m_try / 10.0) * 10)
+                break
+            prev = m_try
+        if dep is not None:
+            t_dep = goal_with_deposit(dep)
+            pr = rules_p(t_dep, monthly + dep, years)
+            levers["deposit_rules_p_goal_pct"] = pr
+            if pr is not None and pr < star:
+                dep = None                    # holds without the rules, not with them
+            else:
+                levers["deposit_goal_after"] = round(t_dep, 0)
+        levers["extra_monthly_ils"] = dep
+
+        # A later deadline raises the goal too: another year at the goal's ROI.
+        ext, rules_tries = None, 0
+        for i in range(1, 61):
+            e = 0.25 * i
+            t_amt = target * (1.0 + goal_roi) ** e if goal_roi is not None else target
+            if fr.goal_probability(nav, t_amt, years + e, g_b, v_b, monthly) * 100 < star:
+                continue
+            hs = paths.goal_stats(paths.simulate(daily @ w_full_base, years=years + e), nav=nav,
+                                  target=t_amt, monthly=monthly, p_star=p_star)
+            if hs["p_goal_pct"] < star:
+                continue
+            if sizing_rules is not None:
+                rules_tries += 1
+                pr = rules_p(t_amt, monthly, years + e)
+                if pr < star:
+                    if rules_tries >= 4:
+                        break
+                    continue
+                levers["deadline_rules_p_goal_pct"] = pr
+            ext = e
+            levers["deadline_goal_after"] = round(t_amt, 0)
+            levers["deadline_history_p_goal_pct"] = hs["p_goal_pct"]
+            break
+        levers["deadline_extra_years"] = ext
+
+        # The largest goal amount reached with p_star by the deadline, on every
+        # basis the card can be held to: the model, history, and the rules
+        # replay it is sized on. The smallest of them is what the card offers.
         z = _z(1.0 - p_star)
-        levers["amount_at_confidence"] = round(
-            fr.fv_contributions(monthly, g_b, years) + nav * math.exp(g_b * years + v_b * math.sqrt(years) * z), 0)
-        # PR 93: a "70% chance" lever must hold on the historical paths too --
-        # the LARGER deposit and the SMALLER amount of the two methods.
-        model_extra = levers.get("extra_monthly_ils")
-        hist_extra = tail_base.get("extra_monthly_needed")
-        levers["extra_monthly_model_ils"] = model_extra
-        levers["extra_monthly_history_ils"] = (int(math.ceil(hist_extra / 10.0) * 10)
-                                               if hist_extra is not None else None)
-        if model_extra is not None and levers["extra_monthly_history_ils"] is not None:
-            levers["extra_monthly_ils"] = max(model_extra, levers["extra_monthly_history_ils"]) or None
-        levers["amount_at_confidence_model"] = levers["amount_at_confidence"]
+        amt_model = round(fr.fv_contributions(monthly, g_b, years)
+                          + nav * math.exp(g_b * years + v_b * math.sqrt(years) * z), 0)
+        amt_rules = (sized_stats or {}).get("amount_at_confidence")
+        levers["amount_at_confidence_model"] = amt_model
         levers["amount_at_confidence_history"] = tail_base["amount_at_confidence"]
-        levers["amount_at_confidence"] = min(levers["amount_at_confidence"], tail_base["amount_at_confidence"])
-        if levers.get("deadline_extra_years"):
-            later = years + levers["deadline_extra_years"]
-            w_full = _expand(book(proposed if material else now_s), sleeve_idx, core_vec, cash_idx, n_full)
-            later_stats = paths.goal_stats(paths.simulate(daily @ w_full, years=later), nav=nav,
-                                           target=target, monthly=monthly, p_star=p_star)
-            levers["deadline_history_p_goal_pct"] = later_stats["p_goal_pct"]
-            if later_stats["p_goal_pct"] < star:
-                levers["deadline_extra_years"] = None          # the model's year does not survive history
+        levers["amount_at_confidence_rules"] = amt_rules
+        levers["amount_at_confidence"] = min(x for x in (amt_model, tail_base["amount_at_confidence"], amt_rules)
+                                             if x is not None)
+        # Money and time cannot close a goal that asks more per shekel than the
+        # book is expected to earn: said once instead of offering cards for it.
+        if goal_roi is not None and dep is None and ext is None \
+                and base["growth_cagr_pct"] < goal_roi * 100:
+            levers["money_time_note"] = {"roi_pct": round(goal_roi * 100, 2),
+                                         "expected_cagr_pct": base["growth_cagr_pct"]}
     for m in (before, after):
         m.pop("volatility", None)
     return {"ok": True, "mode": "goal", "outcome": outcome, "material": bool(material),
@@ -664,7 +750,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             "core_pct_before": round((free_total - now_s.sum()) * 100, 2),
             "core_pct_after": round((free_total - proposed.sum()) * 100, 2),
             "core_basket": core_basket, "before": before, "after": after, "levers": levers,
-            "rules": rules_block, "stress": stress,
+            "rules": rules_block, "stress": stress, "headline": headline,
             "tail": {"before": tail_before, "after": tail_after, "gate": tail_gate,
                      "paths": paths.N_PATHS, "block_days": paths.BLOCK_DAYS,
                      "basis": "historical daily returns re-centred on the chosen estimate"},
@@ -814,6 +900,22 @@ GUARD_LEVELS = (15.0, 20.0)
 RULES_CARD_KIND = "frontier_rules"
 
 
+def _guard_spec(lvl, g_spec, guard_col) -> dict | None:
+    """The drawdown guard at `lvl` percent, as `paths.simulate_rules` takes it."""
+    if lvl is None or guard_col is None:
+        return None
+    return {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
+            "fraction": (g_spec or {}).get("fraction", 0.25), "col": guard_col}
+
+
+def _fv_monthly(monthly: float, roi: float, years: float) -> float:
+    """What `monthly` deposited at each month's end grows to at `roi` a year by
+    the deadline -- the amount those deposits add to a "ROI on every shekel"
+    goal (`goal_service.compound` on the deposits it would record)."""
+    n = int(years * 12)
+    return sum(monthly * (1.0 + roi) ** ((n - k) / 12.0) for k in range(1, n + 1))
+
+
 def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on) -> dict | None:
     has_exits = any(s.get("trail") for s in sl_specs)
     if not has_exits and not g_spec:
@@ -825,10 +927,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
         levels = [None] + list(GUARD_LEVELS)
 
     def guard_at(lvl):
-        if lvl is None or guard_col is None:
-            return None
-        return {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
-                "fraction": (g_spec or {}).get("fraction", 0.25), "col": guard_col}
+        return _guard_spec(lvl, g_spec, guard_col)
 
     cands = []
     for retire in ((False, True) if has_exits else (False,)):
@@ -851,7 +950,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
         if best["guard_pct"] != cur_guard:
             changes["guard"] = {"rule_id": (rules.get("guard") or {}).get("rule_id"),
                                 "from_pct": cur_guard, "to_pct": best["guard_pct"]}
-    return {"halve_floor_pct": HALVE_FLOOR_PCT, "material": material,
+    return {"halve_floor_pct": HALVE_FLOOR_PCT, "material": material, "guard_col": guard_col,
             "current": {"guard_pct": cur_guard, "stats": r_on},
             "best": best, "changes": changes if material else None,
             "candidates": [{k2: v for k2, v in c.items()} for c in cands]}
@@ -1046,7 +1145,8 @@ async def compute_for(session, user, *, source: str = "on_demand",
                            kelly_setting=ctx.get("kelly_fraction_setting"),
                            sleeve_cap_pct=goal["sleeve_cap_pct"],
                            volatility_cap_pct=goal["volatility_cap_pct"],
-                           draws=min(draws, GOAL_DRAWS), rules=rules_ctx)
+                           draws=min(draws, GOAL_DRAWS), rules=rules_ctx,
+                           goal_roi=goal.get("roi_annual"))
             # PR 94: and which CORE serves the goal, the sleeves as they are.
             if v.get("mode") == "goal" and v.get("outcome") not in (NOT_MEASURABLE, GOAL_NO_TARGET) and current_core:
                 try:
@@ -1162,7 +1262,7 @@ async def _goal_context(session, user, rows) -> dict | None:
     None when the plan has no ROI target and deadline: there is nothing to
     steer by, and the solve falls back to managing risk.
     """
-    from app.services.goal_service import compute_goal
+    from app.services.goal_service import annual_roi, compute_goal
     from app.services.plan_service import effective_caps, get_plan
     from app.services.standing_order_service import monthly_total
     from app.services.strategy_service import _snapshot
@@ -1182,6 +1282,8 @@ async def _goal_context(session, user, rows) -> dict | None:
     return {"nav": nav, "target": float(g["target"]), "years": float(g["years_left"]),
             "deadline": g.get("deadline"), "monthly": monthly,
             "roi_pct": float(plan.target_roi_pct), "flows": g.get("contributions") or [],
+            # PR 99: only a goal DERIVED from deposits grows with them.
+            "roi_annual": annual_roi(plan) if g.get("basis") == "contributions" else None,
             "target_date_raw": getattr(plan, "target_date", None),
             "sleeve_cap_pct": float(caps.get("concentration_cap") or 0.4) * 100.0,
             "volatility_cap_pct": float(caps.get("volatility_cap") or 0.0) * 100.0 or None}
@@ -1440,7 +1542,7 @@ async def book_expectation(session, user) -> dict | None:
     return {"expected_return_pct": float(b["growth_cagr_pct"]), "volatility_pct": float(b["volatility_pct"]),
             "basis": "frontier", "confidence": v.get("confidence"), "regime": mk.get("state"),
             "recent_weight": mk.get("recent_weight"), "age_hours": round(age or 0.0, 1),
-            "goal_probability_pct": b.get("goal_probability_pct")}
+            "goal_probability_pct": b.get("goal_probability_pct"), "headline": v.get("headline")}
 
 
 async def goal_story_active(session, user) -> bool:
@@ -1487,10 +1589,16 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     # PR 93: the same goal on fat-tailed history, said on every goal card.
     tl = v.get("tail") or {}
     tb, ta = tl.get("before") or {}, tl.get("after") or {}
+    # PR 99: ONE headline chance, the same figure everywhere it appears: with
+    # the rules as they work today, the same replay's rules-off figure beside it.
+    hl = v.get("headline") or {}
+    if hl.get("p_goal_pct") is not None:
+        goal_line += (f" Your chance today: {hl['p_goal_pct']:g}%"
+                      + (f" with your protective rules as they work ({hl['without_rules_pct']:g}% without them)."
+                         if hl.get("without_rules_pct") is not None else "."))
     if tb:
         goal_line += (f" On {tl.get('paths', 2000):,} paths built from real market days (centred on your "
-                      f"estimate): {tb['p_goal_pct']:g}% chance today; the worst 5% of outcomes end near "
-                      f"{tb['worst5_mean']:,.0f}; {tb['p_halve_pct']:g}% chance the book halves at some point.")
+                      f"estimate) the worst 5% of outcomes end near {tb['worst5_mean']:,.0f}.")
     # PR 94: how much the CORE can move the goal, said once so the levers make sense.
     # PR 97: what the market is doing now, and how much that moved the inputs.
     mk = v.get("market") or {}
@@ -1515,10 +1623,9 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     rb = v.get("rules") or {}
     if rb.get("on"):
         on, off, fix = rb["on"], rb["off"], rb["rebound"]
-        goal_line += (f" With your protective rules as they work today: {on['p_goal_pct']:g}% chance, "
-                      f"{on['p_halve_pct']:g}% chance of halving (rules off: {off['p_goal_pct']:g}%, "
-                      f"{off['p_halve_pct']:g}%). If a stop waited for a 15% rebound before buying back: "
-                      f"{fix['p_goal_pct']:g}%, {fix['p_halve_pct']:g}%.")
+        goal_line += (f" Chance the book halves at some point: {on['p_halve_pct']:g}% with your rules, "
+                      f"{off['p_halve_pct']:g}% without. If a stop waited for a 15% rebound before buying back: "
+                      f"{fix['p_goal_pct']:g}% chance, {fix['p_halve_pct']:g}% halving.")
         if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
             outs = [f"{sid} {p:g}%" for sid, p in zip(rb.get("sleeves") or {}, on.get("pct_time_out") or []) if p]
             goal_line += (f" Your rules cost this goal {abs(rb['effect_pts']):g} points: after a stop or take-profit "
@@ -1531,6 +1638,10 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         goal_line += (f" Changing your core ({len(cc['candidates'])} catalog cores modelled) moves the odds by "
                       f"at most {spread:.1f} points" + (" - the sleeves decide this goal." if spread < MATERIAL_PROB_PTS
                                                         else "."))
+    mt = lv.get("money_time_note")
+    if mt:
+        goal_line += (f" Adding money or time doesn't help this goal: it asks {mt['roi_pct']:g}%/yr on every "
+                      f"shekel, and the book is expected to make about {mt['expected_cagr_pct']:.0f}%.")
     cards = []
     from app.services import sleeve_service as _sv2
     if cc.get("outcome") == CORE_SWITCH and await _sv2.core_strategy_id(session, user) == cc["current"]["id"]:
@@ -1630,7 +1741,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
 
     base = a if v.get("material") else b
     tail_base = (ta if v.get("material") else tb) or {}
-    if min(base["goal_probability_pct"], tail_base.get("p_goal_pct", 100.0)) < star:
+    p_sized = lv.get("sized_p_goal_pct")
+    if p_sized is None:                       # a verdict from before PR 99
+        p_sized = min(base["goal_probability_pct"], tail_base.get("p_goal_pct", 100.0))
+    sized_words = {"after_retune": " after you accept 'Retune your protection'",
+                   "rules_as_they_are": " with your protective rules as they are"}.get(lv.get("sized_on"), "")
+    if p_sized < star:
         alt = []
         if lv.get("extra_monthly_ils"):
             alt.append(f"add {lv['extra_monthly_ils']:,}/month")
@@ -1639,20 +1755,19 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         if lv.get("deadline_extra_years"):
             alt.append(f"give it {lv['deadline_extra_years']:g} more years")
         others = "; ".join(alt)
-        head = (f"Even the best mix within your risk cap leaves a {base['goal_probability_pct']:g}% chance "
+        head = (f"Even the best mix within your risk cap leaves a {p_sized:g}% chance{sized_words} "
                 f"(target {star}%)." if v["outcome"] in (GOAL_OUT_OF_REACH, GOAL_IMPROVE) else
-                f"After the rebalance the chance is {base['goal_probability_pct']:g}% (target {star}%).")
+                f"After the rebalance the chance is {p_sized:g}%{sized_words} (target {star}%).")
         if v["outcome"] == GOAL_TAIL_SHORT:
             head = (f"The model gives {base['goal_probability_pct']:g}%, but on real-market paths it is "
                     f"{tail_base.get('p_goal_pct')}% - not on track (target {star}%).")
         elif v["outcome"] == GOAL_TAIL_DISAGREES:
             head += (" A trade that looked better in the model lowers the odds on real-market paths, so it is "
                      "not offered.")
-        sized = ""
-        if lv.get("extra_monthly_model_ils") is not None and lv.get("extra_monthly_history_ils") is not None:
-            sized = (f" Deposit sized so {star}% holds both ways (model {lv['extra_monthly_model_ils']:,}, "
-                     f"history {lv['extra_monthly_history_ils']:,}).")
-        common_why = goal_line + " " + head + f" Ways to close it: {others}.{sized} Solved {when}."
+        sized = {"after_retune": " Sized on your book after 'Retune your protection'.",
+                 "rules_as_they_are": " Sized on your protective rules as they are."}.get(lv.get("sized_on"), "")
+        common_why = (goal_line + " " + head + (f" Ways to close it: {others}." if others else "")
+                      + f"{sized} Solved {when}.")
         if lv.get("extra_monthly_ils"):
             new_total = round(float(g.get("monthly") or 0) + float(lv["extra_monthly_ils"]), 2)
             cards.append({
@@ -1661,7 +1776,10 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                 "why": common_why,
                 "action": (f"Accept sets your standing orders to {new_total:,.0f}/month in total. "
                            f"No money moves now; each deposit is recorded on its day."),
-                "impact": f"Raises the chance of reaching {g['target']:,.0f} by {deadline} to about {star}%.",
+                "impact": (f"Your goal becomes {lv['deposit_goal_after']:,.0f} by {deadline} (each deposit also has "
+                           f"to grow {g.get('roi_pct'):g}%/yr), with about a {star}% chance of reaching it."
+                           if lv.get("deposit_goal_after") else
+                           f"Raises the chance of reaching {g['target']:,.0f} by {deadline} to about {star}%."),
                 "how": [f"Monthly deposits: {float(g.get('monthly') or 0):,.0f} -> {new_total:,.0f}",
                         "Change or pause it any time on the Cash tab"],
                 "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
@@ -1688,7 +1806,10 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                 "title": f"Move your deadline to {new_year} for a {star}% chance",
                 "why": common_why,
                 "action": f"Accept moves your goal deadline from {str(g['deadline'])[:4]} to {new_year}.",
-                "impact": f"Gives the book {math.ceil(extra)} more year(s) to compound toward your goal.",
+                "impact": (f"Your goal becomes {lv['deadline_goal_after']:,.0f} by {new_year} (another "
+                           f"{math.ceil(extra)} year(s) at {g.get('roi_pct'):g}%/yr), with about a {star}% chance "
+                           f"of reaching it." if lv.get("deadline_goal_after") else
+                           f"Gives the book {math.ceil(extra)} more year(s) to compound toward your goal."),
                 "how": ["Only the deadline changes; nothing is bought or sold"],
                 "apply": {"kind": "set_plan", "fields": {"target_date": str(new_year)}},
                 "meta": {"lever": "deadline", "goal": g, "levers": lv}})

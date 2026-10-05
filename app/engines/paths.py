@@ -293,10 +293,12 @@ def simulate_rules(asset_daily: np.ndarray, weights: np.ndarray, *, years: float
             "guard_fires_per_year": round(float(guards.mean() / yrs), 2)}
 
 
-def rules_stats(sim: dict, *, target: float) -> dict:
+def rules_stats(sim: dict, *, target: float, p_star: float = 0.70) -> dict:
     final = sim["final"]
     worst5 = np.sort(final)[: max(1, int(0.05 * final.size))]
     return {"p_goal_pct": round(float(np.mean(final >= target)) * 100, 1),
+            # PR 99: the largest goal these paths reach with p_star, rules acting.
+            "amount_at_confidence": round(float(np.percentile(final, (1 - p_star) * 100)), 0),
             "median": round(float(np.median(final)), 0),
             "worst5_mean": round(float(worst5.mean()), 0),
             "p_halve_pct": round(float(np.mean(sim["worst_drawdown"] >= 0.5)) * 100, 1),

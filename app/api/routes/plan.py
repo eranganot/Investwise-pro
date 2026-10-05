@@ -1017,6 +1017,11 @@ async def goal_projection(contribution_per_year: float | None = None,
         "on_track": (sim.nominal.p50 >= target) if target else None,
         "probability_meets_target": (round(sim.probability_meets_target, 3)
                                      if sim.probability_meets_target is not None else None),
+        # PR 99: the goal's ONE headline chance (with the protective rules as
+        # they work, rules-off beside it), so this card quotes the goal cards'
+        # figure; the chart's own no-rules run stays labelled as such.
+        "goal_headline": ((stats.get("expectation") or {}).get("headline")
+                          if stats.get("assumption_basis") == "frontier" else None),
         "probability_of_loss_real": round(sim.probability_of_loss_real, 3),
         "probability_of_gain_real": round(sim.probability_of_gain_real, 3),
         "runs": sim.runs,

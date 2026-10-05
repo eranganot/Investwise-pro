@@ -113,12 +113,14 @@ async def test_goal_cards_state_the_rules_and_the_stress_case(own_session):
             cur = _seed(c, 10)
             await _store_verdict(own_session, _goal_verdict(
                 cur, stress={"confidence": "shrunk", "before_p_pct": 22.9, "after_p_pct": 22.9},
+                headline={"p_goal_pct": 1.0, "without_rules_pct": 33.0, "basis": "rules"},
                 rules={"on": st, "off": off, "rebound": {**st, "p_goal_pct": 1.5}, "effect_pts": -32.0,
                        "fix_effect_pts": 0.5, "sleeves": {"btm_qqq_hold": {}}}))
             dep = next(x for x in _cards(c) if (x.get("meta") or {}).get("lever") == "deposit")
             assert "Stress case (shrunk estimate" in dep["why"] and "22.9% chance" in dep["why"]
-            assert "With your protective rules as they work today: 1% chance" in dep["why"]
-            assert "rules off: 33%" in dep["why"]
+            # PR 99: one headline, rules-off beside it, said once.
+            assert "Your chance today: 1% with your protective rules as they work (33% without them)." in dep["why"]
+            assert "Chance the book halves at some point: 0% with your rules, 40% without" in dep["why"]
             assert "Your rules cost this goal 32 points" in dep["why"]
             assert "btm_qqq_hold 62.1%" in dep["why"]
     finally:

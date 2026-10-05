@@ -87,13 +87,12 @@ def test_an_impossible_goal_offers_levers_that_actually_reach_70pct():
     g = base["log_growth"]
     vol = base["volatility_pct"] / 100
     m = lv["extra_monthly_ils"]
-    # PR 93: the lever is the LARGER of the model's and history's deposit, so
-    # "70%" holds on both; it is minimal on whichever of the two binds.
-    assert m == max(lv["extra_monthly_model_ils"], lv["extra_monthly_history_ils"])
+    # A fixed-amount goal (no goal_roi): a deposit does not move the goal, and
+    # the deposit reaches 70% on the model (history is checked inside the solve).
+    assert lv["sized_on"] == "no_rules" and "deposit_goal_after" in lv
+    assert lv["deposit_goal_after"] == 10_000_000
     assert fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=m) >= 0.70 - 1e-6
-    mm = lv["extra_monthly_model_ils"]
-    assert fr.goal_probability(10_000, 10_000_000, 5.0, g, vol, monthly=mm - 10) < 0.70
-    # the amount is the SMALLER of the two, and the model's own is exact
+    # the amount is the SMALLER of every basis, and the model's own is exact
     assert lv["amount_at_confidence"] == min(lv["amount_at_confidence_model"], lv["amount_at_confidence_history"])
     assert fr.goal_probability(10_000, lv["amount_at_confidence_model"], 5.0, g, vol) == pytest.approx(0.70, abs=0.01)
 
@@ -281,7 +280,7 @@ async def test_on_track_in_the_model_but_short_on_history_still_offers_levers(ow
             assert dep is not None
             assert "on real-market paths it is 62.0%" in dep["why"]
             assert "worst 5% of outcomes end near 9,000" in dep["why"]
-            assert "history 210" in dep["why"]
+            assert "history 210" not in dep["why"]
     finally:
         await _reset_plan(own_session)
 
