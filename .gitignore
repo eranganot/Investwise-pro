@@ -39,3 +39,6 @@ scripts/.agent-key*
 *.tar.gz
 
 .claude/settings.local.json
+
+# Smoke-script scratch output (PR 88+): a baseline the next PR diffs against.
+scripts/smoke/baseline-*.json

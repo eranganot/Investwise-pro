@@ -202,6 +202,15 @@ long-only corner, caps/infeasible caps, the core leaning away from equity beside
 Ledoit-Wolf shrinkage/invertibility, projection, frontier dominance, Kelly arithmetic (3× a
 10%/22% asset grows ~0.2%/yr vs ~7.7% at full Kelly).
 
+**Smoke.** `scripts/smoke/smoke-pr88-frontier-engine.ps1 -Sha <sha>` on the new shared
+`_smoke-common.ps1` (every PR now ships one — CLAUDE.md ship rules). Its endpoint fields were
+verified against production on 2026-10-05 (serving `501e8a7`): `/mix target_source` =
+`sleeves+core`; `GET /plan/target` is 422 without params, so the script reads
+`/plan/target/accepted`. **First live engine reading:** 22.49% stated CAGR, 50.46% realised
+vol, so the book sits at **0.88× full Kelly** (4% risk-free assumed). That is not over-Kelly, but it
+is above Grow's ½. The `.ps1` itself has not been run yet: an isolated session cannot launch
+PowerShell.
+
 **Behaviour change: none.** Next: PR 89 (ILS inputs + Black-Litterman).
 
 ---
