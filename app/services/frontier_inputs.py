@@ -92,8 +92,14 @@ TAU = 0.05
 # shrunk by default, blended as an option; measured kept as the third).
 #   shrunk    Black-Litterman as estimated: the backtest counts in proportion
 #             to its own precision (variance / OOS years).
-#   blended   halfway between that posterior and the backtest, for every asset
-#             that carries a view -- a fixed 50%, not an evidence weight.
+#   blended   PR 95 (Eran, 2026-10-05, "Prior = 5 years"): Black-Litterman
+#             with the market prior counting as FIVE years of evidence
+#             (tau = 0.2) instead of twenty. A backtest's weight is then
+#             ~T/(T+5): today the SOXL rule's 4.7 OOS years get ~49%, and the
+#             weight rises by itself as out-of-sample years accumulate. It was
+#             a fixed 50/50 of the two estimates, which -- because shrunk
+#             already holds ~21% of the backtest -- really gave it ~61%, and
+#             never learned.
 #   measured  the backtest's own drift, unshrunk.
 # Assets without a view keep the posterior under every setting: there is
 # nothing measured to trust more.
@@ -101,7 +107,9 @@ CONFIDENCE_SHRUNK = "shrunk"
 CONFIDENCE_BLENDED = "blended"
 CONFIDENCE_MEASURED = "measured"
 CONFIDENCE_LEVELS = (CONFIDENCE_SHRUNK, CONFIDENCE_BLENDED, CONFIDENCE_MEASURED)
-DEFAULT_CONFIDENCE = CONFIDENCE_SHRUNK
+# PR 95: blended is the default (Eran, 2026-10-05), shrunk the stress case.
+DEFAULT_CONFIDENCE = CONFIDENCE_BLENDED
+BLENDED_TAU = 0.20          # the prior is worth 5 years of evidence
 
 
 def confidence_of(value: str | None) -> str:
@@ -328,14 +336,15 @@ def estimate(ils: np.ndarray, assets: list[dict], *, objective_target: dict[str,
                       "years": round(years, 2), "window": [meas.get("start"), meas.get("end")],
                       "basis": "measured_oos"})
     p = np.array(p_rows) if p_rows else np.zeros((0, n))
-    posterior = black_litterman(cov, prior, p, np.array(q), np.diag(omega) if omega else
-                                np.zeros((0, 0)), tau=tau)
+    o_mat = np.diag(omega) if omega else np.zeros((0, 0))
+    posterior = black_litterman(cov, prior, p, np.array(q), o_mat, tau=tau)
     shrunk = posterior.copy()
     confidence = confidence_of(confidence)
-    if confidence != CONFIDENCE_SHRUNK:
+    if confidence == CONFIDENCE_BLENDED:
+        posterior = black_litterman(cov, prior, p, np.array(q), o_mat, tau=BLENDED_TAU)
+    elif confidence == CONFIDENCE_MEASURED:
         for row, q_i in zip(p_rows, q):
-            i = int(np.argmax(row))
-            posterior[i] = q_i if confidence == CONFIDENCE_MEASURED else 0.5 * (shrunk[i] + q_i)
+            posterior[int(np.argmax(row))] = q_i
 
     cov_full = np.zeros((n + 1, n + 1))
     cov_full[:n, :n] = cov

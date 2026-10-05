@@ -27,17 +27,33 @@ def _est(confidence, measured=True):
 # confidence
 # --------------------------------------------------------------------------
 
-def test_measured_uses_the_backtest_and_blended_sits_halfway():
+def test_measured_uses_the_backtest_and_blended_is_bl_with_a_five_year_prior():
     prep, sh = _est("shrunk")
     _, bl = _est("blended")
     _, me = _est("measured")
     i = [a["id"] for a in prep["assets"]].index("lev")
     q = fr.arithmetic_drift(60.0, 85.0)
     assert me["mu"][i] == pytest.approx(q)
-    assert bl["mu"][i] == pytest.approx(0.5 * (sh["mu"][i] + q))
+    # PR 95: blended = Black-Litterman with tau 0.2 (prior worth 5 years), not a midpoint.
+    meas = {"lev": ({"cagr_pct": 60.0, "volatility_pct": 85.0, "observations": 1190}, None)}
+    tau02 = fi.estimate(prep["ils"], prep["assets"], **{**EST_KW, "measurements": meas},
+                        confidence="shrunk", tau=fi.BLENDED_TAU)
+    assert bl["mu"][i] == pytest.approx(tau02["mu"][i])
     assert sh["mu"][i] < bl["mu"][i] < me["mu"][i]
     # Every setting keeps the shrunk figure alongside, so a screen can show both.
     assert me["mu_shrunk"][i] == pytest.approx(sh["mu"][i])
+    assert bl["mu_shrunk"][i] == pytest.approx(sh["mu"][i])
+
+
+def test_the_blended_weight_learns_with_more_out_of_sample_years():
+    prep = _prep()
+
+    def weight(years):
+        meas = {"lev": ({"cagr_pct": 60.0, "volatility_pct": 85.0, "observations": int(252 * years)}, None)}
+        e = fi.estimate(prep["ils"], prep["assets"], **{**EST_KW, "measurements": meas}, confidence="blended")
+        i = [a["id"] for a in prep["assets"]].index("lev")
+        return (e["mu"][i] - e["prior"][i]) / (fr.arithmetic_drift(60.0, 85.0) - e["prior"][i])
+    assert weight(2) < weight(5) < weight(10) < 1.0
 
 
 def test_assets_without_a_view_do_not_move_with_the_dial():
@@ -48,8 +64,8 @@ def test_assets_without_a_view_do_not_move_with_the_dial():
         assert me["mu"][ids.index(a)] == pytest.approx(sh["mu"][ids.index(a)])
 
 
-def test_an_unknown_confidence_falls_back_to_shrunk():
-    assert fi.confidence_of(None) == fi.confidence_of("yolo") == "shrunk"
+def test_an_unknown_confidence_falls_back_to_the_default_blended():
+    assert fi.confidence_of(None) == fi.confidence_of("yolo") == "blended"
     assert fi.confidence_of(" Blended ") == "blended"
 
 
@@ -89,7 +105,7 @@ def test_every_confidence_is_scored_and_the_ceiling_is_a_ceiling():
         assert s["max_growth_pct"] >= s["before_growth_pct"] - 1e-6
         assert s["max_growth_pct"] >= s["after_growth_pct"] - 1e-6
     t = v["target"]
-    assert t["roi_pct"] == 30.0 and t["confidence"] == "shrunk"
+    assert t["roi_pct"] == 30.0 and t["confidence"] == "blended"
     assert t["reachable"] == (v["scenarios"]["shrunk"]["max_growth_pct"] >= 30.0)
 
 

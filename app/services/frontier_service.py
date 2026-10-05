@@ -935,6 +935,78 @@ async def compute_for(session, user, *, source: str = "on_demand",
     return out
 
 
+def rules_spec(rules: list[dict], *, prices: dict[str, float],
+               sleeve_tickers: dict[str, set[str]]) -> dict:
+    """The user's ARMED rules -> what `paths.simulate_rules` takes. Pure.
+
+    ``rules`` are rows as dicts {ticker, rule_type, mode, level, params,
+    trim_fraction}; ``prices`` today's price per ticker (the rules' own
+    currency); ``sleeve_tickers`` the tickers each sleeve can hold. Per sleeve
+    the TIGHTEST exit wins (trailing stop, activated profit-protect, or a hard
+    stop expressed as a fall from today's price) and the NEAREST take-profit.
+    """
+    from app.services.advanced_rules import DERISK_FRACTION
+    from app.services.rules_service import TAKE_PROFIT_FRACTION
+
+    out = {sid: {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": []}
+           for sid in sleeve_tickers}
+    guard, not_sim = None, []
+    for r in rules:
+        tk, rt = (r.get("ticker") or "").upper(), r.get("rule_type")
+        lvl = float(r.get("level") or 0.0)
+        if rt == "drawdown_guard" and tk == "__BOOK__" and lvl > 0:
+            guard = {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
+                     "fraction": DERISK_FRACTION}
+            continue
+        sid = next((s for s, ts in sleeve_tickers.items() if tk in ts), None)
+        if sid is None:
+            if rt in ("stop_loss", "trailing_stop", "profit_protect", "take_profit", "drawdown_guard"):
+                not_sim.append(f"{rt} on {tk}")
+            continue
+        spec = out[sid]
+        px = float(prices.get(tk) or 0.0)
+        trail = None
+        if rt == "trailing_stop" and r.get("mode", "pct") == "pct":
+            trail = lvl / 100.0
+        elif rt == "profit_protect" and (r.get("params") or {}).get("activated"):
+            trail = lvl / 100.0
+        elif rt == "stop_loss":
+            trail = (1.0 - lvl / px) if r.get("mode") == "price" and px > 0 else lvl / 100.0
+        if trail is not None and 0 < trail < 1:
+            spec["trail"] = trail if spec["trail"] is None else min(spec["trail"], trail)
+            spec["rules"].append(f"{rt} {tk} ({trail:.0%} below the peak)")
+        if rt == "take_profit" and px > 0:
+            ratio = lvl / px if r.get("mode") == "price" else 1.0 + lvl / 100.0
+            if ratio > 1.0:
+                spec["tp_ratio"] = ratio if spec["tp_ratio"] is None else min(spec["tp_ratio"], ratio)
+                frac = r.get("trim_fraction")
+                spec["tp_fraction"] = float(frac) if frac and 0 < float(frac) <= 1 else TAKE_PROFIT_FRACTION
+                spec["rules"].append(f"take_profit {tk} (+{ratio - 1:.0%}, sells {spec['tp_fraction']:.0%})")
+    return {"sleeves": out, "guard": guard, "not_simulated": sorted(set(not_sim))}
+
+
+async def _rules_context(session, user, sleeves: list[dict]) -> dict | None:
+    """The user's active rules and today's prices, mapped onto his sleeves."""
+    from sqlalchemy import select
+
+    from app.engines import blend
+    from app.models.tables import TradingRule
+    from app.services.intake_service import list_positions
+
+    rows = (await session.scalars(select(TradingRule).where(TradingRule.subject == user.email)
+                                  .where(TradingRule.active.is_(True)))).all()
+    if not rows:
+        return None
+    prices = {}
+    for p in await list_positions(session, user):
+        if p.current_price:
+            prices[(p.ticker or "").upper()] = float(p.current_price)
+    tickers = {s["id"]: {t.upper() for t in blend.claimable_tickers(s["spec"])} for s in sleeves}
+    return rules_spec([{"ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode, "level": r.level,
+                        "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows],
+                      prices=prices, sleeve_tickers=tickers)
+
+
 async def _goal_context(session, user, rows) -> dict | None:
     """The plan's goal as the solve needs it, from the SAME functions /plan uses.
 

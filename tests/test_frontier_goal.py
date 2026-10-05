@@ -163,7 +163,7 @@ def _cards(c):
 def _goal_verdict(cur_pct, **over):
     v = {"ok": True, "mode": "goal", "outcome": fs.GOAL_OUT_OF_REACH, "material": False,
          "objective": "Grow", "p_star": 0.70, "kelly_ceiling": 1.0, "kelly_source": "goal (cap 1.0x)",
-         "kelly_fraction": 1.0, "kelly_target": 1.0, "confidence": "shrunk",
+         "kelly_fraction": 1.0, "kelly_target": 1.0, "confidence": "blended",
          "goal": {"target": 82692.0, "years": 5.2, "nav": 24611.0, "monthly": 0.0,
                   "deadline": "2031-12-31", "roi_pct": 30.0, "target_date_raw": "2031",
                   "reachable_within_ceiling": False, "meets_now": False, "meets_after": False},
