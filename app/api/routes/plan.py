@@ -46,11 +46,36 @@ async def _measured(session, user) -> dict | None:
     """
     from app.services.measured_assumptions import book_assumptions
     try:
-        return await book_assumptions(session, user)
+        m = await book_assumptions(session, user)
     except Exception:  # noqa: BLE001 -- see the docstring
         logger.warning("measured assumptions unavailable; using the instrument table",
                        exc_info=False)
-        return None
+        m = None
+    # PR 98: ONE return basis. A fresh goal verdict's own figures win, so this
+    # screen, the projection and the goal cards quote the same numbers; the
+    # measured blend stays alongside under `measured_*` for comparison.
+    try:
+        from app.services.frontier_service import book_expectation
+        fe = await book_expectation(session, user)
+    except Exception:  # noqa: BLE001 -- the measured figures are the safe fallback
+        fe = None
+    if fe:
+        m = dict(m or {})
+        m["measured_expected_return_pct"] = m.get("expected_return_pct")
+        m["measured_volatility_pct"] = m.get("volatility_pct")
+        m["expected_return_pct"] = fe["expected_return_pct"]
+        m["volatility_pct"] = fe["volatility_pct"]
+        m["basis"] = "frontier"
+        m["frontier"] = fe
+    return m
+
+
+def _frontier_basis_text(fe: dict | None) -> str:
+    """PR 98: the basis sentence when the goal verdict supplies the numbers."""
+    fe = fe or {}
+    return (f" (your goal model: {fe.get('confidence') or 'blended'} estimate, recent volatility weighted "
+            f"{float(fe.get('recent_weight') or 0):.0%}, market {fe.get('regime') or 'unknown'}; "
+            f"the same numbers as your goal cards)")
 
 
 def _portfolio_stats(rows, measured: dict | None = None) -> dict:
@@ -110,6 +135,10 @@ def _portfolio_stats(rows, measured: dict | None = None) -> dict:
         out["assumption_basis"] = measured.get("basis", "static")
         out["measured_pct_of_book"] = measured.get("measured_pct_of_book")
         out["assumptions"] = measured
+        # PR 98: when the goal verdict supplies the numbers, say so and keep the
+        # measured blend beside them.
+        out["expectation"] = measured.get("frontier")
+        out["measured_expected_roi"] = measured.get("measured_expected_return_pct")
         # What the screen used to say, kept beside what it says now. A number
         # that moved without the old one visible is a number the reader cannot
         # check.
@@ -191,6 +220,10 @@ def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
     # your 30%/yr target" never said it was an instrument-table guess about
     # buy-and-hold TQQQ; a forward number with no stated basis is not checkable.
     base["assumption_basis"] = stats.get("assumption_basis", "static")
+    # PR 98: the goal model's basis when it supplies the number, and the
+    # measured blend it replaced, so the screen can show both.
+    base["expectation"] = stats.get("expectation")
+    base["portfolio_expected_roi_pct_measured"] = stats.get("measured_expected_roi")
     base["measured_pct_of_book"] = stats.get("measured_pct_of_book")
     base["portfolio_expected_roi_pct_static"] = stats.get("static_expected_roi")
     base["portfolio_volatility_pct"] = stats.get("volatility")
@@ -1002,7 +1035,9 @@ async def goal_projection(contribution_per_year: float | None = None,
         "return_convention_note": CONVENTION_NOTE,
         "assumptions": [f"~{stats['expected_roi'] or 6}%/yr compound return (the median grows at it), "
                         f"{stats['volatility'] or 12}% volatility, over {years:.1f} years"
-                        + (f" ({stats['assumption_basis']}; "
+                        + (_frontier_basis_text(stats.get("expectation"))
+                           if stats.get("assumption_basis") == "frontier" else
+                           f" ({stats['assumption_basis']}; "
                            f"{stats.get('measured_pct_of_book')}% of the book measured)"
                            if stats.get("assumption_basis") not in (None, "static") else
                            " (instrument table, not measured)"),

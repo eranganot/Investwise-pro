@@ -1410,6 +1410,39 @@ def _goal_verdict_current(plan, live: dict, v: dict, age: float | None) -> bool:
     return True
 
 
+async def book_expectation(session, user) -> dict | None:
+    """PR 98: the ONE expected return and volatility every screen quotes.
+
+    When a fresh goal verdict speaks for this plan and book, its own figures for
+    the book AS IT STANDS -- expected compound growth and volatility under the
+    user's return confidence and today's volatility level -- are the app's
+    numbers. The Plan screen's "expected return", the projection and the risk
+    report then agree with the goal cards instead of quoting the measured
+    backtest blend beside them. None otherwise: callers keep their measured
+    figures, labelled as such.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.plan_service import get_plan
+    row = await latest(session, user)
+    if row is None:
+        return None
+    v = row.detail or {}
+    if v.get("mode") != "goal" or v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET):
+        return None
+    live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    age = _age_hours(row)
+    if not _goal_verdict_current(await get_plan(session, user), live, v, age):
+        return None
+    b = v.get("before") or {}
+    if b.get("growth_cagr_pct") is None or b.get("volatility_pct") is None:
+        return None
+    mk = v.get("market") or {}
+    return {"expected_return_pct": float(b["growth_cagr_pct"]), "volatility_pct": float(b["volatility_pct"]),
+            "basis": "frontier", "confidence": v.get("confidence"), "regime": mk.get("state"),
+            "recent_weight": mk.get("recent_weight"), "age_hours": round(age or 0.0, 1),
+            "goal_probability_pct": b.get("goal_probability_pct")}
+
+
 async def goal_story_active(session, user) -> bool:
     """True when a fresh goal verdict speaks for the goal on Today.
 

@@ -3387,7 +3387,12 @@ function renderRoi(p){const e=$("roi_note");
     // no hint that it came from a table pricing TQQQ as buy-and-hold.
     const meas=p.assumption_basis&&p.assumption_basis!=="static";
     const wasStatic=p.portfolio_expected_roi_pct_static;
-    const basisLine=meas
+    // PR 98: one return basis. When the goal model supplies the number, say so
+    // and show the measured backtest blend it replaced.
+    const fe=p.expectation;
+    const basisLine=(p.assumption_basis==="frontier"&&fe)
+      ?`<div class="mk" style="margin-top:3px">From your goal model — the same numbers as your goal cards: ${fe.confidence||"blended"} estimate, recent volatility weighted ${Math.round((fe.recent_weight||0)*100)}% (market ${fe.regime||"unknown"}), ${fe.volatility_pct}% volatility.${p.portfolio_expected_roi_pct_measured!=null?` The measured backtests alone say ~${p.portfolio_expected_roi_pct_measured}%/yr.`:""} An estimate, not a forecast.</div>`
+      :meas
       ?`<div class="mk" style="margin-top:3px">Measured from your own strategies (${p.measured_pct_of_book}% of the book)${wasStatic!=null&&wasStatic!==p.portfolio_expected_roi_pct?` — the instrument table would have said ~${wasStatic}%/yr`:""}. Measured is what happened, not a forecast.</div>`
       :`<div class="mk" style="margin-top:3px">⚠️ Not measured — this is the instrument table, which prices a leveraged fund as if you held it buy-and-hold. Your sleeves are rules that sit out of it some of the time.</div>`;
     e.innerHTML=`Your portfolio's expected compound return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`+basisLine;}

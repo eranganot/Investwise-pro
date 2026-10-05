@@ -116,6 +116,16 @@ async def portfolio_risk(session: AsyncSession, user: User, *, history_days: int
         from app.services.measured_assumptions import book_assumptions
         _a = await book_assumptions(session, user)
         drift_pct = _a.get("expected_return_pct")
+        # PR 98: one return basis -- the goal verdict's figure when it is current,
+        # so this report's goal probability uses the same return as the cards.
+        try:
+            from app.services.frontier_service import book_expectation
+            _fe = await book_expectation(session, user)
+        except Exception:  # noqa: BLE001
+            _fe = None
+        if _fe:
+            drift_pct = _fe["expected_return_pct"]
+            _a = {**_a, "volatility_pct": _fe["volatility_pct"], "basis": "frontier"}
         # The blend as measured, not a rescaling of it. PR 55.1 passed a
         # sigma/sqrt(f) "in-market" version here so the comparison would come
         # out like-for-like, and it reconciled -- 68.02 against 67.48 -- by

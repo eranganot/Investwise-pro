@@ -63,4 +63,4 @@ Renumbered:
 | **95** ✅ | blended = BL with a 5-year prior (default) + shrunk stress line; protective rules replayed on the goal's paths (off / as today / rebound fix) |
 | **96** ✅ | protection tuned for the goal: one actionable card pausing the rules that cost the goal and re-levelling the guard, best odds under a 5% halving floor (the rebound re-entry fix measured ~0 and was not built) |
 | **97** ✅ | faster reactions: regime-weighted recent-volatility blend (40/50/70%), regime on the cards, re-solve when a protective rule fires; crash-risk limit 1% (guard 15%) |
-| **98** | one return basis app-wide: projection + expected return follow `return_confidence` |
+| **98** ✅ | one return basis app-wide: the Plan screen, projection and risk report quote the current goal verdict's figures (measured blend kept alongside) |
