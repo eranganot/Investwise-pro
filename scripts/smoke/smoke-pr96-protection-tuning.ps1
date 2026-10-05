@@ -200,7 +200,7 @@ Sec "4  the Today cards"
 $recs = Api GET "/api/v1/recommendations"
 $all = @(@($recs.recommendations) + @($recs.more_recommendations) | Where-Object { $_ })
 $goalCards = @($all | Where-Object { $_.dimension -eq 'goal' })
-foreach ($c in $goalCards) { Note ("[{0}] {1}" -f $(if ($c.meta.lever) { $c.meta.lever } else { 'mix' }), $c.title) }
+foreach ($c in $goalCards) { Note ("[{0}] {1}" -f $(if ($c.meta.lever) { $c.meta.lever } else { ("$($c.id)" -replace '^rec_goal_([a-z]+)_.*$', '$1') }), $c.title) }
 $mix = $goalCards | Where-Object { "$($_.id)".StartsWith('rec_goal_mix_') } | Select-Object -First 1
 $wantMix = $v.material -and @('LESS_RISK', 'REBALANCE', 'IMPROVE') -contains $v.outcome
 if ($wantMix -eq ($null -ne $mix)) { Ok ("mix card {0} (material {1}, outcome {2})" -f $(if ($mix) { 'present' } else { 'absent' }), $v.material, $v.outcome) }
@@ -218,7 +218,7 @@ if ($effective -lt $star) {
         if ($tg -and [double]$tg.apply.fields.target_roi_pct -eq [double]$v.levers.roi_at_confidence_pct) { Ok "target lever card: $($tg.title)" } else { Bad "target lever card missing or wrong" }
     }
 } else { if (@($goalCards | Where-Object { $_.meta.lever }).Count -eq 0) { Ok "no lever cards - the goal is on track" } else { Bad "lever cards although the goal is on track" } }
-$old = @($goalCards | Where-Object { -not $_.meta.lever -and -not "$($_.id)".StartsWith('rec_goal_mix_') })
+$old = @($goalCards | Where-Object { -not $_.meta.lever -and -not "$($_.id)".StartsWith('rec_goal_') })
 if ($old.Count -eq 0) { Ok "the older behind-your-goal card has stood down (one goal story)" } else { Bad ("older goal card still showing: {0}" -f (($old | ForEach-Object { $_.title }) -join '; ')) }
 $coreCard = $goalCards | Where-Object { "$($_.id)".StartsWith('rec_goal_core_') } | Select-Object -First 1
 if (($cc.outcome -eq 'SWITCH') -eq ($null -ne $coreCard)) { Ok ("core card {0} (core outcome {1})" -f $(if ($coreCard) { 'present' } else { 'absent' }), $cc.outcome) }
