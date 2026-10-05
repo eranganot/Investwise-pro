@@ -677,6 +677,21 @@ async def target_split(max_drawdown_pct: float,
         session, user, max_drawdown_pct=float(max_drawdown_pct))
 
 
+@router.get("/plan/frontier/inputs")
+async def frontier_inputs(session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """PR 89 -- what the efficient frontier would be fed, with provenance.
+
+    READ-ONLY and diagnostic: nothing reads this yet (PR 90 does). It exists so
+    the inputs can be inspected on the real book -- the ILS covariance, the
+    shrinkage, the prior, which sleeves carry a measured view and why the
+    others do not -- before any optimiser is allowed to act on them. Fetches
+    ~10 years of closes, so it is a button, never a card load.
+    """
+    from app.services.frontier_inputs import frontier_inputs_for
+    return await frontier_inputs_for(session, user)
+
+
 @router.get("/plan/target/cores")
 async def target_cores(max_drawdown_pct: float, top_n: int = 5,
                        session: AsyncSession = Depends(get_session),

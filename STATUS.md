@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 88, the efficient-frontier engine — pure math, nothing wired). Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 89, the frontier's inputs — ILS covariance + Black-Litterman, read-only endpoint). Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,35 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 89 — the frontier's inputs: ILS returns, shrunk covariance, Black-Litterman (read-only)
+
+**What.** `app/services/frontier_inputs.py` + `GET /api/v1/plan/frontier/inputs` (diagnostic; nothing
+reads it until PR 90).
+- **Universe:** VTI / VXUS / BND / IAU+DBC as class proxies, plus each **sleeve's simulated rule
+  stream** (pre-tax; tax lives in the measured CAGR), plus ILS cash.
+- **ILS:** every risky return is compounded with the daily USD/ILS change (`ILS=X`). If FX history is
+  missing it falls back to USD and says `fx_basis: "spot"` / `degraded: FX_SPOT`.
+- **Covariance:** `frontier.ledoit_wolf`. Cash is appended as a zero row, after every inversion.
+- **Prior:** reverse-optimised from the plan's fixed `OBJ_TARGET` (Equities split 60/40 US/intl),
+  with λ calibrated so the reference earns the instrument table's premium. **With no views the
+  optimiser returns the plan's own target.** That is tested, and the smoke checks it on prod data.
+- **Views:** one per sleeve with a usable OOS measurement. Ω = variance / OOS years (no knob).
+  Unusable measurements are named (`NOT_MEASURED`, `ENGINE_VERSION_MOVED`, `NO_OUT_OF_SAMPLE`, …).
+
+**Measured on real data before shipping (2026-10-05, Yahoo + prod sleeves).** 2,215 shared
+sessions (2016-10 → 2026-10), FX historical, shrinkage 0.003, nothing excluded. Sleeves:
+`btm_trend_soxl` 40% and `btm_qqq_hold` 19%, both with views. The sleeve stream matches the stored
+backtest: SOXL rule 83.95% USD vol vs 84.32% stored (the difference is CGT lumps); QQQ 22.56% vs 22.56%.
+**Finding:** `btm_trend_soxl` is 87.8% vol in ILS (the rule holds SMH, not cash, when it is off). BL
+shrinks its 59% OOS CAGR (4.7y at 93% vol) to a 32% drift, and at that vol the **expected
+compound growth is −6%/yr**. That is a fact for PR 90's card, not a trade.
+
+**Smoke.** `scripts/smoke/smoke-pr89-frontier-inputs.ps1 -Sha <sha>`.
+
+**Tests.** `tests/test_frontier_inputs.py` (20). **Behaviour change:** one new read-only endpoint.
 
 ---
 
