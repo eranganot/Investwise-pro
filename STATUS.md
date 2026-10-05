@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 89, the frontier's inputs — ILS covariance + Black-Litterman, read-only endpoint). Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 90, migration 0026 — the frontier's two dials, add-only, ships alone). Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,28 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 90 — migration 0026: `plans.kelly_fraction` + `plans.return_confidence` (add-only, ships alone)
+
+_2026-10-05, Eran's decisions on the frontier card:_ "0.5 is the default but I want to be able to change it"
+(Kelly fraction, 0.25–1.0, capped at full Kelly because above it the model gives less growth for more risk), and
+return confidence defaults to **shrunk**, with "blended as an option to change" (Measured stays available, as
+part of the 'add all three' choice). NULL means today's behaviour: the objective's Kelly default and 'shrunk'.
+Guarded like 0021–0025, mirrored into `main.py`'s ADD COLUMN list, and the model columns added. Shipped
+**alone**, before PR 91 reads it (PR 47). Local check on SQLite: upgrade → head; `downgrade -1` removes both;
+re-upgrade on the table without them (the production shape) adds them and stamps 0026.
+
+**Why the dials exist (measured on production inputs, 2026-10-05).** Plan: Grow, 30%/yr target, risk tolerance High.
+Under the shrunk estimate the best compound growth these assets offer at any Kelly fraction is ~10.8%/yr, so the
+30% target is unreachable. Under the raw OOS backtest, today's plan compounds 39.6%/yr at 0.45× Kelly, and
+the resize would cut it to 17.3%. Blended: 24.0% → 13.4%. **The card's verdict depends on how far the backtest is
+trusted more than on the Kelly fraction**, so PR 91's card will show both estimates against the user's target.
+BL already weights the SOXL backtest at 21% (±40%/yr std error over 4.7y) and QQQ's at 49%.
+
+**Smoke.** `scripts/smoke/smoke-pr90-migration-0026.ps1 -Sha <sha>`. The schema must read `0026_plan_frontier_settings`
+before PR 91 ships.
 
 ---
 

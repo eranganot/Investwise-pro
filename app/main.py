@@ -59,6 +59,10 @@ async def lifespan(app: FastAPI):
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS cash_target_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS cash_target_ils NUMERIC(18, 4)",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS cash_redeploy_at_ils NUMERIC(18, 4)",
+                    # Migration 0026 (PR 90): the frontier's two dials. NULL
+                    # means the objective's Kelly default and 'shrunk'.
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS kelly_fraction DOUBLE PRECISION",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS return_confidence VARCHAR(12)",
                     # plans.strategy / strategy_sleeve_pct are DROPPED here, not
                     # added. They were the single-sleeve model and `plan_sleeves`
                     # replaced them; the last thing they said in production was

@@ -339,6 +339,12 @@ class Plan(Base, PKMixin, TimestampMixin):
     # card does not reappear the moment a single deposit lands. NULL: the card
     # fires as soon as there is a tradeable amount above the cash target.
     cash_redeploy_at_ils: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
+    # PR 90 / migration 0026: the frontier's two dials (read from PR 91).
+    # Share of full Kelly the plan aims for, 0.25-1.0; NULL = the objective's
+    # default. How far sleeve backtests are trusted: 'shrunk' | 'blended' |
+    # 'measured'; NULL = 'shrunk'.
+    kelly_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    return_confidence: Mapped[str | None] = mapped_column(String(12), nullable=True)
     # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
     # one size can describe exactly one sleeve, so the moment a book could run
     # several they became a pointer to the most recently applied -- and a

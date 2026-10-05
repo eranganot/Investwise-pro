@@ -41,3 +41,21 @@ Three optimisers quoting three targets would break "one function, so two screens
 - Stated returns are CAGR; the engine converts once through `return_convention.drift_pct`.
 - Every out-of-sample figure carries `split_solver.OOS_CAVEAT` (one bear market is a sample of one).
 - SQLite + Postgres + ruff green before push.
+
+## Change, 2026-10-05 (Eran): actionable cards, user dials, target-aware
+
+- Cards must be **actionable**: Accept executes. The first is the resampled shrink-only **sleeve resize** (the live
+  inputs show the sleeves carry the risk; core-only re-optimisation reaches just 1.14x → 1.08x Kelly).
+- **Kelly fraction** becomes a plan setting (default by objective, Grow 0.5; range 0.25–1.0).
+- **Return confidence** becomes a plan setting: shrunk (default), blended, measured.
+- The card is **target-aware**: expected compound growth against `target_roi_pct` under both estimates, and it says
+  so when no setting reaches the target, or when a resize would drop the book below it under the measured numbers.
+
+Renumbered:
+
+| PR | What |
+|---|---|
+| **90** | migration 0026: `plans.kelly_fraction`, `plans.return_confidence` (add-only, ships alone) |
+| **91** | the actionable resize card + both dials + target comparison (the work drafted as PR 90) |
+| **92** | whole-book mean-CVaR validation, gating the cards |
+| **93** | core-tilt card with `plan.target_source = "frontier"` |
