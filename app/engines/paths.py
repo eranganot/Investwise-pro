@@ -35,10 +35,21 @@ BLOCK_DAYS = 21
 SEED = 11
 
 
-def recentre(returns: np.ndarray, drift_annual: np.ndarray, *, periods: int = TRADING_DAYS) -> np.ndarray:
-    """Shift each column so its mean daily return is drift/periods; shape untouched."""
+def recentre(returns: np.ndarray, drift_annual: np.ndarray, *, periods: int = TRADING_DAYS,
+             vol_scale=None) -> np.ndarray:
+    """Shift each column so its mean daily return is drift/periods.
+
+    With ``vol_scale`` (PR 97) each column's deviations are also multiplied by
+    its scale: history's shape at TODAY's volatility level.
+    """
     r = np.asarray(returns, dtype=float)
-    return r - r.mean(axis=0) + np.asarray(drift_annual, dtype=float) / periods
+    dev = r - r.mean(axis=0)
+    if vol_scale is not None:
+        s = np.ones(r.shape[1])
+        vs = np.asarray(vol_scale, dtype=float)[: s.size]
+        s[: vs.size] = vs
+        dev = dev * s[None, :]
+    return dev + np.asarray(drift_annual, dtype=float) / periods
 
 
 def simulate(port_daily: np.ndarray, *, years: float, n_paths: int = N_PATHS,

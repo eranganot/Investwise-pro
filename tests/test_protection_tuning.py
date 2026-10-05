@@ -28,10 +28,10 @@ def test_the_best_goal_odds_under_the_halving_floor_wins():
                                                                        "take_profit SOXL (+13%)"]}},
              "guard": {"rule_id": "g1"}}
     t = fs._tune_protection(run, sl, guard, rules, ["soxl"], np.zeros((10, 1)), 1, table[(False, 10.0)])
-    assert t["material"] and t["best"]["retire_sleeve_exits"] and t["best"]["guard_pct"] == 20.0
+    assert t["material"] and t["best"]["retire_sleeve_exits"] and t["best"]["guard_pct"] == 15.0  # 20% halves 2.9% > the 1% limit (PR 97)
     assert t["changes"]["pause_rule_ids"] == ["r1", "r2"]
     assert t["changes"]["pause_rules"] == ["trailing_stop SOXL (20%)"]          # take-profits stay
-    assert t["changes"]["guard"] == {"rule_id": "g1", "from_pct": 10.0, "to_pct": 20.0}
+    assert t["changes"]["guard"] == {"rule_id": "g1", "from_pct": 10.0, "to_pct": 15.0}
     # a setup that halves too often never wins, however good its odds
     table[(True, 20.0)] = _stats(40.0, 9.0)
     t2 = fs._tune_protection(run, sl, guard, rules, ["soxl"], np.zeros((10, 1)), 1, table[(False, 10.0)])

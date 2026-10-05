@@ -286,14 +286,24 @@ def prepare(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict]) 
 def estimate(ils: np.ndarray, assets: list[dict], *, objective_target: dict[str, float],
              measurements: dict[str, tuple], class_assumptions: dict[str, tuple[float, float]],
              cash_rate_pct: float, tau: float = TAU,
-             confidence: str = DEFAULT_CONFIDENCE) -> dict:
+             confidence: str = DEFAULT_CONFIDENCE, vol_scale=None) -> dict:
     """An ILS return matrix -> covariance and BL drifts, CASH APPENDED LAST. Pure.
+
+    ``vol_scale`` (PR 97) multiplies each asset's volatility -- correlations
+    stay the long run's -- so the covariance carries TODAY's volatility level.
+    Shorter than the asset list (a candidate core appended by PR 94) means 1.0
+    for the rest.
 
     Arrays come back indexed like ``assets`` plus one trailing cash entry.
     Does not mutate ``assets``.
     """
     degraded: list[str] = []
     cov, shrink = fr.ledoit_wolf(ils)
+    if vol_scale is not None:
+        s = np.ones(cov.shape[0])
+        vs = np.asarray(vol_scale, dtype=float)[: s.size]
+        s[: vs.size] = vs
+        cov = cov * np.outer(s, s)
     vols = np.sqrt(np.diag(cov))
     n = len(assets)
 
@@ -358,20 +368,28 @@ def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[di
                  objective_target: dict[str, float], measurements: dict[str, tuple],
                  class_assumptions: dict[str, tuple[float, float]],
                  cash_rate_pct: float, tau: float = TAU,
-                 confidence: str = DEFAULT_CONFIDENCE) -> dict:
+                 confidence: str = DEFAULT_CONFIDENCE, vol_scale_override=None,
+                 recent_vol: dict | None = None) -> dict:
     """Price history in, frontier inputs out. Pure.
 
     ``sleeves`` is ``[{"id", "spec", "current_pct"}]`` (the solvers' shape);
     ``measurements`` maps sleeve id -> ``view_from_measurement(...)``'s pair;
     ``class_assumptions`` maps class id -> the instrument table's
-    ``(cagr_pct, volatility_pct)``.
+    ``(cagr_pct, volatility_pct)``. ``recent_vol`` = {"regime": state} turns on
+    PR 97's recent-volatility scaling exactly as the goal solve applies it.
     """
     prep = prepare(series, sleeves=sleeves)
     if not prep["ok"]:
         return prep
+    vs = None
+    if recent_vol is not None:
+        vs = vol_scale(prep, recent_vol.get("regime"))
+        vol_scale_arr = vs["scale"]
+    else:
+        vol_scale_arr = vol_scale_override
     est = estimate(prep["ils"], prep["assets"], objective_target=objective_target,
                    measurements=measurements, class_assumptions=class_assumptions,
-                   cash_rate_pct=cash_rate_pct, tau=tau, confidence=confidence)
+                   cash_rate_pct=cash_rate_pct, tau=tau, confidence=confidence, vol_scale=vol_scale_arr)
     assets = [dict(a) for a in prep["assets"]]
     assets.append({"id": CASH_ID, "kind": "cash", "label": "Cash (ILS)"})
     for a, pr, po, sh, v in zip(assets, est["prior"], est["mu"], est["mu_shrunk"], est["vols"]):
@@ -399,7 +417,52 @@ def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[di
         "window": {"start": dates[0], "end": dates[-1], "sessions": len(dates)},
         "excluded": prep["excluded"],
         "degraded": prep["degraded"] + est["degraded"],
+        "recent_vol": ({"recent_weight": vs["recent_weight"], "regime": vs["regime"], "assets": vs["assets"]}
+                       if vs else None),
     }
+
+
+# --------------------------------------------------------------------------
+# PR 97: react to today's market, not only the decade's
+# --------------------------------------------------------------------------
+#
+# Eran, 2026-10-05: "if something would change in the market I expect the tool
+# to recognize it." Ten equally weighted years barely move when the last month
+# turns violent. Each asset's volatility is therefore blended between its
+# long-run level and a RECENT one (exponentially weighted, ~3-month half-life);
+# correlations stay the long run's, which a few weeks cannot estimate. How much
+# weight "recent" gets follows the app's own price-derived regime: calm markets
+# lean on the decade, stressed ones on the last months.
+
+RECENT_HALFLIFE_DAYS = 63
+RECENT_WEIGHT = {"risk_on": 0.4, "neutral": 0.5, "risk_off": 0.7}
+DEFAULT_RECENT_WEIGHT = 0.5
+
+
+def ewma_vol(returns: np.ndarray, halflife: int = RECENT_HALFLIFE_DAYS,
+             periods: int = 252) -> np.ndarray:
+    """Exponentially weighted volatility per column, annualised, the LAST row weighing most."""
+    r = np.asarray(returns, dtype=float)
+    t = r.shape[0]
+    w = 0.5 ** (np.arange(t)[::-1] / float(halflife))
+    w /= w.sum()
+    mu = (w[:, None] * r).sum(axis=0)
+    var = (w[:, None] * (r - mu) ** 2).sum(axis=0)
+    return np.sqrt(var * periods)
+
+
+def vol_scale(prep: dict, regime_state: str | None) -> dict:
+    """Per-asset volatility multipliers: (1 - a) + a x recent/long-run. Pure."""
+    ils = prep["ils"]
+    long_run = ils.std(axis=0, ddof=1) * np.sqrt(252)
+    recent = ewma_vol(ils)
+    a = RECENT_WEIGHT.get(regime_state or "", DEFAULT_RECENT_WEIGHT)
+    ratio = np.where(long_run > 0, recent / np.where(long_run > 0, long_run, 1.0), 1.0)
+    scale = (1.0 - a) + a * ratio
+    return {"scale": scale, "recent_weight": a, "regime": regime_state,
+            "assets": [{"id": asset["id"], "long_run_vol_pct": round(float(lr) * 100, 1),
+                        "recent_vol_pct": round(float(rc) * 100, 1), "scale": round(float(sc), 3)}
+                       for asset, lr, rc, sc in zip(prep["assets"], long_run, recent, scale)]}
 
 
 def basket_ils(prep: dict, weights: dict[str, float]) -> np.ndarray | None:
@@ -457,7 +520,19 @@ async def load_context(session, user) -> dict:
         tickers |= set(c["weights"])
     for s in sleeves:
         tickers |= set(bt.tickers_needed(s["spec"]))
+    from app.engines import regime as _regime
+    tickers |= set(_regime.tickers_needed())
     series, no_data, unavailable = await offload(_fetch_blocking, sorted(tickers))
+    # PR 97: today's market regime, from the SAME price-derived function the
+    # backtests gate on (never the futures feed).
+    market = {"ok": False, "reason": "NO_SERIES"}
+    try:
+        rs = {t: series[t] for t in _regime.tickers_needed() if t in series}
+        if rs:
+            _d, rpx = bt.align(rs)
+            market = _regime.latest(rpx)
+    except Exception:  # noqa: BLE001 -- a regime read must never cost the solve
+        logger.warning("regime read failed", exc_info=False)
 
     est_kw = {"objective_target": objective_target, "measurements": measurements,
               "class_assumptions": {cid: assumptions_for(c["assumption_ticker"])
@@ -469,7 +544,8 @@ async def load_context(session, user) -> dict:
             # PR 91: the plan's own dials and target, read once here so the
             # solve and the card cannot read two different plans.
             "kelly_fraction_setting": getattr(plan, "kelly_fraction", None),
-            "target_roi_pct": getattr(plan, "target_roi_pct", None)}
+            "target_roi_pct": getattr(plan, "target_roi_pct", None),
+            "market": market}
 
 
 async def frontier_inputs_for(session, user) -> dict:
@@ -477,7 +553,9 @@ async def frontier_inputs_for(session, user) -> dict:
     ctx = await load_context(session, user)
     if not ctx.get("ok"):
         return ctx
-    out = build_inputs(ctx["series"], sleeves=ctx["sleeves"], **ctx["est_kw"])
+    out = build_inputs(ctx["series"], sleeves=ctx["sleeves"], **ctx["est_kw"],
+                       recent_vol={"regime": (ctx.get("market") or {}).get("state")})
+    out["market"] = ctx.get("market")
     out["objective"] = ctx["objective"]
     out["no_history"] = ctx["no_history"]
     out["unavailable"] = ctx["unavailable"]

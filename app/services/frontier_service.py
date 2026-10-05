@@ -524,7 +524,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
     # to hold on both. Seeded, so the same book gives the same numbers.
     n_full = len(ids)
     rf_daily = rf / paths.TRADING_DAYS
-    daily = np.column_stack([paths.recentre(ils, est0["mu"][:-1]), np.full(ils.shape[0], rf_daily)])
+    daily = np.column_stack([paths.recentre(ils, est0["mu"][:-1], vol_scale=est_kw.get("vol_scale")), np.full(ils.shape[0], rf_daily)])
 
     def tail_of(s):
         w_full = _expand(book(s), sleeve_idx, core_vec, cash_idx, n_full)
@@ -746,7 +746,7 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
                "volatility_pct": round(vol * 100, 2),
                "fraction_of_kelly": fr.kelly_position(w, est["mu"], est["cov"], est["risk_free"])["fraction_of_kelly"]}
         if with_tail:
-            daily = np.column_stack([paths.recentre(mat, est["mu"][:-1]),
+            daily = np.column_stack([paths.recentre(mat, est["mu"][:-1], vol_scale=est_kw.get("vol_scale")),
                                      np.full(mat.shape[0], est["risk_free"] / paths.TRADING_DAYS)])
             t = paths.goal_stats(paths.simulate(daily @ w, years=years), nav=nav, target=target,
                                  monthly=monthly, p_star=p_star)
@@ -809,7 +809,7 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
 # user set, not something to trade away. Retiring a rule PAUSES it; one tap on
 # the Rules tab brings it back.
 
-HALVE_FLOOR_PCT = 5.0
+HALVE_FLOOR_PCT = 1.0          # Eran, 2026-10-05: "Guard 15%: 0.8% / 22.7%" -- a 1% crash-risk limit
 GUARD_LEVELS = (15.0, 20.0)
 RULES_CARD_KIND = "frontier_rules"
 
@@ -1028,10 +1028,20 @@ async def compute_for(session, user, *, source: str = "on_demand",
             return {"ok": True, "outcome": UNAVAILABLE if unavailable else NOT_MEASURABLE,
                     "reason": prep.get("reason"), "detail": prep.get("detail"),
                     "unavailable": ctx.get("unavailable")}
+        # PR 97: today's volatility level, weighted by the regime, everywhere.
+        vs = fi.vol_scale(prep, (ctx.get("market") or {}).get("state"))
+        est_kw = {**ctx["est_kw"], "vol_scale": vs["scale"]}
+        v = _work_solve(prep, est_kw)
+        if isinstance(v, dict):
+            v["market"] = {**(ctx.get("market") or {}), "recent_weight": vs["recent_weight"],
+                           "vol": vs["assets"], "halflife_days": fi.RECENT_HALFLIFE_DAYS}
+        return v
+
+    def _work_solve(prep, est_kw):
         if goal:
             # PR 92: the goal is the objective whenever the plan states one.
             v = goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
-                           objective=ctx["objective"], est_kw=ctx["est_kw"], nav=goal["nav"],
+                           objective=ctx["objective"], est_kw=est_kw, nav=goal["nav"],
                            target=goal["target"], years=goal["years"], monthly=goal["monthly"],
                            kelly_setting=ctx.get("kelly_fraction_setting"),
                            sleeve_cap_pct=goal["sleeve_cap_pct"],
@@ -1042,7 +1052,7 @@ async def compute_for(session, user, *, source: str = "on_demand",
                 try:
                     v["core_choice"] = core_solve(
                         prep, sleeves_pct=sleeves_pct, current_core_id=current_core,
-                        candidates=core_candidates, cash_pct=cash_pct, est_kw=ctx["est_kw"],
+                        candidates=core_candidates, cash_pct=cash_pct, est_kw=est_kw,
                         nav=goal["nav"], target=goal["target"], years=goal["years"],
                         monthly=goal["monthly"], objective=ctx["objective"],
                         kelly_setting=ctx.get("kelly_fraction_setting"))
@@ -1051,7 +1061,7 @@ async def compute_for(session, user, *, source: str = "on_demand",
             return v
         # No goal on the plan: manage risk to the Kelly dial (PR 91's resize).
         return resize_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
-                            objective=ctx["objective"], est_kw=ctx["est_kw"],
+                            objective=ctx["objective"], est_kw=est_kw,
                             kelly_fraction=ctx.get("kelly_fraction_setting"),
                             target_roi_pct=ctx.get("target_roi_pct"), draws=draws)
 
@@ -1200,6 +1210,33 @@ def _roi_for_amount(goal: dict, amount: float) -> float | None:
         mid = 0.5 * (lo + hi)
         lo, hi = (mid, hi) if compound(flows, mid, deadline) < amount else (lo, mid)
     return round(hi * 100, 1)
+
+
+# PR 97: which firings re-solve the goal at once, and how often at most.
+RESOLVE_ON = frozenset({"stop_loss", "trailing_stop", "profit_protect", "take_profit", "buy_back",
+                        "trend_break", "drawdown_guard", "strategy_signal"})
+RESOLVE_MIN_AGE_H = 1.0
+RESOLVE_ON_RULE_FIRE = True
+
+
+async def resolve_after_rule(session, user, fired: list[dict]) -> dict | None:
+    """Re-solve the goal right after a protective rule fired. At most hourly.
+
+    The nightly solve is a schedule; a firing is news. Skipped when nothing
+    that changes the book's risk fired, or when a verdict is under an hour old
+    (two firings in one price run must not cost two solves).
+    """
+    if not RESOLVE_ON_RULE_FIRE:
+        return None
+    kinds = {(f or {}).get("rule_type") for f in fired or []}
+    if not kinds & RESOLVE_ON:
+        return None
+    row = await latest(session, user)
+    age = _age_hours(row) if row is not None else None
+    if age is not None and age < RESOLVE_MIN_AGE_H:
+        return {"skipped": "RECENT_VERDICT", "age_hours": round(age, 2)}
+    out = await compute_for(session, user, source="rule_fired")
+    return {"resolved": True, "outcome": out.get("outcome"), "fired": sorted(k for k in kinds if k)}
 
 
 async def refresh_all(session) -> dict:
@@ -1422,6 +1459,22 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       f"estimate): {tb['p_goal_pct']:g}% chance today; the worst 5% of outcomes end near "
                       f"{tb['worst5_mean']:,.0f}; {tb['p_halve_pct']:g}% chance the book halves at some point.")
     # PR 94: how much the CORE can move the goal, said once so the levers make sense.
+    # PR 97: what the market is doing now, and how much that moved the inputs.
+    mk = v.get("market") or {}
+    if mk.get("ok"):
+        comp = mk.get("components") or {}
+        state = {"risk_on": "calm (risk-on)", "neutral": "mixed (neutral)", "risk_off": "stressed (risk-off)"}.get(
+            mk.get("state"), mk.get("state"))
+        line = (f" Markets now: {state} - trend {'up' if comp.get('trend_up') else 'down'}"
+                + (f", volatility at the {comp['vol_percentile']:g}th percentile of the last two years"
+                   if comp.get("vol_percentile") is not None else "")
+                + f"; recent volatility weighs {float(mk.get('recent_weight') or 0):.0%} in these numbers")
+        moved = [a for a in (mk.get("vol") or []) if abs(float(a.get("scale") or 1) - 1) >= 0.10]
+        if moved:
+            top = max(moved, key=lambda a: abs(a["scale"] - 1))
+            line += (f" ({top['id']} {top['recent_vol_pct']:g}% volatility lately vs {top['long_run_vol_pct']:g}% "
+                     f"long-run)")
+        goal_line += line + "."
     # PR 95: the stress case and the protective rules, said on every goal card.
     st = v.get("stress") or {}
     if st.get("before_p_pct") is not None:

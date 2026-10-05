@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 96, protection tuned for the goal — an actionable card that pauses the rules that cost the goal and re-levels the guard). Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 97, the goal reacts to today's market — regime-weighted recent volatility, re-solve when a rule fires; 1% crash-risk limit). Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,31 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 97 — the goal reacts to today's market
+
+**Decisions (Eran, 2026-10-05).** Crash-risk limit **1%** (*"Guard 15%: 0.8% / 22.7%"*), so the protection card now
+proposes pausing the SOXL/QQQ exits with the guard at **15%**. Then *"continue to PR97"*: faster reactions.
+
+**What.**
+- **Recent volatility** (`frontier_inputs.vol_scale` / `ewma_vol`): each asset's volatility is blended between its
+  10-year level and an exponentially weighted recent one (63-day half-life); correlations stay the long run's. The
+  weight follows the app's **price-derived regime** (`engines/regime.latest`, the same function the backtests gate
+  on): risk-on 40%, neutral 50%, **risk-off 70%**. Applied to the covariance (`estimate(vol_scale=)`), to the
+  historical paths and rules replay (`paths.recentre(vol_scale=)`), and to `/plan/frontier/inputs` (so the smoke's
+  re-derivation still matches).
+- **The market on every goal card**: regime, trend, volatility percentile, the recent weight, and the asset whose
+  volatility moved most against its long-run level.
+- **Re-solve when a rule fires**: `rules_service.evaluate_all` (the 30-minute price job) calls
+  `frontier_service.resolve_after_rule` when a protective rule newly fires (stops, profit-protect, take-profit,
+  buy-back, trend break, drawdown guard, strategy signal). At most once an hour; a failure never costs the rule
+  evaluation.
+
+**Smoke.** `scripts/smoke/smoke-pr97-faster-reactions.ps1 -Sha <sha>`. The rule-fired re-solve cannot be triggered
+from a smoke without a real firing; it is covered by a test that runs the rules pass. **Tests.**
+`tests/test_faster_reactions.py` (10) + PR 96 tuning test updated for the 1% limit.
 
 ---
 

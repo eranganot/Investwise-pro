@@ -896,7 +896,17 @@ async def evaluate_all(session: AsyncSession) -> dict:
     for subj in subjects:
         user = await ensure_user(session, subj)
         await session.flush()
-        total += len(await evaluate_user(session, user, notify=True))
+        fired = await evaluate_user(session, user, notify=True)
+        total += len(fired)
+        # PR 97: a protective rule firing IS the market changing -- re-solve
+        # the goal now rather than at the nightly run, so Today's goal cards
+        # speak about the book as it is after the event.
+        if fired:
+            try:
+                from app.services.frontier_service import resolve_after_rule
+                await resolve_after_rule(session, user, fired)
+            except Exception:  # noqa: BLE001 -- a re-solve must never cost the rule evaluation
+                logger.warning("frontier re-solve after a rule fired failed", exc_info=False)
     return {"subjects": len(subjects), "triggered": total}
 
 
