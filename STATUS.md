@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 93, the goal checked on fat-tailed history — filtered historical paths gate cards and size levers). Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 94, which core serves the goal — catalog cores priced from their own tickers; CI duplicate-run guard). Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,41 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 94 — which core serves the goal
+
+**What.** `frontier_service.core_solve`: every catalog core is **priced from its own tickers' real ILS history**,
+never through a proxy (NVDA modelled as VTI is a lie by approximation). It is added as one more asset beside the
+sleeves, and the current core is priced the same way, so the comparison is like for like. Score = the **lower** of
+the model's and the history's goal probability.
+
+A switch requires all of:
+- **+5 points** of score;
+- no loss on either method;
+- best in **≥ 50% of 30 redraws**;
+- never pushing the book further past the Kelly cap.
+
+Cores whose tickers were not fetched are **listed as not modelled**. The card (`frontier_core`) switches the core
+via `sleeve_service.set_core`, then realigns through `_apply_core_to_basket` (prices every buy before selling,
+re-plans from live rows). It refuses untouched if the core changed. Every goal card now says how much changing the
+core can move the odds.
+
+**On the live book (real data, 2026-10-05):** **KEEP under every estimate.** The core moves the odds by ≤ ~2 points:
+- shrunk: Diversified Global Growth 17.8 vs 60/40 15.8, but it pushes the book to 1.22× Kelly, so it is ineligible;
+- blended: all 41.4–42.0;
+- measured: All-Weather 71.5 vs 71.1 (halving 18.8% → 15.6%, immaterial to the goal).
+
+**The goal is decided by the sleeves, not the core** (the core is 37% of the book). Nine catalog cores are not
+modelled (single names / income / short-bond tickers not in the fetched history).
+
+**CI.** GitHub created two runs for the single push of `bea66a2` (#273/#274: same commit, event and second).
+`ci.yml` now has a `concurrency` group per workflow+event+commit with `cancel-in-progress`, so a duplicate cancels
+the older run.
+
+**Smoke.** `scripts/smoke/smoke-pr94-goal-core.ps1 -Sha <sha>`. **Tests.** `tests/test_frontier_core.py` (6), including
+an end-to-end switch.
 
 ---
 

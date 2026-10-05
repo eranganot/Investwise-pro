@@ -269,7 +269,9 @@ def prepare(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict]) 
 
     usd = np.column_stack(cols)
     ils = (1.0 + usd) * (1.0 + fx_r)[:, None] - 1.0
-    return {"ok": True, "assets": assets, "ils": ils, "dates": dates,
+    # `px` / `fx_r` ride along (never serialised) so a caller can price another
+    # basket on the SAME calendar -- PR 94's candidate cores.
+    return {"ok": True, "assets": assets, "ils": ils, "dates": dates, "px": px, "fx_r": fx_r,
             "fx": bool(fx_rows), "excluded": excluded, "degraded": degraded}
 
 
@@ -389,6 +391,15 @@ def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[di
         "excluded": prep["excluded"],
         "degraded": prep["degraded"] + est["degraded"],
     }
+
+
+def basket_ils(prep: dict, weights: dict[str, float]) -> np.ndarray | None:
+    """A basket's daily ILS returns on `prep`'s calendar, or None if a ticker is missing."""
+    px = prep.get("px") or {}
+    w = {t.upper(): float(v) for t, v in (weights or {}).items() if float(v) > 0 and t.upper() != "CASH"}
+    if not w or any(t not in px for t in w):
+        return None
+    return (1.0 + _basket_returns(px, w)) * (1.0 + prep["fx_r"]) - 1.0
 
 
 def as_arrays(payload: dict) -> tuple[list[str], np.ndarray, np.ndarray]:

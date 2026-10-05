@@ -613,6 +613,121 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             "excluded": prep["excluded"], "degraded": prep["degraded"] + est0["degraded"]}
 
 
+# --------------------------------------------------------------------------
+# PR 94: which core serves the goal
+# --------------------------------------------------------------------------
+#
+# The goal solve holds the core to its basket. This asks the other question:
+# would a different CORE -- one of the catalog's whole-book mixes -- give the
+# goal better odds, with the sleeves as they are? Each candidate is priced from
+# ITS OWN tickers' real history (never through a proxy: modelling NVDA as VTI
+# is a lie by approximation), and the current core the same way, so the
+# comparison is like for like. A candidate whose tickers were not fetched is
+# listed, not guessed.
+
+CORE_SWITCH = "SWITCH"
+CORE_KEEP = "KEEP"
+CORE_CARD_KIND = "frontier_core"
+CORE_DRAWS = 30
+CORE_MIN_WIN_SHARE = 0.5
+
+
+def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: str | None,
+               candidates: list[dict], cash_pct: float, est_kw: dict, nav: float,
+               target: float, years: float, monthly: float = 0.0, objective: str = "Balanced",
+               kelly_setting: float | None = None, p_star: float = GOAL_CONFIDENCE,
+               draws: int = CORE_DRAWS, seed: int = SEED) -> dict:
+    """Score every modellable catalog core by the goal's odds. Pure.
+
+    Score = the LOWER of the model's and history's probability: a core has to
+    help on both. Eligible only if it does not push the book further past the
+    Kelly cap than it already is. A switch must beat today's core by
+    `MATERIAL_PROB_PTS` on the score, not lose on either method, and win at
+    least `CORE_MIN_WIN_SHARE` of the bootstrap draws.
+    """
+    assets = prep["assets"]
+    ils = prep["ils"]
+    sleeve_ids = [a["id"] for a in assets if a["kind"] == "sleeve" and a["id"] in sleeves_pct]
+    cash = max(0.0, min(1.0, cash_pct / 100.0))
+    s_tot = sum(sleeves_pct[s] / 100.0 for s in sleeve_ids)
+    core_share = max(0.0, 1.0 - cash - s_tot)
+    ceiling = goal_ceiling(kelly_setting)
+
+    modelled, not_modelled = [], []
+    for c in candidates:
+        col = fi.basket_ils(prep, c["weights"])
+        (modelled if col is not None else not_modelled).append((c, col))
+    if current_core_id not in {c["id"] for c, _ in modelled}:
+        return {"ok": True, "outcome": NOT_MEASURABLE, "reason": "CURRENT_CORE_NOT_MODELLED",
+                "not_modelled": [c["id"] for c, _ in not_modelled]}
+
+    def book(n_assets, core_idx):
+        w = np.zeros(n_assets + 1)
+        for s in sleeve_ids:
+            w[[a["id"] for a in assets].index(s)] = sleeves_pct[s] / 100.0
+        w[core_idx] = core_share
+        w[-1] = cash
+        return w
+
+    def evaluate(c, col, rows_idx=None, with_tail=False):
+        mat = np.column_stack([ils, col])
+        if rows_idx is not None:
+            mat = mat[rows_idx]
+        a2 = assets + [{"id": f"core:{c['id']}", "kind": "core"}]
+        est = fi.estimate(mat, a2, **est_kw)
+        w = book(len(a2), len(a2) - 1)
+        g = fr.growth(w, est["mu"], est["cov"], est["risk_free"])
+        vol = fr.portfolio_stats(w, est["mu"], est["cov"])["volatility"]
+        p = fr.goal_probability(nav, target, years, g["log_growth"], vol, monthly) * 100
+        out = {"model_p_pct": round(p, 1), "growth_cagr_pct": round(g["cagr"] * 100, 2),
+               "volatility_pct": round(vol * 100, 2),
+               "fraction_of_kelly": fr.kelly_position(w, est["mu"], est["cov"], est["risk_free"])["fraction_of_kelly"]}
+        if with_tail:
+            daily = np.column_stack([paths.recentre(mat, est["mu"][:-1]),
+                                     np.full(mat.shape[0], est["risk_free"] / paths.TRADING_DAYS)])
+            t = paths.goal_stats(paths.simulate(daily @ w, years=years), nav=nav, target=target,
+                                 monthly=monthly, p_star=p_star)
+            out.update({"tail_p_pct": t["p_goal_pct"], "worst5_mean": t["worst5_mean"],
+                        "p_halve_pct": t["p_halve_pct"]})
+            out["score_pct"] = min(out["model_p_pct"], out["tail_p_pct"])
+        return out
+
+    rows = []
+    for c, col in modelled:
+        r = {"id": c["id"], "name": c.get("name", c["id"]), "weights": c["weights"],
+             **evaluate(c, col, with_tail=True)}
+        rows.append(r)
+    cur = next(r for r in rows if r["id"] == current_core_id)
+    cur_k = cur["fraction_of_kelly"] or 0.0
+    for r in rows:
+        k = r["fraction_of_kelly"] or 0.0
+        r["eligible"] = r["id"] == current_core_id or k <= max(ceiling, cur_k) + 1e-9
+
+    rng = np.random.default_rng(seed)
+    wins = {r["id"]: 0 for r in rows}
+    eligible = [(c, col) for c, col in modelled if next(r for r in rows if r["id"] == c["id"])["eligible"]]
+    for _ in range(draws):
+        idx = block_bootstrap(ils.shape[0], BLOCK_DAYS, rng)
+        scores = [(evaluate(c, col, rows_idx=idx)["model_p_pct"], c["id"]) for c, col in eligible]
+        wins[max(scores)[1]] += 1
+    for r in rows:
+        r["win_share"] = round(wins[r["id"]] / draws, 3) if draws else None
+        if r["fraction_of_kelly"] is not None:
+            r["fraction_of_kelly"] = round(r["fraction_of_kelly"], 3)
+
+    best = max((r for r in rows if r["eligible"]), key=lambda r: (r["score_pct"], r["model_p_pct"]))
+    switch = (best["id"] != current_core_id
+              and best["score_pct"] - cur["score_pct"] >= MATERIAL_PROB_PTS
+              and best["model_p_pct"] >= cur["model_p_pct"] and best["tail_p_pct"] >= cur["tail_p_pct"]
+              and (best["win_share"] or 0) >= CORE_MIN_WIN_SHARE)
+    return {"ok": True, "outcome": CORE_SWITCH if switch else CORE_KEEP,
+            "current": cur, "best": best, "core_share_pct": round(core_share * 100, 2),
+            "candidates": sorted(rows, key=lambda r: -r["score_pct"]),
+            "not_modelled": [c["id"] for c, _ in not_modelled], "draws": draws,
+            "rule": (f"score = lower of model and history odds; switch only if +{MATERIAL_PROB_PTS:g} pts, "
+                     f"no worse on either, and best in >= {CORE_MIN_WIN_SHARE:.0%} of {draws} redraws")}
+
+
 def plan_trades(verdict: dict, *, specs: dict[str, dict], holdings: list[dict]) -> dict:
     """The trades a RESIZE verdict implies for today's holdings. Pure.
 
@@ -767,6 +882,10 @@ async def compute_for(session, user, *, source: str = "on_demand",
     basket = await _core_basket(session, user, ctx["objective"])
     goal = await _goal_context(session, user, rows)
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
+    from app.services import sleeve_service as _sv
+    from app.services import strategies as _static_cat
+    current_core = await _sv.core_strategy_id(session, user)
+    core_candidates = _static_cat.core_candidates()
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
@@ -777,13 +896,25 @@ async def compute_for(session, user, *, source: str = "on_demand",
                     "unavailable": ctx.get("unavailable")}
         if goal:
             # PR 92: the goal is the objective whenever the plan states one.
-            return goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
-                              objective=ctx["objective"], est_kw=ctx["est_kw"], nav=goal["nav"],
-                              target=goal["target"], years=goal["years"], monthly=goal["monthly"],
-                              kelly_setting=ctx.get("kelly_fraction_setting"),
-                              sleeve_cap_pct=goal["sleeve_cap_pct"],
-                              volatility_cap_pct=goal["volatility_cap_pct"],
-                              draws=min(draws, GOAL_DRAWS))
+            v = goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
+                           objective=ctx["objective"], est_kw=ctx["est_kw"], nav=goal["nav"],
+                           target=goal["target"], years=goal["years"], monthly=goal["monthly"],
+                           kelly_setting=ctx.get("kelly_fraction_setting"),
+                           sleeve_cap_pct=goal["sleeve_cap_pct"],
+                           volatility_cap_pct=goal["volatility_cap_pct"],
+                           draws=min(draws, GOAL_DRAWS))
+            # PR 94: and which CORE serves the goal, the sleeves as they are.
+            if v.get("mode") == "goal" and v.get("outcome") not in (NOT_MEASURABLE, GOAL_NO_TARGET) and current_core:
+                try:
+                    v["core_choice"] = core_solve(
+                        prep, sleeves_pct=sleeves_pct, current_core_id=current_core,
+                        candidates=core_candidates, cash_pct=cash_pct, est_kw=ctx["est_kw"],
+                        nav=goal["nav"], target=goal["target"], years=goal["years"],
+                        monthly=goal["monthly"], objective=ctx["objective"],
+                        kelly_setting=ctx.get("kelly_fraction_setting"))
+                except Exception:  # noqa: BLE001 -- the goal verdict stands without it
+                    logger.warning("core choice failed", exc_info=True)
+            return v
         # No goal on the plan: manage risk to the Kelly dial (PR 91's resize).
         return resize_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
                             objective=ctx["objective"], est_kw=ctx["est_kw"],
@@ -1079,7 +1210,35 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         goal_line += (f" On {tl.get('paths', 2000):,} paths built from real market days (centred on your "
                       f"estimate): {tb['p_goal_pct']:g}% chance today; the worst 5% of outcomes end near "
                       f"{tb['worst5_mean']:,.0f}; {tb['p_halve_pct']:g}% chance the book halves at some point.")
+    # PR 94: how much the CORE can move the goal, said once so the levers make sense.
+    cc = v.get("core_choice") or {}
+    if cc.get("current") and cc.get("candidates"):
+        spread = max(r["score_pct"] for r in cc["candidates"]) - min(r["score_pct"] for r in cc["candidates"])
+        goal_line += (f" Changing your core ({len(cc['candidates'])} catalog cores modelled) moves the odds by "
+                      f"at most {spread:.1f} points" + (" - the sleeves decide this goal." if spread < MATERIAL_PROB_PTS
+                                                        else "."))
     cards = []
+    from app.services import sleeve_service as _sv2
+    if cc.get("outcome") == CORE_SWITCH and await _sv2.core_strategy_id(session, user) == cc["current"]["id"]:
+        cur_c, best_c = cc["current"], cc["best"]
+        cards.append({
+            "id": f"rec_goal_core_{row.id}", "dimension": "goal", "severity": "HIGH",
+            "title": (f"Switch your core to {best_c['name']}: goal odds {cur_c['score_pct']:g}% -> "
+                      f"{best_c['score_pct']:g}%"),
+            "why": (goal_line + f" Each catalog core was priced from its own tickers' history with your sleeves "
+                    f"as they are; {best_c['name']} scored best on both methods and in "
+                    f"{best_c['win_share']:.0%} of {cc['draws']} redraws."),
+            "action": (f"Accept makes {best_c['name']} your core and realigns the core's holdings to its basket "
+                       f"({', '.join(f'{t} {w:.0%}' for t, w in best_c['weights'].items())}). Sleeves are untouched."),
+            "impact": (f"Goal odds {cur_c['model_p_pct']:g}% -> {best_c['model_p_pct']:g}% (model), "
+                       f"{cur_c['tail_p_pct']:g}% -> {best_c['tail_p_pct']:g}% (history); chance the book halves "
+                       f"{cur_c['p_halve_pct']:g}% -> {best_c['p_halve_pct']:g}%; volatility "
+                       f"{cur_c['volatility_pct']}% -> {best_c['volatility_pct']}%."),
+            "how": [f"Core: {cur_c['name']} -> {best_c['name']}", "Sells and buys only inside the core",
+                    f"Solved {when}"],
+            "apply": {"kind": CORE_CARD_KIND, "strategy_id": best_c["id"],
+                      "from_strategy_id": cur_c["id"], "objective": v.get("objective")},
+            "meta": {"core_choice": {"current": cur_c, "best": best_c}, "goal": g}})
 
     if v.get("material") and v["outcome"] in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE):
         specs = {sid: strategy_catalog.get(sid) or {} for sid in live}
@@ -1324,3 +1483,30 @@ async def apply_resize(session, user, spec: dict) -> dict:
             "skipped_buys": bought.get("skipped", []), "tax_ils": round(tax_total, 2),
             "net_raised_ils": round(net_total, 2), "caps": caps,
             "broker_note": "Tracked book updated - no brokerage order was placed."}
+
+
+async def apply_core_switch(session, user, spec: dict) -> dict:
+    """PR 94: make the goal's best core the core, then realign the core to it.
+
+    Refuses UNTOUCHED when the core is no longer the one the card was solved
+    for. The realign is `_apply_core_to_basket` -- the one path that prices
+    every buy before it sells and re-plans from live rows -- so switching the
+    core and bringing the holdings to it cannot drift apart.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.recommendations import _apply_core_to_basket
+
+    now = await sv.core_strategy_id(session, user)
+    if now != spec.get("from_strategy_id"):
+        return {"ok": False, "refused": "CORE_CHANGED",
+                "error": f"your core is now {now or 'not set'}, not {spec.get('from_strategy_id')} - nothing was changed."}
+    res = await sv.set_core(session, user, str(spec.get("strategy_id")))
+    if not res.get("ok"):
+        await session.rollback()
+        return {"ok": False, "refused": "CORE_REFUSED", "error": res.get("reason") or res.get("error")}
+    await session.commit()
+    detail = dict(await _apply_core_to_basket(session, user, {"objective": spec.get("objective")}) or {})
+    detail["core_switched"] = {"from": res.get("previous"), "to": res.get("strategy_id")}
+    detail["note"] = (f"Core switched from {res.get('previous')} to {res.get('strategy_id')}. "
+                      + (detail.get("note") or "Core holdings realigned to its basket."))
+    return detail

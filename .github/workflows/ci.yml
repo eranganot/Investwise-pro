@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+# PR 94: GitHub created TWO runs for the single push of bea66a2 (#273/#274,
+# same commit, same event, same second). One run per commit per event is the
+# contract; a duplicate cancels the older one instead of doubling the minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

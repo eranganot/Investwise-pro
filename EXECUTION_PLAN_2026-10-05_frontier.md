@@ -59,5 +59,5 @@ Renumbered:
 | **91** ✅ | the actionable resize card + both dials + target comparison + materiality gate (the work drafted as PR 90) |
 | **92** ✅ | **the goal is the objective** (Eran, 2026-10-05): 70% chance of the ROI goal, Kelly as a ceiling (1.0x), sleeves may grow, actionable lever cards (deposit / target / deadline), one goal story |
 | **93** ✅ | the goal on fat-tailed history: filtered historical paths gate trade cards, require 70% on both, size levers both ways; cards show worst-5% and halving odds |
-| **94** | core-tilt card with `plan.target_source = "frontier"`, chosen for the goal |
+| **94** ✅ | goal-chosen core: catalog cores priced from their own tickers, scored by goal odds (both methods), actionable switch via set_core + core realign (no new target source needed) |
 | **95** | one return basis app-wide: projection + expected return follow `return_confidence` |

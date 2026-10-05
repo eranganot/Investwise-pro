@@ -49,6 +49,8 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "fund_plan", "relevel_sleeve_caps", "core_to_basket",
                      # PR 90: resize sleeves toward the plan's Kelly fraction.
                      "frontier_resize",
+                     # PR 94: switch the core to the one that best serves the goal.
+                     "frontier_core",
                      "set_standing_order",
                      # PR 72: a rule that fights a sleeve. Accept carries a
                      # choice -- sell the slice and lower the sleeve, or keep
@@ -5955,6 +5957,11 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await _apply_buy_funded(session, user, spec)
     elif kind == "core_to_basket":
         detail = await _apply_core_to_basket(session, user, spec)
+    elif kind == "frontier_core":
+        from app.services.frontier_service import apply_core_switch
+        detail = await apply_core_switch(session, user, spec)
+        if detail.get("refused"):
+            return {"ok": False, "applied": "none", "title": rec["title"], **detail}
     elif kind == "frontier_resize":
         from app.services.frontier_service import apply_resize
         detail = await apply_resize(session, user, spec)
