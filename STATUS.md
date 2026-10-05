@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 94, which core serves the goal — catalog cores priced from their own tickers; CI duplicate-run guard). Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 95, blended = prior worth 5 years is the default; the protective rules replayed on the goal's paths). Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,50 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 95 — blended is the default (prior = 5 years); the protective rules replayed on the goal's paths
+
+**Decisions (Eran, 2026-10-05).** Blended becomes the default, with **shrunk as the stress line** on every goal
+card. *"Prior = 5 years"*: blended is Black-Litterman with τ = 0.2, so a backtest weighs ~T/(T+5). Today the SOXL
+rule gets ~49% (the old 50/50-of-estimates formula really gave it ~61%), and the weight rises on its own as
+out-of-sample years accumulate. Supersedes "shrunk by default" (PR 90/91). The next PRs: rules-aware odds (this
+one), then faster reactions, then one return basis app-wide.
+
+**What.**
+- `engines/paths.simulate_rules`: the user's **armed** rules replayed on the same filtered-history paths, with the
+  semantics the app executes (read from the code):
+  - trailing exit = the tightest of trailing_stop / activated profit_protect / stop_loss on a sleeve ticker;
+  - take-profit sells `trim_fraction` (25%), next rung +10%;
+  - the **buy-back hold** keeps a sold holding out until its price is **below the sale price**;
+  - drawdown guard sells 25% of the most volatile sleeve and holds it until the drawdown is < max(L/2, L−2.5);
+  - monthly two-sided rebalance of everything not held out; deposits monthly.
+- Three runs on identical paths: rules off, as today, and the **rebound fix** (buy back only after a 15% rebound).
+- `rules_spec` maps the DB rules onto sleeves (core-ticker rules listed as not simulated).
+- Every goal verdict carries `rules` and `stress`. Cards state the shrunk stress odds, the rules-on/off/fix odds and
+  halving chances, and why when the rules cost ≥ 5 points.
+- Assumptions stated: every rule card is accepted the day it fires; sleeve rules act on the sleeve's stream.
+
+**On the live book (real data, 28 armed rules, blended, 2026-10-05):**
+
+| | goal odds | halving |
+|---|---|---|
+| rules off | 32.9% | 39.6% |
+| **rules as today** | **0.5%** | 0% |
+| rebound fix | 1.0% | 0% |
+| sleeve stops/trails only | 7.8% | 9.4% |
+| take-profits only | 33.3% | 38.7% |
+| drawdown guard only | 18.8% | 0.7% |
+| guard 15% + take-profits, no sleeve stops | 22.7% | 0.8% |
+
+**The sleeve stops are what cost the goal.** After an exit the buy-back hold keeps SOXL out **62%** of days and QQQ
+**49%** in rising markets. **The drawdown guard alone does nearly all the crash protection.** The take-profit ladder
+is neutral to slightly positive. **Not yet acted on**: retiring the sleeve stops or re-levelling the guard changes
+his rules, and is offered as a decision (next PR).
+
+**Smoke.** `scripts/smoke/smoke-pr95-rules-aware.ps1 -Sha <sha>`. **Tests.** `tests/test_rules_paths.py` (9) plus updated
+dial/goal tests.
 
 ---
 

@@ -410,7 +410,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                target: float | None, years: float | None, monthly: float = 0.0,
                kelly_setting: float | None = None, sleeve_cap_pct: float = 40.0,
                volatility_cap_pct: float | None = None, p_star: float = GOAL_CONFIDENCE,
-               draws: int = GOAL_DRAWS, seed: int = SEED) -> dict:
+               draws: int = GOAL_DRAWS, seed: int = SEED, rules: dict | None = None) -> dict:
     """Which mix best serves the user's goal. Pure.
 
     The OBJECTIVE is the goal: `target` (the amount his ROI implies) by his
@@ -542,6 +542,64 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         tail_gate = tail_gate or "SHORT_OF_TARGET_ON_HISTORY"
         outcome = GOAL_TAIL_SHORT
 
+    # ---- PR 95: the user's protective rules, on the same history ---------
+    # Three runs on IDENTICAL paths: no rule acting, his rules as the app
+    # executes them today, and the stop re-entry fix (buy back only after a
+    # 15% rebound). The differences are what the rules -- and the fix -- are
+    # worth to the goal. Reported, not yet a decision input.
+    rules_block = None
+    if rules:
+        a_rows = []
+        for i in sleeve_idx:
+            e = np.zeros(n_full)
+            e[i] = 1.0
+            a_rows.append(e)
+        a_rows.append(core_vec)
+        e = np.zeros(n_full)
+        e[cash_idx] = 1.0
+        a_rows.append(e)
+        unit_daily = daily @ np.array(a_rows).T
+        sl_specs = []
+        for j, sid in enumerate(sleeve_ids):
+            sp = (rules.get("sleeves") or {}).get(sid) or {}
+            sl_specs.append({"col": j, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
+                             "tp_fraction": sp.get("tp_fraction")})
+        g_spec = None
+        if rules.get("guard") and k:
+            vols = unit_daily[:, :k].std(axis=0)
+            g_spec = {**rules["guard"], "col": int(np.argmax(vols))}
+
+        def run(**kw):
+            sim = paths.simulate_rules(unit_daily, book(now_s), years=years, sleeves=sl_specs, guard=g_spec,
+                                       monthly=monthly, nav=nav, rf_daily=rf_daily, **kw)
+            return paths.rules_stats(sim, target=target)
+        r_off, r_on, r_fix = run(rules_on=False), run(), run(reentry="rebound")
+        rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
+                       "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
+                       "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
+                       "sleeves": {sid: (rules.get("sleeves") or {}).get(sid) for sid in sleeve_ids},
+                       "guard": rules.get("guard"),
+                       "guard_target": sleeve_ids[g_spec["col"]] if g_spec else None,
+                       "not_simulated": rules.get("not_simulated") or [],
+                       "assumptions": ["every rule card is accepted the day it fires",
+                                       "sleeve rules act on the sleeve's own return stream",
+                                       "the book is topped back to target monthly from cash",
+                                       "rules on core tickers are not simulated (the core is one basket)"]}
+
+    # ---- PR 95: the stress case (shrunk estimate) on every goal verdict ---
+    stress = None
+    if est0["confidence"] != fi.CONFIDENCE_SHRUNK:
+        est_s = fi.estimate(ils, assets, **{**est_kw, "confidence": fi.CONFIDENCE_SHRUNK})
+        mu_s, cov_s = _reduce(est_s["mu"], est_s["cov"], sleeve_idx, core_vec, cash_idx)
+
+        def p_s(s):
+            w = book(s)
+            gs = fr.growth(w, mu_s, cov_s, rf)["log_growth"]
+            vs = fr.portfolio_stats(w, mu_s, cov_s)["volatility"]
+            return round(fr.goal_probability(nav, target, years, gs, vs, monthly) * 100, 1)
+        stress = {"confidence": fi.CONFIDENCE_SHRUNK, "before_p_pct": p_s(now_s),
+                  "after_p_pct": p_s(proposed) if acting else p_s(now_s)}
+
     # ---- levers, on the book AFTER the card (or today's, without one) ----
     base = after if material else before
     tail_base = tail_after if material else tail_before
@@ -602,6 +660,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             "core_pct_before": round((free_total - now_s.sum()) * 100, 2),
             "core_pct_after": round((free_total - proposed.sum()) * 100, 2),
             "core_basket": core_basket, "before": before, "after": after, "levers": levers,
+            "rules": rules_block, "stress": stress,
             "tail": {"before": tail_before, "after": tail_after, "gate": tail_gate,
                      "paths": paths.N_PATHS, "block_days": paths.BLOCK_DAYS,
                      "basis": "historical daily returns re-centred on the chosen estimate"},
@@ -886,6 +945,11 @@ async def compute_for(session, user, *, source: str = "on_demand",
     from app.services import strategies as _static_cat
     current_core = await _sv.core_strategy_id(session, user)
     core_candidates = _static_cat.core_candidates()
+    try:
+        rules_ctx = await _rules_context(session, user, ctx["sleeves"])
+    except Exception:  # noqa: BLE001 -- the goal verdict stands without the rules replay
+        logger.warning("rules context failed", exc_info=True)
+        rules_ctx = None
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
@@ -902,7 +966,7 @@ async def compute_for(session, user, *, source: str = "on_demand",
                            kelly_setting=ctx.get("kelly_fraction_setting"),
                            sleeve_cap_pct=goal["sleeve_cap_pct"],
                            volatility_cap_pct=goal["volatility_cap_pct"],
-                           draws=min(draws, GOAL_DRAWS))
+                           draws=min(draws, GOAL_DRAWS), rules=rules_ctx)
             # PR 94: and which CORE serves the goal, the sleeves as they are.
             if v.get("mode") == "goal" and v.get("outcome") not in (NOT_MEASURABLE, GOAL_NO_TARGET) and current_core:
                 try:
@@ -933,6 +997,78 @@ async def compute_for(session, user, *, source: str = "on_demand",
     out["version"] = FRONTIER_TAG
     await record(session, user, out, source=source)
     return out
+
+
+def rules_spec(rules: list[dict], *, prices: dict[str, float],
+               sleeve_tickers: dict[str, set[str]]) -> dict:
+    """The user's ARMED rules -> what `paths.simulate_rules` takes. Pure.
+
+    ``rules`` are rows as dicts {ticker, rule_type, mode, level, params,
+    trim_fraction}; ``prices`` today's price per ticker (the rules' own
+    currency); ``sleeve_tickers`` the tickers each sleeve can hold. Per sleeve
+    the TIGHTEST exit wins (trailing stop, activated profit-protect, or a hard
+    stop expressed as a fall from today's price) and the NEAREST take-profit.
+    """
+    from app.services.advanced_rules import DERISK_FRACTION
+    from app.services.rules_service import TAKE_PROFIT_FRACTION
+
+    out = {sid: {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": []}
+           for sid in sleeve_tickers}
+    guard, not_sim = None, []
+    for r in rules:
+        tk, rt = (r.get("ticker") or "").upper(), r.get("rule_type")
+        lvl = float(r.get("level") or 0.0)
+        if rt == "drawdown_guard" and tk == "__BOOK__" and lvl > 0:
+            guard = {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - 2.5) / 100.0,
+                     "fraction": DERISK_FRACTION}
+            continue
+        sid = next((s for s, ts in sleeve_tickers.items() if tk in ts), None)
+        if sid is None:
+            if rt in ("stop_loss", "trailing_stop", "profit_protect", "take_profit", "drawdown_guard"):
+                not_sim.append(f"{rt} on {tk}")
+            continue
+        spec = out[sid]
+        px = float(prices.get(tk) or 0.0)
+        trail = None
+        if rt == "trailing_stop" and r.get("mode", "pct") == "pct":
+            trail = lvl / 100.0
+        elif rt == "profit_protect" and (r.get("params") or {}).get("activated"):
+            trail = lvl / 100.0
+        elif rt == "stop_loss":
+            trail = (1.0 - lvl / px) if r.get("mode") == "price" and px > 0 else lvl / 100.0
+        if trail is not None and 0 < trail < 1:
+            spec["trail"] = trail if spec["trail"] is None else min(spec["trail"], trail)
+            spec["rules"].append(f"{rt} {tk} ({trail:.0%} below the peak)")
+        if rt == "take_profit" and px > 0:
+            ratio = lvl / px if r.get("mode") == "price" else 1.0 + lvl / 100.0
+            if ratio > 1.0:
+                spec["tp_ratio"] = ratio if spec["tp_ratio"] is None else min(spec["tp_ratio"], ratio)
+                frac = r.get("trim_fraction")
+                spec["tp_fraction"] = float(frac) if frac and 0 < float(frac) <= 1 else TAKE_PROFIT_FRACTION
+                spec["rules"].append(f"take_profit {tk} (+{ratio - 1:.0%}, sells {spec['tp_fraction']:.0%})")
+    return {"sleeves": out, "guard": guard, "not_simulated": sorted(set(not_sim))}
+
+
+async def _rules_context(session, user, sleeves: list[dict]) -> dict | None:
+    """The user's active rules and today's prices, mapped onto his sleeves."""
+    from sqlalchemy import select
+
+    from app.engines import blend
+    from app.models.tables import TradingRule
+    from app.services.intake_service import list_positions
+
+    rows = (await session.scalars(select(TradingRule).where(TradingRule.subject == user.email)
+                                  .where(TradingRule.active.is_(True)))).all()
+    if not rows:
+        return None
+    prices = {}
+    for p in await list_positions(session, user):
+        if p.current_price:
+            prices[(p.ticker or "").upper()] = float(p.current_price)
+    tickers = {s["id"]: {t.upper() for t in blend.claimable_tickers(s["spec"])} for s in sleeves}
+    return rules_spec([{"ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode, "level": r.level,
+                        "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows],
+                      prices=prices, sleeve_tickers=tickers)
 
 
 async def _goal_context(session, user, rows) -> dict | None:
@@ -1211,6 +1347,23 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       f"estimate): {tb['p_goal_pct']:g}% chance today; the worst 5% of outcomes end near "
                       f"{tb['worst5_mean']:,.0f}; {tb['p_halve_pct']:g}% chance the book halves at some point.")
     # PR 94: how much the CORE can move the goal, said once so the levers make sense.
+    # PR 95: the stress case and the protective rules, said on every goal card.
+    st = v.get("stress") or {}
+    if st.get("before_p_pct") is not None:
+        goal_line += (f" Stress case (shrunk estimate, backtests trusted least): {st['before_p_pct']:g}% chance.")
+    rb = v.get("rules") or {}
+    if rb.get("on"):
+        on, off, fix = rb["on"], rb["off"], rb["rebound"]
+        goal_line += (f" With your protective rules as they work today: {on['p_goal_pct']:g}% chance, "
+                      f"{on['p_halve_pct']:g}% chance of halving (rules off: {off['p_goal_pct']:g}%, "
+                      f"{off['p_halve_pct']:g}%). If a stop waited for a 15% rebound before buying back: "
+                      f"{fix['p_goal_pct']:g}%, {fix['p_halve_pct']:g}%.")
+        if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
+            outs = [f"{sid} {p:g}%" for sid, p in zip(rb.get("sleeves") or {}, on.get("pct_time_out") or []) if p]
+            goal_line += (f" Your rules cost this goal {abs(rb['effect_pts']):g} points: after a stop or take-profit "
+                          f"the app keeps the holding out until its price falls back below the sale price, so in "
+                          f"rising markets it stays out"
+                          + (f" (time out of the market: {', '.join(outs)})." if outs else "."))
     cc = v.get("core_choice") or {}
     if cc.get("current") and cc.get("candidates"):
         spread = max(r["score_pct"] for r in cc["candidates"]) - min(r["score_pct"] for r in cc["candidates"])

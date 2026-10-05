@@ -60,4 +60,7 @@ Renumbered:
 | **92** ✅ | **the goal is the objective** (Eran, 2026-10-05): 70% chance of the ROI goal, Kelly as a ceiling (1.0x), sleeves may grow, actionable lever cards (deposit / target / deadline), one goal story |
 | **93** ✅ | the goal on fat-tailed history: filtered historical paths gate trade cards, require 70% on both, size levers both ways; cards show worst-5% and halving odds |
 | **94** ✅ | goal-chosen core: catalog cores priced from their own tickers, scored by goal odds (both methods), actionable switch via set_core + core realign (no new target source needed) |
-| **95** | one return basis app-wide: projection + expected return follow `return_confidence` |
+| **95** ✅ | blended = BL with a 5-year prior (default) + shrunk stress line; protective rules replayed on the goal's paths (off / as today / rebound fix) |
+| **96** | protection tuned for the goal: actionable cards to retire/relevel rules that cost the goal (e.g. sleeve stops), and the stop re-entry fix |
+| **97** | faster reactions: recent-volatility blend, regime signal, re-solve when a rule fires |
+| **98** | one return basis app-wide: projection + expected return follow `return_confidence` |
