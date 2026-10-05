@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 88, the efficient-frontier engine — pure math, nothing wired). Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,32 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 88 — the efficient-frontier engine (pure math; nothing reads it yet)
+
+**Why.** Validation on 2026-10-05: the plan's targets are constants (`OBJ_TARGET`, each catalog
+`target_allocation`); `portfolio_risk.analyze` measures a covariance matrix that no weight decision
+reads; T2/T6 optimise sleeve SHARE only, on drawdown. Eran approved a five-PR pipeline —
+`EXECUTION_PLAN_2026-10-05_frontier.md` — of which this is the first.
+
+**What.** `app/engines/frontier.py`, numpy only, no I/O:
+- `ledoit_wolf` — shrunk, annualised covariance; the shrinkage is returned, not hidden.
+- `optimize` — max mu'x − (λ/2)x'Σx, long-only, capped, with **fixed weights** (the sleeves) inside
+  the covariance but never moved. `risk_aversion=inf` is minimum variance (the no-return fallback).
+- `frontier`, `for_volatility` — the constrained frontier; an unreachable target says which end.
+- Kelly: `kelly_weights`, `growth`, `kelly_position` (fraction of Kelly along the book's own mix;
+  `over_kelly` when holding less would grow faster). λ = 1 / Kelly fraction:
+  Grow ½, Balanced ⅓, Preserve/Income ¼ — never full Kelly.
+- Returns go in as CAGR → `return_convention.drift_pct`; growth comes out via expm1.
+
+**Tests.** `tests/test_frontier_engine.py` (18): 2-asset closed forms (min-var, mean-variance),
+long-only corner, caps/infeasible caps, the core leaning away from equity beside a 64% sleeve,
+Ledoit-Wolf shrinkage/invertibility, projection, frontier dominance, Kelly arithmetic (3× a
+10%/22% asset grows ~0.2%/yr vs ~7.7% at full Kelly).
+
+**Behaviour change: none.** Next: PR 89 (ILS inputs + Black-Litterman).
 
 ---
 
