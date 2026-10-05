@@ -47,6 +47,8 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      "set_objective_and_rebalance", "set_plan", "create_rule", "create_rules",
                      "buy_funded", "sell_position", "redeploy_cash", "fund_sleeve",
                      "fund_plan", "relevel_sleeve_caps", "core_to_basket",
+                     # PR 90: resize sleeves toward the plan's Kelly fraction.
+                     "frontier_resize",
                      "set_standing_order",
                      # PR 72: a rule that fights a sleeve. Accept carries a
                      # choice -- sell the slice and lower the sleeve, or keep
@@ -2224,6 +2226,17 @@ async def build_recommendations(session: AsyncSession, user: User,
     except Exception:  # noqa: BLE001
         logger.warning("core-ceiling recommendation failed", exc_info=True)
         degraded.append("solver_verdict")
+
+    # PR 90: the stored frontier verdict, as an actionable resize. Read-only
+    # here -- the solve runs nightly or from POST /plan/frontier/refresh, never
+    # on the Today path.
+    try:
+        async with _agent_tx(session):
+            from app.services import frontier_service
+            recs += await frontier_service.card(session, user, rows)
+    except Exception:  # noqa: BLE001
+        logger.warning("frontier recommendation failed", exc_info=True)
+        degraded.append("frontier")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
@@ -5932,6 +5945,13 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await _apply_buy_funded(session, user, spec)
     elif kind == "core_to_basket":
         detail = await _apply_core_to_basket(session, user, spec)
+    elif kind == "frontier_resize":
+        from app.services.frontier_service import apply_resize
+        detail = await apply_resize(session, user, spec)
+        if detail.get("refused"):
+            # Refused UNTOUCHED (book moved, no price): nothing reached the
+            # book, so nothing reaches the ledger either.
+            return {"ok": False, "applied": "none", "title": rec["title"], **detail}
     elif kind == "edit_rule":
         from app.services.rules_service import update_rule
         detail = await update_rule(session, user, str(spec.get("target_rule_id")),

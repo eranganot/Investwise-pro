@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 89, the frontier's inputs — ILS covariance + Black-Litterman, read-only endpoint). Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 90, the frontier card — resampled, shrink-only sleeve resize that Accept executes). Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,44 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 90 — the frontier card: resize sleeves toward the plan's Kelly fraction, and Accept executes it
+
+**Why.** Eran, 2026-10-05, after PR 89's smoke: *"I want the recommendation cards to be actionable … once
+I approve them will execute it."* That changed the plan: PR 90 was going to be a read-only card. Measured
+on production inputs before designing: the book as targeted is **1.14× full Kelly**. Re-optimising only the
+core (sleeves fixed) reaches just 1.08× and an all-bond corner, because the sleeves carry the risk. So the
+actionable card is a **sleeve resize**.
+
+**What.** `app/services/frontier_service.py`.
+- **Solve:** max μ'x − (λ/2)x'Σx with λ = 1/(objective's Kelly fraction). Sleeves are **shrink-only**, the
+  core is held to its basket's shape as one composite asset, and cash is fixed.
+- **Resampling:** 100 block-bootstrap draws (21-day blocks). The proposal is the mean (Michaud) and the band
+  is p10–p90. A sleeve acts only when today's size is **above its whole band** and by ≥ 2 points.
+- **Stored** as a `SolverVerdict` row (`frontier-f1`; `solver_store.latest()` now excludes it). Computed
+  nightly (same job as the target re-solve) and by `POST /plan/frontier/refresh`. `GET /plan/frontier`
+  reads it. It is never computed on the Today path.
+- **Card** (`frontier_resize`): before/after Kelly, vol and growth come from the simulated post-trade
+  weights. The card shows sells, CGT and core buys. It does not appear when the verdict is >36h old, the
+  objective changed, or a sleeve was resized since.
+- **Accept** (`apply_resize`): refuses UNTOUCHED if the book moved or a buy cannot be priced. Otherwise it
+  resizes, sells the same fraction of every ticker the sleeve holds (CGT via `_sell_shares`), buys the core
+  basket from the actual net proceeds (`_apply_redeploy_cash`), and re-levels caps. One ledger call at the
+  boundary; share guard and conservation report as for every other kind.
+- **Engine:** FISTA plus an exact capped-simplex projection and a vectorised Ledoit-Wolf. The real resample
+  went from 62s to 11s with an identical answer.
+
+**On the live book (real Yahoo data + prod sleeves, 2026-10-05):** `btm_trend_soxl` **40% → 10.5%**
+(band 9.0–12.6%; seed 99 gives the same). `btm_qqq_hold` stays: 19% is inside its 1–19% band. The book
+goes from 1.14× to 0.52× Kelly, vol 41.9% → 20.9%, expected compound growth 10.1% → 9.6%/yr, and the core
+(60/40 VTI/BND) from 37% to 67%. The smoke's independent re-derivation reproduces both figures exactly.
+
+**Smoke.** `scripts/smoke/smoke-pr90-frontier-cards.ps1 -Sha <sha>`. It does **not** accept the card.
+
+**Tests.** `tests/test_frontier_resize.py` (15), including an end-to-end accept that re-measures the book,
+and a test that runs the nightly job.
 
 ---
 

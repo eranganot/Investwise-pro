@@ -692,6 +692,31 @@ async def frontier_inputs(session: AsyncSession = Depends(get_session),
     return await frontier_inputs_for(session, user)
 
 
+@router.get("/plan/frontier")
+async def frontier_latest(session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """PR 90 -- the latest stored frontier verdict, with its age. Never computes."""
+    from app.services import frontier_service as fs
+    row = await fs.latest(session, user)
+    if row is None:
+        return {"ok": False, "reason": "NO_VERDICT",
+                "detail": "no frontier solve on record - POST /plan/frontier/refresh runs one"}
+    return {"ok": True, "age_hours": round(fs._age_hours(row) or 0.0, 2),
+            "max_age_hours": fs.MAX_AGE_H, "source": row.source, **(row.detail or {})}
+
+
+@router.post("/plan/frontier/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def frontier_refresh(session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
+    """PR 90 -- solve now and store the verdict. Reads the book; changes nothing.
+
+    ~10-20s: fetches ~10y of closes and resamples the solve. The resize itself
+    happens only when the Today card it produces is accepted.
+    """
+    from app.services import frontier_service as fs
+    return await fs.compute_for(session, user, source="on_demand")
+
+
 @router.get("/plan/target/cores")
 async def target_cores(max_drawdown_pct: float, top_n: int = 5,
                        session: AsyncSession = Depends(get_session),

@@ -31,7 +31,7 @@ Three optimisers quoting three targets would break "one function, so two screens
 |---|---|---|
 | **88** ✅ | `engines/frontier.py`: Ledoit-Wolf, sleeve-conditional optimiser (projected gradient on a capped simplex), frontier, target-volatility point, Kelly growth/position. | none |
 | **89** ✅ | `services/frontier_inputs.py` + `GET /plan/frontier/inputs`: ILS-denominated return matrix (class proxies + **sleeve backtest streams**, not tickers); Black-Litterman mu — equilibrium prior + `measured_assumptions` OOS views, confidence by observations; NOT_MEASURED / degraded reasons. | none |
-| **90** | Block-bootstrap resampling (21-day blocks, ~200 draws) → averaged weights + stability band; no-trade zone when the current target sits inside it; min-variance fallback when no views. **Read-only Frontier card**: book vs target vs frontier, efficiency gap, Kelly position, over-Kelly warning. | read-only |
+| **90** ✅ (changed 2026-10-05: actionable, per Eran) | Resampled **shrink-only sleeve resize** card that Accept EXECUTES (resize → sell with CGT → buy core → re-level caps). Was: block-bootstrap resampling (21-day blocks, ~200 draws) → averaged weights + stability band; no-trade zone when the current target sits inside it; min-variance fallback when no views. **Read-only Frontier card**: book vs target vs frontier, efficiency gap, Kelly position, over-Kelly warning. | read-only |
 | **91** | Whole-book mean-CVaR validation: `split_solver.search` with core classes as axes, `blend.measure_blend`, OOS-ranked, CVaR95 cap + drawdown ceiling. Nightly job cached in `solver_store` + a test that actually runs the job. Disagreement with #2 shown; the more conservative wins. | read-only |
 | **92** | `plan.target_source = "fixed" \| "frontier"`; frontier core feeds `book_target` only on Accept and only when the gain beats cost + tax (`tax_engine`). Every buy via `funding_service.propose_funded_buy()`; `test_card_claims` re-measures the post-trade mix. | **live, opt-in** |
 
@@ -41,3 +41,11 @@ Three optimisers quoting three targets would break "one function, so two screens
 - Stated returns are CAGR; the engine converts once through `return_convention.drift_pct`.
 - Every out-of-sample figure carries `split_solver.OOS_CAVEAT` (one bear market is a sample of one).
 - SQLite + Postgres + ruff green before push.
+
+## Change, 2026-10-05 (Eran)
+
+"I want the recommendation cards to be actionable … once I approve them will execute it." PR 90 became an
+executing card. The live inputs showed the sleeves carry the risk (core-only re-optimisation: 1.14x → 1.08x
+Kelly), so the first actionable card is the sleeve resize. The core-tilt card, which needs
+`plan.target_source = "frontier"` so the rebalancer does not undo it, stays for PR 92. CVaR validation is
+PR 91 and gates both.
