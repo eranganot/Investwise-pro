@@ -37,3 +37,5 @@ scripts/.agent-key*
 # than keep one: `git archive --format=tar.gz -o iw-src.tgz HEAD`.
 *.tgz
 *.tar.gz
+
+.claude/settings.local.json
