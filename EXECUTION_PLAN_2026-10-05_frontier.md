@@ -56,6 +56,6 @@ Renumbered:
 | PR | What |
 |---|---|
 | **90** | migration 0026: `plans.kelly_fraction`, `plans.return_confidence` (add-only, ships alone) |
-| **91** | the actionable resize card + both dials + target comparison (the work drafted as PR 90) |
+| **91** ✅ | the actionable resize card + both dials + target comparison + materiality gate (the work drafted as PR 90) |
 | **92** | whole-book mean-CVaR validation, gating the cards |
 | **93** | core-tilt card with `plan.target_source = "frontier"` |

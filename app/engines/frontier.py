@@ -80,11 +80,25 @@ def arithmetic_drift(cagr_pct: float, volatility_pct: float) -> float:
     return drift_pct(cagr_pct, volatility_pct) / 100.0
 
 
-def risk_aversion_for(objective: str | None) -> float:
-    """lambda for an objective: 1 / (its fraction of Kelly)."""
-    frac = KELLY_FRACTION_BY_OBJECTIVE.get(objective or DEFAULT_OBJECTIVE,
+# PR 91: the fraction is the user's to set (Eran, 2026-10-05: "0.5 is the
+# default but I want to be able to change it"). Capped at full Kelly because
+# past it the model gives LESS compound growth for MORE risk -- a setting that
+# can only make both numbers worse is not a choice worth offering.
+KELLY_MIN = 0.25
+KELLY_MAX = 1.0
+
+
+def kelly_fraction_for(objective: str | None, override: float | None = None) -> float:
+    """The plan's fraction of full Kelly: its own setting, else the objective's."""
+    if override is not None:
+        return min(KELLY_MAX, max(KELLY_MIN, float(override)))
+    return KELLY_FRACTION_BY_OBJECTIVE.get(objective or DEFAULT_OBJECTIVE,
                                            KELLY_FRACTION_BY_OBJECTIVE[DEFAULT_OBJECTIVE])
-    return 1.0 / frac
+
+
+def risk_aversion_for(objective: str | None, fraction: float | None = None) -> float:
+    """lambda for a plan: 1 / (its fraction of Kelly)."""
+    return 1.0 / kelly_fraction_for(objective, fraction)
 
 
 # --------------------------------------------------------------------------
@@ -116,7 +130,10 @@ def ledoit_wolf(returns: np.ndarray, *, periods: int = TRADING_DAYS) -> tuple[np
     if d2 <= 0.0:
         return sample * periods, 0.0
     # b2: the variance of the sample covariance's entries, bounded by d2.
-    b2 = sum(float(np.sum((np.outer(r, r) - sample) ** 2)) for r in x) / t ** 2
+    # sum_t ||x_t x_t' - S||^2 = sum_t ||x_t||^4 - T ||S||^2, because
+    # sum_t x_t' S x_t = T tr(S^2). Vectorised (PR 90): the per-row loop it
+    # replaces was the cost of every resampling draw.
+    b2 = (float(np.sum(np.sum(x * x, axis=1) ** 2)) - t * float(np.sum(sample ** 2))) / t ** 2
     b2 = min(b2, d2)
     shrink = b2 / d2
     cov = shrink * target + (1.0 - shrink) * sample
@@ -131,22 +148,28 @@ def project_capped_simplex(v: np.ndarray, upper: np.ndarray, total: float) -> np
     """Euclidean projection onto {0 <= x <= upper, sum(x) = total}.
 
     The projection is clip(v - tau, 0, upper) for the one tau that makes it sum
-    to `total`; the sum is monotone in tau, so bisection finds it exactly.
+    to `total`. That sum is piecewise LINEAR and decreasing in tau, with kinks
+    only at v_i and v_i - upper_i, so tau is solved exactly on the one segment
+    that brackets `total`. (It was a bisection until PR 90; with caps binding it
+    rarely met its stopping rule, and it was the whole cost of a resample.)
     """
     v = np.asarray(v, dtype=float)
     upper = np.asarray(upper, dtype=float)
     if total < -1e-12 or total > float(upper.sum()) + 1e-9:
         raise ValueError(f"infeasible: total {total} outside [0, {float(upper.sum())}]")
-    lo, hi = float(np.min(v - upper)) - 1.0, float(np.max(v)) + 1.0
-    for _ in range(200):
-        tau = 0.5 * (lo + hi)
-        s = float(np.clip(v - tau, 0.0, upper).sum())
-        if abs(s - total) < 1e-13:
-            break
-        if s > total:
-            lo = tau
-        else:
-            hi = tau
+    bps = np.unique(np.concatenate([v, v - upper]))
+
+    def f(tau: float) -> float:
+        return float(np.clip(v - tau, 0.0, upper).sum())
+
+    # f(min bp) = sum(upper) >= total >= 0 = f(max bp): one segment brackets it.
+    vals = np.array([f(b) for b in bps])
+    j = int(np.searchsorted(-vals, -total, side="left"))
+    if j == 0:
+        tau = float(bps[0])
+    else:
+        a, b, fa, fb = bps[j - 1], bps[j], vals[j - 1], vals[j]
+        tau = float(a if fa == fb else a + (fa - total) * (b - a) / (fa - fb))
     return np.clip(v - tau, 0.0, upper)
 
 
@@ -196,12 +219,20 @@ def optimize(mu, cov, *, risk_aversion: float, free_total: float,
     step = 1.0 / max(float(np.linalg.eigvalsh(q).max()), 1e-12)
     m = int(free.sum())
     y = project_capped_simplex(np.full(m, free_total / m), up, free_total)
+    # FISTA (accelerated projected gradient), PR 90. Plain projected gradient
+    # converges at the rate of the condition number, and a book holding an
+    # 88%-volatility sleeve beside a 10% bond fund is badly conditioned: on the
+    # live book it ran into MAX_ITER and a 100-draw resample took 62s. Same
+    # fixed point, same feasible set; only the path to it is shorter.
+    z, t = y.copy(), 1.0
     for _ in range(MAX_ITER):
-        y_new = project_capped_simplex(y + step * (a - q @ y), up, free_total)
+        y_new = project_capped_simplex(z + step * (a - q @ z), up, free_total)
         if float(np.max(np.abs(y_new - y))) < TOL:
             y = y_new
             break
-        y = y_new
+        t_new = 0.5 * (1.0 + math.sqrt(1.0 + 4.0 * t * t))
+        z = y_new + ((t - 1.0) / t_new) * (y_new - y)
+        y, t = y_new, t_new
     out = fixed.copy()
     out[free] = y
     return out

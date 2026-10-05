@@ -471,6 +471,12 @@
         <div><label class="mk">Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
         <div><label class="mk">per</label><select id="p_yld_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
       </div>
+      <label>Risk dials <span class="mk">(how the frontier card sizes your sleeves)</span></label>
+      <div class="grid2">
+        <div><label class="mk">Kelly fraction</label><select id="p_kelly"><option value="0.25">0.25×</option><option value="0.33">0.33×</option><option value="0.5">0.5× (half)</option><option value="0.75">0.75×</option><option value="1">1.0× (full)</option></select></div>
+        <div><label class="mk">Trust in backtests</label><select id="p_conf"><option value="shrunk">shrunk (evidence-weighted)</option><option value="blended">blended (50/50)</option><option value="measured">measured (trust fully)</option></select></div>
+      </div>
+      <div class="mk" id="p_dials_note"></div>
       <div class="how" id="roi_note" style="display:none;background:var(--soft);border-radius:10px;padding:10px;margin-top:10px;color:#aebacb;font-size:13px"></div>
       <button class="primary" onclick="savePlan()">Save my plan</button>
       <div class="muted" id="plan_out" style="margin-top:10px"></div>
@@ -3336,8 +3342,26 @@ async function loadPlan(){
     if(p.target_roi_pct!=null)$("p_roi").value=p.target_roi_pct; if(p.target_roi_period)$("p_roi_p").value=p.target_roi_period;
     PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
     if(p.target_yield_pct!=null)$("p_yld").value=p.target_yield_pct; if(p.target_yield_period)$("p_yld_p").value=p.target_yield_period;
-    renderGoal(p);renderPlanNote(p);renderRoi(p);
+    renderGoal(p);renderPlanNote(p);renderRoi(p);renderDials(p);
   }catch(e){}
+}
+// PR 91: the frontier's two dials. Preselected from the EFFECTIVE value, and
+// only sent when changed -- saving the ROI must not pin a default as a choice.
+let DIALS={kelly:null,conf:null};
+function renderDials(p){
+  const f=p.frontier||{}; if(f.kelly_fraction==null) return;
+  const opts=[...$("p_kelly").options].map(o=>+o.value);
+  const near=opts.reduce((a,b)=>Math.abs(b-f.kelly_fraction)<Math.abs(a-f.kelly_fraction)?b:a);
+  $("p_kelly").value=String(near); $("p_conf").value=f.return_confidence||"shrunk";
+  DIALS={kelly:$("p_kelly").value,conf:$("p_conf").value};
+  $("p_dials_note").innerHTML=`Now ${f.kelly_fraction.toFixed(2)}× Kelly (${f.kelly_source==="plan"?"your setting":"your objective's default, "+f.kelly_default.toFixed(2)+"×"}), trust: ${f.return_confidence}. `+
+    `Half Kelly keeps ~75% of the maximum compound growth at half the volatility. Above 1.0× is not offered: past full Kelly more risk means <i>less</i> compound growth.`;
+}
+async function refreshFrontierAfterDials(){
+  $("p_dials_note").innerHTML+=` <span class="muted">Re-solving the frontier with your new dials…</span>`;
+  try{const r=await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});const j=await r.json();
+    $("p_dials_note").innerHTML+=` <span class="ok">Done (${j.outcome||"?"}). Today shows the new card, if any.</span>`;}
+  catch(e){$("p_dials_note").innerHTML+=` <span class="bad">Re-solve failed: ${e}</span>`;}
 }
 function renderGoal(p){
   const g=p.goal||{};
@@ -3370,6 +3394,9 @@ async function savePlan(){
     target_amount:($("p_roi").value!==""&&$("p_amt").value)?+$("p_amt").value:null,target_date:$("p_date").value||null,
     target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
     target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
+  const dialsChanged=$("p_kelly").value!==DIALS.kelly||$("p_conf").value!==DIALS.conf;
+  if($("p_kelly").value!==DIALS.kelly) body.kelly_fraction=+$("p_kelly").value;
+  if($("p_conf").value!==DIALS.conf) body.return_confidence=$("p_conf").value;
   $("plan_out").textContent="Saving…";
   try{const resp=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(resp.status===401){location.href="/login";return;}
@@ -3378,7 +3405,8 @@ async function savePlan(){
     $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;
     PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
     if(p.target_amount!=null)$("p_amt").value=p.target_amount;
-    renderGoal(p);renderPlanNote(p);renderRoi(p);
+    renderGoal(p);renderPlanNote(p);renderRoi(p);renderDials(p);
+    if(dialsChanged) refreshFrontierAfterDials();
   }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
 }
 

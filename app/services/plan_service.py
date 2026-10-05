@@ -23,7 +23,9 @@ async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
     plan = await get_plan(session, user)
     allowed = {"objective", "risk_tolerance", "horizon_years", "target_amount", "target_date", "currency",
                "target_roi_pct", "target_roi_period", "target_yield_pct", "target_yield_period", "preferred_depth",
-               "cash_target_pct", "cash_target_ils", "cash_redeploy_at_ils"}
+               "cash_target_pct", "cash_target_ils", "cash_redeploy_at_ils",
+               # PR 91 / migration 0026: the frontier's dials.
+               "kelly_fraction", "return_confidence"}
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
     # ONE CASH TARGET AT A TIME: whichever unit was set last wins, and setting it
     # clears the other. Two live targets would leave every reader to guess.

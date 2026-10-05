@@ -149,6 +149,10 @@ class PlanRequest(BaseModel):
     cash_target_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
     # When the put-cash-to-work card appears (it still invests down to the target).
     cash_redeploy_at_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
+    # PR 91, the frontier's two dials (migration 0026). Bounded at the boundary:
+    # past full Kelly the model gives less growth for more risk, so 1.0 is the cap.
+    kelly_fraction: float | None = Field(default=None, ge=0.25, le=1.0)
+    return_confidence: str | None = Field(default=None, pattern="^(shrunk|blended|measured)$")
 
 
 def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
@@ -204,6 +208,13 @@ def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
         annual_target = roi * PERIOD_MULT.get(base.get("target_roi_period", "yearly"), 1)
         base["roi_annual_target_pct"] = round(annual_target, 2)
         base["roi_on_track"] = stats["expected_roi"] >= annual_target
+    # PR 91: the frontier's dials, effective value and source. `kelly_fraction`
+    # / `return_confidence` above-the-fold are the raw stored values (None =
+    # default); this block is what the frontier actually uses.
+    from app.services.frontier_service import settings_of
+    base["kelly_fraction"] = getattr(plan, "kelly_fraction", None) if plan is not None else None
+    base["return_confidence"] = getattr(plan, "return_confidence", None) if plan is not None else None
+    base["frontier"] = settings_of(plan)
     return base
 
 
@@ -690,6 +701,31 @@ async def frontier_inputs(session: AsyncSession = Depends(get_session),
     """
     from app.services.frontier_inputs import frontier_inputs_for
     return await frontier_inputs_for(session, user)
+
+
+@router.get("/plan/frontier")
+async def frontier_latest(session: AsyncSession = Depends(get_session),
+                          user: User = Depends(acting_user)) -> dict:
+    """PR 90 -- the latest stored frontier verdict, with its age. Never computes."""
+    from app.services import frontier_service as fs
+    row = await fs.latest(session, user)
+    if row is None:
+        return {"ok": False, "reason": "NO_VERDICT",
+                "detail": "no frontier solve on record - POST /plan/frontier/refresh runs one"}
+    return {"ok": True, "age_hours": round(fs._age_hours(row) or 0.0, 2),
+            "max_age_hours": fs.MAX_AGE_H, "source": row.source, **(row.detail or {})}
+
+
+@router.post("/plan/frontier/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def frontier_refresh(session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
+    """PR 90 -- solve now and store the verdict. Reads the book; changes nothing.
+
+    ~10-20s: fetches ~10y of closes and resamples the solve. The resize itself
+    happens only when the Today card it produces is accepted.
+    """
+    from app.services import frontier_service as fs
+    return await fs.compute_for(session, user, source="on_demand")
 
 
 @router.get("/plan/target/cores")

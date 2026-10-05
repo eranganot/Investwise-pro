@@ -88,6 +88,26 @@ REFERENCE_INTL_SHARE = 0.4
 # 0.05 is the conventional value (He & Litterman use 0.025-0.05).
 TAU = 0.05
 
+# PR 91: how far a sleeve's measured backtest is trusted (Eran, 2026-10-05:
+# shrunk by default, blended as an option; measured kept as the third).
+#   shrunk    Black-Litterman as estimated: the backtest counts in proportion
+#             to its own precision (variance / OOS years).
+#   blended   halfway between that posterior and the backtest, for every asset
+#             that carries a view -- a fixed 50%, not an evidence weight.
+#   measured  the backtest's own drift, unshrunk.
+# Assets without a view keep the posterior under every setting: there is
+# nothing measured to trust more.
+CONFIDENCE_SHRUNK = "shrunk"
+CONFIDENCE_BLENDED = "blended"
+CONFIDENCE_MEASURED = "measured"
+CONFIDENCE_LEVELS = (CONFIDENCE_SHRUNK, CONFIDENCE_BLENDED, CONFIDENCE_MEASURED)
+DEFAULT_CONFIDENCE = CONFIDENCE_SHRUNK
+
+
+def confidence_of(value: str | None) -> str:
+    v = (value or "").strip().lower()
+    return v if v in CONFIDENCE_LEVELS else DEFAULT_CONFIDENCE
+
 # Why a sleeve has no view. Named, never silently dropped.
 VIEW_NOT_MEASURED = "NOT_MEASURED"
 VIEW_FAILED = "MEASUREMENT_FAILED"
@@ -178,16 +198,13 @@ def black_litterman(cov: np.ndarray, prior: np.ndarray, p: np.ndarray, q: np.nda
     return np.linalg.solve(a, b)
 
 
-def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict],
-                 objective_target: dict[str, float], measurements: dict[str, tuple],
-                 class_assumptions: dict[str, tuple[float, float]],
-                 cash_rate_pct: float, tau: float = TAU) -> dict:
-    """Price history in, frontier inputs out. Pure.
+def prepare(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict]) -> dict:
+    """Price history -> the T x N ILS daily-return matrix and its assets. Pure.
 
-    ``sleeves`` is ``[{"id", "spec", "current_pct"}]`` (the solvers' shape);
-    ``measurements`` maps sleeve id -> ``view_from_measurement(...)``'s pair;
-    ``class_assumptions`` maps class id -> the instrument table's
-    ``(cagr_pct, volatility_pct)``.
+    Split from `estimate` in PR 90 so resampling can redraw the ROWS of this
+    matrix and re-estimate, without re-fetching or re-simulating anything.
+    The returned ``assets`` are the risky ones only; cash is added by
+    `estimate`'s consumers.
     """
     degraded: list[str] = []
     excluded: list[dict] = []
@@ -252,6 +269,20 @@ def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[di
 
     usd = np.column_stack(cols)
     ils = (1.0 + usd) * (1.0 + fx_r)[:, None] - 1.0
+    return {"ok": True, "assets": assets, "ils": ils, "dates": dates,
+            "fx": bool(fx_rows), "excluded": excluded, "degraded": degraded}
+
+
+def estimate(ils: np.ndarray, assets: list[dict], *, objective_target: dict[str, float],
+             measurements: dict[str, tuple], class_assumptions: dict[str, tuple[float, float]],
+             cash_rate_pct: float, tau: float = TAU,
+             confidence: str = DEFAULT_CONFIDENCE) -> dict:
+    """An ILS return matrix -> covariance and BL drifts, CASH APPENDED LAST. Pure.
+
+    Arrays come back indexed like ``assets`` plus one trailing cash entry.
+    Does not mutate ``assets``.
+    """
+    degraded: list[str] = []
     cov, shrink = fr.ledoit_wolf(ils)
     vols = np.sqrt(np.diag(cov))
     n = len(assets)
@@ -297,38 +328,66 @@ def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[di
     p = np.array(p_rows) if p_rows else np.zeros((0, n))
     posterior = black_litterman(cov, prior, p, np.array(q), np.diag(omega) if omega else
                                 np.zeros((0, 0)), tau=tau)
+    shrunk = posterior.copy()
+    confidence = confidence_of(confidence)
+    if confidence != CONFIDENCE_SHRUNK:
+        for row, q_i in zip(p_rows, q):
+            i = int(np.argmax(row))
+            posterior[i] = q_i if confidence == CONFIDENCE_MEASURED else 0.5 * (shrunk[i] + q_i)
 
-    # ---- cash, appended last ---------------------------------------------
-    assets.append({"id": CASH_ID, "kind": "cash", "label": "Cash (ILS)"})
     cov_full = np.zeros((n + 1, n + 1))
     cov_full[:n, :n] = cov
-    prior_full = np.append(prior, rf)
-    post_full = np.append(posterior, rf)
-    vols_full = np.append(vols, 0.0)
+    return {"cov": cov_full, "prior": np.append(prior, rf), "mu": np.append(posterior, rf),
+            "mu_shrunk": np.append(shrunk, rf), "confidence": confidence,
+            "vols": np.append(vols, 0.0), "shrinkage": float(shrink), "risk_free": rf,
+            "reference": ref, "risk_aversion": lam_ref, "views": views, "degraded": degraded}
 
-    for a, pr, po, v in zip(assets, prior_full, post_full, vols_full):
+
+def build_inputs(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict],
+                 objective_target: dict[str, float], measurements: dict[str, tuple],
+                 class_assumptions: dict[str, tuple[float, float]],
+                 cash_rate_pct: float, tau: float = TAU,
+                 confidence: str = DEFAULT_CONFIDENCE) -> dict:
+    """Price history in, frontier inputs out. Pure.
+
+    ``sleeves`` is ``[{"id", "spec", "current_pct"}]`` (the solvers' shape);
+    ``measurements`` maps sleeve id -> ``view_from_measurement(...)``'s pair;
+    ``class_assumptions`` maps class id -> the instrument table's
+    ``(cagr_pct, volatility_pct)``.
+    """
+    prep = prepare(series, sleeves=sleeves)
+    if not prep["ok"]:
+        return prep
+    est = estimate(prep["ils"], prep["assets"], objective_target=objective_target,
+                   measurements=measurements, class_assumptions=class_assumptions,
+                   cash_rate_pct=cash_rate_pct, tau=tau, confidence=confidence)
+    assets = [dict(a) for a in prep["assets"]]
+    assets.append({"id": CASH_ID, "kind": "cash", "label": "Cash (ILS)"})
+    for a, pr, po, sh, v in zip(assets, est["prior"], est["mu"], est["mu_shrunk"], est["vols"]):
         a["prior_drift"] = round(float(pr), 6)
         a["drift"] = round(float(po), 6)
+        a["shrunk_drift"] = round(float(sh), 6)
         a["volatility"] = round(float(v), 6)
         # The same figure as a CAGR, so the screen reads in the app's convention.
         a["cagr_pct"] = round(math.expm1(float(po) - 0.5 * float(v) ** 2) * 100, 2)
-
+    dates = prep["dates"]
     return {
         "ok": True, "version": INPUTS_VERSION,
         "assets": assets,
-        "mu": [round(float(x), 8) for x in post_full],
-        "cov": [[round(float(x), 10) for x in row] for row in cov_full],
-        "shrinkage": round(shrink, 4),
-        "risk_free": {"drift": rf, "cagr_pct": cash_rate_pct,
+        "mu": [round(float(x), 8) for x in est["mu"]],
+        "cov": [[round(float(x), 10) for x in row] for row in est["cov"]],
+        "shrinkage": round(est["shrinkage"], 4),
+        "risk_free": {"drift": est["risk_free"], "cagr_pct": cash_rate_pct,
                       "source": "instrument table, cash row (a planning assumption)"},
         "prior": {"basis": "reverse-optimised from the plan's fixed target",
-                  "reference": {k: round(v, 4) for k, v in ref.items()},
-                  "risk_aversion": round(lam_ref, 4), "tau": tau},
-        "views": views,
-        "fx_basis": "historical" if fx_rows else "spot",
+                  "reference": {k: round(v, 4) for k, v in est["reference"].items()},
+                  "risk_aversion": round(est["risk_aversion"], 4), "tau": tau},
+        "views": est["views"],
+        "confidence": est["confidence"],
+        "fx_basis": "historical" if prep["fx"] else "spot",
         "window": {"start": dates[0], "end": dates[-1], "sessions": len(dates)},
-        "excluded": excluded,
-        "degraded": degraded,
+        "excluded": prep["excluded"],
+        "degraded": prep["degraded"] + est["degraded"],
     }
 
 
@@ -347,8 +406,12 @@ def _fetch_blocking(tickers: list[str]) -> tuple[dict, list[str], list[str]]:
     return _fetch(sorted(tickers), classify=True)
 
 
-async def frontier_inputs_for(session, user) -> dict:
-    """The acting user's frontier inputs. Read-only; fetches ~10y of closes."""
+async def load_context(session, user) -> dict:
+    """Everything a frontier solve needs about the acting user's book, fetched once.
+
+    ONE loader for the inputs endpoint and the PR 90 resize solve, so the two
+    cannot disagree about which sleeves, which measurements or which prices.
+    """
     from app.core.offload import offload
     from app.services import backtest_service, target_solver
     from app.services.allocation_mix import OBJ_TARGET
@@ -376,13 +439,26 @@ async def frontier_inputs_for(session, user) -> dict:
         tickers |= set(bt.tickers_needed(s["spec"]))
     series, no_data, unavailable = await offload(_fetch_blocking, sorted(tickers))
 
-    class_assumptions = {cid: assumptions_for(c["assumption_ticker"])
-                         for cid, c in CLASS_PROXIES.items()}
-    cash_rate_pct = assumptions_for("CASH", "cash")[0]
-    out = build_inputs(series, sleeves=sleeves, objective_target=objective_target,
-                       measurements=measurements, class_assumptions=class_assumptions,
-                       cash_rate_pct=cash_rate_pct)
-    out["objective"] = objective
-    out["no_history"] = sorted(no_data)
-    out["unavailable"] = sorted(unavailable)
+    est_kw = {"objective_target": objective_target, "measurements": measurements,
+              "class_assumptions": {cid: assumptions_for(c["assumption_ticker"])
+                                    for cid, c in CLASS_PROXIES.items()},
+              "cash_rate_pct": assumptions_for("CASH", "cash")[0],
+              "confidence": confidence_of(getattr(plan, "return_confidence", None))}
+    return {"ok": True, "sleeves": sleeves, "objective": objective, "series": series,
+            "est_kw": est_kw, "no_history": sorted(no_data), "unavailable": sorted(unavailable),
+            # PR 91: the plan's own dials and target, read once here so the
+            # solve and the card cannot read two different plans.
+            "kelly_fraction_setting": getattr(plan, "kelly_fraction", None),
+            "target_roi_pct": getattr(plan, "target_roi_pct", None)}
+
+
+async def frontier_inputs_for(session, user) -> dict:
+    """The acting user's frontier inputs. Read-only; fetches ~10y of closes."""
+    ctx = await load_context(session, user)
+    if not ctx.get("ok"):
+        return ctx
+    out = build_inputs(ctx["series"], sleeves=ctx["sleeves"], **ctx["est_kw"])
+    out["objective"] = ctx["objective"]
+    out["no_history"] = ctx["no_history"]
+    out["unavailable"] = ctx["unavailable"]
     return out

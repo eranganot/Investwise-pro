@@ -110,6 +110,10 @@ async def record(session: AsyncSession, user: User, verdict: dict, *,
 # SOLVER_VERSION is meant to be bumped and an `== "s1"` filter would silently
 # stop finding rows the day it is.
 CORE_VERSION = "t6b"
+# PR 90's frontier verdicts share this table (see `frontier_service`). Named
+# here so the target-solver reader can exclude them: a frontier row read as a
+# target solve would be a constraint nobody set.
+FRONTIER_VERSION = "frontier-f1"
 
 
 async def latest(session: AsyncSession, user: User) -> SolverVerdict | None:
@@ -118,6 +122,7 @@ async def latest(session: AsyncSession, user: User) -> SolverVerdict | None:
         select(SolverVerdict)
         .where(SolverVerdict.subject == user.email)
         .where(SolverVerdict.solver_version != CORE_VERSION)
+        .where(SolverVerdict.solver_version != FRONTIER_VERSION)
         .order_by(desc(SolverVerdict.created_at))
         .limit(1))).first()
     return row
@@ -422,7 +427,12 @@ async def _refresh_job() -> dict:
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-            return await refresh_all(session)
+            out = await refresh_all(session)
+            # PR 90: the frontier verdict, same nightly pass. Its own per-book
+            # try lives inside; a frontier failure never undoes a target solve.
+            from app.services import frontier_service
+            out.update(await frontier_service.refresh_all(session))
+            return out
     finally:
         await engine.dispose()
 

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 90, migration 0026 — the frontier's two dials, add-only, ships alone). Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 91, the frontier card — Accept executes a resampled sleeve resize; user dials; target-aware). Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,54 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 91 — the frontier card: Accept executes a resampled sleeve resize, on the user's dials, against his target
+
+**Why.** Eran, 2026-10-05: cards must be *"actionable … once I approve them will execute it"*. The Kelly fraction is
+*"the default but I want to be able to change it"*. Return confidence defaults to shrunk, with *"blended as an
+option"*. And the recommendations must be measured against the ROI he set (30%/yr).
+
+**What.** `app/services/frontier_service.py` (new) plus wiring.
+- **Solve:** max μ'x − (λ/2)x'Σx, λ = 1/(plan's Kelly fraction). Sleeves are **shrink-only**; the core is held to
+  its basket (one composite asset); cash is fixed. Resampled 100× (21-day block bootstrap). The proposal is the
+  mean and the band is p10–p90. A sleeve acts only above its whole band and by ≥ 2 pts.
+- **Materiality gate:** a stable resize must close ≥ ⅓ of the gap to the Kelly fraction or cut vol ≥ 3 pts,
+  else `IMMATERIAL` (no card). Found on real data: under 'blended' the stable answer was "sell all of QQQ" for
+  0.64× → 0.61× Kelly.
+- **Dials** (migration 0026): `PUT /plan` takes `kelly_fraction` 0.25–1.0 (422 outside; full Kelly is the cap)
+  and `return_confidence` shrunk|blended|measured. `GET /plan.frontier` returns the effective values and their
+  source. The Plan tab has both selects; a dial is sent only when changed, and a change triggers a re-solve.
+  `estimate()` applies the confidence only to assets with a measured view.
+- **Target-aware:** every verdict carries `scenarios` for all three confidences (growth before and after, plus
+  the most any long-only mix compounds, i.e. the λ = 1 optimum) and a `target` block. The card says out loud
+  when the target is unreachable on the chosen estimate, and when the resize would drop the book below target
+  if the backtests are right.
+- **Card ↔ verdict:** the card hides when the verdict is > 36h old, or the objective, a sleeve size, the Kelly
+  fraction or the confidence changed.
+- **Accept** (`frontier_resize`): refuses untouched if the book moved or a buy can't be priced. Otherwise it
+  resizes, sells the same fraction of every ticker the sleeve holds (CGT), buys the core basket from the actual
+  net proceeds, and re-levels caps. One ledger call at the boundary.
+- **Store/jobs:** `SolverVerdict` rows tagged `frontier-f1` (`solver_store.latest()` excludes them). The
+  nightly job runs the frontier pass. `POST /plan/frontier/refresh` and `GET /plan/frontier` are new. Cold
+  cache: one retry after 35s (breaker recovery); still refused → `UNAVAILABLE`. This was seen on PR 90's deploy.
+- **Engine:** FISTA, an exact capped-simplex projection and vectorised Ledoit-Wolf. The real resample went from
+  62s to 11s with an identical answer.
+- `sw.js` → `iw-v36` (new Plan controls).
+
+**On the live book, real data (2026-10-05):**
+- **Shrunk** (default): `btm_trend_soxl` 40% → **10.5%** (band 9.0–12.6%). The book goes from 1.14× to 0.52×
+  Kelly and vol from 41.9% to 20.9%; growth 10.1% → 9.6%/yr. The card says: "Your target is 30%/yr … the most
+  any mix of these assets compounds is 10.85%/yr, so the target is not reachable on this estimate … If the
+  backtests are right (measured), the book compounds 39.56% today - above your target - and 17.29% after:
+  below it."
+- **Blended:** `IMMATERIAL`, no card. The max is 28.2%/yr, so 30% is unreachable on this estimate too.
+
+**Smoke.** `scripts/smoke/smoke-pr91-frontier-card.ps1 -Sha <sha>`. It does **not** accept.
+
+**Tests.** `test_frontier_resize.py` (15, incl. an end-to-end accept re-measured and the nightly job) and
+`test_frontier_dials.py` (14).
 
 ---
 
