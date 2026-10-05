@@ -318,7 +318,7 @@ def test_a_rate_limited_ticker_is_unavailable_not_missing(monkeypatch):
         calls["n"] += 1
         raise RateLimitedError("slow down")
 
-    monkeypatch.setattr(bs, "guarded_history", _hist)
+    monkeypatch.setattr(bs, "guarded_total_return_history", _hist)
     monkeypatch.setattr(bs, "_sleep", lambda s: None)
     series, no_data, unavailable = bs._fetch(["SPY"], classify=True)
     assert series == {}
@@ -337,9 +337,9 @@ def test_a_retry_that_succeeds_returns_the_series(monkeypatch):
         state["n"] += 1
         if state["n"] < 2:
             raise RateLimitedError("slow down")
-        return [("2026-01-01", 1.0), ("2026-01-02", 1.1), ("2026-01-03", 1.2)]
+        return [("2026-01-01", 1.0), ("2026-01-02", 1.1), ("2026-01-03", 1.2)], "total_return"
 
-    monkeypatch.setattr(bs, "guarded_history", _hist)
+    monkeypatch.setattr(bs, "guarded_total_return_history", _hist)
     monkeypatch.setattr(bs, "_sleep", lambda s: None)
     series, no_data, unavailable = bs._fetch(["SPY"], classify=True)
     assert "SPY" in series and no_data == [] and unavailable == []
@@ -354,7 +354,7 @@ def test_a_genuinely_empty_ticker_is_not_retried(monkeypatch):
         calls["n"] += 1
         raise ValueError("no such symbol")
 
-    monkeypatch.setattr(bs, "guarded_history", _hist)
+    monkeypatch.setattr(bs, "guarded_total_return_history", _hist)
     monkeypatch.setattr(bs, "_sleep", lambda s: None)
     series, no_data, unavailable = bs._fetch(["ZZZZ"], classify=True)
     assert no_data == ["ZZZZ"] and unavailable == []
@@ -371,7 +371,7 @@ def test_the_legacy_two_tuple_contract_is_unchanged(monkeypatch):
             raise RateLimitedError("slow down")
         raise ValueError("nothing")
 
-    monkeypatch.setattr(bs, "guarded_history", _hist)
+    monkeypatch.setattr(bs, "guarded_total_return_history", _hist)
     monkeypatch.setattr(bs, "_sleep", lambda s: None)
     out = bs._fetch(["SPY", "ZZZZ"])
     assert len(out) == 2

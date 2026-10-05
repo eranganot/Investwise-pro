@@ -40,7 +40,7 @@ def test_off_where_the_scheduler_is_off():
 def test_a_kick_measures_and_stores_and_is_not_repeated(monkeypatch):
     from app.services import backtest_service
     monkeypatch.setattr(backtest_service, "_fetch",
-                        lambda tks, classify=False: ({t: series(t, up(700))[t] for t in tks}, []))
+                        lambda tks, classify=False, basis=None: ({t: series(t, up(700))[t] for t in tks}, []))
     assert hr.kick_background(["rvod"], force=True) == ["RVOD"]
     hr.kick_background.last_thread.join(timeout=60)
     got = _read("RVOD")
@@ -53,7 +53,7 @@ def test_a_kick_measures_and_stores_and_is_not_repeated(monkeypatch):
 def test_a_failed_fetch_leaves_nothing_in_flight(monkeypatch):
     from app.services import backtest_service
 
-    def boom(tks, classify=False):
+    def boom(tks, classify=False, basis=None):
         raise RuntimeError("rate limited")
     monkeypatch.setattr(backtest_service, "_fetch", boom)
     assert hr.kick_background(["RVBAD"], force=True) == ["RVBAD"]

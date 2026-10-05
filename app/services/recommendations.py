@@ -3792,7 +3792,9 @@ def _holding_review_recs(rows, snap, closes_by_ticker: dict, measured: dict,
                   f"1 month {_pc(m['ret_1m_pct'])}. Long term: 50-day {m['sma50']:,.2f} vs 200-day "
                   f"{m['sma200'] if m['sma200'] is not None else 'n/a'}, 6 months {_pc(m['ret_6m_pct'])}, "
                   f"12 months {_pc(m['ret_12m_pct'])}, {_pc(m['drawdown_52w_pct'])} from its 52-week high.")
-        bt_line = (f"On {tk}'s own history ({j.get('start')} to {j.get('end')}), selling when "
+        hist_words = ("price history, dividends not included" if (meas or {}).get("return_basis") == "price_only"
+                      else "history with dividends")
+        bt_line = (f"On {tk}'s own {hist_words} ({j.get('start')} to {j.get('end')}), selling when "
                    f"{s['words']} returned {j.get('rule_cagr_pct')}%/yr after costs and 25% CGT "
                    f"vs {j.get('hold_cagr_pct')}%/yr holding; worst drop {j.get('rule_max_drawdown_pct')}% "
                    f"vs {j.get('hold_max_drawdown_pct')}%. (The first 200 days count as cash for the "

@@ -147,7 +147,7 @@ def test_the_engine_version_moved_with_the_meaning_of_a_row():
     row records which run produced it."""
     from app.services import backtest_service as bs
 
-    assert bs.ENGINE_VERSION == "a5"
+    assert bs.ENGINE_VERSION == "a6"  # PR 101: total return
     import inspect
     src = inspect.getsource(bs.measure)
     assert "regime_gate_applied" in src
@@ -172,7 +172,7 @@ def test_an_opted_in_strategy_that_could_not_be_gated_says_so(monkeypatch):
                     "observations": 2513, "start": "a", "end": "b"}
 
         monkeypatch.setattr(bs.bt, "run", _run)
-        monkeypatch.setattr(bs, "_fetch", lambda t: ({"A": [("d", 1.0)] * 5}, []))
+        monkeypatch.setattr(bs, "_fetch", lambda t, basis=None: ({"A": [("d", 1.0)] * 5}, []))
         monkeypatch.setattr(bs.bt, "tickers_needed", lambda s, **k: ["A"])
         monkeypatch.setattr(bs.bt, "out_of_sample", lambda *a, **k: {})
         out = bs.measure({"id": "x1", "overlay": {"kind": "buy_hold"}})

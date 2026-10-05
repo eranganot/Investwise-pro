@@ -185,7 +185,7 @@ def test_every_basket_is_measured_on_its_own_tickers_not_the_shared_feed(monkeyp
 
     seen: list[set] = []
 
-    def _fake_fetch(tickers, classify=False):
+    def _fake_fetch(tickers, classify=False, basis=None):
         series = {tk: [("2020-01-0%d" % (i + 1), 100.0 + i) for i in range(9)]
                   for tk in tickers}
         return (series, [], []) if classify else (series, [])
@@ -216,7 +216,7 @@ def test_a_dead_ticker_in_one_basket_does_not_kill_the_others(monkeypatch):
     """Thirteen good cores must not be lost to one missing symbol."""
     from app.services import backtest_service as B
 
-    def _fake_fetch(tickers, classify=False):
+    def _fake_fetch(tickers, classify=False, basis=None):
         series = {tk: [("2020-01-0%d" % (i + 1), 100.0 + i) for i in range(9)]
                   for tk in tickers if tk != "DEAD"}
         return (series, ["DEAD"], []) if classify else (series, ["DEAD"])
@@ -242,7 +242,7 @@ def test_a_rate_limited_ticker_is_not_reported_as_a_dead_one(monkeypatch):
     """
     from app.services import backtest_service as B
 
-    def _fake_fetch(tickers, classify=False):
+    def _fake_fetch(tickers, classify=False, basis=None):
         series = {tk: [("2020-01-0%d" % (i + 1), 100.0 + i) for i in range(9)]
                   for tk in tickers if tk != "SLOW"}
         return (series, [], ["SLOW"]) if classify else (series, ["SLOW"])
@@ -258,7 +258,7 @@ def test_a_measured_core_records_that_it_has_no_fold_to_test(monkeypatch):
     """An empty `robustness` reads as a failed measurement. This is not one."""
     from app.services import backtest_service as B
 
-    def _fake_fetch(tickers, classify=False):
+    def _fake_fetch(tickers, classify=False, basis=None):
         series = {tk: [("2020-01-0%d" % (i + 1), 100.0 + i) for i in range(9)]
                   for tk in tickers}
         return (series, [], []) if classify else (series, [])

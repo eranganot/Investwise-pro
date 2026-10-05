@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import get_settings
 from app.engines import strategy_backtest as bt
 from app.models.tables import StrategyBacktest
-from app.providers.registry import guarded_history, market_provider
+from app.providers.registry import PRICE_ONLY, guarded_total_return_history, market_provider
 from app.providers.resilience import CircuitOpenError, RateLimitedError
 from app.services import strategy_catalog
 
@@ -65,7 +65,12 @@ logger = logging.getLogger(__name__)
 #             gated CAGR sitting in the same field as an ungated one, with
 #             nothing to tell them apart, is worse than not having the gate.
 #             The bump invalidates every row; the nightly job recomputes them.
-ENGINE_VERSION = "a5"
+#   a5 -> a6: PR 101. History is dividend-adjusted (total return), not plain
+#             closes, so every CAGR moves up by the dividend yield and a bond
+#             fund no longer measures as losing money. `return_basis` on every
+#             result says which it was; a ticker with no adjusted series is
+#             measured on plain closes and labelled `price_only`.
+ENGINE_VERSION = "a6"
 
 HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularity
 STALE_AFTER_DAYS = 7
@@ -86,7 +91,7 @@ _sleep = time.sleep
 
 
 def _fetch(tickers: list[str],
-           classify: bool = False) -> tuple[dict, list[str]] | tuple[dict, list[str], list[str]]:
+           classify: bool = False, basis: dict | None = None) -> tuple[dict, list[str]] | tuple[dict, list[str], list[str]]:
     """Price history per ticker.
 
     Returns `(series, no_data)` by default, and `(series, no_data, unavailable)`
@@ -115,7 +120,9 @@ def _fetch(tickers: list[str],
         reason = None
         for attempt in range(FETCH_RETRIES):
             try:
-                rows = guarded_history(tk, HISTORY_DAYS)
+                rows, tk_basis = guarded_total_return_history(tk, HISTORY_DAYS)
+                if basis is not None:
+                    basis[tk] = tk_basis
                 reason = None
                 break
             except (RateLimitedError, CircuitOpenError) as exc:
@@ -147,6 +154,15 @@ def _fetch(tickers: list[str],
     return series, sorted(no_data + unavailable)
 
 
+def return_basis_of(basis: dict) -> dict:
+    """`return_basis` for a measurement: total return only if every ticker in it
+    was dividend-adjusted. One price-only ticker makes the whole run price-only,
+    and the run names it, so a card can say which figure is missing dividends."""
+    price_only = sorted(tk for tk, b in basis.items() if b == PRICE_ONLY)
+    return {"return_basis": PRICE_ONLY if price_only else "total_return",
+            "price_only_tickers": price_only}
+
+
 def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     """Run one strategy end to end: fetch, backtest, and probe its fragility."""
     bench_tk = benchmark_ticker or get_settings().benchmark_ticker
@@ -156,7 +172,8 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     # tickers, so including them does not move the ungated window -- a test
     # asserts the two runs agree on `observations` rather than trusting that.)
     needed = bt.tickers_needed(spec, regime_gate=True)
-    series, missing = _fetch(sorted(set(needed) | {bench_tk}))
+    basis: dict = {}
+    series, missing = _fetch(sorted(set(needed) | {bench_tk}), basis=basis)
     if missing:
         return {"ok": False, "reason": bt.MISSING_TICKER,
                 "detail": f"no price history for {', '.join(missing)}"}
@@ -168,6 +185,7 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     # later change to settings.benchmark_ticker marks it stale instead of
     # silently relabelling a SPY-measured excess as excess-over-QQQ.
     result["benchmark_ticker"] = bench_tk
+    result.update(return_basis_of(basis))
 
     # Fragility travels with the headline number rather than being computed once
     # and forgotten: a strategy tuned until it looked good shows up here.
@@ -295,7 +313,8 @@ def measure_cores(candidates: list[dict] | None = None) -> dict[str, dict]:
     wanted = {bench_tk}
     for c in cands:
         wanted |= {t.upper() for t in (c.get("weights") or {})}
-    series, no_data, unavailable = _fetch(sorted(wanted), classify=True)
+    basis: dict = {}
+    series, no_data, unavailable = _fetch(sorted(wanted), classify=True, basis=basis)
     # The two kinds of absence stay apart to the end: "BND has no price history"
     # is a fact about BND, "BND was rate-limited" is a fact about this run, and
     # a reader who cannot tell them apart goes off to check for a delisting.
@@ -335,6 +354,7 @@ def measure_cores(candidates: list[dict] | None = None) -> dict[str, dict]:
             # records it: a later settings change must mark the row stale rather
             # than relabel a SPY-measured excess as excess-over-QQQ.
             res["benchmark_ticker"] = bench_tk
+            res.update(return_basis_of({tk: basis.get(tk) for tk in need | {bench_tk}}))
             # A BUY-AND-HOLD BASKET HAS NOTHING TO FIT, SO IT GETS NO
             # OUT-OF-SAMPLE FOLD. `measure()` stores one for a rule because a
             # rule has parameters that can be tuned until the past looks good.
@@ -395,7 +415,8 @@ async def store(session: AsyncSession, strategy_id: str, result: dict) -> Strate
         row.last_error = f"{row.reason}: {row.detail}"[:255]
         row.last_error_at = datetime.now(timezone.utc)
     if ok:
-        row.data_source = market_provider().name
+        row.data_source = (f"{market_provider().name}:"
+                           f"{result.get('return_basis') or 'price_only'}")[:32]
         row.period_start = str(result.get("start") or "")[:10]
         row.period_end = str(result.get("end") or "")[:10]
         row.benchmark_ticker = str(result.get("benchmark_ticker") or "")[:16]

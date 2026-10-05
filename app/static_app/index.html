@@ -1109,7 +1109,7 @@ function reviewTable(rows){
     if(r.sleeve) return esc(r.sleeve);
     if(!r.measurement_usable) return esc(r.measurement_note||"not measured");
     const one=(k,lbl)=>{const j=m[k]||{};return j.measured?`${lbl}: ${j.rule_cagr_pct}%/yr vs hold ${j.hold_cagr_pct}% \u2014 ${j.edge?"beat holding":"did not beat holding"}`:`${lbl}: not measured`;};
-    return one("short","20/50 sell")+"<br>"+one("long","50/200 exit");};
+    return one("short","20/50 sell")+"<br>"+one("long","50/200 exit")+(m.return_basis==="price_only"?"<br>price only: dividends not included":"");};
   return `<details class="card" style="margin-top:12px"><summary class="nm" style="cursor:pointer">Holding review \u00b7 ${rows.length} holdings</summary>
     <div class="mk" style="margin:6px 0 8px">Trend on two horizons per holding, and whether selling on it has beaten holding on that holding's own history (after costs and 25% CGT). Sleeve holdings follow their own strategy rule. Not financial advice.</div>
     ${rows.map(r=>{const m=r.metrics||{};return `<div style="padding:8px 0;border-top:1px solid var(--line)">

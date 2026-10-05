@@ -142,6 +142,43 @@ def guarded_history(ticker: str, days: int = 252):
     return series[-days:]
 
 
+# What `guarded_total_return_history` says about the series it returned.
+TOTAL_RETURN = "total_return"
+PRICE_ONLY = "price_only"
+
+
+def guarded_total_return_history(ticker: str, days: int = 252) -> tuple[list, str]:
+    """Dividend-adjusted daily closes for a backtest, and which basis they are.
+
+    PR 101: every backtest read plain closes, so a fund's dividends were
+    invisible and a bond fund measured as losing money (BND -1.76%/yr over ten
+    years; +1.25% with dividends), which made "sell all of BND" beat holding.
+    Charts, stops and trend rules keep `guarded_history`: they trigger on the
+    price you actually trade at.
+
+    When the provider has no adjusted series (FMP, the builtin provider, or a
+    Yahoo answer without `adjclose`) this falls back to plain closes and returns
+    `PRICE_ONLY`, so the measurement can carry the label. Rate limits and an
+    open circuit still raise: those are about us, not the ticker.
+    """
+    tier = _tiers()["history"]
+    want = _history_bucket(days)
+    series = None
+    for b in _HISTORY_BUCKETS:
+        if b < want:
+            continue
+        cached = tier.cached(f"histtr:{ticker}:{b}")
+        if cached is not None:
+            series = cached
+            break
+    if series is None:
+        series = tier.call(f"histtr:{ticker}:{want}",
+                           lambda: market_provider().get_total_return_history(ticker, want))
+    if series and len(series) >= 2:
+        return series[-days:], TOTAL_RETURN
+    return guarded_history(ticker, days), PRICE_ONLY
+
+
 def guarded_intraday(ticker: str, span: str = "1d"):
     """Intraday bars through the MARKET tier: quote cadence, no stale stock.
     The history tier keeps bars for hours, which is right for daily closes and

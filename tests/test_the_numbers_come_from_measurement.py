@@ -37,6 +37,7 @@ from fastapi.testclient import TestClient               # noqa: E402
 import app.main as m                                    # noqa: E402
 from app.services import measured_assumptions as ma     # noqa: E402
 from app.services.portfolio_analytics import compute_snapshot  # noqa: E402
+from app.services.backtest_service import ENGINE_VERSION  # noqa: E402
 
 
 def _row(**kw):
@@ -312,7 +313,7 @@ async def test_a_measured_sleeve_prices_the_book_and_the_numbers_actually_move(o
         user = (await s.execute(select(User))).scalars().first()
         await sv.add_or_resize(s, user, "btm_swing_dip", 60)
         s.add(StrategyBacktest(
-            strategy_id="btm_swing_dip", ok=True, engine_version="a5",
+            strategy_id="btm_swing_dip", ok=True, engine_version=ENGINE_VERSION,
             observations=2513, period_start="2015-01-01", period_end="2025-01-01",
             metrics={"cagr_pct": 28.0, "volatility_pct": 31.0, "max_drawdown_pct": -43.8},
             robustness={"out_of_sample": {"out_of_sample": {"cagr_pct": 16.5}}}))

@@ -132,12 +132,16 @@ def judge(rule: dict, hold: dict) -> dict:
                     "earned more than holding but with a deeper drawdown")}
 
 
-def measure_ticker(ticker: str, series: dict) -> dict:
-    """Both signals for one ticker, from already-fetched history (pure)."""
+def measure_ticker(ticker: str, series: dict, basis: dict | None = None) -> dict:
+    """Both signals for one ticker, from already-fetched history (pure).
+
+    `basis` is what `_fetch` reported per ticker; the measurement carries it so
+    a price-only figure (no dividend-adjusted series) is labelled as one."""
     from app.engines import strategy_backtest as bt
-    from app.services.backtest_service import ENGINE_VERSION
+    from app.services.backtest_service import ENGINE_VERSION, return_basis_of
     hold = bt.run(series, {"id": f"review_hold_{ticker}", "weights": {ticker: 1.0}})
     out = {"ticker": ticker, "engine_version": ENGINE_VERSION,
+           **return_basis_of(basis if basis is not None else {ticker: "price_only"}),
            "measured_at": datetime.now(timezone.utc).isoformat(),
            "assumptions": [f"{s['id']}@{s['version']}" for s in SIGNALS.values()]}
     for name in SIGNALS:
@@ -204,11 +208,12 @@ async def measure_for(session, tickers) -> list[dict]:
     from app.services.backtest_service import _fetch
     done = []
     for tk in sorted({t.upper() for t in tickers}):
-        series, missing = await offload(_fetch, [tk])
+        basis: dict = {}
+        series, missing = await offload(_fetch, [tk], basis=basis)
         if tk not in series:
             done.append({"ticker": tk, "ok": False, "why": f"no history ({', '.join(missing) or tk})"})
             continue
-        res = await offload(measure_ticker, tk, series)
+        res = await offload(measure_ticker, tk, series, basis)
         await save(session, res)
         done.append({"ticker": tk, "ok": True,
                      **{n: res[n].get("edge") for n in SIGNALS}})

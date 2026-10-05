@@ -83,7 +83,17 @@ class YahooMarketDataProvider(MarketDataProvider):
                      price=round(float(price), 4), currency=str(meta.get("currency") or "USD"),
                      as_of=as_of, as_of_source=("market" if ts else "request"))
 
-    def get_history(self, ticker: str, days: int = 252) -> list[float]:
+    def get_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
+        return self._daily(ticker, days, adjusted=False)
+
+    def get_total_return_history(self, ticker: str, days: int = 252) -> list[tuple[str, float]]:
+        """Dividend-adjusted closes (`indicators.adjclose`), the series Yahoo
+        uses for total return. Same request as `get_history`. Empty -- not an
+        error -- when Yahoo omits the series, so the caller can fall back to
+        plain closes and say so rather than open the circuit."""
+        return self._daily(ticker, days, adjusted=True)
+
+    def _daily(self, ticker: str, days: int, *, adjusted: bool) -> list[tuple[str, float]]:
         sym = self.to_symbol(ticker)
         # The ladder used to stop at "5y", so any caller asking for a decade got
         # five years and no warning -- fine for a 200-day trend, useless for
@@ -103,7 +113,13 @@ class YahooMarketDataProvider(MarketDataProvider):
         if not result:
             raise ValueError(f"no history for '{ticker}'")
         ts = result[0].get("timestamp") or []
-        closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+        indicators = result[0].get("indicators") or {}
+        if adjusted:
+            closes = ((indicators.get("adjclose") or [{}])[0].get("adjclose") or [])
+            if not any(c is not None for c in closes):
+                return []
+        else:
+            closes = ((indicators.get("quote") or [{}])[0].get("close") or [])
         out: list[tuple[str, float]] = []
         for t, c in zip(ts, closes):
             if c is None:

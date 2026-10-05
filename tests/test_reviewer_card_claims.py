@@ -163,7 +163,7 @@ def test_the_nightly_job_runs_and_stores(monkeypatch):
             await eng.dispose()
     asyncio.run(seed())
     monkeypatch.setattr(backtest_service, "_fetch",
-                        lambda tks, classify=False: ({t: series(t, up(700))[t] for t in tks}, []))
+                        lambda tks, classify=False, basis=None: ({t: series(t, up(700))[t] for t in tks}, []))
     done = hr.run_holding_review_blocking()
     assert any(d["ticker"] == "RVJOB" and d["ok"] for d in done)
 

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 98, one return basis — the Plan screen, projection and risk report quote the goal model). Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 101, backtest history includes dividends — first PR of `Execution plan v2`; shipping order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,35 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 101 — backtest history includes dividends (total return)
+
+**Root cause.** Every backtest (holdings review, sleeves' measured returns, core baskets, the goal model's inputs,
+both solvers, walk-forward) fetched ten years through `backtest_service._fetch` → `guarded_history`, which reads
+Yahoo's `indicators.quote.close`: the plain close, dividends left out. A fund that pays out its return looks like
+it slowly loses value. BND measured **−1.76%/yr** held over 2016-10 → 2026-10, so the 20/50 sell signal (0.05%/yr)
+"beat holding" and Today showed **"Sell all of BND"**. Silent because nothing compared a measured CAGR with a
+total-return figure; every number moved together.
+
+**What.**
+- `get_total_return_history` on the provider (Yahoo: `indicators.adjclose`, same request) and
+  `registry.guarded_total_return_history` → `(rows, basis)`, its own cache key (`histtr:`). No adjusted series (FMP,
+  builtin, or Yahoo omits it) → plain closes, basis **`price_only`** (Eran: fall back, labelled).
+- `_fetch(basis=)` records each ticker's basis; strategy and core rows store `return_basis` /
+  `price_only_tickers` and `data_source = <provider>:<basis>`; holdings-review measurements carry `return_basis`.
+  A price-only figure says "price history, dividends not included" on the card and in the Holding review list.
+- `ENGINE_VERSION` a5 → **a6**: every stored measurement is stale until re-measured (nightly, or the refresh
+  endpoints), and no card acts on a stale one.
+- **Unchanged (Eran):** live prices, charts, the performance/benchmark chart (price-only, relabelled in PR 100),
+  stops / take-profits / 200-day trend rules, screener, signal service — they keep `guarded_history`. `sw.js` → `iw-v39`.
+
+**Measured on live Yahoo** (this code, 2016-10-06 → 2026-10-05): BND hold **+1.23%/yr**, 50/200 1.05%, 20/50 0.97%
+→ no edge, the sell card goes. SPY hold 15.54%. USO short signal still beats holding (8.78% vs 4.75%).
+
+**Smoke.** `scripts/smoke/smoke-pr101-total-return.ps1 -Sha <sha>` (re-measures the holdings review and one
+strategy; executes nothing). **Tests.** `tests/test_backtests_include_dividends.py` (6); fake `_fetch`s take `basis`.
 
 ---
 
