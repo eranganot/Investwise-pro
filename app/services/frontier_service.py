@@ -1512,6 +1512,17 @@ def _goal_verdict_current(plan, live: dict, v: dict, age: float | None) -> bool:
     return True
 
 
+def stale_views(v: dict) -> list[str]:
+    """Sleeves whose measured view the solve could not use because it was taken
+    by an older backtest engine. PR 99.1: after PR 101's a5 -> a6 bump every
+    sleeve fell back to its prior until re-measured, the goal model read 0.19%/yr
+    for a book it put at 17.9% the day before, and the goal cards offered a
+    -7%/yr target from it. A verdict built on out-of-date measurements speaks
+    for nothing; the cards and screens stand down until tonight's re-measure."""
+    return [x.get("asset") for x in (v.get("views") or [])
+            if not x.get("used") and x.get("reason") == fi.VIEW_STALE]
+
+
 async def book_expectation(session, user) -> dict | None:
     """PR 98: the ONE expected return and volatility every screen quotes.
 
@@ -1529,7 +1540,8 @@ async def book_expectation(session, user) -> dict | None:
     if row is None:
         return None
     v = row.detail or {}
-    if v.get("mode") != "goal" or v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET):
+    if v.get("mode") != "goal" or v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET) \
+            or stale_views(v):
         return None
     live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
     age = _age_hours(row)
@@ -1576,6 +1588,8 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     plan = await get_plan(session, user)
     live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
     if v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET) or not _goal_verdict_current(plan, live, v, age):
+        return []
+    if stale_views(v):
         return []
     g, b, a, lv = v["goal"], v["before"], v["after"], v.get("levers") or {}
     star = round(v.get("p_star", GOAL_CONFIDENCE) * 100)
@@ -1750,7 +1764,9 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         alt = []
         if lv.get("extra_monthly_ils"):
             alt.append(f"add {lv['extra_monthly_ils']:,}/month")
-        if lv.get("roi_at_confidence_pct") is not None:
+        # PR 99.1: a target at or below zero is not a goal to offer.
+        reachable_roi = lv.get("roi_at_confidence_pct") is not None and lv["roi_at_confidence_pct"] > 0
+        if reachable_roi:
             alt.append(f"aim for {lv['roi_at_confidence_pct']:g}%/yr")
         if lv.get("deadline_extra_years"):
             alt.append(f"give it {lv['deadline_extra_years']:g} more years")
@@ -1786,7 +1802,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                           "add_ils": float(lv["extra_monthly_ils"])},
                 "meta": {"lever": "deposit", "goal": g, "levers": lv}})
         roi_now = float(g.get("roi_pct") or 0)
-        if lv.get("roi_at_confidence_pct") is not None and lv["roi_at_confidence_pct"] < roi_now:
+        if reachable_roi and lv["roi_at_confidence_pct"] < roi_now:
             cards.append({
                 "id": f"rec_goal_target_{row.id}", "dimension": "goal", "severity": "MEDIUM",
                 "title": f"Set a target this book can reach: {lv['roi_at_confidence_pct']:g}%/yr ({star}% chance)",

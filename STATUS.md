@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-06 by Claude (PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,35 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 99.1 — a stale measurement silences the goal
+
+**Found on production right after PR 99 (`ccb33aa`).** PR 101's a5 → a6 bump made every sleeve backtest stale
+until 03:30; the goal solve dropped both sleeve views (`ENGINE_VERSION_MOVED`), fell back to priors, read the book
+at **0.19%/yr** (17.9% the day before) and the goal cards offered **"Set a target this book can reach: −7%/yr"**.
+PR 101 promised "no card acts on an out-of-date number"; the goal cards were the one place that did not check.
+Fixed on prod at once by `POST /strategies/backtests/refresh` (22 rows re-measured in 5 s, a measurement only).
+
+**What.**
+- `frontier_service.stale_views(v)`: a verdict with a sleeve view unused for `ENGINE_VERSION_MOVED` speaks for
+  nothing — `_goal_cards` returns none and `book_expectation` returns None (screens fall back to the measured
+  blend, labelled). `goal_story_active` is unchanged, so the older behind-goal card stays down: the goal goes quiet.
+- A target lever at or below 0%/yr is never offered (card or "aim for" text).
+- `backtest_service.measure`: an opted-in regime-gated headline is a fresh dict and lost `return_basis` **and**
+  `benchmark_ticker` — `btm_vol_target_tqqq` was stored `yahoo:price_only` on dividend-adjusted data. Both carried.
+
+**Tests.** `tests/test_a_stale_measurement_silences_the_goal.py` (4).
+
+**PR 99 on production (`ccb33aa`, after the re-measure; smoke checks run from Python).** Headline **0.4% with your
+rules (29.7% without)** — the same figure on the goal cards and the projection caption (its own no-rules run:
+38.3%). Model 39.1%, history 34.0%. Two goal cards: "Retune your protection: odds 0.4% → 16.8%, halving 0% → 0.4%"
+and "Set a target this book can reach: 6.1%/yr" (sized after the retune: rules-path amount 27,585 < model 32,774 /
+history 32,613; v1's 9% was the no-rules figure). No deposit or deadline card; the money-and-time line shows (asks
+30%/yr, book ~18.5%). Re-derived: v1's "+680/month" was 89.9% with the goal frozen and **32.2%** on the goal after
+Accept (171,255). Holdings unchanged. CI `37374139627` green on all three jobs, `test-postgres` included (covers
+PR 101 too).
 
 ---
 

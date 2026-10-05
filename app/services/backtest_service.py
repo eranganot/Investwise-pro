@@ -234,6 +234,12 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
         # silently would put an ungated CAGR under a row that claims to be
         # gated, which is the confusion `regime_gate_applied` exists to prevent.
         if enabled and gated.get("ok"):
+            # The gated run is a fresh dict: carry what this measurement IS --
+            # its benchmark and its return basis -- or the row is stored with
+            # neither (PR 99.1: btm_vol_target_tqqq read "price_only" on
+            # dividend-adjusted data).
+            gated["benchmark_ticker"] = bench_tk
+            gated.update(return_basis_of(basis))
             gated["robustness"] = robustness
             gated["regime_gate_applied"] = True
             robustness["regime"]["headline_is_gated"] = True
