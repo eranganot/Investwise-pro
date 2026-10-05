@@ -1895,11 +1895,21 @@ async def build_recommendations(session: AsyncSession, user: User,
         logger.warning("goal projection for the behind card failed", exc_info=True)
         projected_median, _levers = None, None
     _er = _pstats.get("expected_roi")
-    recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing,
-                              goal=_goal, expected_roi_pct=(_er if _er is not None else None),
-                              return_basis=_pstats.get("assumption_basis"),
-                              measured_pct=_pstats.get("measured_pct_of_book"),
-                              volatility_pct=_pstats.get("volatility"), levers=_levers)
+    # PR 92: while a fresh goal verdict speaks for the goal, this card stands
+    # down -- it projects at the app-wide measured return, the goal cards at
+    # the user's own return confidence, and two goal stories on two bases
+    # contradict each other on one screen.
+    try:
+        from app.services.frontier_service import goal_story_active
+        _goal_owned = await goal_story_active(session, user)
+    except Exception:  # noqa: BLE001 -- the older card is the safe fallback
+        _goal_owned = False
+    if not _goal_owned:
+        recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing,
+                                  goal=_goal, expected_roi_pct=(_er if _er is not None else None),
+                                  return_basis=_pstats.get("assumption_basis"),
+                                  measured_pct=_pstats.get("measured_pct_of_book"),
+                                  volatility_pct=_pstats.get("volatility"), levers=_levers)
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,

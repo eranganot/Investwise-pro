@@ -57,5 +57,7 @@ Renumbered:
 |---|---|
 | **90** | migration 0026: `plans.kelly_fraction`, `plans.return_confidence` (add-only, ships alone) |
 | **91** ✅ | the actionable resize card + both dials + target comparison + materiality gate (the work drafted as PR 90) |
-| **92** | whole-book mean-CVaR validation, gating the cards |
-| **93** | core-tilt card with `plan.target_source = "frontier"` |
+| **92** ✅ | **the goal is the objective** (Eran, 2026-10-05): 70% chance of the ROI goal, Kelly as a ceiling (1.0x), sleeves may grow, actionable lever cards (deposit / target / deadline), one goal story |
+| **93** | whole-book mean-CVaR validation, gating the cards |
+| **94** | core-tilt card with `plan.target_source = "frontier"`, chosen for the goal |
+| **95** | one return basis app-wide: projection + expected return follow `return_confidence` |

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-05 by Claude (PR 91, the frontier card — Accept executes a resampled sleeve resize; user dials; target-aware). Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 by Claude (PR 92, the goal is the objective — 70% chance, Kelly as a ceiling, actionable lever cards). Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,56 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 92 — the goal is the objective; the frontier and Kelly are how
+
+**Why.** Eran, 2026-10-05: *"the end goal is to meet the ROI goals the user set … the kelly parameter and the
+efficient frontier are tools and not the objectives."* Measured first, on production inputs: PR 91's ½-Kelly
+resize **lowers** the goal's odds under every estimate (shrunk 23% → 5%, blended 46% → 41%). And "the lowest risk
+whose *median* reaches the goal" would trim a 71% book to a coin flip. The goal needs 26.0%/yr, not 30%: the book
+is ahead of its contribution schedule (₪24,611 → ₪82,692 by 2031-12-31).
+
+**Decisions (Eran, 2026-10-05).** *Meeting the goal = at least a 70% chance.* *The goal picks the risk, capped at
+full Kelly; the Kelly dial is an optional extra ceiling.* This **supersedes** PR 91's "0.5 is the default" for plans
+that have an ROI target. Without a target, PR 91's risk mode (dial default by objective) still applies.
+
+**What.**
+- `engines/frontier.py`: `required_log_growth`, `goal_probability` (lognormal on the book, deposits at median
+  FV), `median_wealth`, `fv_contributions`.
+- `frontier_service.goal_solve`: on each of 60 bootstrap draws, walk a 16-point frontier from the cap (1.0× or
+  the user's lower dial) to the safest mix. Take the **safest mix with ≥ 70%**, else the **best odds**. Sleeves may
+  **shrink or grow** (to the plan's concentration cap, 40% on High); the core is held to its basket.
+  Outcomes: ON_TRACK / LESS_RISK / REBALANCE / IMPROVE / OUT_OF_REACH. Material = +5 pts of odds, or −3 vol pts
+  while still ≥ 70%.
+- **Lever cards** when the odds stay under 70%, each with the existing actionable kinds:
+  - *add ₪X/month* → `set_standing_order`, solved to reach exactly 70%;
+  - *set a target this book can reach* → `set_plan target_roi_pct`, the amount reached at 70% converted back
+    through `goal_service.compound`;
+  - *move the deadline* → `set_plan target_date`, only when ≤ 15 years.
+- **Mix card** (`frontier_resize`, extended): shrinks as before. A **growing** sleeve is funded by
+  `strategy_service.load_basket(mode="fund")`, the path that only sells what the plan holds too much of. The
+  shrink legs are recorded by the handler and `ledger_recorded` set, so nothing is double-counted.
+- **One goal story:** while a fresh goal verdict is current (same ROI, deadline, objective, sleeves, dials), the
+  older `_behind_goal_recs` card stands down. It projects at the app-wide measured return; the goal cards use the
+  user's return confidence.
+- `GET /plan.frontier` gains `mode` (goal|risk) and `goal_confidence`. The Plan tab note explains the ceiling.
+  `sw.js` → `iw-v37`.
+
+**On the live book, real data (2026-10-05), at 70% and a 1.0× cap:**
+- **Measured:** ON_TRACK (71%), no cards.
+- **Blended:** OUT_OF_REACH (best 47%), no trade helps materially. Levers: +₪320/month, or +3.5 years, or a goal
+  of ₪45,834.
+- **Shrunk** (his setting): OUT_OF_REACH (today 23%; the stable trade raises growth but *lowers* odds to 19%,
+  so no mix card). Levers: **+₪720/month**; the target lever (the amount reachable at 70% is about today's NAV); the
+  deadline lever is +18.75y, past the 15y limit, so no card.
+
+**Smoke.** `scripts/smoke/smoke-pr92-goal-seeking.ps1 -Sha <sha>`. It re-derives today's goal probability and the
+deposit lever from production's inputs, and does not accept.
+
+**Tests.** `tests/test_frontier_goal.py` (16), including accepting a deposit lever, a grow card end-to-end, and
+the older goal card standing down.
 
 ---
 

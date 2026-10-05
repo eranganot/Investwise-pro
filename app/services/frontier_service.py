@@ -310,6 +310,244 @@ def resize_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict
             "excluded": prep["excluded"], "degraded": prep["degraded"] + est0["degraded"]}
 
 
+# --------------------------------------------------------------------------
+# PR 92: the goal decides; the frontier and Kelly are how
+# --------------------------------------------------------------------------
+#
+# Eran, 2026-10-05: "the end goal is to meet the ROI goals the user set ... the
+# kelly parameter and the efficient frontier are tools and not the
+# objectives." His two decisions the same day:
+#   * meeting the goal = at least a 70% chance of reaching it  (GOAL_CONFIDENCE)
+#   * the goal picks the risk, hard-capped at FULL Kelly; his Kelly dial is an
+#     optional extra limit, never the aim                    (goal_ceiling)
+#
+# Measured on the live book before writing this: the 1/2-Kelly resize PR 91
+# proposes LOWERS the goal's odds under every estimate (shrunk 23% -> 5%,
+# blended 46% -> 41%, measured 71% -> 71%), and "the lowest risk whose MEDIAN
+# reaches the goal" trims a 71% book to a coin flip. Both are why the rule
+# below is about a probability, chosen by the user, inside a growth-safe cap.
+
+GOAL_CONFIDENCE = 0.70
+GOAL_ON_TRACK = "ON_TRACK"            # >= 70% today, and no materially safer mix keeps it there
+GOAL_LESS_RISK = "LESS_RISK"          # >= 70% today; a materially less volatile mix keeps >= 70%
+GOAL_REBALANCE = "REBALANCE"          # < 70% today; a mix within the cap reaches 70%
+GOAL_IMPROVE = "IMPROVE"              # < 70% everywhere within the cap; a mix raises the odds materially
+GOAL_OUT_OF_REACH = "OUT_OF_REACH"    # < 70% everywhere; no trade helps materially -- the levers do
+GOAL_NO_TARGET = "NO_TARGET"          # no ROI target / deadline: there is no goal to steer by
+
+# A goal card must change the goal's odds or its risk: five points of
+# probability, or three of volatility with the odds still >= GOAL_CONFIDENCE.
+MATERIAL_PROB_PTS = 5.0
+GRID_POINTS = 16
+LAMBDA_MAX = 200.0
+# Fewer draws than the risk-mode resize: each goal draw walks a 16-point
+# frontier, and on the live book 100 x 24 took 77s for the shrunk estimate.
+GOAL_DRAWS = 60
+
+
+def goal_ceiling(kelly_setting: float | None) -> float:
+    """The most of full Kelly the goal may use: the user's dial if he set one, else 1.0."""
+    if kelly_setting is None:
+        return fr.KELLY_MAX
+    return min(fr.KELLY_MAX, max(fr.KELLY_MIN, float(kelly_setting)))
+
+
+def _z(p: float) -> float:
+    """Standard normal quantile (Acklam's rational approximation; |err| < 1e-9)."""
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549671010114055e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00]
+    if p < 0.02425:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1)
+    if p > 1 - 0.02425:
+        return -_z(1 - p)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+        (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1)
+
+
+def _goal_mix(points: list, *, p_star: float):
+    """The decision rule on ONE estimate's frontier -> (index, reaches).
+
+    ``points`` run from the cap (most risk allowed) to the safest, each with
+    its goal probability. Reached: the SAFEST point still >= p_star -- risk the
+    goal does not need is cost with no benefit. Not reached: the point with the
+    best odds (ties go to the safer one).
+    """
+    reach = [i for i, p in enumerate(points) if p["p"] >= p_star]
+    if reach:
+        return max(reach), True
+    best = max(range(len(points)), key=lambda i: (round(points[i]["p"], 6), i))
+    return best, False
+
+
+def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[str, float],
+               cash_pct: float, objective: str, est_kw: dict, nav: float,
+               target: float | None, years: float | None, monthly: float = 0.0,
+               kelly_setting: float | None = None, sleeve_cap_pct: float = 40.0,
+               volatility_cap_pct: float | None = None, p_star: float = GOAL_CONFIDENCE,
+               draws: int = GOAL_DRAWS, seed: int = SEED) -> dict:
+    """Which mix best serves the user's goal. Pure.
+
+    The OBJECTIVE is the goal: `target` (the amount his ROI implies) by his
+    deadline (`years` from now), from today's `nav` plus active standing orders
+    (`monthly`), reached with probability >= `p_star`. Risk is capped at
+    `goal_ceiling(kelly_setting)` of full Kelly; the frontier between that cap
+    and the safest mix is the menu. Sleeves may shrink or GROW (to
+    `sleeve_cap_pct`, the plan's concentration cap, or today's size if larger);
+    the core is held to its basket; cash is fixed.
+    """
+    assets = prep["assets"]
+    ids = [a["id"] for a in assets] + [fi.CASH_ID]
+    sleeve_ids = [a["id"] for a in assets if a["kind"] == "sleeve" and a["id"] in sleeves_pct]
+    core_vec = core_vector(core_basket, ids)
+    if core_vec is None:
+        return {"ok": True, "mode": "goal", "outcome": NOT_MEASURABLE, "reason": "CORE_NOT_MODELLED",
+                "detail": "the core basket names an asset that could not be priced"}
+    if not target or not years or years <= 0 or nav <= 0:
+        return {"ok": True, "mode": "goal", "outcome": GOAL_NO_TARGET,
+                "detail": "no ROI target and deadline on the plan, so there is no goal to steer by"}
+    g_req = fr.required_log_growth(nav, target, years, monthly)
+
+    sleeve_idx = [ids.index(s) for s in sleeve_ids]
+    cash_idx = ids.index(fi.CASH_ID)
+    k = len(sleeve_ids)
+    now_s = np.array([sleeves_pct[s] / 100.0 for s in sleeve_ids])
+    cash = max(0.0, min(1.0, cash_pct / 100.0))
+    free_total = 1.0 - cash
+    ceiling = goal_ceiling(kelly_setting)
+    lams = list(np.geomspace(1.0 / ceiling, LAMBDA_MAX, GRID_POINTS))
+    free = np.array([True] * (k + 1) + [False])
+    fixed = np.zeros(k + 2)
+    fixed[-1] = cash
+    upper = np.append(np.maximum(now_s, sleeve_cap_pct / 100.0), [1.0, 0.0])
+
+    def book(s):
+        return np.concatenate([s, [free_total - s.sum(), cash]])
+
+    def prob(w, mu_r, cov_r, rf):
+        g = fr.growth(w, mu_r, cov_r, rf)["log_growth"]
+        vol = fr.portfolio_stats(w, mu_r, cov_r)["volatility"]
+        return fr.goal_probability(nav, target, years, g, vol, monthly)
+
+    def decide(est):
+        mu_r, cov_r = _reduce(est["mu"], est["cov"], sleeve_idx, core_vec, cash_idx)
+        pts = []
+        for lam in lams:
+            w = fr.optimize(mu_r, cov_r, risk_aversion=lam, free_total=free_total,
+                            fixed=fixed, free=free, upper=upper)
+            pts.append({"w": w, "lam": lam, "p": prob(w, mu_r, cov_r, est["risk_free"])})
+        i, ok = _goal_mix(pts, p_star=p_star)
+        return pts[i]["w"], ok, mu_r, cov_r
+
+    ils = prep["ils"]
+    est0 = fi.estimate(ils, assets, **est_kw)
+    w0, reach0, mu0, cov0 = decide(est0)
+    rf = est0["risk_free"]
+    rng = np.random.default_rng(seed)
+    samples = [decide(fi.estimate(ils[block_bootstrap(ils.shape[0], BLOCK_DAYS, rng)], assets, **est_kw))[0][:k]
+               for _ in range(draws)]
+    samples = np.array(samples) if draws else np.array([w0[:k]])
+    mean = samples.mean(axis=0)
+    lo, hi = np.percentile(samples, BAND_PCT, axis=0)
+
+    rows, proposed = [], now_s.copy()
+    for j, sid in enumerate(sleeve_ids):
+        cur = now_s[j] * 100
+        prop = _grid(mean[j] * 100)
+        outside = cur > hi[j] * 100 + 1e-9 or cur < lo[j] * 100 - 1e-9
+        act = outside and abs(cur - prop) >= MIN_MOVE_PCT
+        if act:
+            proposed[j] = prop / 100.0
+        rows.append({"id": sid, "current_pct": round(cur, 2), "proposed_pct": prop,
+                     "point_pct": round(w0[j] * 100, 2),
+                     "band_pct": [round(lo[j] * 100, 2), round(hi[j] * 100, 2)],
+                     "act": bool(act), "direction": ("grow" if prop > cur else "shrink") if act else None})
+    if proposed.sum() > free_total + 1e-9:
+        proposed *= free_total / proposed.sum()
+
+    def metrics(s):
+        w = book(s)
+        g = fr.growth(w, mu0, cov0, rf)
+        vol = fr.portfolio_stats(w, mu0, cov0)["volatility"]
+        kp = fr.kelly_position(w, mu0, cov0, rf)["fraction_of_kelly"]
+        return {"growth_cagr_pct": round(g["cagr"] * 100, 2), "log_growth": g["log_growth"],
+                "volatility": vol, "volatility_pct": round(vol * 100, 2),
+                "fraction_of_kelly": round(kp, 3) if kp is not None else None,
+                "goal_probability_pct": round(fr.goal_probability(nav, target, years, g["log_growth"], vol,
+                                                                  monthly) * 100, 1),
+                "median_at_deadline": round(fr.median_wealth(nav, g["log_growth"], years, monthly), 0)}
+    before, after = metrics(now_s), metrics(proposed)
+    acting = any(r["act"] for r in rows)
+    star = p_star * 100
+    ok_now, ok_after = before["goal_probability_pct"] >= star, after["goal_probability_pct"] >= star
+    dp = after["goal_probability_pct"] - before["goal_probability_pct"]
+    dvol = before["volatility_pct"] - after["volatility_pct"]
+    if ok_now:
+        material = acting and ok_after and dvol >= MATERIAL_VOL_DROP_PCT
+        outcome = GOAL_LESS_RISK if material else GOAL_ON_TRACK
+    elif reach0:
+        material = acting and ok_after and dp > 0
+        outcome = GOAL_REBALANCE if material else GOAL_IMPROVE if acting and dp >= MATERIAL_PROB_PTS else GOAL_OUT_OF_REACH
+        material = material or (acting and dp >= MATERIAL_PROB_PTS)
+    else:
+        material = acting and dp >= MATERIAL_PROB_PTS
+        outcome = GOAL_IMPROVE if material else GOAL_OUT_OF_REACH
+
+    # ---- levers, on the book AFTER the card (or today's, without one) ----
+    base = after if material else before
+    g_b, v_b = base["log_growth"], base["volatility"]
+    levers = {"required_cagr_pct": round(math.expm1(g_req) * 100, 2) if g_req is not None else None,
+              "on_track_cagr_pct": base["growth_cagr_pct"]}
+    if base["goal_probability_pct"] < star:
+        def p_with(m=monthly, y=years):
+            return fr.goal_probability(nav, target, y, g_b, v_b, m)
+        lo_m, hi_m = 0.0, 10.0
+        while p_with(m=monthly + hi_m) < p_star and hi_m < 1e7:
+            lo_m, hi_m = hi_m, hi_m * 2
+        for _ in range(60):
+            mid = 0.5 * (lo_m + hi_m)
+            lo_m, hi_m = (lo_m, mid) if p_with(m=monthly + mid) >= p_star else (mid, hi_m)
+        levers["extra_monthly_ils"] = int(math.ceil(hi_m / 10.0) * 10) if hi_m < 1e7 else None
+        y = years
+        while p_with(y=y) < p_star and y < years + 40:
+            y += 0.25
+        levers["deadline_extra_years"] = round(y - years, 2) if y < years + 40 else None
+        # The largest goal amount reached with p_star by the deadline: P(W >= A) = p_star.
+        z = _z(1.0 - p_star)
+        levers["amount_at_confidence"] = round(
+            fr.fv_contributions(monthly, g_b, years) + nav * math.exp(g_b * years + v_b * math.sqrt(years) * z), 0)
+    for m in (before, after):
+        m.pop("volatility", None)
+    return {"ok": True, "mode": "goal", "outcome": outcome, "material": bool(material),
+            "objective": objective, "p_star": p_star,
+            "kelly_ceiling": round(ceiling, 4),
+            "kelly_source": "plan" if kelly_setting is not None else "goal (cap 1.0x)",
+            "kelly_fraction": round(ceiling, 4), "kelly_target": round(ceiling, 4),
+            "confidence": est0["confidence"],
+            "goal": {"target": round(target, 2), "years": round(years, 3), "nav": round(nav, 2),
+                     "monthly": round(monthly, 2), "reachable_within_ceiling": bool(reach0),
+                     "meets_now": bool(ok_now), "meets_after": bool(ok_after)},
+            "volatility_cap_pct": volatility_cap_pct,
+            "sleeves": rows, "cash_pct": round(cash * 100, 2),
+            "core_pct_before": round((free_total - now_s.sum()) * 100, 2),
+            "core_pct_after": round((free_total - proposed.sum()) * 100, 2),
+            "core_basket": core_basket, "before": before, "after": after, "levers": levers,
+            "draws": draws, "block_days": BLOCK_DAYS, "band": list(BAND_PCT),
+            "views": est0["views"], "shrinkage": round(est0["shrinkage"], 4),
+            "window": {"start": prep["dates"][0], "end": prep["dates"][-1],
+                       "sessions": len(prep["dates"])},
+            "fx_basis": "historical" if prep["fx"] else "spot",
+            "excluded": prep["excluded"], "degraded": prep["degraded"] + est0["degraded"]}
+
+
 def plan_trades(verdict: dict, *, specs: dict[str, dict], holdings: list[dict]) -> dict:
     """The trades a RESIZE verdict implies for today's holdings. Pure.
 
@@ -335,10 +573,18 @@ def plan_trades(verdict: dict, *, specs: dict[str, dict], holdings: list[dict]) 
         if shared:
             skipped.append({"id": sid, "reason": "SHARED_TICKER", "tickers": shared})
             continue
+        if s["proposed_pct"] > s["current_pct"]:
+            # PR 92: a GROWING sleeve sells nothing of its own. Accept funds it
+            # through `strategy_service.load_basket` (mode "fund"), the one path
+            # that obeys "funding may only sell what the plan has too much of".
+            resizes.append({"strategy_id": sid, "from_pct": s["current_pct"],
+                            "to_pct": s["proposed_pct"], "fraction_sold": 0.0,
+                            "direction": "grow", "tickers": sorted(mine)})
+            continue
         frac = 1.0 - s["proposed_pct"] / s["current_pct"]
         resizes.append({"strategy_id": sid, "from_pct": s["current_pct"],
                         "to_pct": s["proposed_pct"], "fraction_sold": round(frac, 6),
-                        "tickers": sorted(mine)})
+                        "direction": "shrink", "tickers": sorted(mine)})
         for h in holdings:
             if h["ticker"].upper() in mine and h["shares"] > 0:
                 sells.append({"ticker": h["ticker"].upper(), "strategy_id": sid,
@@ -352,8 +598,12 @@ def plan_trades(verdict: dict, *, specs: dict[str, dict], holdings: list[dict]) 
               if w > 0 and t.upper() != "CASH"}
     total_w = sum(basket.values())
     buys = []
+    # When a sleeve also GROWS, the shrink's proceeds stay as cash for it:
+    # buying the core first only for the grow's funding to sell it again is two
+    # taxable legs that cancel.
+    grows = any(r.get("direction") == "grow" for r in resizes)
     for tk, w in sorted(basket.items()):
-        amt = round(net * w / total_w, 2) if total_w else 0.0
+        amt = round(net * w / total_w, 2) if total_w and not grows else 0.0
         if amt >= MIN_TRADE_ILS:
             buys.append({"ticker": tk, "weight": round(w / total_w, 6), "amount_ils": amt})
     return {"resizes": resizes, "sells": sells, "buys": buys, "skipped": skipped,
@@ -450,6 +700,8 @@ async def compute_for(session, user, *, source: str = "on_demand",
     mix, _nav = current_mix(rows)
     cash_pct = float(mix.get("Cash") or 0.0) * 100.0
     basket = await _core_basket(session, user, ctx["objective"])
+    goal = await _goal_context(session, user, rows)
+    sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
@@ -458,16 +710,89 @@ async def compute_for(session, user, *, source: str = "on_demand",
             return {"ok": True, "outcome": UNAVAILABLE if unavailable else NOT_MEASURABLE,
                     "reason": prep.get("reason"), "detail": prep.get("detail"),
                     "unavailable": ctx.get("unavailable")}
-        return resize_solve(prep, sleeves_pct={s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]},
-                            core_basket=basket, cash_pct=cash_pct, objective=ctx["objective"],
-                            est_kw=ctx["est_kw"], kelly_fraction=ctx.get("kelly_fraction_setting"),
+        if goal:
+            # PR 92: the goal is the objective whenever the plan states one.
+            return goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
+                              objective=ctx["objective"], est_kw=ctx["est_kw"], nav=goal["nav"],
+                              target=goal["target"], years=goal["years"], monthly=goal["monthly"],
+                              kelly_setting=ctx.get("kelly_fraction_setting"),
+                              sleeve_cap_pct=goal["sleeve_cap_pct"],
+                              volatility_cap_pct=goal["volatility_cap_pct"],
+                              draws=min(draws, GOAL_DRAWS))
+        # No goal on the plan: manage risk to the Kelly dial (PR 91's resize).
+        return resize_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
+                            objective=ctx["objective"], est_kw=ctx["est_kw"],
+                            kelly_fraction=ctx.get("kelly_fraction_setting"),
                             target_roi_pct=ctx.get("target_roi_pct"), draws=draws)
 
     out = await offload(work)
+    if goal and out.get("mode") == "goal":
+        amt = (out.get("levers") or {}).get("amount_at_confidence")
+        if amt:
+            out["levers"]["roi_at_confidence_pct"] = _roi_for_amount(goal, float(amt))
+        out["goal"]["deadline"] = goal.get("deadline")
+        out["goal"]["roi_pct"] = goal.get("roi_pct")
+        out["goal"]["target_date_raw"] = goal.get("target_date_raw")
     out["computed_at"] = datetime.now(timezone.utc).isoformat()
     out["version"] = FRONTIER_TAG
     await record(session, user, out, source=source)
     return out
+
+
+async def _goal_context(session, user, rows) -> dict | None:
+    """The plan's goal as the solve needs it, from the SAME functions /plan uses.
+
+    None when the plan has no ROI target and deadline: there is nothing to
+    steer by, and the solve falls back to managing risk.
+    """
+    from app.services.goal_service import compute_goal
+    from app.services.plan_service import effective_caps, get_plan
+    from app.services.standing_order_service import monthly_total
+    from app.services.strategy_service import _snapshot
+
+    plan = await get_plan(session, user)
+    nav = float(_snapshot(rows).get("nav") or 0.0)
+    if plan is None or getattr(plan, "target_roi_pct", None) is None or nav <= 0:
+        return None
+    g = await compute_goal(session, user, plan, nav)
+    if not g.get("target") or not g.get("years_left"):
+        return None
+    caps = effective_caps(plan)
+    try:
+        monthly = float(await monthly_total(session, user))
+    except Exception:  # noqa: BLE001 -- a goal without deposits is still a goal
+        monthly = 0.0
+    return {"nav": nav, "target": float(g["target"]), "years": float(g["years_left"]),
+            "deadline": g.get("deadline"), "monthly": monthly,
+            "roi_pct": float(plan.target_roi_pct), "flows": g.get("contributions") or [],
+            "target_date_raw": getattr(plan, "target_date", None),
+            "sleeve_cap_pct": float(caps.get("concentration_cap") or 0.4) * 100.0,
+            "volatility_cap_pct": float(caps.get("volatility_cap") or 0.0) * 100.0 or None}
+
+
+def _roi_for_amount(goal: dict, amount: float) -> float | None:
+    """The yearly ROI whose goal (deposits compounded to the deadline) equals `amount`.
+
+    Uses `goal_service.compound` itself, so "set your ROI to X%" produces
+    exactly the goal amount the card quotes.
+    """
+    from datetime import date
+
+    from app.services.goal_service import compound
+    try:
+        flows = [(date.fromisoformat(str(f["at"])[:10]), float(f["amount_ils"])) for f in goal["flows"]]
+        deadline = date.fromisoformat(str(goal["deadline"])[:10])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not flows or compound(flows, -0.99, deadline) > amount:
+        return None
+    lo, hi = -0.99, 5.0
+    if compound(flows, hi, deadline) < amount:
+        return None
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if compound(flows, mid, deadline) < amount else (lo, mid)
+    return round(hi * 100, 1)
 
 
 async def refresh_all(session) -> dict:
@@ -520,6 +845,8 @@ async def card(session, user, rows) -> list[dict]:
     from app.services.plan_service import get_plan
 
     row = await latest(session, user)
+    if row is not None and (row.detail or {}).get("mode") == "goal":
+        return await _goal_cards(session, user, rows, row)
     if row is None or row.outcome != RESIZE:
         return []
     age = _age_hours(row)
@@ -600,13 +927,182 @@ def settings_of(plan) -> dict:
     objective = getattr(plan, "objective", None) or "Balanced"
     raw_k = getattr(plan, "kelly_fraction", None)
     raw_c = getattr(plan, "return_confidence", None)
-    return {"kelly_fraction": fr.kelly_fraction_for(objective, raw_k),
-            "kelly_default": fr.kelly_fraction_for(objective, None),
-            "kelly_source": "plan" if raw_k is not None else "objective",
+    # PR 92: with a goal on the plan the goal picks the risk and Kelly is a
+    # CEILING (full Kelly unless the user set a lower one); without one the
+    # dial is what risk is managed to (PR 91), defaulting by objective.
+    goal_mode = plan is not None and getattr(plan, "target_roi_pct", None) is not None
+    if goal_mode:
+        k, k_default = goal_ceiling(raw_k), fr.KELLY_MAX
+        k_source = "plan" if raw_k is not None else "goal (cap 1.0x)"
+    else:
+        k, k_default = fr.kelly_fraction_for(objective, raw_k), fr.kelly_fraction_for(objective, None)
+        k_source = "plan" if raw_k is not None else "objective"
+    return {"mode": "goal" if goal_mode else "risk",
+            "goal_confidence": GOAL_CONFIDENCE,
+            "kelly_fraction": k, "kelly_default": k_default, "kelly_source": k_source,
             "kelly_range": [fr.KELLY_MIN, fr.KELLY_MAX],
             "return_confidence": fi.confidence_of(raw_c),
             "confidence_source": "plan" if raw_c else "default",
             "confidence_levels": list(fi.CONFIDENCE_LEVELS)}
+
+
+def _goal_verdict_current(plan, live: dict, v: dict, age: float | None) -> bool:
+    """Is a stored GOAL verdict still about this plan and this book?"""
+    if age is None or age > MAX_AGE_H or plan is None:
+        return False
+    g = v.get("goal") or {}
+    st = settings_of(plan)
+    if ((getattr(plan, "objective", None) or "Balanced") != v.get("objective")
+            or st["mode"] != "goal"
+            or abs(float(v.get("kelly_ceiling") or 0) - st["kelly_fraction"]) > 1e-6
+            or (v.get("confidence") or fi.DEFAULT_CONFIDENCE) != st["return_confidence"]
+            or g.get("roi_pct") is None
+            or abs(float(g["roi_pct"]) - float(plan.target_roi_pct)) > 1e-9
+            or (g.get("target_date_raw") or None) != (getattr(plan, "target_date", None) or None)):
+        return False
+    for s in v.get("sleeves") or []:
+        if abs(live.get(s["id"], -1.0) - float(s["current_pct"])) > 0.01:
+            return False
+    return True
+
+
+async def goal_story_active(session, user) -> bool:
+    """True when a fresh goal verdict speaks for the goal on Today.
+
+    The older behind-your-goal card projects at the app-wide measured return;
+    the goal cards use the user's own return confidence. Two goal stories on
+    two bases is the contradiction this exists to prevent, so while this is
+    True the older card stands down.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.plan_service import get_plan
+    row = await latest(session, user)
+    if row is None or (row.detail or {}).get("mode") != "goal":
+        return False
+    if (row.detail or {}).get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET):
+        return False
+    live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    return _goal_verdict_current(await get_plan(session, user), live, row.detail or {}, _age_hours(row))
+
+
+async def _goal_cards(session, user, rows, row) -> list[dict]:
+    """PR 92: the goal's cards -- a mix card when a trade materially helps the
+    goal, and lever cards when even the best mix leaves it under 70%."""
+    from app.services import sleeve_service as sv
+    from app.services import strategy_catalog
+    from app.services.plan_service import get_plan
+
+    v = row.detail or {}
+    age = _age_hours(row)
+    plan = await get_plan(session, user)
+    live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    if v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET) or not _goal_verdict_current(plan, live, v, age):
+        return []
+    g, b, a, lv = v["goal"], v["before"], v["after"], v.get("levers") or {}
+    star = round(v.get("p_star", GOAL_CONFIDENCE) * 100)
+    conf = v.get("confidence", "shrunk")
+    when = "just now" if age < 1 else f"{age:.0f}h ago"
+    deadline = g.get("deadline") or "your deadline"
+    goal_line = (f"Your goal: {g['target']:,.0f} by {deadline} ({g.get('roi_pct'):g}%/yr on what you put in) - "
+                 f"from {g['nav']:,.0f} today that needs ~{lv.get('required_cagr_pct')}%/yr compound. "
+                 f"'On track' means at least a {star}% chance. Estimate: {conf}; risk capped at "
+                 f"{v['kelly_ceiling']:g}x full Kelly ({v.get('kelly_source')}).")
+    cards = []
+
+    if v.get("material") and v["outcome"] in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE):
+        specs = {sid: strategy_catalog.get(sid) or {} for sid in live}
+        trades = plan_trades(v, specs=specs, holdings=_holdings_for_sale(rows))
+        if trades["resizes"]:
+            moves = ", ".join(f"{r['strategy_id']} {r['from_pct']:g}% -> {r['to_pct']:g}%" for r in trades["resizes"])
+            sells_txt = ", ".join(f"{x['shares']:g} {x['ticker']} (~{x['value_ils']:,.0f})" for x in trades["sells"])
+            grows = [r for r in trades["resizes"] if r.get("direction") == "grow"]
+            buys_txt = (", ".join(f"{x['ticker']} ~{x['amount_ils']:,.0f}" for x in trades["buys"])
+                        if trades["buys"] else ("the growing sleeve, funded from what the plan then holds "
+                                                "too much of" if grows else "nothing (kept as cash)"))
+            title = {GOAL_LESS_RISK: "Your goal is on track: keep it with less risk",
+                     GOAL_REBALANCE: f"Rebalance to reach your goal: {b['goal_probability_pct']:g}% -> "
+                                     f"{a['goal_probability_pct']:g}% chance",
+                     GOAL_IMPROVE: f"Raise your goal's odds: {b['goal_probability_pct']:g}% -> "
+                                   f"{a['goal_probability_pct']:g}% chance"}[v["outcome"]]
+            vcap = v.get("volatility_cap_pct")
+            vcap_txt = (f" Volatility after is {a['volatility_pct']:.1f}%, above your plan's "
+                        f"{vcap:g}% limit." if vcap and a["volatility_pct"] > vcap else "")
+            cards.append({
+                "id": f"rec_goal_mix_{row.id}", "dimension": "goal", "severity": "HIGH",
+                "title": title,
+                "why": (goal_line + f" Resampled {v['draws']} times; a sleeve only moves when today's size "
+                        f"sits outside its whole stability band. Estimates, not forecasts.{vcap_txt}"),
+                "action": (f"Accept resizes {moves}"
+                           + (f", sells {sells_txt} (~{trades['tax_ils']:,.0f} tax)" if trades["sells"] else "")
+                           + f", and buys {buys_txt}. Sleeve caps are re-levelled."),
+                "impact": (f"Chance of reaching your goal {b['goal_probability_pct']:g}% -> "
+                           f"{a['goal_probability_pct']:g}%; median at the deadline {b['median_at_deadline']:,.0f} -> "
+                           f"{a['median_at_deadline']:,.0f}; expected compound growth {b['growth_cagr_pct']}% -> "
+                           f"{a['growth_cagr_pct']}%/yr; volatility {b['volatility_pct']}% -> {a['volatility_pct']}%."),
+                "how": [f"Resize: {moves}", *([f"Sell: {sells_txt}"] if sells_txt else []),
+                        f"Buy: {buys_txt}", f"Solved {when} ({v.get('version')})"],
+                "apply": {"kind": CARD_KIND, "verdict_id": row.id, "resizes": trades["resizes"],
+                          "buy_weights": {x["ticker"]: x["weight"] for x in trades["buys"]},
+                          "estimate": {"sells": trades["sells"], "buys": trades["buys"],
+                                       "tax_ils": trades["tax_ils"], "net_ils": trades["net_ils"]}},
+                "meta": {"goal": g, "before": b, "after": a, "sleeves": v["sleeves"], "levers": lv,
+                         "outcome": v["outcome"], "age_hours": round(age, 1)},
+            })
+
+    base = a if v.get("material") else b
+    if base["goal_probability_pct"] < star:
+        alt = []
+        if lv.get("extra_monthly_ils"):
+            alt.append(f"add {lv['extra_monthly_ils']:,}/month")
+        if lv.get("roi_at_confidence_pct") is not None:
+            alt.append(f"aim for {lv['roi_at_confidence_pct']:g}%/yr")
+        if lv.get("deadline_extra_years"):
+            alt.append(f"give it {lv['deadline_extra_years']:g} more years")
+        others = "; ".join(alt)
+        head = (f"Even the best mix within your risk cap leaves a {base['goal_probability_pct']:g}% chance "
+                f"(target {star}%)." if v["outcome"] in (GOAL_OUT_OF_REACH, GOAL_IMPROVE) else
+                f"After the rebalance the chance is {base['goal_probability_pct']:g}% (target {star}%).")
+        common_why = goal_line + " " + head + f" Ways to close it: {others}. Solved {when}."
+        if lv.get("extra_monthly_ils"):
+            new_total = round(float(g.get("monthly") or 0) + float(lv["extra_monthly_ils"]), 2)
+            cards.append({
+                "id": f"rec_goal_deposit_{row.id}", "dimension": "goal", "severity": "HIGH",
+                "title": f"Add {lv['extra_monthly_ils']:,}/month for a {star}% chance of your goal",
+                "why": common_why,
+                "action": (f"Accept sets your standing orders to {new_total:,.0f}/month in total. "
+                           f"No money moves now; each deposit is recorded on its day."),
+                "impact": f"Raises the chance of reaching {g['target']:,.0f} by {deadline} to about {star}%.",
+                "how": [f"Monthly deposits: {float(g.get('monthly') or 0):,.0f} -> {new_total:,.0f}",
+                        "Change or pause it any time on the Cash tab"],
+                "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
+                          "add_ils": float(lv["extra_monthly_ils"])},
+                "meta": {"lever": "deposit", "goal": g, "levers": lv}})
+        roi_now = float(g.get("roi_pct") or 0)
+        if lv.get("roi_at_confidence_pct") is not None and lv["roi_at_confidence_pct"] < roi_now:
+            cards.append({
+                "id": f"rec_goal_target_{row.id}", "dimension": "goal", "severity": "MEDIUM",
+                "title": f"Set a target this book can reach: {lv['roi_at_confidence_pct']:g}%/yr ({star}% chance)",
+                "why": common_why,
+                "action": (f"Accept changes your ROI target from {roi_now:g}% to {lv['roi_at_confidence_pct']:g}%/yr, "
+                           f"so the goal becomes about {lv['amount_at_confidence']:,.0f} by {deadline}."),
+                "impact": "Your goal stops asking for growth this book is not estimated to deliver.",
+                "how": ["Only the target changes; nothing is bought or sold",
+                        "Raise it again any time on the Plan tab"],
+                "apply": {"kind": "set_plan", "fields": {"target_roi_pct": lv["roi_at_confidence_pct"]}},
+                "meta": {"lever": "target", "goal": g, "levers": lv}})
+        extra = lv.get("deadline_extra_years")
+        if extra and extra <= 15 and g.get("deadline"):
+            new_year = int(str(g["deadline"])[:4]) + math.ceil(extra)
+            cards.append({
+                "id": f"rec_goal_deadline_{row.id}", "dimension": "goal", "severity": "MEDIUM",
+                "title": f"Move your deadline to {new_year} for a {star}% chance",
+                "why": common_why,
+                "action": f"Accept moves your goal deadline from {str(g['deadline'])[:4]} to {new_year}.",
+                "impact": f"Gives the book {math.ceil(extra)} more year(s) to compound toward your goal.",
+                "how": ["Only the deadline changes; nothing is bought or sold"],
+                "apply": {"kind": "set_plan", "fields": {"target_date": str(new_year)}},
+                "meta": {"lever": "deadline", "goal": g, "levers": lv}})
+    return cards
 
 
 def _target_text(v: dict) -> str:
@@ -710,13 +1206,35 @@ async def apply_resize(session, user, spec: dict) -> dict:
         if amt >= MIN_TRADE_ILS:
             legs.append({"ticker": tk, "amount_ils": amt})
     bought = await _apply_redeploy_cash(session, user, {"legs": legs}) if legs else {"bought": [], "skipped": []}
+    got = bought.get("bought", [])
+
+    # PR 92: a GROWING sleeve is funded by the one path that obeys "funding may
+    # only sell what the plan has too much of" -- after the resize above, the
+    # plan wants more of this sleeve and less of everything else. That path
+    # writes its own ledger legs, so this handler records ITS legs itself too
+    # and tells the boundary not to record them a second time.
+    grown = []
+    grows = [r for r in resizes if r.get("direction") == "grow"]
+    if grows:
+        from app.services import ledger_service as ledger
+        from app.services.strategy_service import load_basket
+        await ledger.record_legs(session, user, sold=sold, bought=got, source=CARD_KIND,
+                                 note="frontier resize: shrink legs")
+        for r in grows:
+            res = await load_basket(session, user, r["strategy_id"], sleeve_pct=float(r["to_pct"]),
+                                    mode="fund", honour_holds=True)
+            grown.append({"strategy_id": r["strategy_id"], "ok": res.get("ok", True),
+                          "sold": res.get("sold") or [], "bought": res.get("bought") or [],
+                          "error": res.get("error"), "shortfall": res.get("shortfall")})
     caps = await _arm_sleeve_caps(session, user)
     await session.commit()
-    got = bought.get("bought", [])
     note = ("Resized " + ", ".join(f"{r['strategy_id']} {r['from_pct']:g}% -> {r['to_pct']:g}%" for r in resized)
             + ". Bought " + (", ".join(f"{b['ticker']} {b['amount_ils']:,.0f}" for b in got) or "nothing")
-            + f" with the {net_total:,.0f} raised. Sleeve caps re-levelled.")
-    return {"note": note, "resized": resized, "sold": sold, "bought": got,
+            + f" with the {net_total:,.0f} raised"
+            + ("; funded " + ", ".join(g_["strategy_id"] for g_ in grown) + " from the plan's overweights" if grown else "")
+            + ". Sleeve caps re-levelled.")
+    out_extra = {"grown": grown, "ledger_recorded": True} if grows else {}
+    return {"note": note, "resized": resized, "sold": sold, "bought": got, **out_extra,
             "skipped_buys": bought.get("skipped", []), "tax_ils": round(tax_total, 2),
             "net_raised_ils": round(net_total, 2), "caps": caps,
             "broker_note": "Tracked book updated - no brokerage order was placed."}

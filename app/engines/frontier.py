@@ -366,3 +366,70 @@ def kelly_position(weights, mu, cov, risk_free: float) -> dict:
     return {"fraction_of_kelly": 1.0 / k_star, "over_kelly": k_star < 1.0,
             "growth_now": now, "growth_at_kelly": growth(w * k_star, mu, cov, risk_free),
             "reason": None}
+
+
+# --------------------------------------------------------------------------
+# the goal (PR 92)
+# --------------------------------------------------------------------------
+#
+# Eran, 2026-10-05: "the end goal is to meet the ROI goals the user set ...
+# the kelly parameter and the efficient frontier are tools and not the
+# objectives." So the question every card answers is about HIS goal: the
+# amount his ROI implies, by his deadline. Growth here is LOG growth (the
+# median's rate), the same quantity `growth()` returns, so "reaches the goal"
+# means "the median outcome reaches it".
+
+def fv_contributions(monthly: float, log_growth: float, years: float) -> float:
+    """Future value of a monthly deposit compounding continuously at `log_growth`."""
+    if monthly <= 0 or years <= 0:
+        return 0.0
+    annual = monthly * 12.0
+    if abs(log_growth) < 1e-9:
+        return annual * years
+    return annual * math.expm1(log_growth * years) / log_growth
+
+
+def median_wealth(nav: float, log_growth: float, years: float, monthly: float = 0.0) -> float:
+    return nav * math.exp(log_growth * years) + fv_contributions(monthly, log_growth, years)
+
+
+def required_log_growth(nav: float, target: float, years: float, monthly: float = 0.0) -> float | None:
+    """The log growth whose MEDIAN outcome lands exactly on `target` by `years`.
+
+    None when there is no horizon or nothing to grow. Monotone in growth, so
+    bisection; bounds wide enough for any plan a person would type.
+    """
+    if years <= 0 or nav <= 0 or target <= 0:
+        return None
+    if median_wealth(nav, -0.99, years, monthly) >= target:
+        return -0.99
+    lo, hi = -0.99, 3.0
+    if median_wealth(nav, hi, years, monthly) < target:
+        return None
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        if median_wealth(nav, mid, years, monthly) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def goal_probability(nav: float, target: float, years: float, log_growth: float,
+                     volatility: float, monthly: float = 0.0) -> float:
+    """P(wealth at the deadline >= target), lognormal on the book.
+
+    Deposits are added at their MEDIAN future value and the lognormal applies
+    to the starting book -- an approximation that keeps the probability and the
+    median on one model; stated here rather than hidden.
+    """
+    if years <= 0 or nav <= 0:
+        return 1.0 if nav >= target else 0.0
+    need = target - fv_contributions(monthly, log_growth, years)
+    if need <= 0:
+        return 1.0
+    sd = volatility * math.sqrt(years)
+    z = (math.log(need / nav) - log_growth * years)
+    if sd <= 1e-12:
+        return 1.0 if z <= 0 else 0.0
+    return 0.5 * math.erfc(z / (sd * math.sqrt(2.0)))

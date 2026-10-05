@@ -3354,8 +3354,14 @@ function renderDials(p){
   const near=opts.reduce((a,b)=>Math.abs(b-f.kelly_fraction)<Math.abs(a-f.kelly_fraction)?b:a);
   $("p_kelly").value=String(near); $("p_conf").value=f.return_confidence||"shrunk";
   DIALS={kelly:$("p_kelly").value,conf:$("p_conf").value};
-  $("p_dials_note").innerHTML=`Now ${f.kelly_fraction.toFixed(2)}× Kelly (${f.kelly_source==="plan"?"your setting":"your objective's default, "+f.kelly_default.toFixed(2)+"×"}), trust: ${f.return_confidence}. `+
-    `Half Kelly keeps ~75% of the maximum compound growth at half the volatility. Above 1.0× is not offered: past full Kelly more risk means <i>less</i> compound growth.`;
+  // PR 92: with an ROI target the GOAL picks the risk; the Kelly dial is only
+  // an optional extra ceiling (1.0× = no extra limit).
+  $("p_dials_note").innerHTML=(f.mode==="goal"
+    ?`Your goal decides how much risk to take: the cards aim for at least a ${Math.round((f.goal_confidence||0.7)*100)}% chance of reaching it. `+
+      `Kelly is only a ceiling — now ${f.kelly_fraction.toFixed(2)}× (${f.kelly_source==="plan"?"your limit":"no extra limit"}); 1.0× means no limit beyond full Kelly. Trust: ${f.return_confidence}. `
+    :`Now ${f.kelly_fraction.toFixed(2)}× Kelly (${f.kelly_source==="plan"?"your setting":"your objective's default, "+f.kelly_default.toFixed(2)+"×"}), trust: ${f.return_confidence}. `+
+      `Half Kelly keeps ~75% of the maximum compound growth at half the volatility. `)+
+    `Above 1.0× is not offered: past full Kelly more risk means <i>less</i> compound growth.`;
 }
 async function refreshFrontierAfterDials(){
   $("p_dials_note").innerHTML+=` <span class="muted">Re-solving the frontier with your new dials…</span>`;
