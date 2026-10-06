@@ -1352,9 +1352,14 @@ async def suggest_rules_for_holdings(session: AsyncSession, user: User) -> list[
     idx = await _positions_index(session, user)
     if not idx:
         return []
+    # EVERY rule counts, armed or paused. PR 104a.2: Eran accepted "Retune your
+    # protection" (five stops paused for his goal) and Today answered with "4
+    # protective rules ready to arm" -- the same stops, offered back, because
+    # only ARMED rules were counted. A rule you paused, or one that fired and was
+    # dealt with, is a decision about that holding; re-arming it is one tap on
+    # the Rules tab, and re-suggesting it is the app arguing with itself.
     existing = (await session.scalars(
-        select(TradingRule).where(TradingRule.subject == user.email,
-                                  TradingRule.active.is_(True)))).all()
+        select(TradingRule).where(TradingRule.subject == user.email))).all()
     have = {(r.ticker.upper(), r.rule_type) for r in existing}
     # A CAP MAY NEVER BE SUGGESTED BELOW THE SLEEVE TARGET IT WOULD FIGHT.
     #

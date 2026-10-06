@@ -1074,7 +1074,7 @@ async function loadToday(){
       + (more.length?(MORE_HTML=withGoalSummary(more,recs.some(o=>o.dimension==="goal")?null:r.goal_summary,r.goal_summary_head),moreNote(more)):"")
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
       + headsupList(r.headsups||[])
-      + reviewTable(r.holding_review||[]);
+      + reviewTable(r.holding_review||[],all.concat(more));
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${(p.goal&&p.goal.deadline)||p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -1135,9 +1135,22 @@ let HIST_CARDS=[];
 const _HIST_BADGE={done:["✅ Done","#34d399"],ignored:["🙈 Ignored","#fbbf24"],blocked:["⚖️ Blocked","#f87171"]};
 // PR 77: every holding's review state, with the numbers behind it. Folded by
 // default; the cards above are where anything actionable appears.
-function reviewTable(rows){
+function reviewTable(rows,cards){
   if(!rows.length) return "";
-  const col={Hold:"ok",Protect:"warn",Trim:"warn",Exit:"bad",Unmeasured:"muted"};
+  const col={Hold:"ok",Protect:"warn",Trim:"warn",Exit:"bad",Sell:"bad",Unmeasured:"muted"};
+  // PR 104a.2: "Exit" over "did not beat holding" read as advice with no card
+  // behind it. The label is now the ACTION: a card if there is one, else Hold
+  // when selling on the trend did worse than holding. The trend stays below.
+  const card={}; (cards||[]).filter(c=>c.dimension==="holding_review").forEach(c=>{const t=(c.meta||{}).ticker;if(t)card[t]=c;});
+  const act=r=>{const c=card[r.ticker];
+    if(c) return (c.apply||{}).kind==="create_rules"?"Protect":"Sell";
+    const m=r.measurement||{};
+    if((r.state==="Exit"||r.state==="Trim")&&r.measurement_usable&&!(m.short||{}).edge&&!(m.long||{}).edge) return "Hold";
+    return r.state;};
+  const why=r=>{const a=act(r),c=card[r.ticker];
+    if(c) return `<div class="mk" style="margin-top:2px">&rarr; the card on Today: <b>${esc(c.title)}</b></div>`;
+    if(a!==r.state) return `<div class="mk" style="margin-top:2px">The trend says ${esc(r.state.toLowerCase())}, but selling on it did worse than holding on ${esc(r.ticker)}'s own history, so the app does not suggest a sale.</div>`;
+    return "";};
   const n=v=>v==null?"\u2014":`${v>0?"+":""}${v}%`;
   const meas=r=>{const m=r.measurement||{};
     if(r.sleeve) return esc(r.sleeve);
@@ -1147,7 +1160,7 @@ function reviewTable(rows){
   return `<details class="card" style="margin-top:12px"><summary class="nm" style="cursor:pointer">Holding review \u00b7 ${rows.length} holdings</summary>
     <div class="mk" style="margin:6px 0 8px">Trend on two horizons per holding, and whether selling on it has beaten holding on that holding's own history (after costs and 25% CGT). Sleeve holdings follow their own strategy rule. Not financial advice.</div>
     ${rows.map(r=>{const m=r.metrics||{};return `<div style="padding:8px 0;border-top:1px solid var(--line)">
-      <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(r.ticker)}</b><span class="${col[r.state]||"muted"}" style="font-weight:700">${esc(r.state)}</span></div>
+      <div style="display:flex;justify-content:space-between;gap:8px"><b>${esc(r.ticker)}</b><span class="${col[act(r)]||"muted"}" style="font-weight:700">${esc(act(r))}</span></div>${why(r)}
       ${m.ok?`<div class="mk">Short: ${m.short} (1m ${n(m.ret_1m_pct)}) \u00b7 Long: ${m.long||"\u2014"} (6m ${n(m.ret_6m_pct)}, 12m ${n(m.ret_12m_pct)}) \u00b7 ${n(m.drawdown_52w_pct)} from 52-week high</div>`:`<div class="mk">${esc(m.why||"no price history")}</div>`}
       <div class="mk" style="margin-top:2px">${meas(r)}</div></div>`;}).join("")}
   </details>`;
@@ -1478,7 +1491,7 @@ async function snooze(id){
   // Record the dismissal (and what the card asked for, so a materially different
   // ask comes back) BEFORE reloading: the reload must see the server's answer.
   try{await fetch(`/api/v1/recommendations/${id}/dismiss`,_statePost(_cardState(id)));}catch(e){}
-  loadToday();}
+  _reloadView();}   // PR 104a.2: on the Plan tab, Ignore reloaded Today and nothing visibly happened
 
 // WHAT EACH CARD SAID, at the moment it was rendered. Sent with Ignore and
 // Mark-as-done so the server can record the SITUATION you acted on, not just
@@ -3010,7 +3023,9 @@ function goalSummary(p,f){
       ${hl&&hl.without_rules_pct!=null?_chip(`${hl.without_rules_pct}% without them${offH!=null?`, but a ${Math.round(offH)}% chance the book halves`:""}`):""}
       ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}</div>
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
-      ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH)}% with them, ${Math.round(offH)}% without) and cost growth: after a stop fires, the holding sits out until its price falls back below the sale price.</div>`:""}`;
+      ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${
+          rb.tuning&&!rb.tuning.material?` This is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit: removing the rest would leave a ${Math.round(offH)}% chance of halving.`
+          :" After a stop fires, the holding sits out until its price falls back below the sale price."}</div>`:""}`;
 }
 
 // What you hold against the plan: each sleeve, the core, commodities and cash.
@@ -3067,7 +3082,7 @@ function protectionPanel(rules,f,protect){
   const eff=f&&f.rules&&f.rules.effect_pts;
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin:14px 4px 6px">
       <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Your protective rules</span>
-      ${eff!=null&&eff<=-5?_chip(`cost your goal ${Math.abs(eff)} pts`,"warn"):""}</div>
+      ${eff!=null&&eff<=-5?_chip(`cost your goal ${Math.abs(eff)} pts${f.rules&&f.rules.on&&f.rules.off?`, keep halving at ${Math.round(f.rules.on.p_halve_pct*10)/10}% (not ${Math.round(f.rules.off.p_halve_pct)}%)`:""}`,"warn"):""}</div>
     <div class="card">${groups}
       ${guard?`<div style="height:1px;background:var(--line);margin:6px 0"></div>
         <div style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><b>Drawdown guard <span class="mk">· whole book</span></b>

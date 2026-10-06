@@ -75,6 +75,23 @@ def test_suggestions_endpoint_gives_a_rule_set_per_holding():
             assert r["why"]
 
 
+def test_a_paused_rule_is_a_decision_not_a_gap():
+    """PR 104a.2: accepting "Retune your protection" paused the sleeve stops, and
+    Today answered with "protective rules ready to arm" -- the same stops. A
+    paused rule is never suggested back."""
+    with TestClient(m.app) as c:
+        c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
+            {"ticker": "PZD", "market": "NYSE", "asset_class": "Equities", "depth": 2,
+             "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 80}]})
+        r = c.post("/api/v1/rules", json={"ticker": "PZD", "rule_type": "stop_loss", "mode": "price",
+                                          "level": 85.0}).json()
+        rid = (r.get("rule") or r).get("id")
+        assert c.post(f"/api/v1/rules/{rid}/toggle").json()["ok"]          # paused
+        data = c.get("/api/v1/rules/suggestions").json()["suggestions"]
+        kinds = {x["rule_type"] for h in data if h["ticker"] == "PZD" for x in h["rules"]}
+        assert "stop_loss" not in kinds, "a paused stop was offered back as 'ready to arm'"
+
+
 def test_accept_trend_card_arms_the_rule_end_to_end(monkeypatch):
     monkeypatch.setattr("app.providers.registry.guarded_history",
                         lambda tk, days=200: _down_closes() if tk == "DOWN" else None)

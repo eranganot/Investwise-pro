@@ -45,8 +45,9 @@ def test_the_old_device_hides_are_cleared_once():
 
 def test_ignore_waits_for_the_server_before_reloading():
     s = _src()
-    body = re.search(r"async function snooze\(id\)\{(.*?)\n\s*loadToday\(\);\}", s, re.S)
-    assert body, "snooze() must be async and end by reloading Today"
+    # PR 104a.2: it reloads the view you are on (Today, or the Plan tab).
+    body = re.search(r"async function snooze\(id\)\{(.*?)\n\s*_reloadView\(\);", s, re.S)
+    assert body, "snooze() must be async and end by reloading the current view"
     assert "await fetch(`/api/v1/recommendations/${id}/dismiss`" in body.group(1)
 
 
