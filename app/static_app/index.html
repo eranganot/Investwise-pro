@@ -453,45 +453,6 @@
       <div class="card" id="goalSum"><div class="muted">Loading your goal…</div></div>
       <div class="card" id="goalRows" style="margin-top:10px;padding-top:2px;padding-bottom:2px"></div>
       <div id="goalWays"></div>
-      <div class="mk" style="margin:12px 4px 4px;text-transform:uppercase;letter-spacing:.06em">Goal settings</div>
-      <div class="card">
-      <div class="goal" id="goalbig"></div>
-      <div class="bar2" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
-      <div class="grid2">
-        <div><label>What are you aiming for? <span class="mk">· this is what manages your core</span></label>
-          <select id="p_obj"><option>Grow</option><option selected>Balanced</option><option>Preserve</option><option>Income</option></select></div>
-        <div><label>Risk tolerance</label>
-          <select id="p_risk"><option>Low</option><option selected>Medium</option><option>High</option></select></div>
-      </div>
-      <label>Investment flavor <span class="link" onclick="explain('flavor')">examples?</span></label>
-      <select id="p_depth"><option value="">No preference</option><option value="1">Depth 1 — hot / hype names</option><option value="2">Depth 2 — mid</option><option value="3">Depth 3 — structural backbone</option></select>
-      <div class="grid2">
-        <div><label>Years invested (horizon)</label><input id="p_hor" type="number" value="10" oninput="recalcTarget()"/>
-          <div class="mk">how long your money stays invested — sets how much risk fits</div></div>
-        <div><label>Target amount (₪) <span class="mk">· auto from ROI</span></label><input id="p_amt" type="number" readonly style="opacity:.85;cursor:not-allowed"/><div class="mk" id="amt_note"></div></div>
-      </div>
-      <label>Goal deadline (year)</label><input id="p_date" placeholder="2035" oninput="recalcTarget()"/>
-      <div class="mk">the year you want to hit your target amount</div>
-      <label>Targets <span class="link" onclick="explain('roiyield')">ROI vs Yield?</span></label>
-      <div class="grid2">
-        <div><label class="mk">Target return (ROI %)</label><input id="p_roi" type="number" placeholder="8" oninput="recalcTarget()"/></div>
-        <div><label class="mk">per</label><select id="p_roi_p" onchange="recalcTarget()"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
-      </div>
-      <div class="grid2">
-        <div><label class="mk">Target yield (%)</label><input id="p_yld" type="number" placeholder="3"/></div>
-        <div><label class="mk">per</label><select id="p_yld_p"><option>monthly</option><option>quarterly</option><option selected>yearly</option></select></div>
-      </div>
-      <label>Risk dials <span class="mk">(how the frontier card sizes your sleeves)</span></label>
-      <div class="grid2">
-        <div><label class="mk">Kelly fraction</label><select id="p_kelly"><option value="0.25">0.25×</option><option value="0.33">0.33×</option><option value="0.5">0.5× (half)</option><option value="0.75">0.75×</option><option value="1">1.0× (full)</option></select></div>
-        <div><label class="mk">Trust in backtests</label><select id="p_conf"><option value="shrunk">shrunk (evidence-weighted)</option><option value="blended">blended (50/50)</option><option value="measured">measured (trust fully)</option></select></div>
-      </div>
-      <div class="mk" id="p_dials_note"></div>
-      <div class="how" id="roi_note" style="display:none;background:var(--soft);border-radius:10px;padding:10px;margin-top:10px;color:#aebacb;font-size:13px"></div>
-      <button class="primary" onclick="savePlan()">Save my plan</button>
-      <div class="muted" id="plan_out" style="margin-top:10px"></div>
-      <div class="how" id="plan_note" style="display:block;background:var(--soft);border-radius:10px;padding:10px;margin-top:12px;color:#aebacb;font-size:13px"></div>
-    </div>
     </div>
     <div id="plan-mix" class="hide">
       <div id="mixBox"><div class="card muted">Loading…</div></div>
@@ -2246,11 +2207,6 @@ async function setCore(){
     const p=await resp.json();
     if(!resp.ok){ if(note) note.innerHTML=`<span class="bad">Save failed (${resp.status})</span>`; return; }
     MYPLAN=p;
-    // The form lower down shows the same two fields; leaving it stale would let
-    // "Save my plan" put the old objective back.
-    if($("p_obj")) $("p_obj").value=p.objective;
-    if($("p_risk")) $("p_risk").value=p.risk_tolerance;
-    renderPlanNote(p);
     if(note) note.innerHTML=`<span class="ok">Saved — your core, health score and the agents all use this.</span>`;
   }catch(e){ if(note) note.innerHTML=`<span class="bad">${e}</span>`; }
 }
@@ -3049,9 +3005,9 @@ function goalRows(X){
   const ed=fn=>`<div class="acts" style="margin:0"><button onclick="${fn}">Edit</button></div>`;
   return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
     +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
-    +`<div style="padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Risk dials</span>${ed("document.getElementById('plan_out').scrollIntoView({behavior:'smooth'})")}</div>
+    +`<div style="padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Risk dials</span>${ed("openDialsSheet()")}</div>
       <div style="font-weight:650;margin-top:2px">${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}</div>
-      <div class="mk">Set below under Goal settings for now; its own sheet comes next.</div></div>`;
+      <div class="mk">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div></div>`;
 }
 
 function openGoalSheet(){
@@ -3098,6 +3054,77 @@ async function saveGoalSheet(btn){
     await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save goal";}
+}
+
+// PR 104c: every dial the goal runs on, in one sheet (Eran: "I want every
+// decision to be controlled and changeable through the app").
+function openDialsSheet(){
+  const p=PLX.p||{}, f=p.frontier||{};
+  const opt=(vals,cur,lbl)=>vals.map(v=>`<option value="${v}"${String(v)===String(cur)?" selected":""}>${lbl?lbl(v):v}</option>`).join("");
+  const kNow=f.kelly_fraction!=null?[0.25,0.33,0.5,0.75,1].reduce((a,b)=>Math.abs(b-f.kelly_fraction)<Math.abs(a-f.kelly_fraction)?b:a):1;
+  openSheet(_sheetHead("Your risk dials")
+    +`<div style="display:flex;gap:10px"><div style="flex:1"><label class="mk" for="rd_obj">Objective</label>
+        <select id="rd_obj" style="width:100%">${opt(["Grow","Balanced","Income","Preserve"],p.objective)}</select></div>
+      <div style="flex:1"><label class="mk" for="rd_risk">Risk tolerance</label>
+        <select id="rd_risk" style="width:100%">${opt(["Low","Medium","High"],p.risk_tolerance)}</select></div></div>
+      <div style="display:flex;gap:10px;margin-top:8px"><div style="flex:1"><label class="mk" for="rd_kelly">Kelly ceiling</label>
+        <select id="rd_kelly" style="width:100%">${opt([0.25,0.33,0.5,0.75,1],kNow,v=>v+"×")}</select></div>
+      <div style="flex:1"><label class="mk" for="rd_conf">Trust in backtests</label>
+        <select id="rd_conf" style="width:100%">${opt(["shrunk","blended","measured"],f.return_confidence||"shrunk")}</select></div></div>
+      <div style="display:flex;gap:10px;margin-top:8px"><div style="flex:1"><label class="mk" for="rd_halve">Crash-risk limit (% chance the book halves)</label>
+        <input id="rd_halve" type="number" min="0.1" max="100" step="0.5" value="${f.halve_limit_pct??1}" oninput="dialsPreview()" style="width:100%"></div>
+      <div style="flex:1"><label class="mk" for="rd_track">On track at (% chance)</label>
+        <input id="rd_track" type="number" min="50" max="95" step="5" value="${Math.round((f.goal_confidence??0.7)*100)}" oninput="dialsPreview()" style="width:100%"></div></div>
+      <details style="margin-top:8px"><summary class="mk" style="cursor:pointer">More</summary>
+        <div style="display:flex;gap:10px;margin-top:6px"><div style="flex:1"><label class="mk" for="rd_depth">Investment flavor</label>
+          <select id="rd_depth" style="width:100%">${opt(["","1","2","3"],p.preferred_depth?String(p.preferred_depth):"",v=>({"":"No preference","1":"Depth 1 — hot / hype","2":"Depth 2 — mid","3":"Depth 3 — backbone"})[v])}</select></div>
+        <div style="flex:1"><label class="mk" for="rd_yld">Target yield (%/yr)</label>
+          <input id="rd_yld" type="number" min="0" step="0.5" value="${p.target_yield_pct??""}" style="width:100%"></div></div></details>`
+    +`<div id="pvBox" style="background:var(--bg,#0b111a);border:1px solid var(--line);border-radius:12px;padding:12px;margin:12px 0">
+        <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">If you save this</span>
+        <div id="pvBody" style="margin-top:6px"></div>
+        <div class="mk" style="margin-top:6px">Kelly, trust and objective change the estimate itself: the goal is re-solved when you save.</div></div>`
+    +`<div class="acts"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
+       <button class="acc" style="flex:2" onclick="saveDialsSheet(this)">Save dials</button></div>`);
+  dialsPreview();
+}
+// The crash-risk limit picks among the protection setups the last solve
+// measured, so its effect is shown from those numbers -- no new solve needed.
+function dialsPreview(){
+  const f=PLX.f||{}, rb=f.rules||{}, tu=rb.tuning||{}, h=(f.headline||{});
+  const lim=parseFloat($("rd_halve").value), bar=parseFloat($("rd_track").value);
+  let out="";
+  if(h.p_goal_pct!=null&&!isNaN(bar)) out+=_pvRow(`On track at ${bar}%`,`today ${h.p_goal_pct}% → ${h.p_goal_pct>=bar?"on track":"off track"}`,h.p_goal_pct>=bar?"ok":"warn");
+  const cands=(tu.candidates||[]).filter(c=>c.stats&&c.stats.p_halve_pct<=lim);
+  if(tu.candidates&&tu.candidates.length){
+    const best=cands.sort((a,b)=>b.stats.p_goal_pct-a.stats.p_goal_pct)[0];
+    out+=best?_pvRow(`Best protection within ${lim}%`,`${best.retire_sleeve_exits?"sleeve stops paused, ":""}guard ${best.guard_pct??"off"}${best.guard_pct!=null?"%":""}: ${best.stats.p_goal_pct}% chance, ${best.stats.p_halve_pct}% halving`)
+      :_pvRow(`Best protection within ${lim}%`,"none of the measured setups — the app would suggest no change","warn");
+  } else if(rb.off) {
+    out+=_pvRow("With no protective rules",`${rb.off.p_goal_pct}% chance, ${rb.off.p_halve_pct}% halving`)
+      +`<div class="mk">${rb.off.p_halve_pct<=lim?"Within this limit.":"Above this limit: re-arming protection is what the app would suggest."}</div>`;
+  } else out+=`<span class="muted">No protective rules are armed, so the limit applies when you arm some.</span>`;
+  $("pvBody").innerHTML=out;
+}
+async function saveDialsSheet(btn){
+  const p=PLX.p||{}, f=p.frontier||{}, b={};
+  const put=(k,v,cur)=>{if(v!==""&&v!=null&&!(typeof v==="number"&&isNaN(v))&&String(v)!==String(cur??"")) b[k]=v;};
+  put("objective",$("rd_obj").value,p.objective); put("risk_tolerance",$("rd_risk").value,p.risk_tolerance);
+  const kNow=f.kelly_fraction!=null?[0.25,0.33,0.5,0.75,1].reduce((a,c)=>Math.abs(c-f.kelly_fraction)<Math.abs(a-f.kelly_fraction)?c:a):null;
+  if(+$("rd_kelly").value!==kNow) b.kelly_fraction=+$("rd_kelly").value;
+  put("return_confidence",$("rd_conf").value,f.return_confidence);
+  put("halve_limit_pct",parseFloat($("rd_halve").value),f.halve_limit_pct);
+  const tr=parseFloat($("rd_track").value); if(!isNaN(tr)&&Math.abs(tr-Math.round((f.goal_confidence??0.7)*100))>1e-9) b.on_track_pct=tr;
+  const dp=$("rd_depth").value; if(dp!==(p.preferred_depth?String(p.preferred_depth):"")&&dp) b.preferred_depth=+dp;
+  put("target_yield_pct",parseFloat($("rd_yld").value),p.target_yield_pct);
+  if(!Object.keys(b).length){closeSheet();return;}
+  btn.disabled=true; btn.textContent="Saving…";
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.detail&&JSON.stringify(j.detail))||("Save failed ("+r.status+")"));}
+    btn.textContent="Re-solving your goal… (~20 s)";
+    await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    closeSheet(); _reloadView();
+  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
 }
 
 // The stops on what your sleeves hold, and the drawdown guard. Ticked = armed.
@@ -3158,7 +3185,8 @@ function goalSummary(p,f){
   if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
   const hl=(p.expectation&&p.expectation.headline)||null;
   const prog=Math.max(0,Math.min(100,Math.round((p.goal_progress||0)*100)));
-  const on=hl&&hl.p_goal_pct!=null?hl.p_goal_pct>=70:null;
+  const bar=Math.round(((p.frontier||{}).goal_confidence??0.7)*100);   // PR 104c: the plan's on-track bar
+  const on=hl&&hl.p_goal_pct!=null?hl.p_goal_pct>=bar:null;
   const need=(f&&f.ok&&f.mode==="goal"&&f.levers)?Math.round(f.levers.required_cagr_pct):null;
   const exp=p.assumption_basis==="frontier"?Math.round(p.portfolio_expected_roi_pct):null;
   const rb=(f&&f.rules)||{}, offH=rb.off?rb.off.p_halve_pct:null, onH=rb.on?rb.on.p_halve_pct:null;
@@ -3175,10 +3203,16 @@ function goalSummary(p,f){
           <div class="acts" style="margin-top:6px"><button class="acc" onclick="resolveGoalNow(this)">Re-solve now</button></div></div>`}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
       ${hl&&hl.without_rules_pct!=null?_chip(`${hl.without_rules_pct}% without them${offH!=null?`, but a ${Math.round(offH)}% chance the book halves`:""}`):""}
-      ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}</div>
+      ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}
+      ${exp==null&&p.portfolio_expected_roi_pct!=null
+        // PR 16, kept on the new card: a return not from the goal model says its basis.
+        ?_chip(p.assumption_basis&&p.assumption_basis!=="static"
+          ?`expected ~${Math.round(p.portfolio_expected_roi_pct)}%/yr, measured from your strategies (${p.measured_pct_of_book}% of the book)`
+          :`expected ~${Math.round(p.portfolio_expected_roi_pct)}%/yr — not measured: the instrument table prices a leveraged fund as if held buy-and-hold`,
+          p.assumption_basis&&p.assumption_basis!=="static"?"":"warn"):""}</div>
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
       ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${
-          rb.tuning&&!rb.tuning.material?` This is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit: removing the rest would leave a ${Math.round(offH)}% chance of halving.`
+          rb.tuning&&!rb.tuning.material?` This is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
           :" After a stop fires, the holding sits out until its price falls back below the sale price."}</div>`:""}`;
 }
 
@@ -3684,122 +3718,11 @@ async function fundStratSleeveConfirm(id,name){
     loadHoldings&&loadHoldings();
   }catch(e){o.innerHTML=String(e);}
 }
-// PR 74. The target is the MONEY YOU PUT IN, each deposit compounded at your
-// ROI from its own date to the deadline -- the same formula as
-// app/services/goal_service.py. It used to be live NAV x (1+roi)^n, which made
-// progress a constant and let market gains raise the goal.
-let PLAN_FLOWS=[], PLAN_HOR=0;
-function _goalDeadline(){
-  const raw=($("p_date").value||"").trim();
-  // Same rules as goal_service.deadline_of: a full ISO date as given, else
-  // the YEAR governs (31 Dec), else first deposit + horizon (29 Feb -> 28 Feb).
-  if(raw.length>=10&&/^\d{4}-\d{2}-\d{2}/.test(raw)){const d=new Date(raw.slice(0,10)+"T00:00:00Z");if(!isNaN(d))return d;}
-  if(/^\d{4}/.test(raw))return new Date(Date.UTC(+raw.slice(0,4),11,31));
-  const yrs=+($("p_hor").value||0);
-  if(yrs&&PLAN_FLOWS.length){const f=new Date(PLAN_FLOWS[0].at+"T00:00:00Z"), m=f.getUTCMonth();
-    f.setUTCFullYear(f.getUTCFullYear()+yrs); if(f.getUTCMonth()!==m)f.setUTCDate(0); return f;}
-  return null;
-}
-function recalcTarget(){
-  const roiRaw=$("p_roi").value, roi=+(roiRaw||0), per=$("p_roi_p").value;
-  const note=$("amt_note");
-  if(!PLAN_FLOWS.length){ if(note)note.textContent="No deposits are logged yet. Once what you put in is logged, the target is derived from it."; return; }
-  const dl=_goalDeadline();
-  if(roiRaw===""||!dl){ if(note)note.textContent="Enter a target ROI % and a deadline year to set the target."; return; }
-  const n=per==="monthly"?12:per==="quarterly"?4:1, annual=Math.pow(1+roi/100,n)-1;
-  let tgt=0, putIn=0;
-  for(const c of PLAN_FLOWS){const t=Math.max(0,(dl-new Date(c.at+"T00:00:00Z"))/(365.25*864e5));
-    tgt+=c.amount_ils*Math.pow(1+annual,t); putIn+=c.amount_ils;}
-  tgt=Math.round(tgt);
-  $("p_amt").value=tgt;
-  const word=per==="monthly"?"month":per==="quarterly"?"quarter":"yr";
-  if(note)note.innerHTML=`= ₪${Math.round(putIn).toLocaleString()} put in, compounding ${roi}%/${word} from each deposit to ${dl.toISOString().slice(0,10)} \u2192 <b>₪${tgt.toLocaleString()}</b>. Changes only when you add or withdraw money — not when the market moves.`;
-}
+// PR 104c: the old "Goal settings" form and its functions are gone -- target,
+// deadline and deposit live on the Edit-goal sheet, the dials on the Risk-dials
+// sheet, each with its own Save. MYPLAN is still read by the strategy cards.
 async function loadPlan(){
-  try{const p=await(await fetch("/api/v1/plan")).json();
-    $("p_obj").value=p.objective;$("p_risk").value=p.risk_tolerance;$("p_hor").value=p.horizon_years;
-    $("p_depth").value=p.preferred_depth?String(p.preferred_depth):"";
-    if(p.target_amount)$("p_amt").value=p.target_amount; if(p.target_date)$("p_date").value=p.target_date;
-    if(p.target_roi_pct!=null)$("p_roi").value=p.target_roi_pct; if(p.target_roi_period)$("p_roi_p").value=p.target_roi_period;
-    PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
-    if(p.target_yield_pct!=null)$("p_yld").value=p.target_yield_pct; if(p.target_yield_period)$("p_yld_p").value=p.target_yield_period;
-    renderGoal(p);renderPlanNote(p);renderRoi(p);renderDials(p);
-  }catch(e){}
-}
-// PR 91: the frontier's two dials. Preselected from the EFFECTIVE value, and
-// only sent when changed -- saving the ROI must not pin a default as a choice.
-let DIALS={kelly:null,conf:null};
-function renderDials(p){
-  const f=p.frontier||{}; if(f.kelly_fraction==null) return;
-  const opts=[...$("p_kelly").options].map(o=>+o.value);
-  const near=opts.reduce((a,b)=>Math.abs(b-f.kelly_fraction)<Math.abs(a-f.kelly_fraction)?b:a);
-  $("p_kelly").value=String(near); $("p_conf").value=f.return_confidence||"shrunk";
-  DIALS={kelly:$("p_kelly").value,conf:$("p_conf").value};
-  // PR 92: with an ROI target the GOAL picks the risk; the Kelly dial is only
-  // an optional extra ceiling (1.0× = no extra limit).
-  $("p_dials_note").innerHTML=(f.mode==="goal"
-    ?`Your goal decides how much risk to take: the cards aim for at least a ${Math.round((f.goal_confidence||0.7)*100)}% chance of reaching it. `+
-      `Kelly is only a ceiling — now ${f.kelly_fraction.toFixed(2)}× (${f.kelly_source==="plan"?"your limit":"no extra limit"}); 1.0× means no limit beyond full Kelly. Trust: ${f.return_confidence}. `
-    :`Now ${f.kelly_fraction.toFixed(2)}× Kelly (${f.kelly_source==="plan"?"your setting":"your objective's default, "+f.kelly_default.toFixed(2)+"×"}), trust: ${f.return_confidence}. `+
-      `Half Kelly keeps ~75% of the maximum compound growth at half the volatility. `)+
-    `Above 1.0× is not offered: past full Kelly more risk means <i>less</i> compound growth.`;
-}
-async function refreshFrontierAfterDials(){
-  $("p_dials_note").innerHTML+=` <span class="muted">Re-solving the frontier with your new dials…</span>`;
-  try{const r=await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});const j=await r.json();
-    $("p_dials_note").innerHTML+=` <span class="ok">Done (${j.outcome||"?"}). Today shows the new card, if any.</span>`;}
-  catch(e){$("p_dials_note").innerHTML+=` <span class="bad">Re-solve failed: ${e}</span>`;}
-}
-function renderGoal(p){
-  const g=p.goal||{};
-  // Where you should be TODAY at your ROI, against where you are: the honest
-  // ahead/behind, which moves with the market while the target does not.
-  const track=(g.on_track_value!=null&&g.ahead_by!=null)
-    ?`<div class="mk" style="margin-top:4px">On-track line today: ${ils(g.on_track_value)} — you're <b class="${g.ahead_by>=0?'ok':'warn'}">${ils(Math.abs(g.ahead_by))} ${g.ahead_by>=0?'ahead':'behind'}</b>.</div>`:"";
-  const why=g.breakdown?`<div class="mk" style="margin-top:2px">${g.breakdown}</div>`:"";
-  if(p.goal_progress!=null){$("goalbig").innerHTML=`🎯 <b>${ils(p.current_value||0)}</b> of ${ils(p.target_amount)} by ${g.deadline||p.target_date||'—'} (${pct(p.goal_progress)})`+track+why;$("goalfill").style.width=Math.round(p.goal_progress*100)+"%";}
-  else{$("goalbig").innerHTML=`<span class="muted">Set a target amount to track progress.</span>`;$("goalfill").style.width="0%";}
-}
-function renderPlanNote(p){const cap=p.caps?p.caps.concentration_cap:0.25;
-  $("plan_note").innerHTML=`With <b>${p.risk_tolerance}</b> risk tolerance the agents allow up to <b>${pct(cap)}</b> in any single holding before flagging it — and they veto trades that breach your limits. Change anything here and your health, recommendations and the agents all adjust.`;}
-function renderRoi(p){const e=$("roi_note");
-  if(p.portfolio_expected_roi_pct!=null&&p.roi_annual_target_pct){e.style.display="block";
-    // PR 16. The basis, always. This banner used to state a forward return with
-    // no hint that it came from a table pricing TQQQ as buy-and-hold.
-    const meas=p.assumption_basis&&p.assumption_basis!=="static";
-    const wasStatic=p.portfolio_expected_roi_pct_static;
-    // PR 98: one return basis. When the goal model supplies the number, say so
-    // and show the measured backtest blend it replaced.
-    const fe=p.expectation;
-    const basisLine=(p.assumption_basis==="frontier"&&fe)
-      ?`<div class="mk" style="margin-top:3px">From your goal model — the same numbers as your goal cards: ${fe.confidence||"blended"} estimate, recent volatility weighted ${Math.round((fe.recent_weight||0)*100)}% (market ${fe.regime||"unknown"}), ${fe.volatility_pct}% volatility.${p.portfolio_expected_roi_pct_measured!=null?` The measured backtests alone say ~${p.portfolio_expected_roi_pct_measured}%/yr.`:""} An estimate, not a forecast.</div>`
-      :meas
-      ?`<div class="mk" style="margin-top:3px">Measured from your own strategies (${p.measured_pct_of_book}% of the book)${wasStatic!=null&&wasStatic!==p.portfolio_expected_roi_pct?` — the instrument table would have said ~${wasStatic}%/yr`:""}. Measured is what happened, not a forecast.</div>`
-      :`<div class="mk" style="margin-top:3px">⚠️ Not measured — this is the instrument table, which prices a leveraged fund as if you held it buy-and-hold. Your sleeves are rules that sit out of it some of the time.</div>`;
-    e.innerHTML=`Your portfolio's expected compound return is ~<b>${p.portfolio_expected_roi_pct}%/yr</b> vs your target <b>${p.roi_annual_target_pct}%/yr</b> — <b class="${p.roi_on_track?'ok':'warn'}">${p.roi_on_track?'on track ✅':'behind ⚠️'}</b>.`+basisLine;}
-  else e.style.display="none";}
-async function savePlan(){
-  const body={objective:$("p_obj").value,risk_tolerance:$("p_risk").value,horizon_years:+$("p_hor").value,
-    preferred_depth:$("p_depth").value?+$("p_depth").value:null,
-    // The amount is DERIVED (read-only field). With no ROI there is nothing to
-    // derive, and sending the old derived number would freeze it as a typed goal.
-    target_amount:($("p_roi").value!==""&&$("p_amt").value)?+$("p_amt").value:null,target_date:$("p_date").value||null,
-    target_roi_pct:$("p_roi").value?+$("p_roi").value:null,target_roi_period:$("p_roi_p").value,
-    target_yield_pct:$("p_yld").value?+$("p_yld").value:null,target_yield_period:$("p_yld_p").value};
-  const dialsChanged=$("p_kelly").value!==DIALS.kelly||$("p_conf").value!==DIALS.conf;
-  if($("p_kelly").value!==DIALS.kelly) body.kelly_fraction=+$("p_kelly").value;
-  if($("p_conf").value!==DIALS.conf) body.return_confidence=$("p_conf").value;
-  $("plan_out").textContent="Saving…";
-  try{const resp=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(resp.status===401){location.href="/login";return;}
-    const p=await resp.json();
-    if(!resp.ok){$("plan_out").innerHTML=`<span class="bad">Save failed (${resp.status})</span>`;return;}
-    $("plan_out").innerHTML=`<span class="ok">Saved. Your Today view & the agents now reflect this.</span>`;
-    PLAN_FLOWS=((p.goal&&p.goal.contributions)||[]).slice().sort((a,b)=>a.at<b.at?-1:1); recalcTarget();
-    if(p.target_amount!=null)$("p_amt").value=p.target_amount;
-    renderGoal(p);renderPlanNote(p);renderRoi(p);renderDials(p);
-    if(dialsChanged) refreshFrontierAfterDials();
-  }catch(e){$("plan_out").innerHTML=`<span class="bad">${e}</span>`;}
+  try{MYPLAN=await(await fetch("/api/v1/plan")).json();}catch(e){}
 }
 
 const AV={Research:"🔎",Alpha:"🎯",Risk:"🛡️",Tax:"🧾",Decision:"🧮",Adversary:"⚔️",UX:"📣",Allocation:"📊",Safety:"🚧"};

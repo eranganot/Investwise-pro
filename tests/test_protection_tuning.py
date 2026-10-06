@@ -100,7 +100,7 @@ async def test_accept_pauses_the_rules_and_moves_the_guard(own_session):
                 "off": {**_stats(32.9, 39.6), "exits_per_year": [0.0], "pct_time_out": [0.0]},
                 "rebound": {**_stats(0.9, 0.0), "exits_per_year": [1.0], "pct_time_out": [27.0]},
                 "effect_pts": -32.4, "fix_effect_pts": 0.4, "sleeves": {"btm_qqq_hold": {}},
-                "tuning": {"material": True, "halve_floor_pct": 5.0,
+                "tuning": {"material": True, "halve_floor_pct": 1.0,   # PR 104c: the plan's limit
                            "current": {"guard_pct": 10.0, "stats": st0},
                            "best": {"retire_sleeve_exits": True, "guard_pct": 15.0, "stats": st1},
                            "changes": {"pause_rule_ids": [a], "pause_rules": ["trailing_stop QQQ (10%)"],

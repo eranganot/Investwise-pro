@@ -340,6 +340,9 @@ def resize_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict
 # below is about a probability, chosen by the user, inside a growth-safe cap.
 
 GOAL_CONFIDENCE = 0.70
+# The crash-risk limit's DEFAULT (Eran, 2026-10-05: "Guard 15%: 0.8% / 22.7%"). Since PR 104c
+# the plan's `halve_limit_pct` decides; this is what an unset plan gets.
+HALVE_FLOOR_PCT = 1.0          # Eran, 2026-10-05: "Guard 15%: 0.8% / 22.7%" -- a 1% crash-risk limit
 GOAL_ON_TRACK = "ON_TRACK"            # >= 70% today, and no materially safer mix keeps it there
 GOAL_LESS_RISK = "LESS_RISK"          # >= 70% today; a materially less volatile mix keeps >= 70%
 GOAL_REBALANCE = "REBALANCE"          # < 70% today; a mix within the cap reaches 70%
@@ -411,7 +414,8 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                kelly_setting: float | None = None, sleeve_cap_pct: float = 40.0,
                volatility_cap_pct: float | None = None, p_star: float = GOAL_CONFIDENCE,
                draws: int = GOAL_DRAWS, seed: int = SEED, rules: dict | None = None,
-               goal_roi: float | None = None, light: bool = False) -> dict:
+               goal_roi: float | None = None, light: bool = False,
+               halve_floor_pct: float = HALVE_FLOOR_PCT) -> dict:
     """Which mix best serves the user's goal. Pure.
 
     ``goal_roi`` (PR 99) is the plan's yearly ROI when the goal is "this ROI on
@@ -585,7 +589,8 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             return paths.rules_stats(sim, target=target if target_ is None else target_, p_star=p_star)
         r_off, r_on, r_fix = run(rules_on=False), run(), run(reentry="rebound")
         # PR 104b: a preview (light) asks "what if these rules", not "which rules".
-        tuning = None if light else _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on)
+        tuning = None if light else _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on,
+                                                     floor=halve_floor_pct)
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
@@ -900,7 +905,6 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
 # user set, not something to trade away. Retiring a rule PAUSES it; one tap on
 # the Rules tab brings it back.
 
-HALVE_FLOOR_PCT = 1.0          # Eran, 2026-10-05: "Guard 15%: 0.8% / 22.7%" -- a 1% crash-risk limit
 GUARD_LEVELS = (15.0, 20.0)
 RULES_CARD_KIND = "frontier_rules"
 
@@ -921,7 +925,8 @@ def _fv_monthly(monthly: float, roi: float, years: float) -> float:
     return sum(monthly * (1.0 + roi) ** ((n - k) / 12.0) for k in range(1, n + 1))
 
 
-def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on) -> dict | None:
+def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on,
+                     floor: float = HALVE_FLOOR_PCT) -> dict | None:
     has_exits = any(s.get("trail") for s in sl_specs)
     if not has_exits and not g_spec:
         return None
@@ -941,7 +946,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
             stats = r_on if (not retire and lvl == cur_guard) else run(sl=sl, gd=guard_at(lvl))
             cands.append({"retire_sleeve_exits": retire, "guard_pct": lvl, "stats": stats,
                           "current": (not retire and lvl == cur_guard)})
-    ok = [c for c in cands if c["stats"]["p_halve_pct"] <= HALVE_FLOOR_PCT]
+    ok = [c for c in cands if c["stats"]["p_halve_pct"] <= floor]
     best = max(ok, key=lambda c: (c["stats"]["p_goal_pct"], -c["stats"]["p_halve_pct"])) if ok else None
     material = bool(best and not best["current"]
                     and best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= MATERIAL_PROB_PTS)
@@ -955,7 +960,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
         if best["guard_pct"] != cur_guard:
             changes["guard"] = {"rule_id": (rules.get("guard") or {}).get("rule_id"),
                                 "from_pct": cur_guard, "to_pct": best["guard_pct"]}
-    return {"halve_floor_pct": HALVE_FLOOR_PCT, "material": material, "guard_col": guard_col,
+    return {"halve_floor_pct": floor, "material": material, "guard_col": guard_col,
             "current": {"guard_pct": cur_guard, "stats": r_on},
             "best": best, "changes": changes if material else None,
             "candidates": [{k2: v for k2, v in c.items()} for c in cands]}
@@ -1114,6 +1119,8 @@ async def compute_for(session, user, *, source: str = "on_demand",
     cash_pct = float(mix.get("Cash") or 0.0) * 100.0
     basket = await _core_basket(session, user, ctx["objective"])
     goal = await _goal_context(session, user, rows)
+    from app.services.plan_service import get_plan as _gp
+    _st = settings_of(await _gp(session, user))
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
     from app.services import sleeve_service as _sv
     from app.services import strategies as _static_cat
@@ -1151,7 +1158,8 @@ async def compute_for(session, user, *, source: str = "on_demand",
                            sleeve_cap_pct=goal["sleeve_cap_pct"],
                            volatility_cap_pct=goal["volatility_cap_pct"],
                            draws=min(draws, GOAL_DRAWS), rules=rules_ctx,
-                           goal_roi=goal.get("roi_annual"))
+                           goal_roi=goal.get("roi_annual"), p_star=_st["goal_confidence"],
+                           halve_floor_pct=_st["halve_limit_pct"])
             # PR 94: and which CORE serves the goal, the sleeves as they are.
             if v.get("mode") == "goal" and v.get("outcome") not in (NOT_MEASURABLE, GOAL_NO_TARGET) and current_core:
                 try:
@@ -1160,7 +1168,7 @@ async def compute_for(session, user, *, source: str = "on_demand",
                         candidates=core_candidates, cash_pct=cash_pct, est_kw=est_kw,
                         nav=goal["nav"], target=goal["target"], years=goal["years"],
                         monthly=goal["monthly"], objective=ctx["objective"],
-                        kelly_setting=ctx.get("kelly_fraction_setting"))
+                        kelly_setting=ctx.get("kelly_fraction_setting"), p_star=_st["goal_confidence"])
                 except Exception:  # noqa: BLE001 -- the goal verdict stands without it
                     logger.warning("core choice failed", exc_info=True)
             return v
@@ -1267,6 +1275,8 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
         return {"ok": False, "reason": "NO_GOAL"}
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
     rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct)
+    from app.services.plan_service import get_plan as _gp
+    _st = settings_of(await _gp(session, user))
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
@@ -1278,7 +1288,7 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
                           nav=goal["nav"], target=goal["target"], years=goal["years"], monthly=goal["monthly"],
                           kelly_setting=ctx.get("kelly_fraction_setting"), sleeve_cap_pct=goal["sleeve_cap_pct"],
                           volatility_cap_pct=goal["volatility_cap_pct"], draws=0, rules=rules_ctx,
-                          goal_roi=goal.get("roi_annual"), light=True)
+                          goal_roi=goal.get("roi_annual"), light=True, p_star=_st["goal_confidence"])
 
     v = await offload(work)
     if not v.get("ok") or v.get("mode") != "goal" or "before" not in v:
@@ -1574,8 +1584,14 @@ def settings_of(plan) -> dict:
     else:
         k, k_default = fr.kelly_fraction_for(objective, raw_k), fr.kelly_fraction_for(objective, None)
         k_source = "plan" if raw_k is not None else "objective"
+    raw_h = getattr(plan, "halve_limit_pct", None)
+    raw_t = getattr(plan, "on_track_pct", None)
     return {"mode": "goal" if goal_mode else "risk",
-            "goal_confidence": GOAL_CONFIDENCE,
+            # PR 104c: both limits are the plan's (migration 0027), defaults kept.
+            "goal_confidence": (float(raw_t) / 100.0) if raw_t is not None else GOAL_CONFIDENCE,
+            "on_track_source": "plan" if raw_t is not None else "default",
+            "halve_limit_pct": float(raw_h) if raw_h is not None else HALVE_FLOOR_PCT,
+            "halve_limit_source": "plan" if raw_h is not None else "default",
             "kelly_fraction": k, "kelly_default": k_default, "kelly_source": k_source,
             "kelly_range": [fr.KELLY_MIN, fr.KELLY_MAX],
             "return_confidence": fi.confidence_of(raw_c),
@@ -1623,7 +1639,11 @@ def _goal_verdict_current(plan, live: dict, v: dict, age: float | None,
             or (v.get("confidence") or fi.DEFAULT_CONFIDENCE) != st["return_confidence"]
             or g.get("roi_pct") is None
             or abs(float(g["roi_pct"]) - float(plan.target_roi_pct)) > 1e-9
-            or (g.get("target_date_raw") or None) != (getattr(plan, "target_date", None) or None)):
+            or (g.get("target_date_raw") or None) != (getattr(plan, "target_date", None) or None)
+            # PR 104c: solved under the limits the plan has now.
+            or abs(float(v.get("p_star") or GOAL_CONFIDENCE) - st["goal_confidence"]) > 1e-9
+            or abs(float(((v.get("rules") or {}).get("tuning") or {}).get("halve_floor_pct", st["halve_limit_pct"]))
+                   - st["halve_limit_pct"]) > 1e-9):
         return False
     for s in v.get("sleeves") or []:
         if abs(live.get(s["id"], -1.0) - float(s["current_pct"])) > 0.01:

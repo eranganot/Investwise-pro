@@ -182,6 +182,11 @@ class PlanRequest(BaseModel):
     # past full Kelly the model gives less growth for more risk, so 1.0 is the cap.
     kelly_fraction: float | None = Field(default=None, ge=0.25, le=1.0)
     return_confidence: str | None = Field(default=None, pattern="^(shrunk|blended|measured)$")
+    # PR 104c / migration 0027: the goal's two limits. Crash-risk limit = the most
+    # chance of halving a suggested protection may carry (100 = no limit);
+    # on-track = the chance at which the goal counts as on track.
+    halve_limit_pct: float | None = Field(default=None, ge=0.1, le=100.0)
+    on_track_pct: float | None = Field(default=None, ge=50.0, le=95.0)
 
 
 def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:

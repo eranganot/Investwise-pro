@@ -31,6 +31,10 @@ async def test_goal_cards_stand_down_when_the_rules_moved_and_return_when_they_m
     try:
         with TestClient(app) as c:
             cur = _seed(c, 10)
+            # Building Today retires rules on tickers no longer held (left by
+            # earlier tests), which changes the fingerprint: settle that first,
+            # so the one this test records is the one the build will see.
+            _cards(c)
             async with own_session() as s:
                 fp = await fs.rules_fingerprint(s, await ensure_superadmin(s))
             await _store_verdict(own_session, _goal_verdict(cur, rules_fp="not-" + fp))
