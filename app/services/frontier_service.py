@@ -1576,6 +1576,26 @@ async def goal_story_active(session, user) -> bool:
     return _goal_verdict_current(await get_plan(session, user), live, row.detail or {}, _age_hours(row))
 
 
+def _protect_summary(rb: dict, tu: dict) -> str:
+    """The protection card's one or two sentences: what the rules cost, in the
+    rules' own terms, else how the setup was chosen."""
+    if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
+        outs = [sid for sid, p in zip(rb.get("sleeves") or {}, (rb.get("on") or {}).get("pct_time_out") or []) if p]
+        who = " and ".join(outs) if outs else "the holding"
+        return (f"After a stop fires, the app keeps {who} out until the price falls back below the sale price, "
+                f"so in rising markets {'they sit' if len(outs) > 1 else 'it sits'} out. That costs your goal "
+                f"{abs(rb['effect_pts']):g} points.")
+    return (f"Every setup of your protective rules was replayed on the same paths; this one has the best goal "
+            f"odds with the chance of halving at or under {tu.get('halve_floor_pct', HALVE_FLOOR_PCT):g}%.")
+
+
+def _chip(label: str, before, after, fmt: str = "{:g}", unit: str = "") -> dict:
+    """PR 103: one before -> after chip, both sides formatted the same way."""
+    def f(x):
+        return "-" if x is None else (fmt.format(x) + unit)
+    return {"label": label, "before": f(before), "after": f(after)}
+
+
 async def _goal_cards(session, user, rows, row) -> list[dict]:
     """PR 92: the goal's cards -- a mix card when a trade materially helps the
     goal, and lever cards when even the best mix leaves it under 70%."""
@@ -1677,7 +1697,13 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                     f"Solved {when}"],
             "apply": {"kind": CORE_CARD_KIND, "strategy_id": best_c["id"],
                       "from_strategy_id": cur_c["id"], "objective": v.get("objective")},
-            "meta": {"core_choice": {"current": cur_c, "best": best_c}, "goal": g}})
+            "meta": {"core_choice": {"current": cur_c, "best": best_c}, "goal": g},
+            "summary": (f"Each catalog core was priced from its own tickers with your sleeves as they are; "
+                        f"{best_c['name']} scored best on both methods and in {best_c['win_share']:.0%} of "
+                        f"{cc['draws']} redraws."),
+            "chips": [_chip("odds", cur_c["score_pct"], best_c["score_pct"], unit="%"),
+                      _chip("halving", cur_c["p_halve_pct"], best_c["p_halve_pct"], unit="%"),
+                      _chip("volatility", cur_c["volatility_pct"], best_c["volatility_pct"], unit="%")]})
 
     # PR 96: retune the protective rules for the goal, under a halving floor.
     tu = (v.get("rules") or {}).get("tuning") or {}
@@ -1692,8 +1718,8 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                          else f"move the drawdown guard from {gd['from_pct']:g}% to {gd['to_pct']:g}%")
         cards.append({
             "id": f"rec_goal_protect_{row.id}", "dimension": "goal", "severity": "HIGH",
-            "title": (f"Retune your protection for your goal: odds {cur_s['p_goal_pct']:g}% -> "
-                      f"{best_s['p_goal_pct']:g}%, halving {cur_s['p_halve_pct']:g}% -> {best_s['p_halve_pct']:g}%"),
+            "title": (f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
+                      f"{best_s['p_goal_pct']:g}%"),
             "why": (goal_line + f" Every setup of your protective rules was replayed on the same paths; this is the "
                     f"one with the best goal odds that keeps the chance of halving at or under "
                     f"{tu['halve_floor_pct']:g}%. Take-profits stay (they measured neutral)."),
@@ -1708,7 +1734,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       if ch.get("guard") else []),
                     "Assumes every rule card is accepted the day it fires", f"Solved {when}"],
             "apply": {"kind": RULES_CARD_KIND, "pause_rule_ids": ch["pause_rule_ids"], "guard": ch.get("guard")},
-            "meta": {"tuning": {"current": cur_s, "best": best_s, "changes": ch}, "goal": g}})
+            "meta": {"tuning": {"current": cur_s, "best": best_s, "changes": ch}, "goal": g},
+            "summary": _protect_summary(rb, tu),
+            "chips": [_chip("odds", cur_s["p_goal_pct"], best_s["p_goal_pct"], unit="%"),
+                      _chip("halving", cur_s["p_halve_pct"], best_s["p_halve_pct"], unit="%"),
+                      _chip("median", cur_s["median"], best_s["median"], fmt="{:,.0f}"),
+                      _chip("worst 5%", cur_s["worst5_mean"], best_s["worst5_mean"], fmt="{:,.0f}")]})
 
     if v.get("material") and v["outcome"] in (GOAL_LESS_RISK, GOAL_REBALANCE, GOAL_IMPROVE):
         specs = {sid: strategy_catalog.get(sid) or {} for sid in live}
@@ -1751,6 +1782,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                                        "tax_ils": trades["tax_ils"], "net_ils": trades["net_ils"]}},
                 "meta": {"goal": g, "before": b, "after": a, "sleeves": v["sleeves"], "levers": lv,
                          "outcome": v["outcome"], "age_hours": round(age, 1)},
+                "summary": (f"Resampled {v['draws']} times; a sleeve moves only when today's size sits outside "
+                            f"its whole stability band.{vcap_txt}"),
+                "chips": [_chip("odds", b["goal_probability_pct"], a["goal_probability_pct"], unit="%"),
+                          _chip("median", b["median_at_deadline"], a["median_at_deadline"], fmt="{:,.0f}"),
+                          _chip("growth", b["growth_cagr_pct"], a["growth_cagr_pct"], unit="%/yr"),
+                          _chip("volatility", b["volatility_pct"], a["volatility_pct"], unit="%")],
             })
 
     base = a if v.get("material") else b
@@ -1800,7 +1837,13 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                         "Change or pause it any time on the Cash tab"],
                 "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
                           "add_ils": float(lv["extra_monthly_ils"])},
-                "meta": {"lever": "deposit", "goal": g, "levers": lv}})
+                "meta": {"lever": "deposit", "goal": g, "levers": lv},
+                "summary": (f"Each deposit also has to grow {g.get('roi_pct'):g}%/yr, so your goal becomes "
+                            f"{lv['deposit_goal_after']:,.0f}." if lv.get("deposit_goal_after") else
+                            f"Raises the chance of reaching {g['target']:,.0f} by {deadline} to about {star}%."),
+                "chips": [_chip("monthly", float(g.get("monthly") or 0), new_total, fmt="{:,.0f}"),
+                          _chip("goal", g["target"], lv.get("deposit_goal_after") or g["target"], fmt="{:,.0f}"),
+                          _chip("odds", p_sized, star, unit="%")]})
         roi_now = float(g.get("roi_pct") or 0)
         if reachable_roi and lv["roi_at_confidence_pct"] < roi_now:
             cards.append({
@@ -1813,7 +1856,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                 "how": ["Only the target changes; nothing is bought or sold",
                         "Raise it again any time on the Plan tab"],
                 "apply": {"kind": "set_plan", "fields": {"target_roi_pct": lv["roi_at_confidence_pct"]}},
-                "meta": {"lever": "target", "goal": g, "levers": lv}})
+                "meta": {"lever": "target", "goal": g, "levers": lv},
+                "summary": (f"At {roi_now:g}%/yr your goal asks for growth this book is not estimated to deliver: "
+                            f"a {p_sized:g}% chance{sized_words}."),
+                "chips": [_chip("target", roi_now, lv["roi_at_confidence_pct"], unit="%/yr"),
+                          _chip("goal", g["target"], lv["amount_at_confidence"], fmt="{:,.0f}"),
+                          _chip("odds", p_sized, star, unit="%")]})
         extra = lv.get("deadline_extra_years")
         if extra and extra <= 15 and g.get("deadline"):
             new_year = int(str(g["deadline"])[:4]) + math.ceil(extra)
@@ -1828,7 +1876,16 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                            f"Gives the book {math.ceil(extra)} more year(s) to compound toward your goal."),
                 "how": ["Only the deadline changes; nothing is bought or sold"],
                 "apply": {"kind": "set_plan", "fields": {"target_date": str(new_year)}},
-                "meta": {"lever": "deadline", "goal": g, "levers": lv}})
+                "meta": {"lever": "deadline", "goal": g, "levers": lv},
+                "summary": (f"Another {math.ceil(extra)} year(s) at {g.get('roi_pct'):g}%/yr makes your goal "
+                            f"{lv['deadline_goal_after']:,.0f}." if lv.get("deadline_goal_after") else
+                            f"Gives the book {math.ceil(extra)} more year(s) to compound toward your goal."),
+                "chips": [_chip("deadline", int(str(g["deadline"])[:4]), new_year, fmt="{:d}"),
+                          _chip("goal", g["target"], lv.get("deadline_goal_after") or g["target"], fmt="{:,.0f}"),
+                          _chip("odds", p_sized, star, unit="%")]})
+    # PR 103: "Your goal" is said ONCE, above the goal group, not on every card.
+    for c in cards:
+        c["goal_summary"] = goal_line.strip()
     return cards
 
 

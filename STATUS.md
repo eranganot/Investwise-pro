@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-06 by Claude (PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-06 by Claude (PR 103, shorter cards; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,32 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 103 — shorter cards
+
+**Root cause.** Every goal card opened with the same ~150-word goal paragraph (goal, paths, market, stress case,
+rules replay, core spread, money/time) before its own claim, and every card rendered Why, the action, Impact and a
+How list at the same weight. The card's ask was the fourth thing on it.
+
+**What (approved; word limits are guidelines).**
+- One shape: **title with its number → one or two plain sentences → "Accept will…" → before → after chips →
+  Details**. `summary` is the card's own first two sentences (`first_sentences`) unless the card writes one; the
+  full why, impact, steps, funding legs and audit trail sit behind *Details*. Warnings, "it is back because…" and
+  a decision card's options stay in view. The "app can do this / guidance" tag is gone (PR 102: every card can).
+- Goal cards: `goal_summary` on the payload, rendered once as **"Your goal"** above the goal group; each goal card
+  keeps its own claim (`summary`), what Accept does, and `chips` (`frontier_service._chip`). The protection card
+  follows the plan's example: *"Retune your protection: goal odds 1% -> 16%"*, *"After a stop fires, the app keeps
+  … out … That costs your goal 28 points."*, chips odds / halving / median / worst 5%. `sw.js` → `iw-v43`.
+
+**Guard.** `tests/test_cards_are_short.py` (4): flags a card whose title + summary + Accept passes ~2× the example
+(150 words); today's longest on the adversarial books is 87. **Smoke.** `scripts/smoke/smoke-pr103-short-cards.ps1`.
+
+**PR 102 on production (`0d5d006`, smoke checks from Python).** 4 cards, all with an Accept: retune protection
+(`frontier_rules`), target 6.2%/yr (`set_plan`), core back to Classic 60/40 ₪129 (`core_to_basket`), protect BND
+with a stop (`create_rules`); 1 heads-up ("QQQ is closing on your take-profit"); the ₪5 tax harvest dropped; no
+trade card under the ₪124 floor; banner clean. CI `37484402108` green on all three jobs.
 
 ---
 

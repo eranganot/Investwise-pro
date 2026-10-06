@@ -107,7 +107,9 @@ async def test_accept_pauses_the_rules_and_moves_the_guard(own_session):
                                        "guard": {"rule_id": g, "from_pct": 10.0, "to_pct": 15.0}}}}))
             card = next((x for x in _cards(c) if x["id"].startswith("rec_goal_protect_")), None)
             assert card is not None, [x["title"] for x in _cards(c)]
-            assert "odds 0.5% -> 22.7%, halving 0% -> 0.8%" in card["title"]
+            # PR 103: the title carries the claim; halving moved to a chip.
+            assert card["title"] == "Retune your protection: goal odds 0.5% -> 22.7%"
+            assert {"label": "halving", "before": "0%", "after": "0.8%"} in card["chips"]
             assert card["apply"]["kind"] == fs.RULES_CARD_KIND
             r = c.post(f"/api/v1/recommendations/{card['id']}/accept").json()
             assert r.get("applied") == fs.RULES_CARD_KIND, r

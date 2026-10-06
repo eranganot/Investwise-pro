@@ -1049,8 +1049,8 @@ async function loadToday(){
     // "show them" used to call the bulk restores, which erased every mark and
     // put every card back live -- accept-able twice -- with no sign of what
     // it had been. Looking is now read-only; Restore is per card.
-    $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
-      + (more.length?(MORE_HTML=more.map(recCard).join(""),moreNote(more)):"")
+    $("recs").innerHTML=(recs.length?withGoalSummary(recs,r.goal_summary):emptyRecs(hidden,done,hiddenCards))
+      + (more.length?(MORE_HTML=withGoalSummary(more,recs.some(o=>o.dimension==="goal")?null:r.goal_summary),moreNote(more)):"")
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
       + headsupList(r.headsups||[])
       + reviewTable(r.holding_review||[]);
@@ -1214,63 +1214,66 @@ function fundingBlock(o){
     <b>💰 How it's funded:</b><ul style="margin:4px 0 0;padding-left:18px">${legs.join("")}</ul>
     <div class="mk" style="margin-top:4px">Buy ${ils(sp.amount_ils)} of ${sp.ticker}</div></div>`;
 }
+// PR 103: one shape for every card -- title with its number, one or two plain
+// sentences, what Accept does, before -> after chips, and everything else
+// (the full why, impact, steps, funding legs, the audit trail) behind Details.
+// Warnings and a card's decision options stay in view: they change what Accept means.
+function chipsHtml(o){
+  const cs=o.chips||[]; if(!cs.length) return "";
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0">${cs.map(c=>
+    `<span style="font-size:12px;padding:2px 8px;border-radius:9px;background:var(--card2);border:1px solid var(--line)">${esc(c.label)} ${esc(c.before)} &rarr; <b>${esc(c.after)}</b></span>`).join("")}</div>`;
+}
 function recCard(o){
   const how=(o.how||[]).map(x=>`<li>${x}</li>`).join("");
-  const why=o.why?`<div class="why" style="font-size:13px;opacity:.8;margin:2px 0 6px"><b>Why:</b> ${o.why}</div>`:"";
+  const body=o.summary?`<div style="font-size:13px;margin:2px 0 6px">${o.summary}</div>`:"";
+  const fullWhy=(o.why&&o.why!==o.summary)?`<div class="why" style="font-size:13px;opacity:.85;margin:4px 0"><b>Why:</b> ${o.why}</div>`:"";
   const impact=o.impact?`<div class="impact" style="font-size:13px;margin:6px 0;padding:6px 8px;border-left:3px solid #3b82f6;background:rgba(59,130,246,.08);border-radius:4px"><b>Impact:</b> ${o.impact}</div>`:"";
   const fund=fundingBlock(o);
   // PR 70: other ideas that fill the same gap ride on this card, not beside it.
   const alts=(o.alternatives||[]).length
     ? `<div class="mk" style="margin:4px 0">Also fills this gap: ${(o.alternatives||[]).map(a=>`${a.title||a.ticker}${a.score!=null?` (priority ${a.score})`:""}`).join(" · ")}</div>`
     : "";
-  // Say up front whether the app can execute this or whether it's guidance you
-  // act on yourself -- Accept used to look identical for both.
-  const tag=o.actionable
-    ? `<span class="mk" style="color:#34d399">⚡ The app can do this for you</span>`
-    : `<span class="mk">💡 Guidance — you act on this yourself</span>`;
-  // WHICH STRATEGY THIS CARD SERVES.
-  //
-  // Eran: "I want to add indication to the cards on Today that marked to which
-  // strategy it is applied to." The label is the visible half; the reason it
-  // was worth building is that a card which cannot name its scope is usually a
-  // card computed at the wrong one -- the rebalance card measured a 36% core
-  // target against 100% of the book, and the top card wanted to trim a sleeve
-  // that was exactly on target. Both were unlabelled.
+  // WHICH STRATEGY THIS CARD SERVES (Eran: "marked to which strategy it is applied to").
   const sc=o.scope||{};
   const _SCOPE_STYLE={
     sleeve:"background:rgba(96,165,250,.14);color:#7fb0e5",
     core:  "background:rgba(88,200,140,.14);color:#79c8a0",
     book:  "background:rgba(190,190,190,.12);color:#b8b8b8"};
   const scopeChip=sc.label
-    ? `<span style="${_SCOPE_STYLE[sc.kind]||_SCOPE_STYLE.book};font-size:10px;padding:1px 6px;
-         border-radius:9px;letter-spacing:.3px">${sc.kind==="sleeve"?"SLEEVE":sc.kind==="core"?"CORE":"BOOK"} · ${sc.label}</span>`
+    ? `<div style="margin:2px 0 6px"><span style="${_SCOPE_STYLE[sc.kind]||_SCOPE_STYLE.book};font-size:10px;padding:1px 6px;
+         border-radius:9px;letter-spacing:.3px">${sc.kind==="sleeve"?"SLEEVE":sc.kind==="core"?"CORE":"BOOK"} · ${sc.label}</span></div>`
     : "";
   // Anything the contradiction pass had to say about this card, on the card.
-  // A suppressed sibling that vanishes silently is how eleven cards went
-  // missing in PR 4; a warning that only exists in the payload is the same
-  // failure with extra steps.
   const notes=(o.notes||[]).length
     ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid var(--warn,#e5b857);
          background:rgba(229,184,87,.07);border-radius:4px">${(o.notes||[]).map(n=>`⚠ ${n}`).join("<br>")}</div>`
     : "";
-  // A CARD THAT COMES BACK SAYS WHY IT CAME BACK. Reappearing with no
-  // explanation reads as the app having forgotten you dealt with it -- which is
-  // the complaint the mute exists to prevent, arriving by another door.
+  // A CARD THAT COMES BACK SAYS WHY IT CAME BACK.
   const back=o.refired_because
     ? `<div class="mk" style="margin:4px 0;padding:5px 7px;border-left:3px solid #60a5fa;
          background:rgba(96,165,250,.08);border-radius:4px">You marked this handled &mdash; it is back because ${o.refired_because}.</div>`
     : "";
+  const act=o.action?(/^accept\b/i.test(o.action)?o.action:`<b>Accept will:</b> ${o.action}`):"";
+  const details=(fullWhy||impact||fund||alts||how||o.audit_trail)
+    ? `<details style="margin:6px 0"><summary class="mk" style="cursor:pointer">Details</summary>
+        ${fullWhy}${impact}${fund}${alts}${how?`<div style="margin:4px 0"><b>How:</b><ol>${how}</ol></div>`:""}${auditAccordion(o)}</details>`
+    : "";
   return `<div class="rec"${o.refired_because?' style="border-left:3px solid #60a5fa"':''}><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}"${o.priority?` title="Priority ${o.priority.score}: money ${o.priority.money}, time ${o.priority.time}, your rules ${o.priority.rules}${o.priority.quality!=null?`, idea quality ${o.priority.quality}`:""}"`:""}>${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
-    <div style="margin:2px 0 6px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">${scopeChip}${tag}</div>
-    ${why}
-    <div class="act">${o.action}</div>
+    ${scopeChip}${body}
+    <div class="act">${act}</div>
+    ${chipsHtml(o)}
     ${back}${notes}
-    ${impact}
-    ${fund}${alts}
-    <div class="how" id="how_${o.id}"><b>How:</b><ol>${how}</ol></div>
-    ${auditAccordion(o)}
     ${decisionBlock(o)}
-    <div class="acts"><button onclick="toggleHow('${o.id}')">How?</button>${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
+    ${details}
+    <div class="acts">${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
+}
+// PR 103: "Your goal" once, above the first goal card.
+function withGoalSummary(list,summary){
+  let said=false;
+  return list.map(o=>{
+    if(o.dimension==="goal"&&summary&&!said){said=true;
+      return `<div class="card mk" style="margin:10px 0 6px;font-size:13px"><b>Your goal</b><div style="margin-top:4px">${summary}</div></div>`+recCard(o);}
+    return recCard(o);}).join("");
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}
 function _applyMsg(j){

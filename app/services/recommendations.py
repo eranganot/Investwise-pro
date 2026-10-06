@@ -325,6 +325,13 @@ def _unrealized_ils(rows, only: list[str] | None = None, sign: int = -1) -> floa
 # Plain-language fallbacks so every card explains *why* it fired and its *impact*,
 # even for the agent-built cards that don't set these fields explicitly. Kept
 # qualitative on purpose — the advisor never invents numbers it hasn't computed.
+def first_sentences(text: str, n: int) -> str:
+    """The first `n` sentences of `text`, verbatim."""
+    import re as _re
+    parts = _re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\u20aa])", (text or "").strip())
+    return " ".join(parts[:n]).strip()
+
+
 def _ensure_why_impact(recs: list[dict]) -> list[dict]:
     """Every recommendation carries an 'audit_trail'; 'why' and 'impact' are
     the card's OWN text or empty.
@@ -340,6 +347,11 @@ def _ensure_why_impact(recs: list[dict]) -> list[dict]:
         r["actionable"] = _is_actionable(r)
         r["why"] = r.get("why") or ""
         r["impact"] = r.get("impact") or ""
+        # PR 103: the card body is one or two plain sentences -- the card's own
+        # first ones; the full why moves behind Details.
+        if not r.get("summary"):
+            r["summary"] = first_sentences(r["why"], 2)
+        r.setdefault("chips", [])
         if not r.get("audit_trail"):
             rd: dict = {"reason": r.get("why") or r.get("action") or r.get("title") or dim,
                         "severity": r.get("severity")}
@@ -3049,6 +3061,8 @@ async def build_recommendations(session: AsyncSession, user: User,
             # PR 102: knowledge without an ask -- bottom of Today, above the
             # Holding review (D2), collapsed.
             "headsups": headsups, "headsups_dropped": _dropped,
+            # PR 103: "Your goal", said once above the goal cards.
+            "goal_summary": next((r["goal_summary"] for r in recs if r.get("goal_summary")), None),
             "market": market,
             # What the book is managed to, and where each half came from. On the
             # payload rather than only inside a card, so a smoke test can assert
