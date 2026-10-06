@@ -345,6 +345,11 @@ class Plan(Base, PKMixin, TimestampMixin):
     # 'measured'; NULL = 'shrunk'.
     kelly_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     return_confidence: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    # PR 104c / migration 0027: the goal's two limits, as settings (Eran,
+    # 2026-10-07: "I want every decision to be controlled and changeable through
+    # the app"). Crash-risk limit in % (NULL = 1.0); on-track bar in % (NULL = 70).
+    halve_limit_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    on_track_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
     # one size can describe exactly one sleeve, so the moment a book could run
     # several they became a pointer to the most recently applied -- and a

@@ -63,6 +63,10 @@ async def lifespan(app: FastAPI):
                     # means the objective's Kelly default and 'shrunk'.
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS kelly_fraction DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS return_confidence VARCHAR(12)",
+                    # Migration 0027 (PR 104c): the goal's two limits. NULL means
+                    # a 1% crash-risk limit and a 70% on-track bar.
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS halve_limit_pct DOUBLE PRECISION",
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS on_track_pct DOUBLE PRECISION",
                     # plans.strategy / strategy_sleeve_pct are DROPPED here, not
                     # added. They were the single-sleeve model and `plan_sleeves`
                     # replaced them; the last thing they said in production was
