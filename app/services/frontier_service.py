@@ -589,6 +589,10 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
                        "sleeves": {sid: (rules.get("sleeves") or {}).get(sid) for sid in sleeve_ids},
+                       # The order every per-sleeve list below is in. A JSON object's
+                       # key order does not survive Postgres JSONB (keys come back
+                       # sorted), so the dict above cannot carry it.
+                       "sleeve_ids": list(sleeve_ids),
                        "guard": rules.get("guard"),
                        "guard_target": sleeve_ids[g_spec["col"]] if g_spec else None,
                        "not_simulated": rules.get("not_simulated") or [],
@@ -1576,11 +1580,27 @@ async def goal_story_active(session, user) -> bool:
     return _goal_verdict_current(await get_plan(session, user), live, row.detail or {}, _age_hours(row))
 
 
-def _protect_summary(rb: dict, tu: dict) -> str:
+def rule_sleeve_order(rb: dict, v: dict | None = None) -> list[str]:
+    """The sleeves the rules replay's per-sleeve lists (pct_time_out,
+    exits_per_year, ...) are aligned to.
+
+    Zipping `rb["sleeves"]` (an object) against those lists paired each figure
+    with the wrong sleeve on Postgres, where JSONB returns object keys sorted:
+    "time out of the market" read SOXL's number under QQQ. `sleeve_ids` is the
+    order itself; a verdict stored before it falls back to the verdict's own
+    sleeve rows, a JSON list, whose order survives."""
+    if rb.get("sleeve_ids"):
+        return list(rb["sleeve_ids"])
+    keys = list(rb.get("sleeves") or {})
+    rows = [s.get("id") for s in ((v or {}).get("sleeves") or []) if s.get("id") in keys]
+    return rows + [k for k in keys if k not in rows]
+
+
+def _protect_summary(rb: dict, tu: dict, v: dict | None = None) -> str:
     """The protection card's one or two sentences: what the rules cost, in the
     rules' own terms, else how the setup was chosen."""
     if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
-        outs = [sid for sid, p in zip(rb.get("sleeves") or {}, (rb.get("on") or {}).get("pct_time_out") or []) if p]
+        outs = [sid for sid, p in zip(rule_sleeve_order(rb, v), (rb.get("on") or {}).get("pct_time_out") or []) if p]
         who = " and ".join(outs) if outs else "the holding"
         return (f"After a stop fires, the app keeps {who} out until the price falls back below the sale price, "
                 f"so in rising markets {'they sit' if len(outs) > 1 else 'it sits'} out. That costs your goal "
@@ -1661,7 +1681,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       f"{off['p_halve_pct']:g}% without. If a stop waited for a 15% rebound before buying back: "
                       f"{fix['p_goal_pct']:g}% chance, {fix['p_halve_pct']:g}% halving.")
         if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
-            outs = [f"{sid} {p:g}%" for sid, p in zip(rb.get("sleeves") or {}, on.get("pct_time_out") or []) if p]
+            outs = [f"{sid} {p:g}%" for sid, p in zip(rule_sleeve_order(rb, v), on.get("pct_time_out") or []) if p]
             goal_line += (f" Your rules cost this goal {abs(rb['effect_pts']):g} points: after a stop or take-profit "
                           f"the app keeps the holding out until its price falls back below the sale price, so in "
                           f"rising markets it stays out"
@@ -1735,7 +1755,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                     "Assumes every rule card is accepted the day it fires", f"Solved {when}"],
             "apply": {"kind": RULES_CARD_KIND, "pause_rule_ids": ch["pause_rule_ids"], "guard": ch.get("guard")},
             "meta": {"tuning": {"current": cur_s, "best": best_s, "changes": ch}, "goal": g},
-            "summary": _protect_summary(rb, tu),
+            "summary": _protect_summary(rb, tu, v),
             "chips": [_chip("odds", cur_s["p_goal_pct"], best_s["p_goal_pct"], unit="%"),
                       _chip("halving", cur_s["p_halve_pct"], best_s["p_halve_pct"], unit="%"),
                       _chip("median", cur_s["median"], best_s["median"], fmt="{:,.0f}"),

@@ -55,17 +55,12 @@ ON = {"p_goal_pct": 1.0, "p_halve_pct": 0.0, "median": 31968, "worst5_mean": 221
 async def test_the_goal_group_says_your_goal_once_and_each_card_its_own_claim(own_session):
     try:
         with TestClient(app) as c:
-            # The adversarial books above leave sleeves applied; a verdict only
-            # speaks for the book it was solved on, so clear every other sleeve
-            # (Postgres keeps them between tests; SQLite happened not to).
-            for sl in c.get("/api/v1/plan/sleeves").json().get("sleeves") or []:
-                if sl["strategy_id"].startswith("btm_") and sl["strategy_id"] != "btm_qqq_hold":
-                    c.post(f"/api/v1/strategies/{sl['strategy_id']}/apply?sleeve_pct=0")
             cur = _goal_seed(c, 10)
             await _store_verdict(own_session, _goal_verdict(
                 cur, rules={"on": ON, "off": {**ON, "p_goal_pct": 29.0, "pct_time_out": [0, 0]},
                             "rebound": {**ON, "p_goal_pct": 1.5}, "effect_pts": -28.0, "fix_effect_pts": 0.5,
-                            "sleeves": {"btm_trend_soxl": {}, "btm_qqq_hold": {}}, "tuning": TUNING},
+                            "sleeves": {"btm_trend_soxl": {}, "btm_qqq_hold": {}},
+                            "sleeve_ids": ["btm_trend_soxl", "btm_qqq_hold"], "tuning": TUNING},
                 headline={"p_goal_pct": 1.0, "without_rules_pct": 29.0, "basis": "rules"}))
             body = c.get("/api/v1/recommendations").json()
         goal = [x for x in (body.get("recommendations") or []) + (body.get("more_recommendations") or [])
@@ -95,3 +90,17 @@ def test_chip_formats_both_sides_alike():
     assert fs._chip("median", 31968, 36055, fmt="{:,.0f}") == {"label": "median", "before": "31,968",
                                                               "after": "36,055"}
     assert fs._chip("odds", None, 70, unit="%") == {"label": "odds", "before": "-", "after": "70%"}
+
+
+def test_per_sleeve_figures_keep_their_order_when_postgres_sorts_the_keys():
+    """JSONB returns {"btm_trend_soxl", "btm_qqq_hold"} as qqq-first; the time-out
+    figures must still belong to the sleeve they were measured on."""
+    rb = {"sleeves": {"btm_qqq_hold": {}, "btm_trend_soxl": {}},      # as Postgres hands it back
+          "sleeve_ids": ["btm_trend_soxl", "btm_qqq_hold"],
+          "on": {"pct_time_out": [62.1, 0.0]}, "effect_pts": -28.0}
+    assert fs.rule_sleeve_order(rb) == ["btm_trend_soxl", "btm_qqq_hold"]
+    assert fs._protect_summary(rb, {}).startswith("After a stop fires, the app keeps btm_trend_soxl out")
+    # a verdict stored before sleeve_ids: the verdict's own sleeve rows (a list) give the order
+    old = {k: v for k, v in rb.items() if k != "sleeve_ids"}
+    v = {"sleeves": [{"id": "btm_trend_soxl"}, {"id": "btm_qqq_hold"}]}
+    assert fs.rule_sleeve_order(old, v) == ["btm_trend_soxl", "btm_qqq_hold"]
