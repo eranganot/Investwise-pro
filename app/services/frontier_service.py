@@ -1179,6 +1179,10 @@ async def compute_for(session, user, *, source: str = "on_demand",
         out["goal"]["target_date_raw"] = goal.get("target_date_raw")
     out["computed_at"] = datetime.now(timezone.utc).isoformat()
     out["version"] = FRONTIER_TAG
+    try:
+        out["rules_fp"] = await rules_fingerprint(session, user)
+    except Exception:  # noqa: BLE001 -- a verdict without one is judged as before
+        logger.warning("rules fingerprint unavailable", exc_info=False)
     await record(session, user, out, source=source)
     return out
 
@@ -1496,9 +1500,37 @@ def settings_of(plan) -> dict:
             "confidence_levels": list(fi.CONFIDENCE_LEVELS)}
 
 
-def _goal_verdict_current(plan, live: dict, v: dict, age: float | None) -> bool:
-    """Is a stored GOAL verdict still about this plan and this book?"""
+# PR 104a.1: the rules a verdict's rules replay ran with. Accepting "Retune your
+# protection" paused five stops and moved the guard, and the Plan tab went on
+# showing the verdict solved before it -- 0.7%, "cost your goal 28 pts", the same
+# card -- so Eran saw "nothing happened". A verdict is about the rules it measured.
+FP_RULE_TYPES = ("profit_protect", "trailing_stop", "stop_loss", "drawdown_guard")
+
+
+async def rules_fingerprint(session, user) -> str:
+    """The armed protective rules, as one short string: id, level, armed."""
+    import hashlib
+
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+    rows = (await session.scalars(select(TradingRule).where(
+        TradingRule.subject == user.email, TradingRule.rule_type.in_(FP_RULE_TYPES)))).all()
+    key = "|".join(sorted(f"{r.id}:{float(r.level or 0):g}:{int(bool(r.active))}" for r in rows))
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def rules_changed_since(v: dict, fp_now: str | None) -> bool:
+    """True when the verdict recorded its rules and they are not today's."""
+    return bool(v.get("rules_fp") and fp_now and v["rules_fp"] != fp_now)
+
+
+def _goal_verdict_current(plan, live: dict, v: dict, age: float | None,
+                          fp_now: str | None = None) -> bool:
+    """Is a stored GOAL verdict still about this plan, this book and these rules?"""
     if age is None or age > MAX_AGE_H or plan is None:
+        return False
+    if rules_changed_since(v, fp_now):
         return False
     g = v.get("goal") or {}
     st = settings_of(plan)
@@ -1549,7 +1581,8 @@ async def book_expectation(session, user) -> dict | None:
         return None
     live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
     age = _age_hours(row)
-    if not _goal_verdict_current(await get_plan(session, user), live, v, age):
+    if not _goal_verdict_current(await get_plan(session, user), live, v, age,
+                                 await rules_fingerprint(session, user)):
         return None
     b = v.get("before") or {}
     if b.get("growth_cagr_pct") is None or b.get("volatility_pct") is None:
@@ -1577,7 +1610,18 @@ async def goal_story_active(session, user) -> bool:
     if (row.detail or {}).get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET):
         return False
     live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    # No rules fingerprint here: a verdict made stale by a rules change still
+    # OWNS the goal story -- the older behind-goal card must not come back with a
+    # second, different number while the goal cards wait for the re-solve.
     return _goal_verdict_current(await get_plan(session, user), live, row.detail or {}, _age_hours(row))
+
+
+def sleeve_label(sid: str) -> str:
+    """What a person calls a sleeve: the tickers it holds (SOXL), not its id."""
+    from app.services import strategy_catalog
+    spec = strategy_catalog.get(sid) or {}
+    tks = [t for t in (spec.get("weights") or {})]
+    return "/".join(tks) if tks else sid
 
 
 def rule_sleeve_order(rb: dict, v: dict | None = None) -> list[str]:
@@ -1600,7 +1644,8 @@ def _protect_summary(rb: dict, tu: dict, v: dict | None = None) -> str:
     """The protection card's one or two sentences: what the rules cost, in the
     rules' own terms, else how the setup was chosen."""
     if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
-        outs = [sid for sid, p in zip(rule_sleeve_order(rb, v), (rb.get("on") or {}).get("pct_time_out") or []) if p]
+        outs = [sleeve_label(sid) for sid, p in zip(rule_sleeve_order(rb, v),
+                                                      (rb.get("on") or {}).get("pct_time_out") or []) if p]
         who = " and ".join(outs) if outs else "the holding"
         return (f"After a stop fires, the app keeps {who} out until the price falls back below the sale price, "
                 f"so in rising markets {'they sit' if len(outs) > 1 else 'it sits'} out. That costs your goal "
@@ -1627,7 +1672,8 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     age = _age_hours(row)
     plan = await get_plan(session, user)
     live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
-    if v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET) or not _goal_verdict_current(plan, live, v, age):
+    if v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET) or not _goal_verdict_current(
+            plan, live, v, age, await rules_fingerprint(session, user)):
         return []
     if stale_views(v):
         return []
@@ -1681,7 +1727,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                       f"{off['p_halve_pct']:g}% without. If a stop waited for a 15% rebound before buying back: "
                       f"{fix['p_goal_pct']:g}% chance, {fix['p_halve_pct']:g}% halving.")
         if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
-            outs = [f"{sid} {p:g}%" for sid, p in zip(rule_sleeve_order(rb, v), on.get("pct_time_out") or []) if p]
+            outs = [f"{sleeve_label(sid)} {p:g}%" for sid, p in zip(rule_sleeve_order(rb, v), on.get("pct_time_out") or []) if p]
             goal_line += (f" Your rules cost this goal {abs(rb['effect_pts']):g} points: after a stop or take-profit "
                           f"the app keeps the holding out until its price falls back below the sale price, so in "
                           f"rising markets it stays out"

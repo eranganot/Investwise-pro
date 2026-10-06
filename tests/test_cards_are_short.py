@@ -70,7 +70,7 @@ async def test_the_goal_group_says_your_goal_once_and_each_card_its_own_claim(ow
         protect = next(x for x in goal if x["id"].startswith("rec_goal_protect_"))
         # The plan's own example, card by card.
         assert protect["title"] == "Retune your protection: goal odds 1% -> 16%"
-        assert protect["summary"].startswith("After a stop fires, the app keeps btm_trend_soxl and btm_qqq_hold out")
+        assert protect["summary"].startswith("After a stop fires, the app keeps SOXL and QQQ out")
         assert protect["summary"].endswith("That costs your goal 28 points.")
         assert protect["action"] == ("Accept will pause 2 stop rules and move the drawdown guard 10% -> 15%. "
                                      "Nothing is bought or sold; one tap re-arms them.")
@@ -99,7 +99,7 @@ def test_per_sleeve_figures_keep_their_order_when_postgres_sorts_the_keys():
           "sleeve_ids": ["btm_trend_soxl", "btm_qqq_hold"],
           "on": {"pct_time_out": [62.1, 0.0]}, "effect_pts": -28.0}
     assert fs.rule_sleeve_order(rb) == ["btm_trend_soxl", "btm_qqq_hold"]
-    assert fs._protect_summary(rb, {}).startswith("After a stop fires, the app keeps btm_trend_soxl out")
+    assert fs._protect_summary(rb, {}).startswith("After a stop fires, the app keeps SOXL out")
     # a verdict stored before sleeve_ids: the verdict's own sleeve rows (a list) give the order
     old = {k: v for k, v in rb.items() if k != "sleeve_ids"}
     v = {"sleeves": [{"id": "btm_trend_soxl"}, {"id": "btm_qqq_hold"}]}

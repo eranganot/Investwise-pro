@@ -6038,6 +6038,22 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
         detail = await apply_rules_tuning(session, user, spec)
         if detail.get("refused"):
             return {"ok": False, "applied": "none", "title": rec["title"], **detail}
+        # PR 104a.1: the verdict that suggested this was solved on the OLD rules;
+        # without a re-solve the screen kept its numbers and read as "nothing
+        # happened". Same solve a firing rule triggers (`resolve_after_rule`).
+        try:
+            from app.services.frontier_service import compute_for
+            v2 = await compute_for(session, user, source="rules_changed")
+            hl = v2.get("headline") or {}
+            detail["resolved"] = {"outcome": v2.get("outcome"), "headline": hl}
+            if hl.get("p_goal_pct") is not None:
+                detail["note"] = (f"Done. Your goal re-solved on the new rules: {hl['p_goal_pct']:g}% chance"
+                                  + (f" ({hl['without_rules_pct']:g}% with no rules at all)."
+                                     if hl.get("without_rules_pct") is not None else "."))
+        except Exception:  # noqa: BLE001 -- the rules are changed; tonight's solve catches up
+            logger.warning("re-solve after a rules retune failed", exc_info=True)
+            detail["note"] = ("Done. Your rules are changed; the goal's odds update after the next solve "
+                              "(Plan > Goal > Re-solve now).")
     elif kind == "frontier_core":
         from app.services.frontier_service import apply_core_switch
         detail = await apply_core_switch(session, user, spec)

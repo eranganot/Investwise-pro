@@ -122,7 +122,7 @@ async def test_goal_cards_state_the_rules_and_the_stress_case(own_session):
             assert "Your chance today: 1% with your protective rules as they work (33% without them)." in dep["why"]
             assert "Chance the book halves at some point: 0% with your rules, 40% without" in dep["why"]
             assert "Your rules cost this goal 32 points" in dep["why"]
-            assert "btm_qqq_hold 62.1%" in dep["why"]
+            assert "QQQ 62.1%" in dep["why"]          # PR 104a.1: named by what it holds
     finally:
         await _reset_plan(own_session)
 

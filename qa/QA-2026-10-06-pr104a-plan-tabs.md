@@ -53,10 +53,6 @@ on purpose (see "looks bad but isn't")._
 - On Goal, press **Details** on the target card → it expands. (Don't press Accept unless you mean it.)
 - If you do accept something here: the Plan tab refreshes in place (it used to jump back to Today's data).
 
-## 8. Hebrew
-- Switch the phone to Hebrew, open Plan: the three sub-tab labels and the cards render without overlapping;
-  numbers stay left-to-right.
-
 ## Looks bad but isn't
 - **"Goal settings" (the old form) is still on the Goal sub-tab**, with "Years invested", Kelly and trust dials, and
   one "Save my plan" button. Step (b) replaces target/deadline/deposit with the Edit-goal sheet; step (c) replaces
@@ -74,6 +70,5 @@ Reply with just:
 ✅/❌ 5. Protective rules
 ✅/❌ 6. Explore
 ✅/❌ 7. Accept from Plan
-✅/❌ 8. Hebrew
 For any ❌ — one line: what you saw.
 ```

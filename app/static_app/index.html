@@ -1409,7 +1409,7 @@ function actBtn(o){
   if(ap.kind==="held_cash"&&ap.options) return "";
   if(ap.kind==="rule_vs_sleeve"&&ap.options) return "";
   return o.actionable
-    ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
+    ? `<button class="acc" onclick="acceptRec('${o.id}',true,this)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
 }
 // PR 102: knowledge without an ask. One line each, collapsed; swipe left (or x)
@@ -1434,11 +1434,13 @@ async function huDismiss(id){
   try{await fetch(`/api/v1/recommendations/headsups/${encodeURIComponent(id)}/dismiss`,{method:"POST"});}catch(e){}
 }
 
-async function acceptRec(id,actionable){
+async function acceptRec(id,actionable,btn){
   const msg=actionable
     ? "Apply this now? It will update your holdings/plan."
     : "Mark this as done?\n\nThis is guidance — nothing will be bought or sold. It just clears the card and stops the reminders.";
   if(!confirm(msg))return;
+  // PR 104a.1: say it is working. A rules retune re-solves the goal (~20 s).
+  if(btn){btn.disabled=true;btn.textContent="Applying…";}
   try{const r=await fetch(`/api/v1/recommendations/${id}/accept`,_statePost(_cardState(id)));
     const j=await r.json().catch(()=>({}));
     if(r.status===404){
@@ -1449,9 +1451,9 @@ async function acceptRec(id,actionable){
       _reloadView();return;
     }
     if(!r.ok){throw new Error(j.detail||"Failed to apply");}
-    alert(_applyMsg(j));
+    alert(j.note||_applyMsg(j));
     _reloadView();  // clear cached holdings so the sale/cash shows immediately
-  }catch(e){alert(e.message||e);}
+  }catch(e){alert(e.message||e); if(btn){btn.disabled=false;btn.textContent="✓ Accept";}}
 }
 async function decideRule(id,choice){
   let q=`choice=${choice}`, msg;
@@ -2977,14 +2979,22 @@ async function loadPlanExtras(){
   $("protBox").innerHTML=protectionPanel((rules&&rules.rules)||[],f||{},protect);
 }
 
+async function resolveGoalNow(btn){
+  if(btn){btn.disabled=true;btn.textContent="Solving… (~20 s)";}
+  try{const r=await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    if(!r.ok) throw new Error("Re-solve failed ("+r.status+")");}
+  catch(e){alert(e.message||e);}
+  _reloadView();
+}
 function goalSummary(p,f){
   const g=p.goal||{};
   if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
   const hl=(p.expectation&&p.expectation.headline)||null;
   const prog=Math.max(0,Math.min(100,Math.round((p.goal_progress||0)*100)));
   const on=hl&&hl.p_goal_pct!=null?hl.p_goal_pct>=70:null;
-  const need=(f&&f.ok&&f.mode==="goal"&&f.levers)?f.levers.required_cagr_pct:null;
-  const exp=p.assumption_basis==="frontier"?p.portfolio_expected_roi_pct:null;
+  const need=(f&&f.ok&&f.mode==="goal"&&f.levers)?Math.round(f.levers.required_cagr_pct):null;
+  const exp=p.assumption_basis==="frontier"?Math.round(p.portfolio_expected_roi_pct):null;
+  const rb=(f&&f.rules)||{}, offH=rb.off?rb.off.p_halve_pct:null, onH=rb.on?rb.on.p_halve_pct:null;
   return `<div style="display:flex;justify-content:space-between;align-items:center">
       <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Your goal</span>
       ${on==null?"":_chip(on?"on track":"off track",on?"ok":"warn")}</div>
@@ -2994,10 +3004,13 @@ function goalSummary(p,f){
     ${hl&&hl.p_goal_pct!=null?`<div style="display:flex;align-items:baseline;gap:10px;margin-top:8px">
         <span style="font-size:32px;font-weight:800;color:${on?"var(--green)":"var(--warn,#e5b857)"}">${hl.p_goal_pct}%</span>
         <span>chance${hl.without_rules_pct!=null?", with your protective rules as they are":""}</span></div>`
-      :`<div class="mk" style="margin-top:8px">The chance is computed by tonight's goal solve.</div>`}
+      :`<div class="mk" style="margin-top:8px">${f&&f.ok?"Your rules or your book changed since the goal was last solved, so its odds are out of date.":"The goal has not been solved yet."}
+          <div class="acts" style="margin-top:6px"><button class="acc" onclick="resolveGoalNow(this)">Re-solve now</button></div></div>`}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
-      ${hl&&hl.without_rules_pct!=null?_chip(`${hl.without_rules_pct}% without them`):""}
-      ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}</div>`;
+      ${hl&&hl.without_rules_pct!=null?_chip(`${hl.without_rules_pct}% without them${offH!=null?`, but a ${Math.round(offH)}% chance the book halves`:""}`):""}
+      ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}</div>
+    ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
+      ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH)}% with them, ${Math.round(offH)}% without) and cost growth: after a stop fires, the holding sits out until its price falls back below the sale price.</div>`:""}`;
 }
 
 // What you hold against the plan: each sleeve, the core, commodities and cash.
