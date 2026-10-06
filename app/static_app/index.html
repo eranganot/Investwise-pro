@@ -1049,8 +1049,8 @@ async function loadToday(){
     // "show them" used to call the bulk restores, which erased every mark and
     // put every card back live -- accept-able twice -- with no sign of what
     // it had been. Looking is now read-only; Restore is per card.
-    $("recs").innerHTML=(recs.length?withGoalSummary(recs,r.goal_summary):emptyRecs(hidden,done,hiddenCards))
-      + (more.length?(MORE_HTML=withGoalSummary(more,recs.some(o=>o.dimension==="goal")?null:r.goal_summary),moreNote(more)):"")
+    $("recs").innerHTML=(recs.length?withGoalSummary(recs,r.goal_summary,r.goal_summary_head):emptyRecs(hidden,done,hiddenCards))
+      + (more.length?(MORE_HTML=withGoalSummary(more,recs.some(o=>o.dimension==="goal")?null:r.goal_summary,r.goal_summary_head),moreNote(more)):"")
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
       + headsupList(r.headsups||[])
       + reviewTable(r.holding_review||[]);
@@ -1268,11 +1268,14 @@ function recCard(o){
     <div class="acts">${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
 }
 // PR 103: "Your goal" once, above the first goal card.
-function withGoalSummary(list,summary){
+function withGoalSummary(list,summary,head){
   let said=false;
   return list.map(o=>{
     if(o.dimension==="goal"&&summary&&!said){said=true;
-      return `<div class="card mk" style="margin:10px 0 6px;font-size:13px"><b>Your goal</b><div style="margin-top:4px">${summary}</div></div>`+recCard(o);}
+      const top=head||summary;
+      return `<div class="card mk" style="margin:10px 0 6px;font-size:13px"><b>Your goal</b><div style="margin-top:4px">${top}</div>`
+        +(head?`<details style="margin-top:4px"><summary style="cursor:pointer">More</summary><div style="margin-top:4px">${summary}</div></details>`:"")
+        +`</div>`+recCard(o);}
     return recCard(o);}).join("");
 }
 function toggleHow(id){const e=$("how_"+id);e.style.display=e.style.display==="block"?"none":"block";}

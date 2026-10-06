@@ -55,6 +55,12 @@ ON = {"p_goal_pct": 1.0, "p_halve_pct": 0.0, "median": 31968, "worst5_mean": 221
 async def test_the_goal_group_says_your_goal_once_and_each_card_its_own_claim(own_session):
     try:
         with TestClient(app) as c:
+            # The adversarial books above leave sleeves applied; a verdict only
+            # speaks for the book it was solved on, so clear every other sleeve
+            # (Postgres keeps them between tests; SQLite happened not to).
+            for sl in c.get("/api/v1/plan/sleeves").json().get("sleeves") or []:
+                if sl["strategy_id"].startswith("btm_") and sl["strategy_id"] != "btm_qqq_hold":
+                    c.post(f"/api/v1/strategies/{sl['strategy_id']}/apply?sleeve_pct=0")
             cur = _goal_seed(c, 10)
             await _store_verdict(own_session, _goal_verdict(
                 cur, rules={"on": ON, "off": {**ON, "p_goal_pct": 29.0, "pct_time_out": [0, 0]},
@@ -71,7 +77,11 @@ async def test_the_goal_group_says_your_goal_once_and_each_card_its_own_claim(ow
         assert protect["title"] == "Retune your protection: goal odds 1% -> 16%"
         assert protect["summary"].startswith("After a stop fires, the app keeps btm_trend_soxl and btm_qqq_hold out")
         assert protect["summary"].endswith("That costs your goal 28 points.")
-        assert protect["action"].startswith("Accept will pause")
+        assert protect["action"] == ("Accept will pause 2 stop rules and move the drawdown guard 10% -> 15%. "
+                                     "Nothing is bought or sold; one tap re-arms them.")
+        assert body["goal_summary_head"].startswith("Your goal: 82,692 by 2031-12-31 (30%/yr")
+        assert "Your chance today: 1% with your protective rules as they work (29% without them)." \
+            in body["goal_summary_head"]
         assert [ch["label"] for ch in protect["chips"]] == ["odds", "halving", "median", "worst 5%"]
         assert protect["chips"][0] == {"label": "odds", "before": "1%", "after": "16%"}
         for x in goal:

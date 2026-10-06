@@ -1711,11 +1711,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         ch, cur_s, best_s = tu["changes"], tu["current"]["stats"], tu["best"]["stats"]
         steps = []
         if ch["pause_rules"]:
-            steps.append("pause " + ", ".join(ch["pause_rules"]))
+            n_p = len(ch["pause_rules"])
+            steps.append(f"pause {n_p} stop rule{'s' if n_p > 1 else ''}")
         if ch.get("guard"):
             gd = ch["guard"]
             steps.append(f"set the drawdown guard to {gd['to_pct']:g}%" if gd.get("from_pct") is None
-                         else f"move the drawdown guard from {gd['from_pct']:g}% to {gd['to_pct']:g}%")
+                         else f"move the drawdown guard {gd['from_pct']:g}% -> {gd['to_pct']:g}%")
         cards.append({
             "id": f"rec_goal_protect_{row.id}", "dimension": "goal", "severity": "HIGH",
             "title": (f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
@@ -1723,8 +1724,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
             "why": (goal_line + f" Every setup of your protective rules was replayed on the same paths; this is the "
                     f"one with the best goal odds that keeps the chance of halving at or under "
                     f"{tu['halve_floor_pct']:g}%. Take-profits stay (they measured neutral)."),
-            "action": ("Accept will " + "; ".join(steps) + ". Paused rules stay on the Rules tab - one tap re-arms them. "
-                       "Nothing is bought or sold."),
+            "action": ("Accept will " + " and ".join(steps) + ". Nothing is bought or sold; one tap re-arms them."),
             "impact": (f"Chance of reaching your goal {cur_s['p_goal_pct']:g}% -> {best_s['p_goal_pct']:g}%; chance "
                        f"the book halves {cur_s['p_halve_pct']:g}% -> {best_s['p_halve_pct']:g}%; median at the "
                        f"deadline {cur_s['median']:,.0f} -> {best_s['median']:,.0f}; worst 5% "
@@ -1883,9 +1883,18 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                 "chips": [_chip("deadline", int(str(g["deadline"])[:4]), new_year, fmt="{:d}"),
                           _chip("goal", g["target"], lv.get("deadline_goal_after") or g["target"], fmt="{:,.0f}"),
                           _chip("odds", p_sized, star, unit="%")]})
-    # PR 103: "Your goal" is said ONCE, above the goal group, not on every card.
+    # PR 103: "Your goal" is said ONCE, above the goal group, not on every card:
+    # the goal and its one headline chance up front, the rest behind More.
+    head = (f"Your goal: {g['target']:,.0f} by {deadline} ({g.get('roi_pct'):g}%/yr on what you put in)."
+            + (f" Your chance today: {hl['p_goal_pct']:g}%"
+               + (f" with your protective rules as they work ({hl['without_rules_pct']:g}% without them)."
+                  if hl.get("without_rules_pct") is not None else ".")
+               if hl.get("p_goal_pct") is not None else "")
+            + (f" Adding money or time doesn't help this goal: it asks {mt['roi_pct']:g}%/yr on every shekel, "
+               f"and the book is expected to make about {mt['expected_cagr_pct']:.0f}%." if mt else ""))
     for c in cards:
         c["goal_summary"] = goal_line.strip()
+        c["goal_summary_head"] = head
     return cards
 
 

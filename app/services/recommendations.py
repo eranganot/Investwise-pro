@@ -3063,6 +3063,7 @@ async def build_recommendations(session: AsyncSession, user: User,
             "headsups": headsups, "headsups_dropped": _dropped,
             # PR 103: "Your goal", said once above the goal cards.
             "goal_summary": next((r["goal_summary"] for r in recs if r.get("goal_summary")), None),
+            "goal_summary_head": next((r["goal_summary_head"] for r in recs if r.get("goal_summary_head")), None),
             "market": market,
             # What the book is managed to, and where each half came from. On the
             # payload rather than only inside a card, so a smoke test can assert
@@ -3927,6 +3928,9 @@ def _holding_review_recs(rows, snap, closes_by_ticker: dict, measured: dict,
                 "id": _rid("review_g", tk, state), "dimension": "holding_review",
                 "severity": "MEDIUM",
                 "title": f"{tk}'s trend turned down on {horizon} — protect it with a stop",
+                "summary": (f"{tk}'s moving averages point down on {horizon}"
+                            + (f" and it is {abs(float(m['drawdown_52w_pct'])):.1f}% below its 52-week high."
+                               if m.get("drawdown_52w_pct") is not None else ".")),
                 "why": m_line + (f" {bt_line}" if bt_line else ""),
                 "action": (f"{not_sell} Arm a stop-loss at {stop:,.2f} (~{buf:.0f}% below "
                            f"today's {last:,.2f}) instead."),
