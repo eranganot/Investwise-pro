@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-06 by Claude (PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-06 by Claude (PR 104a, the Plan tab's three sub-tabs — **Pending QA: `qa/QA-2026-10-06-pr104a-plan-tabs.md`**; PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,40 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 104a — the Plan tab: Goal · My mix · Explore (step a of 3)
+
+**Decision (Eran, 2026-10-06; Execution plan v2.2).** D6 = **A + C**: A's three sub-tabs, each built the C way
+(status rows + edit sheets with a live odds preview), protective rules in My mix. D5 = "What would it take?" folded
+at the foot of Explore. Reference screens: canvas "InvestWise Plan tab options", row "Suggested: A's sub-tabs, built
+the C way…" (AC-Goal, AC-Mix, AC-Explore, AC-EditGoal, AC-Protect). Built in three steps, each shipped and
+Pixel-QA'd: **(a) the sub-tabs with today's blocks moved in** ← this; (b) the Goal and Rules sheets; (c) the
+risk-dials sheet and the removals ("Years invested", the duplicate objective/risk).
+
+**Root cause of the old screen (from the canvas).** One long scroll: objective + risk twice with two save paths;
+"Years invested" governs nothing (the deadline does); risk set in five places; two solvers side by side; browsing
+the catalog in the middle of managing the book; one Save at the bottom.
+
+**What.**
+- `#view-plan` → a Goal · My mix · Explore switch (`planTab`, remembered per device).
+- **Goal:** summary card — goal by deadline, progress, the one headline chance (with your rules; "without them"
+  and "needs X%/yr · expected Y%" chips; on/off-track chip); "Ways to close the gap" = the goal cards (Accept works
+  in place, `_reloadView`), with the retune as a one-line link to My mix; the old goal form below as "Goal settings"
+  until (b)/(c) replace it.
+- **My mix:** held vs target for each sleeve, the core, commodities and cash (core target = 100 − sleeves −
+  commodities − cash, as `book_target` composes it); "… pts to fund"; Fund all sleeves / Change core (the core
+  picker opens in place); **Your protective rules**: stops (profit-protect, trailing, stop-loss) on the sleeves'
+  tickers and the drawdown guard, "cost your goal N pts" from the verdict's rules replay, the Retune card; link to
+  Holdings › Rules for take-profits, caps and buy-back holds.
+- **Explore:** the strategy catalog; "What would it take?" in a closed fold at the bottom.
+- The core's own objective/risk selector is gone from the sleeves panel (it duplicated Goal settings). `sw.js` →
+  `iw-v45`.
+
+**Tests.** `tests/test_plan_tab_layout.py` (4): the sub-tabs, which block is in which, D5's fold, the rules filter.
+**Smoke.** `scripts/smoke/smoke-pr104a-plan-tabs.ps1 -Sha <serving sha>`. **QA.** `qa/QA-2026-10-06-pr104a-plan-tabs.md`
+(8 checks, Pixel 9).
 
 ---
 

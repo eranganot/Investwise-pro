@@ -440,11 +440,20 @@
 
   <!-- PLAN -->
   <section id="view-plan" class="hide">
-    <h2>Your plan & goals</h2>
-    <h2 style="margin-top:0">Choose a strategy</h2>
-    <div class="card" id="stratBox"><div class="muted">Loading strategies…</div></div>
-    <div class="card hide" id="stratOut" style="margin-top:8px"></div>
-    <div class="card">
+    <!-- PR 104 (Execution plan v2.2, D6): A's three sub-tabs, built the C way,
+         with the protective rules in My mix. Step (a): today's blocks moved in. -->
+    <h2 style="margin-bottom:6px">Plan</h2>
+    <div class="seg" id="planSeg" role="tablist" style="display:flex;margin:0 0 10px">
+      <button data-p="goal" role="tab" onclick="planTab('goal')" style="flex:1">Goal</button>
+      <button data-p="mix" role="tab" onclick="planTab('mix')" style="flex:1">My mix</button>
+      <button data-p="explore" role="tab" onclick="planTab('explore')" style="flex:1">Explore</button>
+    </div>
+    <div class="card hide" id="stratOut" style="margin-bottom:8px"></div>
+    <div id="plan-goal">
+      <div class="card" id="goalSum"><div class="muted">Loading your goal…</div></div>
+      <div id="goalWays"></div>
+      <div class="mk" style="margin:12px 4px 4px;text-transform:uppercase;letter-spacing:.06em">Goal settings</div>
+      <div class="card">
       <div class="goal" id="goalbig"></div>
       <div class="bar2" style="margin:8px 0 4px"><i id="goalfill" style="width:0%;background:var(--green)"></i></div>
       <div class="grid2">
@@ -481,6 +490,18 @@
       <button class="primary" onclick="savePlan()">Save my plan</button>
       <div class="muted" id="plan_out" style="margin-top:10px"></div>
       <div class="how" id="plan_note" style="display:block;background:var(--soft);border-radius:10px;padding:10px;margin-top:12px;color:#aebacb;font-size:13px"></div>
+    </div>
+    </div>
+    <div id="plan-mix" class="hide">
+      <div id="mixBox"><div class="card muted">Loading…</div></div>
+      <div id="protBox"></div>
+    </div>
+    <div id="plan-explore" class="hide">
+      <div class="card" id="stratBox"><div class="muted">Loading strategies…</div></div>
+      <details class="card" id="wwitBox" style="margin-top:10px">
+        <summary style="cursor:pointer"><b>What would it take?</b> <span class="mk">· size your sleeves to beat SPY</span></summary>
+        <div id="wwitBody" style="margin-top:8px"></div>
+      </details>
     </div>
   </section>
 
@@ -639,7 +660,7 @@ function show(v){
   window.scrollTo(0,0);
   if(v==="today") loadToday();
   if(v==="hold"){loadHoldings();loadCommodities();loadRules();}
-  if(v==="plan"){loadStrategies();loadPlan();}
+  if(v==="plan"){planTab(PLANTAB);loadStrategies();loadPlan();loadPlanExtras();}
   if(v==="markets") loadMarkets();
   if(v==="agents") loadWar();
   if(v==="explore") loadExplore();
@@ -1425,11 +1446,11 @@ async function acceptRec(id,actionable){
       // Drop it outright — don't park it in the ignored list, where it would
       // look like something you'd deliberately hidden.
       alert("That suggestion no longer applies, so I've removed it.");
-      HMAP={};loadToday();return;
+      _reloadView();return;
     }
     if(!r.ok){throw new Error(j.detail||"Failed to apply");}
     alert(_applyMsg(j));
-    HMAP={};loadToday();  // clear cached holdings so the sale/cash shows immediately
+    _reloadView();  // clear cached holdings so the sale/cash shows immediately
   }catch(e){alert(e.message||e);}
 }
 async function decideRule(id,choice){
@@ -2913,10 +2934,141 @@ function sleevePanel(){
     </div>`;
 }
 
+// ===================================================================== PR 104
+// The Plan tab: Goal · My mix · Explore (Execution plan v2.2, D6 confirmed
+// 2026-10-06: A's sub-tabs, built the C way, protective rules in My mix).
+let PLANTAB=(()=>{try{return localStorage.getItem("iw_plantab")||"goal";}catch(e){return "goal";}})();
+let MYMIX=null;
+function planTab(t){
+  PLANTAB=t; try{localStorage.setItem("iw_plantab",t);}catch(e){}
+  for(const k of ["goal","mix","explore"]) $("plan-"+k).classList.toggle("hide",k!==t);
+  document.querySelectorAll("#planSeg button").forEach(b=>{const on=b.dataset.p===t;
+    b.classList.toggle("on",on); b.setAttribute("aria-selected",on?"true":"false");});
+}
+function _reloadView(){
+  HMAP={};
+  if(!$("view-plan").classList.contains("hide")){loadStrategies();loadPlan();loadPlanExtras();}
+  else loadToday();
+}
+const _MONTHS=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function _monYear(d){const p=String(d||"").slice(0,10).split("-");return p.length<2?String(d||"—"):`${_MONTHS[+p[1]-1]||""} ${p[0]}`;}
+function _chip(t,cls){return `<span class="mk" style="display:inline-block;padding:2px 9px;border-radius:999px;border:1px solid var(--line);${cls==="warn"?"color:var(--warn,#e5b857)":cls==="ok"?"color:var(--green)":""}">${t}</span>`;}
+
+// The goal, its one headline chance, and what closes the gap -- plus the
+// protective rules on My mix. One fetch of each, shared by both sub-tabs.
+async function loadPlanExtras(){
+  let p=null,f=null,r=null,rules=null;
+  await Promise.all([
+    fetch("/api/v1/plan").then(x=>x.json()).then(j=>p=j).catch(()=>{}),
+    fetch("/api/v1/plan/frontier").then(x=>x.json()).then(j=>f=j).catch(()=>{}),
+    fetch("/api/v1/recommendations").then(x=>x.json()).then(j=>r=j).catch(()=>{}),
+    fetch("/api/v1/rules").then(x=>x.json()).then(j=>rules=j).catch(()=>{})]);
+  const goalCards=r?[...(r.recommendations||[]),...(r.more_recommendations||[])].filter(o=>o.dimension==="goal"):[];
+  goalCards.forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),severity:o.severity||null};});
+  $("goalSum").innerHTML=goalSummary(p||{},f||{});
+  const protect=goalCards.find(o=>String(o.id).startsWith("rec_goal_protect_"));
+  const others=goalCards.filter(o=>o!==protect);
+  $("goalWays").innerHTML=(others.length||protect)
+    ? `<div class="mk" style="margin:12px 4px 4px;text-transform:uppercase;letter-spacing:.06em">Ways to close the gap</div>`
+      + others.map(recCard).join("")
+      + (protect?`<button class="card" onclick="planTab('mix')" style="display:flex;justify-content:space-between;width:100%;text-align:left;cursor:pointer;color:inherit;margin-top:8px">
+          <b>${protect.title}</b><span class="mk">My mix &rsaquo;</span></button>`:"")
+    : "";
+  $("protBox").innerHTML=protectionPanel((rules&&rules.rules)||[],f||{},protect);
+}
+
+function goalSummary(p,f){
+  const g=p.goal||{};
+  if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
+  const hl=(p.expectation&&p.expectation.headline)||null;
+  const prog=Math.max(0,Math.min(100,Math.round((p.goal_progress||0)*100)));
+  const on=hl&&hl.p_goal_pct!=null?hl.p_goal_pct>=70:null;
+  const need=(f&&f.ok&&f.mode==="goal"&&f.levers)?f.levers.required_cagr_pct:null;
+  const exp=p.assumption_basis==="frontier"?p.portfolio_expected_roi_pct:null;
+  return `<div style="display:flex;justify-content:space-between;align-items:center">
+      <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Your goal</span>
+      ${on==null?"":_chip(on?"on track":"off track",on?"ok":"warn")}</div>
+    <div style="font-size:22px;font-weight:750;margin:4px 0">${ils(p.target_amount)} by ${_monYear(g.deadline||p.target_date)}</div>
+    <div class="bar2" style="margin:6px 0 4px"><i style="width:${prog}%;background:var(--green)"></i></div>
+    <div class="mk" style="display:flex;justify-content:space-between"><span>${ils(p.current_value||0)} today</span><span>${prog}% of the way</span></div>
+    ${hl&&hl.p_goal_pct!=null?`<div style="display:flex;align-items:baseline;gap:10px;margin-top:8px">
+        <span style="font-size:32px;font-weight:800;color:${on?"var(--green)":"var(--warn,#e5b857)"}">${hl.p_goal_pct}%</span>
+        <span>chance${hl.without_rules_pct!=null?", with your protective rules as they are":""}</span></div>`
+      :`<div class="mk" style="margin-top:8px">The chance is computed by tonight's goal solve.</div>`}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+      ${hl&&hl.without_rules_pct!=null?_chip(`${hl.without_rules_pct}% without them`):""}
+      ${need!=null&&exp!=null?_chip(`needs ${need}%/yr · expected ${exp}%`):""}</div>`;
+}
+
+// What you hold against the plan: each sleeve, the core, commodities and cash.
+function mixPanel(){
+  const S=MYSLEEVES; if(!S) return `<div class="card muted">Could not read your sleeves.</div>`;
+  const cur=(MYMIX&&MYMIX.current_allocation)||{};
+  const comT=(S.commodities_pct||0)*100, cashT=(S.cash_reserve_pct||0)*100;
+  const comH=(cur.Commodities||0)*100, cashH=(cur.Cash||0)*100;
+  const sl=(S.sleeves||[]).map(x=>({name:_stratName(x.strategy_id),held:(x.held_pct||0)*100,tgt:+x.sleeve_pct||0,id:x.strategy_id}));
+  const sleevesT=sl.reduce((a,x)=>a+x.tgt,0);
+  const coreT=Math.max(0,100-sleevesT-comT-cashT);
+  const coreH=Math.max(0,(S.core_held_pct||0)*100-comH-cashH);
+  const rows=[...sl.map(x=>({...x,kind:"sleeve"})),
+    {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core"},
+    ...(comT>0||comH>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
+    {name:"Cash",held:cashH,tgt:cashT,kind:"cash"}];
+  const max=Math.max(1,...rows.map(x=>Math.max(x.held,x.tgt)));
+  const toFund=sl.reduce((a,x)=>a+Math.max(0,x.tgt-x.held),0);
+  const r1=v=>(Math.round(v*10)/10).toFixed(1);
+  const bar=x=>{const off=Math.abs(x.held-x.tgt)>=1;
+    return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span>${x.name}</span>
+        <span style="display:flex;gap:6px;align-items:center">${_chip(`${r1(x.held)}% / ${r1(x.tgt)}%`,off?"warn":"ok")}
+          ${x.kind==="sleeve"?`<button class="ghost" style="font-size:11px;padding:2px 6px" onclick="removeSleeve('${x.id}','${x.name.replace(/'/g,"")}')" aria-label="Remove the ${x.name} sleeve">Remove</button>`:""}</span></div>
+      <div style="position:relative;height:8px;background:var(--line);border-radius:4px;margin-top:6px">
+        <i style="position:absolute;left:0;top:0;height:8px;border-radius:4px;background:#4f8df7;width:${Math.min(100,x.held/max*100)}%"></i>
+        <i style="position:absolute;top:-4px;width:2px;height:16px;background:var(--ink,#e6edf6);left:${Math.min(100,x.tgt/max*100)}%"></i></div></div>`;};
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 4px 6px">
+      <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">What you hold vs your plan</span>
+      ${toFund>=0.5?_chip(`${r1(toFund)} pts to fund`,"warn"):_chip("funded","ok")}</div>
+    <div class="card" style="padding-top:2px;padding-bottom:2px">${rows.map(bar).join("")}</div>
+    <div class="acts" style="margin-top:8px"><button class="acc" style="flex:1" onclick="fundAllSleeves()">Fund all sleeves</button>
+      <button style="flex:1" onclick="toggleCorePicker()">${COREPICK?"Close":"Change core"}</button></div>
+    ${(!S.core||COREPICK)?`<div class="card" style="margin-top:8px">${corePicker()}</div>`:""}`;
+}
+
+// The stops on what your sleeves hold, and the drawdown guard: what protects the
+// book, what it costs the goal, and the retune. Take-profits, caps and buy-back
+// holds stay on Holdings > Rules.
+const _STOP_TYPES={profit_protect:"Profit-protect",trailing_stop:"Trailing stop",stop_loss:"Stop-loss"};
+function protectionPanel(rules,f,protect){
+  const sleeves=(MYSLEEVES&&MYSLEEVES.sleeves)||[];
+  const tick={}; sleeves.forEach(x=>(x.tickers||[]).forEach(t=>tick[t.toUpperCase()]=_stratName(x.strategy_id)));
+  const stops=rules.filter(x=>_STOP_TYPES[x.rule_type]&&tick[String(x.ticker).toUpperCase()]);
+  const guard=rules.find(x=>x.rule_type==="drawdown_guard");
+  if(!stops.length&&!guard) return "";
+  const lvl=x=>x.status&&x.rule_type==="profit_protect"?x.status
+    :x.mode==="pct"?`${x.level}% below the peak`:(+x.level).toLocaleString(undefined,{maximumFractionDigits:2});
+  const by={}; stops.forEach(x=>{(by[x.ticker]=by[x.ticker]||[]).push(x);});
+  const groups=Object.keys(by).map(t=>`<div style="padding:4px 0"><b>${t}</b> <span class="mk">· ${tick[t.toUpperCase()]}</span>
+      ${by[t].map(x=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-top:3px">
+        <span class="mk">${_STOP_TYPES[x.rule_type]}${x.active?"":" (paused)"}</span><span>${lvl(x)}</span></div>`).join("")}</div>`).join(`<div style="height:1px;background:var(--line);margin:6px 0"></div>`);
+  const eff=f&&f.rules&&f.rules.effect_pts;
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin:14px 4px 6px">
+      <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Your protective rules</span>
+      ${eff!=null&&eff<=-5?_chip(`cost your goal ${Math.abs(eff)} pts`,"warn"):""}</div>
+    <div class="card">${groups}
+      ${guard?`<div style="height:1px;background:var(--line);margin:6px 0"></div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><b>Drawdown guard <span class="mk">· whole book</span></b>
+        <span>${guard.level}%${guard.active?"":" (paused)"}${guard.status?` · ${String(guard.status).split(" · ")[0]}`:""}</span></div>`:""}
+      ${protect?`<div style="margin-top:10px">${recCard(protect)}</div>`:""}
+      <div class="mk" style="margin-top:8px">Take-profits, caps and buy-back holds:
+        <a href="#" onclick="show('hold');holdSeg('rules');return false">Holdings &rsaquo; Rules</a></div></div>`;
+}
+
 async function loadStrategies(){
   if(!STRAT){try{STRAT=await(await fetch("/api/v1/strategies")).json();}catch(e){$("stratBox").innerHTML='<div class="bad">'+e+'</div>';return;}}
   try{ MYPLAN=await(await fetch("/api/v1/plan")).json(); }catch(e){ MYPLAN=null; }
   try{ MYSLEEVES=await(await fetch("/api/v1/plan/sleeves")).json(); }catch(e){ MYSLEEVES=null; }
+  try{ MYMIX=await(await fetch("/api/v1/mix")).json(); }catch(e){ MYMIX=null; }
   // Only when there is a choice to put in front of you. Fetching the fourteen
   // families on every render, to draw nothing, is a request that exists to be
   // thrown away.
@@ -2968,9 +3120,14 @@ async function loadStrategies(){
               : `<button class="load" onclick="loadStratBasket('${s.id}','${s.name.replace(/'/g,'')}')">↻ Replace book with this basket</button>`)}
       </div>
     </div>`;}).join("");
-  $("stratBox").innerHTML=sleevePanel()+targetCard()+`<div class="stgoal">${tabs}</div>`
+  // PR 104: My mix gets the holdings-vs-plan view, Explore the catalog and,
+  // folded at its foot, "What would it take?" (D5).
+  $("mixBox").innerHTML=mixPanel();
+  $("stratBox").innerHTML=`<div class="mk" style="text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Strategy catalog</div>`
+    + `<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list;
+  $("wwitBody").innerHTML=targetCard();
 }
 
 // Clearing the core sells nothing either, and there are no caps behind it -- a
