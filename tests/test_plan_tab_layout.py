@@ -40,3 +40,16 @@ def test_the_rules_section_shows_only_stops_and_the_guard():
     m = re.search(r"const _STOP_TYPES=\{([^}]*)\}", HTML)
     assert m and set(re.findall(r"(\w+):", m.group(1))) == {"profit_protect", "trailing_stop", "stop_loss"}
     assert 'rule_type==="drawdown_guard"' in HTML
+
+
+def test_the_goal_rows_and_the_two_sheets():
+    """PR 104b: Edit opens a sheet with its own Save and a live odds preview."""
+    assert 'id="goalRows"' in _section("plan-goal")
+    bg = HTML[HTML.index('<div id="sheetBg"'):HTML.index('<div id="sheetBg"') + 400]
+    assert "display:none" in bg, "the sheet must start hidden (an inline display would beat .hide)"
+    for fn in ("function openGoalSheet()", "function openRulesSheet()", "async function saveGoalSheet(",
+               "async function saveRulesSheet("):
+        assert fn in HTML
+    assert HTML.count('fetch("/api/v1/plan/frontier/preview"') == 1      # one debounced preview path
+    assert HTML.count('await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});') >= 2  # both Saves re-solve
+    assert 'onclick="openRulesSheet()"' in HTML

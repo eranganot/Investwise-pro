@@ -1984,7 +1984,9 @@ async def build_recommendations(session: AsyncSession, user: User,
         _trig = getattr(plan, "cash_redeploy_at_ils", None) if plan is not None else None
         _review, _rcards = _holding_review_recs(
             rows, snap, _cl, _meas, _sleeve_notes, _cash_ils,
-            float(_trig) if _trig is not None else None)
+            float(_trig) if _trig is not None else None,
+            armed_stops={str(r.get("ticker") or "").upper() for r in (_user_rules or [])
+                         if r.get("active") and r.get("rule_type") == "stop_loss"})
         # Eran, 2026-09-29 (option a): a holding the nightly run has not
         # measured -- bought today, or the run missed it -- is measured now in
         # the background; the next Today load reads the result.
@@ -3812,7 +3814,8 @@ def stop_buffer_pct(closes: list[float], *, horizon_days: int = 10, k: float = 1
 
 def _holding_review_recs(rows, snap, closes_by_ticker: dict, measured: dict,
                          sleeve_notes: dict, cash_ils: float,
-                         trigger_ils: float | None) -> tuple[list[dict], list[dict]]:
+                         trigger_ils: float | None, *,
+                         armed_stops: set | None = None) -> tuple[list[dict], list[dict]]:
     """PR 77 -- (review rows, cards). Pure: every input is already fetched.
 
     One row per non-cash holding with every number that produced its state; a
@@ -3905,7 +3908,10 @@ def _holding_review_recs(rows, snap, closes_by_ticker: dict, measured: dict,
                           {"kind": "sell_position", "ticker": held[0].ticker, "shares": shares}),
                 "meta": {"ticker": tk, "state": state, "measurement": j,
                          "assumptions": (meas or {}).get("assumptions")}})
-        elif m.get("ok"):
+        elif m.get("ok") and tk not in (armed_stops or set()):
+            # PR 104b: never offer a stop on a holding that already has one armed
+            # (production 2026-10-07: BND's stop at 64.46 was armed and the card
+            # offered a second at 64.42).
             # Eran, 2026-09-28: "the card should be actionable". Without a
             # measured edge the card may not SELL (Q5), so its action is the
             # protection a broken trend calls for: a stop-loss scaled to the

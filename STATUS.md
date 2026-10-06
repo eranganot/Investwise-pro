@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-06 by Claude (PR 104a.2, paused rules are decisions / Ignore on Plan / review actions; PR 104a.1, retune Accept re-solves the goal; PR 104a, the Plan tab's three sub-tabs — **Pending QA: `qa/QA-2026-10-06-pr104a-plan-tabs.md`**; PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-06 by Claude (PR 104b, Edit-goal / Edit-rules sheets with a live odds preview; PR 104a.2, paused rules are decisions / Ignore on Plan / review actions; PR 104a.1, retune Accept re-solves the goal; PR 104a, the Plan tab's three sub-tabs — **Pending QA: `qa/QA-2026-10-06-pr104a-plan-tabs.md`**; PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,35 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 104b — the Edit-goal and Edit-rules sheets, with a live odds preview (step b of 3)
+
+**What (canvas AC-EditGoal, AC-Protect; Eran's QA: "my mix has the rules but I can't change it").**
+- `POST /plan/frontier/preview` → `frontier_service.preview()`: the goal's odds as they WOULD be — another ROI,
+  deadline or monthly deposit (`_goal_context(roi_pct=, target_date=, monthly=)`, the same goal formula; a deposit
+  raises a "ROI on every shekel" goal by the extra deposits compounded, PR 99's rule), or other rules armed / the guard
+  elsewhere (`_rules_context(armed=, guard_pct=)`). Same model and rules replay as the nightly solve, `goal_solve(
+  light=True)`: no resampling, no retune search, no stress case, no lever search. **Stores nothing.**
+- Plan > Goal: rows **Target / Monthly deposit / Risk dials** with Edit. **Edit your goal** sheet: ROI, deadline,
+  monthly deposit (one standing order is created / changed / removed; with several the field is read-only → Cash
+  tab), "If you save this": goal amount, chance with your rules, with none (and its halving), halving. Save → PUT /plan
+  (+ standing order) → re-solve → reload.
+- Plan > My mix: **Edit rules** → sheet: each stop on the sleeves' tickers (ticked = armed) and the drawdown guard
+  (level + armed), pre-filled with the app's suggested retune when there is one; live preview; Save → toggles /
+  PATCHes the rules → re-solve → reload.
+- One bottom sheet for the app (`openSheet` / `closeSheet`), preview debounced 650 ms with "Updating…". `sw.js` →
+  `iw-v48`. Risk dials still edit in the old form until step (c).
+- From Eran's QA (2026-10-07): a restored "BND … protect it with a stop" card offered a second stop (64.42) while one
+  at 64.46 was armed. `_holding_review_recs(armed_stops=)`: no stop card for a holding with a stop-loss armed.
+  (His other question — "I restored the last rule, why is it still 16.7% and not 28.7%?": stops on BND/GOOGL/VTI/
+  UGA/USO are not simulated by the goal model; the gap 16.7% → 29.7% is the drawdown guard alone, which holds halving
+  at 0.5% vs 71% under his 1% limit. Restore brings a card back, it does not undo a rule.)
+
+**Tests.** `tests/test_the_sheets_preview_the_odds.py` (2): later deadline / deposit raise the goal, lower ROI lowers
+it, rules-as-they-would-be change the replay, nothing is stored or changed; `test_plan_tab_layout` (+1).
+**Smoke.** `scripts/smoke/smoke-pr104b-sheets.ps1` (read-only).
 
 ---
 

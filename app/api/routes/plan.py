@@ -736,6 +736,24 @@ async def frontier_inputs(session: AsyncSession = Depends(get_session),
     return await frontier_inputs_for(session, user)
 
 
+class PreviewRequest(BaseModel):
+    """PR 104b: what the Edit-goal / Edit-rules sheets would change. Nothing is saved."""
+    target_roi_pct: float | None = Field(default=None, ge=0.0, le=500.0)
+    target_date: str | None = Field(default=None, pattern=r"^\d{4}$")
+    monthly_ils: float | None = Field(default=None, ge=0.0, le=10_000_000.0)
+    armed: dict[str, bool] | None = None
+    guard_pct: float | None = Field(default=None, gt=0.0, le=90.0)
+
+
+@router.post("/plan/frontier/preview")
+async def frontier_preview(req: PreviewRequest, session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
+    """The goal's odds as they WOULD be. Read-only: no verdict is stored."""
+    from app.services import frontier_service as fs
+    return await fs.preview(session, user, roi_pct=req.target_roi_pct, target_date=req.target_date,
+                            monthly=req.monthly_ils, armed=req.armed, guard_pct=req.guard_pct)
+
+
 @router.get("/plan/frontier")
 async def frontier_latest(session: AsyncSession = Depends(get_session),
                           user: User = Depends(acting_user)) -> dict:

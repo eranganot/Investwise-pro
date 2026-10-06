@@ -19,6 +19,17 @@ def test_exit_with_a_measured_edge_is_an_actionable_full_sale():
     assert "Not financial advice." in c["how"]
 
 
+def test_no_stop_is_offered_on_a_holding_that_already_has_one_armed():
+    """PR 104b: BND's stop at 64.46 was armed and the card offered a second at 64.42."""
+    rows = [row("QQQX", 10.0, 150.0)]
+    _r, cards = _holding_review_recs(rows, {"nav": 10_000}, {"QQQX": down_both()}, {}, {},
+                                     cash_ils=500.0, trigger_ils=1500.0, armed_stops={"QQQX"})
+    assert not [c for c in cards if (c.get("apply") or {}).get("kind") == "create_rules"]
+    _r, cards = _holding_review_recs(rows, {"nav": 10_000}, {"QQQX": down_both()}, {}, {},
+                                     cash_ils=500.0, trigger_ils=1500.0)
+    assert [c for c in cards if (c.get("apply") or {}).get("kind") == "create_rules"], "fixture sanity"
+
+
 def test_trim_sells_the_versioned_fraction():
     _r, cards = _run(short_dip(), measurement())
     c = cards[0]

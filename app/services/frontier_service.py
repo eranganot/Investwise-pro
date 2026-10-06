@@ -411,7 +411,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                kelly_setting: float | None = None, sleeve_cap_pct: float = 40.0,
                volatility_cap_pct: float | None = None, p_star: float = GOAL_CONFIDENCE,
                draws: int = GOAL_DRAWS, seed: int = SEED, rules: dict | None = None,
-               goal_roi: float | None = None) -> dict:
+               goal_roi: float | None = None, light: bool = False) -> dict:
     """Which mix best serves the user's goal. Pure.
 
     ``goal_roi`` (PR 99) is the plan's yearly ROI when the goal is "this ROI on
@@ -584,7 +584,8 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                                        nav=nav, rf_daily=rf_daily, **kw)
             return paths.rules_stats(sim, target=target if target_ is None else target_, p_star=p_star)
         r_off, r_on, r_fix = run(rules_on=False), run(), run(reentry="rebound")
-        tuning = _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on)
+        # PR 104b: a preview (light) asks "what if these rules", not "which rules".
+        tuning = None if light else _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on)
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
@@ -604,7 +605,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
 
     # ---- PR 95: the stress case (shrunk estimate) on every goal verdict ---
     stress = None
-    if est0["confidence"] != fi.CONFIDENCE_SHRUNK:
+    if est0["confidence"] != fi.CONFIDENCE_SHRUNK and not light:
         est_s = fi.estimate(ils, assets, **{**est_kw, "confidence": fi.CONFIDENCE_SHRUNK})
         mu_s, cov_s = _reduce(est_s["mu"], est_s["cov"], sleeve_idx, core_vec, cash_idx)
 
@@ -651,7 +652,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
     levers = {"required_cagr_pct": round(math.expm1(g_req) * 100, 2) if g_req is not None else None,
               "on_track_cagr_pct": base["growth_cagr_pct"], "sized_on": sized_on,
               "sized_p_goal_pct": p_sized}
-    if p_sized < star:
+    if p_sized < star and not light:
         w_full_base = _expand(book(proposed if material else now_s), sleeve_idx, core_vec, cash_idx, n_full)
         sim_base = paths.simulate(daily @ w_full_base, years=years)
 
@@ -1242,16 +1243,73 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
     return {"sleeves": out, "guard": guard, "not_simulated": sorted(set(not_sim))}
 
 
-async def _rules_context(session, user, sleeves: list[dict]) -> dict | None:
-    """The user's active rules and today's prices, mapped onto his sleeves."""
+async def preview(session, user, *, roi_pct: float | None = None, target_date: str | None = None,
+                  monthly: float | None = None, armed: dict | None = None,
+                  guard_pct: float | None = None) -> dict:
+    """PR 104b: the goal's odds as they WOULD be -- another target, deadline or
+    deposit (Edit goal), or other rules armed (Edit rules). The same model and
+    rules replay as the nightly solve, light: no resampling, no retune search,
+    no stress case, no lever search. Read-only: nothing is stored.
+    """
+    from app.core.offload import offload
+    from app.services.allocation_mix import current_mix
+    from app.services.intake_service import list_positions
+
+    ctx = await fi.load_context(session, user)
+    if not ctx.get("ok"):
+        return {"ok": False, "reason": ctx.get("reason") or "NO_INPUTS"}
+    rows = await list_positions(session, user)
+    mix, _nav = current_mix(rows)
+    cash_pct = float(mix.get("Cash") or 0.0) * 100.0
+    basket = await _core_basket(session, user, ctx["objective"])
+    goal = await _goal_context(session, user, rows, roi_pct=roi_pct, target_date=target_date, monthly=monthly)
+    if not goal:
+        return {"ok": False, "reason": "NO_GOAL"}
+    sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
+    rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct)
+
+    def work():
+        prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
+        if not prep["ok"]:
+            return {"ok": False, "reason": prep.get("reason")}
+        vs = fi.vol_scale(prep, (ctx.get("market") or {}).get("state"))
+        return goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
+                          objective=ctx["objective"], est_kw={**ctx["est_kw"], "vol_scale": vs["scale"]},
+                          nav=goal["nav"], target=goal["target"], years=goal["years"], monthly=goal["monthly"],
+                          kelly_setting=ctx.get("kelly_fraction_setting"), sleeve_cap_pct=goal["sleeve_cap_pct"],
+                          volatility_cap_pct=goal["volatility_cap_pct"], draws=0, rules=rules_ctx,
+                          goal_roi=goal.get("roi_annual"), light=True)
+
+    v = await offload(work)
+    if not v.get("ok") or v.get("mode") != "goal" or "before" not in v:
+        return {"ok": False, "reason": v.get("reason") or v.get("outcome") or "NOT_MEASURABLE"}
+    rb = v.get("rules") or {}
+    on, off = rb.get("on") or {}, rb.get("off") or {}
+    return {"ok": True,
+            "goal": {"target": round(goal["target"], 0), "deadline": goal.get("deadline"),
+                     "monthly": round(goal["monthly"], 2), "years": round(goal["years"], 2),
+                     "roi_pct": goal.get("roi_pct")},
+            "headline": v.get("headline"),
+            "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
+            "p_halve_without_rules_pct": off.get("p_halve_pct"),
+            "median": on.get("median"), "worst5_mean": on.get("worst5_mean")}
+
+
+async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | None = None,
+                         guard_pct: float | None = None) -> dict | None:
+    """The user's active rules and today's prices, mapped onto his sleeves.
+
+    PR 104b: `armed` ({rule id: bool}) and `guard_pct` describe the rules as they
+    WOULD be -- the Edit-rules sheet's preview -- without saving anything.
+    """
     from sqlalchemy import select
 
     from app.engines import blend
     from app.models.tables import TradingRule
     from app.services.intake_service import list_positions
 
-    rows = (await session.scalars(select(TradingRule).where(TradingRule.subject == user.email)
-                                  .where(TradingRule.active.is_(True)))).all()
+    every = (await session.scalars(select(TradingRule).where(TradingRule.subject == user.email))).all()
+    rows = [r for r in every if (armed or {}).get(str(r.id), bool(r.active))]
     if not rows:
         return None
     prices = {}
@@ -1259,12 +1317,15 @@ async def _rules_context(session, user, sleeves: list[dict]) -> dict | None:
         if p.current_price:
             prices[(p.ticker or "").upper()] = float(p.current_price)
     tickers = {s["id"]: {t.upper() for t in blend.claimable_tickers(s["spec"])} for s in sleeves}
-    return rules_spec([{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode, "level": r.level,
+    return rules_spec([{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode,
+                        "level": (float(guard_pct) if guard_pct is not None and r.rule_type == "drawdown_guard"
+                                  else r.level),
                         "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows],
                       prices=prices, sleeve_tickers=tickers)
 
 
-async def _goal_context(session, user, rows) -> dict | None:
+async def _goal_context(session, user, rows, *, roi_pct: float | None = None,
+                        target_date: str | None = None, monthly: float | None = None) -> dict | None:
     """The plan's goal as the solve needs it, from the SAME functions /plan uses.
 
     None when the plan has no ROI target and deadline: there is nothing to
@@ -1277,6 +1338,18 @@ async def _goal_context(session, user, rows) -> dict | None:
 
     plan = await get_plan(session, user)
     nav = float(_snapshot(rows).get("nav") or 0.0)
+    if roi_pct is not None or target_date is not None:
+        # PR 104b: the Edit-goal sheet's preview -- the same goal formula on the
+        # plan as it would be saved, nothing written.
+        from types import SimpleNamespace
+        cols = ("target_roi_pct", "target_roi_period", "target_date", "target_amount", "objective",
+                "risk_tolerance", "kelly_fraction", "return_confidence", "concentration_cap",
+                "volatility_cap", "cash_target_pct", "cash_target_ils")
+        plan = SimpleNamespace(**{c: getattr(plan, c, None) for c in cols})
+        if roi_pct is not None:
+            plan.target_roi_pct, plan.target_roi_period = float(roi_pct), "yearly"
+        if target_date is not None:
+            plan.target_date = str(target_date)
     if plan is None or getattr(plan, "target_roi_pct", None) is None or nav <= 0:
         return None
     g = await compute_goal(session, user, plan, nav)
@@ -1284,10 +1357,20 @@ async def _goal_context(session, user, rows) -> dict | None:
         return None
     caps = effective_caps(plan)
     try:
-        monthly = float(await monthly_total(session, user))
+        monthly_now = float(await monthly_total(session, user))
     except Exception:  # noqa: BLE001 -- a goal without deposits is still a goal
-        monthly = 0.0
-    return {"nav": nav, "target": float(g["target"]), "years": float(g["years_left"]),
+        monthly_now = 0.0
+    target = float(g["target"])
+    if monthly is not None:
+        # PR 104b preview: a deposit raises a "ROI on every shekel" goal too --
+        # the extra deposits compounded at the goal's ROI (PR 99's lever rule).
+        roi_a = annual_roi(plan) if g.get("basis") == "contributions" else None
+        extra = max(0.0, float(monthly) - monthly_now)
+        if roi_a is not None and extra > 0:
+            target += _fv_monthly(extra, roi_a, float(g["years_left"]))
+    else:
+        monthly = monthly_now
+    return {"nav": nav, "target": target, "years": float(g["years_left"]),
             "deadline": g.get("deadline"), "monthly": monthly,
             "roi_pct": float(plan.target_roi_pct), "flows": g.get("contributions") or [],
             # PR 99: only a goal DERIVED from deposits grows with them.

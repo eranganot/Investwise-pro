@@ -451,6 +451,7 @@
     <div class="card hide" id="stratOut" style="margin-bottom:8px"></div>
     <div id="plan-goal">
       <div class="card" id="goalSum"><div class="muted">Loading your goal…</div></div>
+      <div class="card" id="goalRows" style="margin-top:10px;padding-top:2px;padding-bottom:2px"></div>
       <div id="goalWays"></div>
       <div class="mk" style="margin:12px 4px 4px;text-transform:uppercase;letter-spacing:.06em">Goal settings</div>
       <div class="card">
@@ -504,6 +505,13 @@
       </details>
     </div>
   </section>
+
+  <!-- PR 104b: one bottom sheet (Edit goal / Edit rules), each with its own Save and a live odds preview. -->
+  <div id="sheetBg" onclick="if(event.target===this)closeSheet()"
+       style="position:fixed;inset:0;background:rgba(3,6,10,.6);z-index:50;display:none;align-items:flex-end;justify-content:center">
+    <section id="sheet" role="dialog" aria-modal="true"
+             style="width:100%;max-width:560px;max-height:88vh;overflow:auto;background:var(--card,#141e2c);border-top:1px solid var(--line);border-radius:20px 20px 0 0;padding:12px 18px 22px;box-sizing:border-box"></section>
+  </div>
 
   <!-- AGENTS -->
   <section id="view-agents" class="hide">
@@ -2972,8 +2980,9 @@ function _chip(t,cls){return `<span class="mk" style="display:inline-block;paddi
 // The goal, its one headline chance, and what closes the gap -- plus the
 // protective rules on My mix. One fetch of each, shared by both sub-tabs.
 async function loadPlanExtras(){
-  let p=null,f=null,r=null,rules=null;
+  let p=null,f=null,r=null,rules=null,orders=null;
   await Promise.all([
+    fetch("/api/v1/portfolio/standing-orders").then(x=>x.json()).then(j=>orders=j).catch(()=>{}),
     fetch("/api/v1/plan").then(x=>x.json()).then(j=>p=j).catch(()=>{}),
     fetch("/api/v1/plan/frontier").then(x=>x.json()).then(j=>f=j).catch(()=>{}),
     fetch("/api/v1/recommendations").then(x=>x.json()).then(j=>r=j).catch(()=>{}),
@@ -2982,6 +2991,8 @@ async function loadPlanExtras(){
   goalCards.forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),severity:o.severity||null};});
   $("goalSum").innerHTML=goalSummary(p||{},f||{});
   const protect=goalCards.find(o=>String(o.id).startsWith("rec_goal_protect_"));
+  PLX={p:p||{},f:f||{},rules:(rules&&rules.rules)||[],orders:orders||{orders:[],monthly_total_ils:0},protect};
+  $("goalRows").innerHTML=goalRows(PLX);
   const others=goalCards.filter(o=>o!==protect);
   $("goalWays").innerHTML=(others.length||protect)
     ? `<div class="mk" style="margin:12px 4px 4px;text-transform:uppercase;letter-spacing:.06em">Ways to close the gap</div>`
@@ -2999,6 +3010,149 @@ async function resolveGoalNow(btn){
   catch(e){alert(e.message||e);}
   _reloadView();
 }
+// ----------------------------------------------------------------- PR 104b
+let PLX={p:{},f:{},rules:[],orders:{orders:[]},protect:null};
+function openSheet(html){$("sheet").innerHTML=`<div style="width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 10px"></div>`+html;
+  $("sheetBg").style.display="flex";}
+function closeSheet(){$("sheetBg").style.display="none";$("sheet").innerHTML="";clearTimeout(_pvT);}
+function _sheetHead(t){return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+  <b style="font-size:18px">${t}</b><button class="ghost" onclick="closeSheet()" style="background:none;border:0;color:var(--mut);padding:8px">Close</button></div>`;}
+let _pvT=null,_pvN=0;
+// The preview: the same model and rules replay as the nightly solve, on what the
+// sheet WOULD save. Debounced -- one replay takes a few seconds.
+function _preview(body,render){
+  clearTimeout(_pvT); const box=$("pvBox"); if(box) box.style.opacity=.55;
+  const st=$("pvState"); if(st) st.textContent="Updating…";
+  _pvT=setTimeout(async()=>{const n=++_pvN;
+    try{const r=await fetch("/api/v1/plan/frontier/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      const j=await r.json(); if(n!==_pvN||!$("pvBox")) return;
+      $("pvBox").style.opacity=1; $("pvState").textContent="";
+      $("pvBody").innerHTML=j.ok?render(j):`<span class="muted">Can't preview this (${esc(j.reason||r.status)}).</span>`;}
+    catch(e){if($("pvState"))$("pvState").textContent="Preview failed";}},650);
+}
+const _pvRow=(k,v,cls)=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0"><span>${k}</span><b class="${cls||""}">${v}</b></div>`;
+function _pvBox(note){return `<div id="pvBox" style="background:var(--bg,#0b111a);border:1px solid var(--line);border-radius:12px;padding:12px;margin:12px 0;transition:opacity .2s">
+  <div style="display:flex;justify-content:space-between"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">If you save this</span><span class="mk" id="pvState"></span></div>
+  <div id="pvBody" style="margin-top:6px"><span class="muted">Working it out…</span></div>
+  <div class="mk" style="margin-top:6px">${note}</div></div>`;}
+const _pct1=v=>v==null?"—":`${Math.round(v*10)/10}%`;
+function _pvOdds(j){const h=j.headline||{};
+  return _pvRow("Chance, your rules as they would be",_pct1(h.p_goal_pct),h.p_goal_pct>=70?"ok":"warn")
+    +(h.without_rules_pct!=null?_pvRow("Chance with no rules",`${_pct1(h.without_rules_pct)} · halving ${_pct1(j.p_halve_without_rules_pct)}`):"")
+    +_pvRow("Chance the book halves",_pct1(j.p_halve_pct));}
+
+function goalRows(X){
+  const p=X.p||{}, f=(p.frontier||{}), o=X.orders||{}, n=(o.orders||[]).filter(x=>x.active).length;
+  const row=(k,v,btn)=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+    <div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">${k}</span>${btn}</div>
+    <div style="font-weight:650;margin-top:2px">${v}</div></div>`;
+  const ed=fn=>`<div class="acts" style="margin:0"><button onclick="${fn}">Edit</button></div>`;
+  return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
+    +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
+    +`<div style="padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Risk dials</span>${ed("document.getElementById('plan_out').scrollIntoView({behavior:'smooth'})")}</div>
+      <div style="font-weight:650;margin-top:2px">${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}</div>
+      <div class="mk">Set below under Goal settings for now; its own sheet comes next.</div></div>`;
+}
+
+function openGoalSheet(){
+  const p=PLX.p||{}, o=PLX.orders||{}, act=(o.orders||[]).filter(x=>x.active);
+  const many=act.length>1;
+  openSheet(_sheetHead("Edit your goal")
+    +`<label class="mk" for="eg_roi">Target return on what you put in (% a year)</label>
+      <input id="eg_roi" type="number" step="0.5" min="0" value="${p.target_roi_pct??""}" oninput="goalPreview()" style="width:100%">
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <div style="flex:1"><label class="mk" for="eg_dl">Deadline (year)</label>
+          <input id="eg_dl" type="number" min="2026" max="2100" value="${p.target_date||""}" oninput="goalPreview()" style="width:100%"></div>
+        <div style="flex:1"><label class="mk" for="eg_dep">Monthly deposit (₪)</label>
+          <input id="eg_dep" type="number" min="0" step="50" value="${Math.round(o.monthly_total_ils||0)}" ${many?"disabled":""} oninput="goalPreview()" style="width:100%">
+          ${many?`<div class="mk">${act.length} standing orders: change them on the Cash tab.</div>`:""}</div></div>`
+    +_pvBox("A deposit or a later deadline also raises the goal: it is a return on every shekel you put in.")
+    +`<div class="acts"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
+       <button class="acc" style="flex:2" id="eg_save" onclick="saveGoalSheet(this)">Save goal</button></div>`);
+  goalPreview();
+}
+function _goalBody(){const b={}, p=PLX.p||{}, o=PLX.orders||{};
+  const roi=parseFloat($("eg_roi").value), dl=($("eg_dl").value||"").trim(), dep=parseFloat($("eg_dep").value);
+  if(!isNaN(roi)) b.target_roi_pct=roi; if(/^\d{4}$/.test(dl)) b.target_date=dl;
+  if(!isNaN(dep)&&Math.round(dep)!==Math.round(o.monthly_total_ils||0)) b.monthly_ils=dep;
+  return b;}
+function goalPreview(){
+  _preview(_goalBody(),j=>_pvRow("Goal",`${ils(j.goal.target)} by ${_monYear(j.goal.deadline)}`)+_pvOdds(j));
+}
+async function saveGoalSheet(btn){
+  const b=_goalBody(), p=PLX.p||{}, o=PLX.orders||{}, act=(o.orders||[]).filter(x=>x.active);
+  btn.disabled=true; btn.textContent="Saving…";
+  try{
+    const plan={};
+    if(b.target_roi_pct!=null&&b.target_roi_pct!==p.target_roi_pct){plan.target_roi_pct=b.target_roi_pct;plan.target_roi_period="yearly";}
+    if(b.target_date&&b.target_date!==String(p.target_date)) plan.target_date=b.target_date;
+    if(Object.keys(plan).length){const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(plan)});
+      if(!r.ok) throw new Error("Saving the goal failed ("+r.status+")");}
+    if(b.monthly_ils!=null&&act.length<=1){
+      const m=Math.round(b.monthly_ils), j={"Content-Type":"application/json"};
+      const r=act.length===0?(m>0?await fetch("/api/v1/portfolio/standing-orders",{method:"POST",headers:j,body:JSON.stringify({amount_ils:m,day_of_month:1,note:"Set from the Plan tab"})}):null)
+        :(m>0?await fetch(`/api/v1/portfolio/standing-orders/${act[0].id}`,{method:"PUT",headers:j,body:JSON.stringify({amount_ils:m})})
+             :await fetch(`/api/v1/portfolio/standing-orders/${act[0].id}`,{method:"DELETE"}));
+      if(r&&!r.ok) throw new Error("Saving the deposit failed ("+r.status+")");}
+    btn.textContent="Re-solving your goal… (~20 s)";
+    await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    closeSheet(); _reloadView();
+  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save goal";}
+}
+
+// The stops on what your sleeves hold, and the drawdown guard. Ticked = armed.
+function _sheetRules(){
+  const sleeves=(MYSLEEVES&&MYSLEEVES.sleeves)||[], tick={};
+  sleeves.forEach(x=>(x.tickers||[]).forEach(t=>tick[t.toUpperCase()]=1));
+  const stops=PLX.rules.filter(x=>_STOP_TYPES[x.rule_type]&&tick[String(x.ticker).toUpperCase()]);
+  const guard=PLX.rules.find(x=>x.rule_type==="drawdown_guard");
+  return {stops,guard};
+}
+function openRulesSheet(){
+  const {stops,guard}=_sheetRules();
+  const ap=(PLX.protect&&PLX.protect.apply)||null;              // the app's suggested retune
+  const pause=new Set((ap&&ap.pause_rule_ids)||[]);
+  const gTo=ap&&ap.guard&&ap.guard.to_pct!=null?ap.guard.to_pct:(guard?guard.level:null);
+  const by={}; stops.forEach(x=>{(by[x.ticker]=by[x.ticker]||[]).push(x);});
+  const lvl=x=>x.status&&x.rule_type==="profit_protect"?x.status:x.mode==="pct"?`${x.level}% below the peak`:(+x.level).toLocaleString(undefined,{maximumFractionDigits:2});
+  openSheet(_sheetHead("Your protective rules")
+    +`<div class="mk">Ticked = armed. Untick to pause; a paused rule stays on Holdings › Rules and one tap re-arms it.${ap?" Pre-filled with the retune the app suggests.":""}</div>`
+    +Object.keys(by).map(t=>`<div class="mk" style="text-transform:uppercase;letter-spacing:.06em;margin-top:10px">${esc(t)}</div>`
+      +by[t].map(x=>`<label style="display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:40px">
+        <span>${_STOP_TYPES[x.rule_type]} · ${lvl(x)}</span>
+        <input type="checkbox" class="rs_on" data-id="${x.id}" ${(ap?!pause.has(x.id):x.active)?"checked":""} onchange="rulesPreview()" style="width:22px;height:22px"></label>`).join("")).join("")
+    +(guard?`<div class="mk" style="text-transform:uppercase;letter-spacing:.06em;margin-top:10px">Whole book</div>
+      <label style="display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:40px">
+        <span>Drawdown guard (% below the peak)</span>
+        <span><input id="rs_guard" type="number" min="1" max="90" step="0.5" value="${gTo??guard.level}" oninput="rulesPreview()" style="width:72px;text-align:right">
+        <input type="checkbox" id="rs_guard_on" ${guard.active?"checked":""} onchange="rulesPreview()" style="width:22px;height:22px;vertical-align:middle"></span></label>`:"")
+    +_pvBox("Change any box and the odds update. Nothing is bought or sold.")
+    +`<div class="acts"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
+       <button class="acc" style="flex:2" onclick="saveRulesSheet(this)">Save rules</button></div>`);
+  rulesPreview();
+}
+function _rulesBody(){
+  const armed={}; document.querySelectorAll(".rs_on").forEach(c=>armed[c.dataset.id]=c.checked);
+  const {guard}=_sheetRules(), b={armed};
+  if(guard){armed[guard.id]=$("rs_guard_on").checked; const g=parseFloat($("rs_guard").value); if(g>0) b.guard_pct=g;}
+  return b;}
+function rulesPreview(){_preview(_rulesBody(),_pvOdds);}
+async function saveRulesSheet(btn){
+  const b=_rulesBody(), {stops,guard}=_sheetRules();
+  btn.disabled=true; btn.textContent="Saving…";
+  try{
+    for(const x of stops.concat(guard?[guard]:[])){
+      if(b.armed[x.id]!==undefined&&b.armed[x.id]!==!!x.active){
+        const r=await fetch(`/api/v1/rules/${x.id}/toggle`,{method:"POST"}); if(!r.ok) throw new Error("Could not change "+x.ticker+" "+x.rule_type);}}
+    if(guard&&b.guard_pct!=null&&Math.abs(b.guard_pct-guard.level)>1e-9){
+      const r=await fetch(`/api/v1/rules/${guard.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({level:b.guard_pct,force:true})});
+      if(!r.ok) throw new Error("Could not move the drawdown guard");}
+    btn.textContent="Re-solving your goal… (~20 s)";
+    await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    closeSheet(); _reloadView();
+  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save rules";}
+}
+
 function goalSummary(p,f){
   const g=p.goal||{};
   if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
@@ -3088,6 +3242,7 @@ function protectionPanel(rules,f,protect){
         <div style="display:flex;justify-content:space-between;gap:8px;font-size:13px"><b>Drawdown guard <span class="mk">· whole book</span></b>
         <span>${guard.level}%${guard.active?"":" (paused)"}${guard.status?` · ${String(guard.status).split(" · ")[0]}`:""}</span></div>`:""}
       ${protect?`<div style="margin-top:10px">${recCard(protect)}</div>`:""}
+      <div class="acts" style="margin-top:8px"><button onclick="openRulesSheet()">Edit rules</button></div>
       <div class="mk" style="margin-top:8px">Take-profits, caps and buy-back holds:
         <a href="#" onclick="show('hold');holdSeg('rules');return false">Holdings &rsaquo; Rules</a></div></div>`;
 }
