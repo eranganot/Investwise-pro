@@ -12,6 +12,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests._cards import all_cards  # noqa: E402
 
 BOOK = {"entity_name": "Personal", "positions": [
     {"ticker": "MSFT", "market": "NASDAQ", "depth": 2, "spot_price": 100, "listing_price": 108,
@@ -25,7 +26,7 @@ def _cards(client) -> dict:
 
 
 def _matching(body: dict, needle: str) -> list[dict]:
-    return [r for r in body.get("recommendations", []) if needle in r.get("title", "")]
+    return [r for r in all_cards(body) if needle in r.get("title", "")]
 
 
 def _mark_cow_stale() -> None:

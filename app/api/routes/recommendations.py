@@ -77,6 +77,15 @@ async def dismiss_recommendation_route(rec_id: str, state: CardState | None = No
     return {"ok": True}
 
 
+@router.post("/recommendations/headsups/{hid}/dismiss")
+async def dismiss_headsup_route(hid: str, session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """PR 102: a heads-up dismissed is gone for good -- it never re-fires."""
+    from app.services import headsup
+    await headsup.dismiss(session, user, hid[:40])
+    return {"ok": True}
+
+
 @router.post("/recommendations/restore")
 async def restore_recommendations(session: AsyncSession = Depends(get_session),
                                   user: User = Depends(acting_user)) -> dict:

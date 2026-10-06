@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as m  # noqa: E402
 from app.services.strategy_service import _snapshot  # noqa: E402
+from tests._cards import all_cards  # noqa: E402
 
 FACTOR = "btm_factor_stack"     # MTUM / QUAL / AVUV
 SOXL = "btm_trend_soxl"
@@ -269,7 +270,7 @@ def test_k_an_empty_sleeve_card_cannot_be_buried_by_accept():
         _seed(c)
         c.post(f"/api/v1/strategies/{SOXL}/apply?sleeve_pct=10")
 
-        recs = c.get("/api/v1/recommendations").json()["recommendations"]
+        recs = all_cards(c.get("/api/v1/recommendations").json())
         cold = [r for r in recs if (r.get("meta") or {}).get("cold_start")]
         assert cold, "no cold-start card for a sleeve that holds nothing"
         card = cold[0]
@@ -282,7 +283,7 @@ def test_k_an_empty_sleeve_card_cannot_be_buried_by_accept():
 
         # Accept it, then look again.
         c.post(f"/api/v1/recommendations/{card['id']}/complete")
-        again = c.get("/api/v1/recommendations").json()["recommendations"]
+        again = all_cards(c.get("/api/v1/recommendations").json())
         still = [r for r in again if r["id"] == card["id"]]
         assert still, "accepting a card that cannot act buried a standing condition"
 

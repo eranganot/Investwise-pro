@@ -8,6 +8,7 @@ from app.providers.builtin import BuiltinMarketDataProvider
 from app.schemas.screener import Fundamentals
 from app.services import commodities as cat
 from app.services import universe as uni
+from tests._cards import all_cards  # noqa: E402
 
 
 def test_builtin_fundamentals_are_deterministic_and_dispersed():
@@ -98,7 +99,7 @@ def test_recommendations_include_holding_verdicts_and_buy_ideas():
         c.post("/api/v1/portfolio/refresh-prices")
         r = c.get("/api/v1/recommendations").json()
         assert "buy_ideas" in r and isinstance(r["buy_ideas"], list)
-        dims = {rec.get("dimension") for rec in r["recommendations"]}
+        dims = {rec.get("dimension") for rec in all_cards(r)}
         assert "holding" in dims                              # per-holding verdicts present
         for rec in r["recommendations"]:
             assert rec["action"] and rec["how"]               # contract upheld

@@ -1334,24 +1334,25 @@ async def build_recommendations(session: AsyncSession, user: User,
         w = snap["exposure_ticker"][tk]
         price = next((float(r.current_price or 0) for r in rows if r.ticker == tk), 0)
         trim = (w - cap) * nav
-        shares = int(trim / price) if price else 0
+        # PR 102: the share of the POSITION that goes, not ILS over a native
+        # price (`int(trim / price)` divided shekels by dollars for a US ticker).
+        _qty = sum(float(r.quantity or 0) for r in rows if r.ticker == tk)
+        shares = round(_qty * (w - cap) / w, 6) if w > 0 else 0.0
         recs.append({"id": _rid("trim", tk), "dimension": "diversification", "severity": "HIGH",
                      "title": f"Trim {tk}",
                      "why": f"{tk} is {w:.0%} of your portfolio — above your {cap:.0%} single-holding limit, "
                             f"so a bad run in one name could sink the whole book.",
-                     "action": f"Sell about {_ils(trim)} of {tk} (~{shares} shares) to bring it from "
+                     "action": f"Sell about {_ils(trim)} of {tk} (~{shares:g} shares) to bring it from "
                                f"{w:.0%} down to your {cap:.0%} limit.",
                      "impact": f"Cuts single-name risk: brings {tk} from {w:.0%} to your {cap:.0%} cap "
                                f"and frees ~{_ils(trim)} to spread across your plan's mix.",
-                     "how": ["Open your brokerage account",
-                             f"Place a SELL order for ~{shares} {tk} shares (~{_ils(trim)})",
-                             "Reinvest the proceeds across your other holdings or your plan's target mix"],
+                     "how": [f"Accept sells ~{shares:g} {tk} (~{_ils(trim)}); the proceeds land in cash",
+                             "No brokerage order is placed - mirror it at your broker"],
                      "est_amount": round(trim, 2),
-                     # GUIDANCE, not an action (Eran, 2026-09-22: "the plan should
-                     # trigger guidance card, the rule should trigger action card").
-                     # Crossing the plan's limit is advice; a max-weight RULE you
-                     # armed firing is the card whose Accept executes the trim.
-                     "apply": {"kind": "none"},
+                     # PR 102 (Execution plan v2, row 1, approved): a card asks
+                     # and Accept does it, so the plan-cap trim sells the excess.
+                     # It was guidance-only since 2026-09-22.
+                     "apply": {"kind": "trim", "ticker": tk, "shares": shares},
                      "meta": {"ticker": tk, "weight_pct": round(w * 100, 2),
                               "limit_pct": round(cap * 100, 2), "source": "plan_cap"}})
         recs[-1]["audit_trail"] = audit_for("diversification",
@@ -2972,6 +2973,17 @@ async def build_recommendations(session: AsyncSession, user: User,
     # Guarded on the rules agent having succeeded. If it degraded, the absence
     # of cards says nothing about the rules and retiring them would destroy real
     # pending work over a transient provider failure.
+    # PR 102: A CARD ASKS YOU TO DO SOMETHING, AND ACCEPT DOES IT. Everything
+    # else is a heads-up: one line, no "Mark as done", dismissed for good.
+    from app.services import headsup as _hu
+    recs, headsups, _dropped = _hu.split(recs, nav=float(snap.get("nav") or 0.0),
+                                        actionable=_is_actionable)
+    try:
+        _hu_gone = await _hu.dismissed(session, user)
+    except Exception:  # noqa: BLE001 -- a store hiccup shows them, never hides cards
+        _hu_gone = set()
+    headsups = [h for h in headsups if h["id"] not in _hu_gone]
+
     rule_banner = {"triggered": [], "carded": [], "blocked": [], "healed": [],
                    "skipped_reason": None}
     if "trading_rules" in degraded:
@@ -2991,7 +3003,8 @@ async def build_recommendations(session: AsyncSession, user: User,
             _live = (await session.scalars(
                 _select(_TR).where(_TR.subject == user.email, _TR.active.is_(True),
                                    _TR.triggered.is_(True)))).all()
-            _carded = {str(r.get("id", ""))[5:] for r in recs
+            # A triggered rule shown as a heads-up has a visible place too.
+            _carded = {str(r.get("id", ""))[5:] for r in recs + headsups
                        if str(r.get("id", "")).startswith("rule_")}
             # A RULE WHOSE CARD THE CONTRADICTION PASS HELD BACK IS NOT AN ORPHAN.
             #
@@ -3033,6 +3046,9 @@ async def build_recommendations(session: AsyncSession, user: User,
             # which ones vanished is now decided by the priority score. They are
             # served, collapsed under "N more lower-priority suggestions".
             "more_recommendations": recs[12:],
+            # PR 102: knowledge without an ask -- bottom of Today, above the
+            # Holding review (D2), collapsed.
+            "headsups": headsups, "headsups_dropped": _dropped,
             "market": market,
             # What the book is managed to, and where each half came from. On the
             # payload rather than only inside a card, so a smoke test can assert
@@ -3463,6 +3479,23 @@ _GAIN_CARD_PCT = 25.0
 _NEAR_CAP_PCT_POINTS = 2.0
 
 
+def _raise_cap_act(rule: dict, tk: str, cap_pct: float, targets: dict | None) -> dict | None:
+    """Eran (D3): a near-cap heads-up offers ONE act -- raise the cap to the plan
+    target plus the rebalance band -- when the cap sits within one band of the
+    target, i.e. when the cap is what is out of step with the plan."""
+    from app.services.advanced_rules import DEFAULTS
+    t = (targets or {}).get(tk)
+    if t is None or not rule.get("id"):
+        return None
+    band = float(DEFAULTS["rebalance_band"])
+    t_pct = float(t) * 100.0
+    new = round(t_pct + band, 1)
+    if abs(cap_pct - t_pct) > band or new <= cap_pct:
+        return None
+    return {"label": f"Raise the cap to {new:g}% (target {t_pct:.1f}% + {band:g})",
+            "apply": {"kind": "edit_rule", "target_rule_id": str(rule["id"]), "level": new}}
+
+
 def _float_or_none(v):
     try:
         x = float(v)
@@ -3612,7 +3645,10 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
                     "action": (f"{tk} is +{gain_pct:.0f}% since you bought ({_ils(gain_ils)} of gain). "
                                f"Trimming to its {t_pct:.0f}% target sells about {_ils(over_ils)}."),
                     "how": [f"Sell about {_ils(over_ils)} of {tk}", "Mind the tax on any realised gain"],
-                    "est_amount": over_ils, "apply": {"kind": "none"},
+                    # PR 102: Accept sells the excess, every row of the ticker.
+                    "est_amount": over_ils,
+                    "apply": {"kind": "trim", "ticker": p.ticker,
+                              "shares": round(qty * over_ils / value_ils, 6) if value_ils > 0 else 0.0},
                     "meta": {"ticker": tk, "gain_pct": round(gain_pct, 2), "weight_pct": round(w_pct, 2),
                              "target_pct": round(t_pct, 2), "over_target_ils": over_ils}})
             else:
@@ -3665,6 +3701,8 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
                 "est_amount": round(max(0.0, nav * headroom / 100.0), 2),
                 "meta_trim_at_cap_ils": round(max(0.0, over_at_cap), 2),
                 "apply": {"kind": "none"},
+                **({"headsup_act": raise_cap} if (raise_cap := _raise_cap_act(r, tk, cap_pct, targets))
+                   else {}),
                 "meta": {"ticker": tk, "weight_pct": round(w_pct, 2),
                          "cap_pct": cap_pct, "headroom_pct": round(headroom, 2)}})
     return out
@@ -4702,7 +4740,7 @@ def _income_cost_recs(pdicts, snap, objective) -> list[dict]:
                             "Move the rest into a T-bill/money-market ETF (e.g. SGOV/BIL) or your target mix",
                             "Re-check after the next contribution"],
                     "est_amount": round(cash_w * nav, 2), "apply": {"kind": "none"},
-                    "meta": {"cash_weight": round(cash_w, 4)}})
+                    "meta": {"cash_weight": round(cash_w, 4), "headsup_kind": "idle_cash"}})
         out[-1]["audit_trail"] = audit_for("income",
             raw_data={"cash_weight": round(cash_w, 4), "nav": round(nav, 2)},
             formulas=[_fml("Cash weight", "cash_weight = cash_value / NAV", result=f"{cash_w:.0%}")])
@@ -5827,7 +5865,9 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     # this looked only in the first 12, so Accept on one of those returned 404
     # ("no longer applies") for a card that was plainly on screen.
     rec = next((r for r in (built.get("recommendations", [])
-                            + built.get("more_recommendations", []))
+                            + built.get("more_recommendations", [])
+                            # PR 102: a heads-up's one act option (D3).
+                            + [h for h in built.get("headsups", []) if h.get("apply")])
                 if r["id"] == rec_id), None)
     if rec is None:
         return None

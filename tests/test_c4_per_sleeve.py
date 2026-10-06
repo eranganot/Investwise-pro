@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 import app.main as m
 from app.services import strategy_signal_service as sigs
+from tests._cards import all_cards  # noqa: E402
 
 SOXL = "btm_trend_soxl"        # SOXL
 FACTOR = "btm_factor_stack"    # MTUM / QUAL / AVUV
@@ -184,7 +185,7 @@ def test_two_sleeves_wanting_one_ticker_produce_ONE_drift_card():
         _seed(c)                      # TQQQ deliberately not held -> cold start
         _apply(c, TREND, 20)
         _apply(c, VOL, 15)
-        recs = c.get("/api/v1/recommendations").json().get("recommendations", [])
+        recs = all_cards(c.get("/api/v1/recommendations").json())
         tqqq = [r for r in recs
                 if r.get("dimension") == "strategy"
                 and (r.get("meta") or {}).get("ticker") == "TQQQ"]
@@ -208,7 +209,7 @@ def test_a_ticker_only_one_sleeve_wants_still_funds_that_sleeve():
     with TestClient(m.app) as c:
         _seed(c)
         _apply(c, SOXL, 20)
-        recs = c.get("/api/v1/recommendations").json().get("recommendations", [])
+        recs = all_cards(c.get("/api/v1/recommendations").json())
         soxl = [r for r in recs
                 if r.get("dimension") == "strategy"
                 and (r.get("meta") or {}).get("ticker") == "SOXL"]
@@ -222,7 +223,7 @@ def test_both_sleeves_appear_when_they_want_different_tickers():
         _seed(c)
         _apply(c, SOXL, 10)
         _apply(c, FACTOR, 15)
-        recs = c.get("/api/v1/recommendations").json().get("recommendations", [])
+        recs = all_cards(c.get("/api/v1/recommendations").json())
         tickers = {(r.get("meta") or {}).get("ticker") for r in recs
                    if r.get("dimension") == "strategy" and (r.get("meta") or {}).get("ticker")}
         assert "SOXL" in tickers, "the first-applied sleeve is invisible again"

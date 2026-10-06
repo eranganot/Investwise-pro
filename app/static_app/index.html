@@ -1052,6 +1052,7 @@ async function loadToday(){
     $("recs").innerHTML=(recs.length?recs.map(recCard).join(""):emptyRecs(hidden,done,hiddenCards))
       + (more.length?(MORE_HTML=more.map(recCard).join(""),moreNote(more)):"")
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
+      + headsupList(r.headsups||[])
       + reviewTable(r.holding_review||[]);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await(await fetch("/api/v1/plan")).json();
@@ -1384,6 +1385,28 @@ function actBtn(o){
     ? `<button class="acc" onclick="acceptRec('${o.id}',true)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
 }
+// PR 102: knowledge without an ask. One line each, collapsed; swipe left (or x)
+// to dismiss for good; no "Mark as done" because there is nothing to do.
+function headsupList(hs){
+  if(!hs.length) return "";
+  return `<details class="card" id="headsups" style="margin-top:12px"><summary class="nm" style="cursor:pointer">Heads-up \u00b7 ${hs.length}</summary>
+    ${hs.map(h=>`<div class="hu" data-id="${esc(h.id)}" style="padding:8px 0;border-top:1px solid var(--line);display:flex;gap:8px;align-items:flex-start;touch-action:pan-y"
+        ontouchstart="huStart(event)" ontouchend="huEnd(event,'${esc(h.id)}')">
+      <div style="flex:1;min-width:0"><b>${esc(h.title)}</b>${h.line?`<div class="mk" style="margin-top:2px">${esc(h.line)}</div>`:""}
+        ${h.act?`<div class="acts" style="margin-top:6px"><button class="acc" onclick="acceptRec('${esc(h.id)}',true)">${esc(h.act.label)}</button></div>`:""}</div>
+      <div class="acts" style="margin-top:0"><button class="ghost" aria-label="Dismiss" title="Dismiss" onclick="huDismiss('${esc(h.id)}')">✕</button></div></div>`).join("")}</details>`;
+}
+let _huX=null;
+function huStart(e){_huX=e.changedTouches&&e.changedTouches[0]?e.changedTouches[0].clientX:null;}
+function huEnd(e,id){const t=e.changedTouches&&e.changedTouches[0];
+  if(_huX!=null&&t&&t.clientX-_huX<-60) huDismiss(id); _huX=null;}
+async function huDismiss(id){
+  const el=document.querySelector(`.hu[data-id="${CSS.escape(id)}"]`); if(el) el.remove();
+  const box=$("headsups"); if(box){const n=box.querySelectorAll(".hu").length;
+    if(!n) box.remove(); else box.querySelector("summary").textContent=`Heads-up \u00b7 ${n}`;}
+  try{await fetch(`/api/v1/recommendations/headsups/${encodeURIComponent(id)}/dismiss`,{method:"POST"});}catch(e){}
+}
+
 async function acceptRec(id,actionable){
   const msg=actionable
     ? "Apply this now? It will update your holdings/plan."

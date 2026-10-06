@@ -73,6 +73,10 @@ def pinned(monkeypatch):
         return set(SLEEVE)
 
     monkeypatch.setattr(sleeve_service, "sleeve_tickers", _sleeve_tickers, raising=False)
+    # These books are small: this file tests what the card MEASURES, not the
+    # PR 102 floor below which a harvest is not offered at all.
+    from app.services import headsup
+    monkeypatch.setattr(headsup, "MIN_TAX_SAVING_ILS", 0.0)
 
 
 def _usd(ticker, qty, cost, market="NASDAQ"):

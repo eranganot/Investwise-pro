@@ -41,6 +41,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import app.main as m  # noqa: E402
 from app.services import recommendations, strategy_catalog as cat  # noqa: E402
+from tests._cards import all_cards  # noqa: E402
 
 QQQ_HOLD = "btm_qqq_hold"       # weights {QQQ}, no base -- the post-swap sleeve
 SOXL_TREND = "btm_trend_soxl"   # weights {SOXL}, base {SMH}
@@ -53,7 +54,7 @@ def _pos(ticker, price=100.0, qty=100.0, basis=90.0, cls="Equities"):
 
 
 def _cold_card(c):
-    recs = c.get("/api/v1/recommendations").json()["recommendations"]
+    recs = all_cards(c.get("/api/v1/recommendations").json())
     cold = [r for r in recs if (r.get("meta") or {}).get("cold_start")]
     return cold[0] if cold else None
 
