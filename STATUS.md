@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-09-29 by Claude (PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-05 (weekly status review: commits PR 72→87 in the last 7 days confirmed against git; HEAD `caebeb9` = PR 87; ops ages bumped; the "Where this repo actually is" block below is STALE — it says HEAD = PR 71, read the per-PR sections or `git log`). Before that:  2026-09-29 by Claude (PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -54,11 +54,11 @@ _Dates are when the item was FIRST flagged, carried forward, never reset._
 
 | first flagged | age | item |
 |---|---|---|
-| 2026-08-03 | **8 weeks — BLOCKING** | ⬆️ **Led the 2026-09-28 digest as the one UNBLOCK item.** Pin `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` in Railway. Live: `vapid_pinned_by_env: false`, `vapid_env_matches_db: null`, `subscriptions: 1`. Runbook `scripts/pin-vapid-from-db.sql` — **pin the pair the database already minted**; a newly generated pair kills the live subscription silently. |
-| 2026-08-03 | **8 weeks — BLOCKING** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
-| 2026-07-13 | **11 weeks — BLOCKING** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. At ten weeks this is the oldest item on any of the four boards. Start it, or move it to the backlog and stop listing it as next. |
-| 2026-08-10 | **7 weeks — BLOCKING** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **forty-one PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
-| 2026-08-31 | **4 weeks — BLOCKING** _(not re-checked 09-28: sandbox down)_ | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-21: unchanged for a **third** week — same two files, same 2026-08-25 mtime. The repo shipped three PRs this week, so it is neither too busy nor idle; the file is simply not being decided about. Land it or `rm` it.)_ |
+| 2026-08-03 | **CLOSED 2026-10-05 — it was already done** | ✅ Eran ran the Step-1 query on prod: 2 rows, and both values **match the `VAPID_*` variables already set on the web service** (screenshot 2026-10-05). So the pair is pinned and matches the DB; nothing to do. Led two digests as BLOCKING while already done — the STATUS `vapid_pinned_by_env: false` reading was stale. |
+| 2026-08-03 | **9 weeks — BLOCKING** | **Rotate the other three secrets** — GitHub token, Railway token, Postgres password (`PRODUCTION.md` §1). Never rotated. With the agent key closed, this is the oldest **security** item on the board (broker integration, 07-13, is the oldest item overall). |
+| 2026-07-13 | **12 weeks — BLOCKING** | **Decide on broker integration** (`BROKER_INTEGRATION_PLAN.md`). Stated "next initiative", unstarted, while **90+ commits** have now shipped past it. At ten weeks this is the oldest item on any of the four boards. Start it, or move it to the backlog and stop listing it as next. |
+| 2026-08-10 | **8 weeks — BLOCKING** | Pixel QA for the P0 safety batch (`qa/QA-2026-08-10-p0-safety.md`). Never run; **forty-one PRs have shipped on top**, so its pre-flight notes are already stale. Re-scope it or void it. |
+| 2026-08-31 | **5 weeks — BLOCKING** _(re-checked 2026-10-05: still untracked, `candidate_search.py` mtime still 2026-08-25; **new** untracked `EXECUTION_PLAN_2026-09-14_v8.md` beside it)_ | **Untracked code: still exactly 2 files, unchanged.** The tarballs, the 14 `scripts/`, `apply-pr26.ps1`, the plan docs and `_to_delete/` are all gone from the tree. What remains is the part that was always the real item: **`app/services/candidate_search.py` and `tests/test_candidate_search.py`** — real code, written, never committed, and not imported by anything on the live path. Land it or delete it; a service that exists only in one working tree is not a service. _(2026-09-21: unchanged for a **third** week — same two files, same 2026-08-25 mtime. The repo shipped three PRs this week, so it is neither too busy nor idle; the file is simply not being decided about. Land it or `rm` it.)_ |
 | 2026-09-14 | **resolved; recurred 09-21; cleared again (confirmed absent 2026-09-28)** | ✅ Stale `.git/index.lock` left here by the weekly review's own sandbox `git status`; Eran cleared it, confirmed empty. Kept as a one-line record because the rule is permanent: **weekly runs must use `git --no-optional-locks status`** — plain `git status` writes a lock the sandbox cannot remove. |
 
 ---
@@ -6830,6 +6830,21 @@ measured one is the failure this app keeps having. The measured figures only
 became readable again with PR 7's `benchmark_ticker` DDL fix; the ranked answer
 is **T6b** (*"the solver varies the core"*), which is where a recommendation gets
 a measurement behind it.
+
+---
+
+## 🔴 BACKLOG — review the goal definition: deposits and time can never raise the odds
+
+**NOT STARTED.** Raised 2026-10-05 (EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md, PR 99). Eran: keep the
+definition as it is for now, review it later.
+
+The goal is 30%/yr on every shekel put in (PR 74, decided 2026-09-28): each deposit and each extra year
+raises the target. The book is expected to grow ~18%/yr (PR 98 goal model), so adding money or time LOWERS the
+chance. Measured with `goal_service.goal_from` + `frontier.goal_probability` at the PR 98 inputs: today 38.1%;
++680/month -> target 173,172, chance 30.4%; deadline 2039 -> target 674,543, chance 26.9%.
+PR 99 therefore removes the deposit and deadline lever cards and says so in the goal summary. The open question
+for the review: should deposits (or extra years) raise the target at all, e.g. a target on the opening capital only,
+or a fixed amount that changes only when Eran edits it?
 
 ---
 
