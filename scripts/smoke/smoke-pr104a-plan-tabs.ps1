@@ -18,8 +18,8 @@ Start-Smoke "PR 104a"
 Assert-Build -Sha $Sha -Schema '0026_plan_frontier_settings' -Why "(unchanged - no migration)"
 
 Sec "1  the page"
-$html = $null; try { $html = (Invoke-WebRequest -Uri "$BaseUrl/" -UseBasicParsing -TimeoutSec 60).Content } catch {}
-$sw = $null; try { $sw = (Invoke-WebRequest -Uri "$BaseUrl/sw.js" -UseBasicParsing -TimeoutSec 60).Content } catch {}
+$html = $null; try { $html = (Invoke-WebRequest -Uri "$BaseUrl/app/" -UseBasicParsing -TimeoutSec 60).Content } catch {}
+$sw = $null; try { $sw = (Invoke-WebRequest -Uri "$BaseUrl/app/sw.js" -UseBasicParsing -TimeoutSec 60).Content } catch {}
 if (-not $html) { Bad "could not load the page" }
 else {
     if ($html -match "planTab\('goal'\)" -and $html -match "planTab\('mix'\)" -and $html -match "planTab\('explore'\)") { Ok "Goal . My mix . Explore sub-tabs" } else { Bad "sub-tabs missing" }
