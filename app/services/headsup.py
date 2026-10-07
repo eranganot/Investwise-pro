@@ -34,8 +34,12 @@ _KV_PREFIX = "headsups_dismissed:"
 
 
 def min_trade_ils(nav: float) -> float:
-    """The smallest trade a card may ask for: 100 ILS or 0.5% of the book, whichever is larger."""
-    return max(MIN_TRADE_ILS, MIN_TRADE_PCT_OF_BOOK / 100.0 * max(0.0, float(nav or 0.0)))
+    """The smallest trade a card may ask for: 100 ILS or 0.5% of the book, whichever is
+    larger (PR 104d: both are settings, `plans.thresholds`)."""
+    from app.services import thresholds
+    ils = float(thresholds.get("min_card_trade_ils", MIN_TRADE_ILS))
+    pct = float(thresholds.get("min_card_trade_pct", MIN_TRADE_PCT_OF_BOOK))
+    return max(ils, pct / 100.0 * max(0.0, float(nav or 0.0)))
 
 
 def _one_line(card: dict) -> str:
@@ -64,6 +68,7 @@ def to_headsup(card: dict) -> dict:
 def split(recs: list[dict], *, nav: float, actionable) -> tuple[list[dict], list[dict], list[dict]]:
     """(cards, heads_ups, dropped). `actionable(card)` is the app's own test of
     whether Accept does something (`recommendations._is_actionable`)."""
+    from app.services import thresholds
     cards, heads, dropped = [], [], []
     floor = min_trade_ils(nav)
     for c in recs:
@@ -71,9 +76,10 @@ def split(recs: list[dict], *, nav: float, actionable) -> tuple[list[dict], list
         if (c.get("meta") or {}).get("headsup_kind") in _REMOVED_IDS:
             dropped.append({"id": c.get("id"), "reason": "said by the cash-redeploy card"})
             continue
+        _tax_min = float(thresholds.get("min_card_tax_ils", MIN_TAX_SAVING_ILS))
         if c.get("dimension") == "tax" and kind == "sell_losers" \
-                and float(c.get("est_amount") or 0.0) < MIN_TAX_SAVING_ILS:
-            dropped.append({"id": c.get("id"), "reason": f"saves under {MIN_TAX_SAVING_ILS:g} ILS"})
+                and float(c.get("est_amount") or 0.0) < _tax_min:
+            dropped.append({"id": c.get("id"), "reason": f"saves under {_tax_min:g} ILS (your smallest tax card)"})
             continue
         if not actionable(c):
             heads.append(to_headsup(c))

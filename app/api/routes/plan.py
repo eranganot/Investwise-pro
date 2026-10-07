@@ -1,7 +1,7 @@
 """Planning / goals + goal projector + mix check."""
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -187,6 +187,9 @@ class PlanRequest(BaseModel):
     # on-track = the chance at which the goal counts as on track.
     halve_limit_pct: float | None = Field(default=None, ge=0.1, le=100.0)
     on_track_pct: float | None = Field(default=None, ge=50.0, le=95.0)
+    # PR 104d / migration 0028: card-threshold OVERRIDES, merged into what is
+    # saved; a null value resets that one to its default.
+    thresholds: dict | None = None
 
 
 def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
@@ -253,6 +256,14 @@ def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
     base["kelly_fraction"] = getattr(plan, "kelly_fraction", None) if plan is not None else None
     base["return_confidence"] = getattr(plan, "return_confidence", None) if plan is not None else None
     base["frontier"] = settings_of(plan)
+    # PR 104d: every card threshold as it applies, which ones are the user's, and
+    # what each one decides (the Card-thresholds sheet renders from this).
+    from app.services import thresholds as _thr
+    base["thresholds"] = _thr.effective(plan)
+    base["thresholds_overrides"] = _thr.overrides_of(plan)
+    base["thresholds_defaults"] = _thr.defaults()
+    base["thresholds_spec"] = {k: {"label": v[0], "detail": v[1], "min": v[2], "max": v[3]}
+                               for k, v in _thr.SPEC.items()}
     return base
 
 
@@ -266,7 +277,17 @@ async def get_my_plan(session: AsyncSession = Depends(get_session), user: User =
 @router.put("/plan", dependencies=[Depends(require_role(Role.ANALYST))])
 async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
-    plan = await upsert_plan(session, user, **req.model_dump())
+    fields = req.model_dump()
+    th_req = fields.pop("thresholds", None)
+    plan = await upsert_plan(session, user, **fields)
+    if th_req is not None:
+        from app.services import thresholds as _thr
+        merged = {**(plan.thresholds or {}), **th_req}
+        merged = {k: v for k, v in merged.items() if v is not None}
+        try:
+            plan.thresholds = _thr.clean(merged) or None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     stats = _portfolio_stats(await _orm(session, user), await _measured(session, user))
     goal = await _goal(session, user, plan, stats["nav"])
     # `plan.target_amount` is a CACHED COPY of the derived goal, written on save,

@@ -30,7 +30,7 @@ from app.services import strategies as cat
 from app.services import strategy_catalog
 from app.services.allocation_mix import current_mix
 from app.services.funding_service import (
-    MIN_TRADE_ILS, describe_funding, plan_funding)
+    describe_funding, min_trade_ils, plan_funding)
 # The single asset class a set of buy legs lands in, or None if mixed. Lives in
 # funding_service beside the argument it feeds: `describe_funding` cannot do its
 # job without one, and owning a private copy here is exactly how the Today path
@@ -697,7 +697,7 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
         else:
             want = nav * w
             short = want - held.get(tk, 0.0)
-        if short < MIN_TRADE_ILS:
+        if short < min_trade_ils():
             continue
         legs.append({"ticker": tk, "target_ils": round(want, 2),
                      "held_ils": round(held.get(tk, 0.0), 2),
@@ -738,7 +738,7 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
 
     legs = _legs_for(targets, nav, held, total=total)
     amount = round(sum(x["buy_ils"] for x in legs), 2)
-    if amount < MIN_TRADE_ILS:
+    if amount < min_trade_ils():
         return {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                 "nothing_to_do": True, "buys": [], "funding": None,
                 "message": (f"Your book already holds the sleeve at roughly its "
@@ -913,7 +913,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
             continue
         legs = _legs_for(targets, nav, held)
         amount = round(sum(x["buy_ils"] for x in legs), 2)
-        if amount < MIN_TRADE_ILS:
+        if amount < min_trade_ils():
             # Two different situations wore one label until C4.
             #
             # A sleeve AT its target has nothing to do. A sleeve still short by
@@ -925,11 +925,11 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
             # Both true, and together they contradict.
             gap_ils = round(sum(nav * w - held.get(tk.upper(), 0.0)
                                 for tk, w in targets.items()), 2)
-            if gap_ils >= MIN_TRADE_ILS / 10.0:
+            if gap_ils >= min_trade_ils() / 10.0:
                 out.append({**entry, "status": "as_close_as_a_lot_allows",
                             "amount_ils": 0.0, "buys": [], "shortfall_ils": gap_ils,
                             "reason": (f"₪{gap_ils:,.0f} under its target, but no single leg "
-                                       f"reaches the ₪{MIN_TRADE_ILS:,.0f} minimum trade — "
+                                       f"reaches the ₪{min_trade_ils():,.0f} minimum trade — "
                                        f"this is as close as a whole lot gets")})
             else:
                 out.append({**entry, "status": "nothing_to_do", "amount_ils": 0.0, "buys": [],
@@ -966,7 +966,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
         out.append({**entry, "status": "funded", "amount_ils": amount, "buys": legs})
 
     funded = [x for x in out if x["status"] == "funded"]
-    fund = _fits(running) if running >= MIN_TRADE_ILS else None
+    fund = _fits(running) if running >= min_trade_ils() else None
     # Read off the plan that will actually run, not the trial that accepted the
     # last sleeve, and reported rather than buried: whole-share rounding and tax
     # mean this is normally small but rarely zero.
@@ -988,7 +988,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
         # sleeve that is as close as a lot allows is a good outcome and still
         # not a complete one.
         "fully_funded": (all(x["status"] in ("funded", "nothing_to_do") for x in out)
-                         and residual < MIN_TRADE_ILS
+                         and residual < min_trade_ils()
                          and abs(resulting_pct - intended_pct) < 0.05),
         "plan_shortfall_ils": round(residual, 2),
         "funding": fund,
@@ -1008,7 +1008,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
                f" gap is smaller than the minimum trade, so it will stay there."
                if lot_bound else "")
             + (f" The plan is still ₪{residual:,.0f} short even so — that is a bug,"
-               f" not a choice; do not execute it." if residual >= MIN_TRADE_ILS else "")
+               f" not a choice; do not execute it." if residual >= min_trade_ils() else "")
             + " What the sleeves do not claim stays in the core.")
 
     if dry_run:
@@ -1090,7 +1090,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
     for leg in legs:
         tk, want = leg["ticker"], float(leg["buy_ils"])
         spend = min(want, budget)
-        if spend < MIN_TRADE_ILS:
+        if spend < min_trade_ils():
             skipped.append({"ticker": tk, "reason": "not enough funded money left"})
             continue
         try:

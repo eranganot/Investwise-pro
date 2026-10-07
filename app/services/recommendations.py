@@ -6,6 +6,8 @@ import json
 import logging
 import math
 import time
+
+from app.services import thresholds as _thr
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -1290,6 +1292,7 @@ async def build_recommendations(session: AsyncSession, user: User,
     snap = compute_snapshot(pdicts)
     nav = snap["nav"]
     plan = await get_plan(session, user)
+    _thr.use(plan)          # PR 104d: this build honours the user's card thresholds
     cap = effective_caps(plan)["concentration_cap"]
     # THE CAPS THE USER SET, ONE READ, HANDED TO EVERY CARD THAT SIZES A TRADE.
     #
@@ -3527,7 +3530,7 @@ def _raise_cap_act(rule: dict, tk: str, cap_pct: float, targets: dict | None) ->
     t = (targets or {}).get(tk)
     if t is None or not rule.get("id"):
         return None
-    band = float(DEFAULTS["rebalance_band"])
+    band = float(_thr.get("rebalance_band_pts", DEFAULTS["rebalance_band"]))
     t_pct = float(t) * 100.0
     new = round(t_pct + band, 1)
     if abs(cap_pct - t_pct) > band or new <= cap_pct:
@@ -3670,7 +3673,7 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
         # portfolio closer to your plan" while its buy-back rule said the plan
         # wanted 1,673 MORE. Over its target it says how much the plan wants
         # trimmed, sized on the excess.
-        if gain_pct >= _GAIN_CARD_PCT and cost > 0:
+        if gain_pct >= float(_thr.get("gain_line_pct", _GAIN_CARD_PCT)) and cost > 0:
             from app.services.funding_service import MIN_TRADE_ILS as _min_trade
             gain_ils = round(value_ils * (1.0 - cost / price), 2)
             tps = sorted(float(r["target"]) for r in mine

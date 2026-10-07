@@ -3033,7 +3033,9 @@ function goalRows(X){
   return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
     +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
     +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
-      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"),true);
+      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"))
+    +row("Card thresholds",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{};
+        return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
 }
 
 function openGoalSheet(){
@@ -3151,6 +3153,43 @@ async function saveDialsSheet(btn){
     await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
+}
+
+// PR 104d: every card threshold, each with what it decides and its default
+// (Eran: "I want every decision to be controlled and changeable through the app").
+function openThresholdsSheet(){
+  const p=PLX.p||{}, spec=p.thresholds_spec||{}, eff=p.thresholds||{}, def=p.thresholds_defaults||{}, mine=p.thresholds_overrides||{};
+  const fmt=v=>Array.isArray(v)?v.join(", "):v;
+  openSheet(_sheetHead("Card thresholds")
+    +`<div class="mk">What decides which cards you get and how big they are. Change a value and Save; Reset puts one back to its default.</div>`
+    +Object.keys(spec).map(k=>{const s=spec[k], isList=k==="guard_levels";
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <label class="mk" for="th_${k}" style="display:block;font-weight:700;color:var(--ink)">${esc(s.label)}${mine[k]!==undefined?' <span class="ok">· set by you</span>':""}</label>
+        <div class="mk">${esc(s.detail)} Default ${fmt(def[k])}.</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+          <input id="th_${k}" ${isList?'type="text" inputmode="decimal"':`type="number" step="any" min="${s.min}" max="${s.max}"`} value="${fmt(eff[k])}" style="flex:1">
+          ${mine[k]!==undefined?`<button class="ghost" onclick="document.getElementById('th_${k}').value='${fmt(def[k])}';document.getElementById('th_${k}').dataset.reset='1'">Reset</button>`:""}</div></div>`;}).join("")
+    +`<div class="acts" style="margin-top:12px"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
+       <button class="acc" style="flex:2" onclick="saveThresholdsSheet(this)">Save thresholds</button></div>`);
+}
+async function saveThresholdsSheet(btn){
+  const p=PLX.p||{}, spec=p.thresholds_spec||{}, eff=p.thresholds||{}, def=p.thresholds_defaults||{}, out={};
+  for(const k of Object.keys(spec)){
+    const el=$("th_"+k); if(!el) continue;
+    const raw=el.value.trim(), isList=k==="guard_levels";
+    const v=isList?raw.split(/[ ,]+/).filter(Boolean).map(Number):parseFloat(raw);
+    const same=(a,b)=>JSON.stringify(Array.isArray(a)?[...a].sort((x,y)=>x-y):a)===JSON.stringify(Array.isArray(b)?[...b].sort((x,y)=>x-y):b);
+    if(el.dataset.reset==="1"||same(v,def[k])){ if((p.thresholds_overrides||{})[k]!==undefined) out[k]=null; continue; }
+    if(!same(v,eff[k])) out[k]=v;
+  }
+  if(!Object.keys(out).length){closeSheet();return;}
+  btn.disabled=true; btn.textContent="Saving…";
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({thresholds:out})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||("Save failed ("+r.status+")"));}
+    // the goal-odds gain and the guard levels change what the retune offers
+    if("material_odds_pts" in out||"guard_levels" in out){btn.textContent="Re-solving your goal… (~20 s)";await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
+    closeSheet(); _reloadView();
+  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save thresholds";}
 }
 
 // The stops on what your sleeves hold, and the drawdown guard. Ticked = armed.

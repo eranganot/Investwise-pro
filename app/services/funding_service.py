@@ -32,7 +32,7 @@ CASH_FLOOR_PCT = {"Preserve": 0.10, "Income": 0.07, "Balanced": 0.05, "Grow": 0.
 _DEFAULT_FLOOR = 0.05
 
 # Don't propose a trade too small to be worth the friction.
-MIN_TRADE_ILS = 250.0
+MIN_TRADE_DEFAULT_ILS = 250.0
 
 # THE LINE NOTHING MAY CROSS, in shekels rather than a share of NAV.
 #
@@ -41,7 +41,28 @@ MIN_TRADE_ILS = 250.0
 # for a TARGET and wrong for a floor: the point of a hard minimum is that it
 # does not move when the market does. 150 is his number, absolute, and it wins
 # over the percentage whenever the percentage is smaller.
-CASH_HARD_FLOOR_ILS = 150.0
+CASH_HARD_FLOOR_DEFAULT_ILS = 150.0
+
+
+# PR 104d: both are settings now (plans.thresholds); the constants above are the
+# defaults. `MIN_TRADE_ILS` / `CASH_HARD_FLOOR_ILS` still resolve, per call, for
+# every `from funding_service import ...` (PEP 562 module __getattr__).
+def min_trade_ils() -> float:
+    from app.services import thresholds
+    return float(thresholds.get("min_funded_trade_ils", MIN_TRADE_DEFAULT_ILS))
+
+
+def cash_hard_floor_ils() -> float:
+    from app.services import thresholds
+    return float(thresholds.get("cash_floor_ils", CASH_HARD_FLOOR_DEFAULT_ILS))
+
+
+def __getattr__(name):
+    if name == "MIN_TRADE_ILS":
+        return min_trade_ils()
+    if name == "CASH_HARD_FLOOR_ILS":
+        return cash_hard_floor_ils()
+    raise AttributeError(name)
 
 
 def cash_target_ils_of(plan) -> float | None:
@@ -126,7 +147,7 @@ def cash_soft_floor_ils(nav: float, objective: str | None, plan=None) -> float:
     be less than 150, and a target that dips under the hard minimum would let the
     ordinary path spend into it without anyone opting in.
     """
-    return max(cash_floor_ils(nav, objective, plan), CASH_HARD_FLOOR_ILS)
+    return max(cash_floor_ils(nav, objective, plan), cash_hard_floor_ils())
 
 
 def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None,
@@ -140,7 +161,7 @@ def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None
     a card that has a specific holding and a reason to name -- ``plan_funding``
     will not honour it without one.
     """
-    floor = (CASH_HARD_FLOOR_ILS if allow_reserve
+    floor = (cash_hard_floor_ils() if allow_reserve
              else cash_soft_floor_ils(nav, objective, plan))
     return max(0.0, float(cash_ils or 0.0) - floor)
 
@@ -304,7 +325,7 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
 
     out = []
     for p in positions:
-        if p["ticker"] in exclude or p["value_ils"] < MIN_TRADE_ILS:
+        if p["ticker"] in exclude or p["value_ils"] < min_trade_ils():
             continue
         cls = p["asset_class"]
         class_over = max(0.0, mix.get(cls, 0.0) - target.get(cls, 0.0))
@@ -367,7 +388,7 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
             # a sentence naming an overweight of zero. Measured on the live book
             # once the book target was threaded in: BND was over by 0.06 points,
             # ILS 15.73.
-            if class_over * nav >= MIN_TRADE_ILS:
+            if class_over * nav >= min_trade_ils():
                 reason = (f"cheapest way to raise it: {cls} is the most overweight class "
                           f"({mix.get(cls, 0.0):.0%} against a {target.get(cls, 0.0):.0%} target) "
                           f"and {p['ticker']} is among its least-taxed positions")
@@ -473,7 +494,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     # different trades wearing the same "sell X to buy Y" sentence, and the card
     # has to be able to tell the user which one it is proposing.
     swap_ils = 0.0
-    if remaining_net >= MIN_TRADE_ILS:
+    if remaining_net >= min_trade_ils():
         from app.core.config import get_settings
         from app.services.fx import fx_rate, price_currency
         cgt = float(get_settings().cgt_rate)
@@ -495,12 +516,12 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         # "sell what you have"; if so, only the overweight may be sold.
         book_has_budget = (sum(class_budget.values())
                            + sum(max(0.0, p["weight"] - cap) * nav
-                                 for p in _position_rows(rows, snap))) >= MIN_TRADE_ILS
+                                 for p in _position_rows(rows, snap))) >= min_trade_ils()
 
         for cand in rank_trim_candidates(rows, snap, objective, cap, exclude,
                                          book_target=book_target, prefer=prefer,
                                          name_caps=name_caps):
-            if remaining_net < MIN_TRADE_ILS:
+            if remaining_net < min_trade_ils():
                 break
             price_ils = cand["price_ils"] or 0.0
             if price_ils <= 0:
@@ -522,7 +543,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                 # The position is eligible on its own terms; `remaining_net`
                 # still caps the total and `exclude` still protects sleeves.
                 allow = max(allow, cand["value_ils"])
-            if allow >= MIN_TRADE_ILS:
+            if allow >= min_trade_ils():
                 # Bounded by whichever authorised the sale: this NAME being over
                 # its own cap is a per-position fact, so it does not consume the
                 # class budget; the class overweight does.
@@ -555,7 +576,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                 continue
             sellable_value = avail_shares * price_ils
             take = min(want_gross, allow, sellable_value)
-            if take < MIN_TRADE_ILS:
+            if take < min_trade_ils():
                 continue
 
             # SELL FRACTIONS, BECAUSE THE BOOK HOLDS FRACTIONS.
@@ -589,7 +610,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             shares = math.floor((take / price_ils) * 10000.0) / 10000.0
             shares = min(shares, avail_shares)
             value = shares * price_ils
-            if value < MIN_TRADE_ILS:
+            if value < min_trade_ils():
                 continue
             tax = gain_per_share * shares * rate * cgt
             sells.append({"ticker": cand["ticker"], "market": cand["market"], "shares": shares,
@@ -621,7 +642,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         "cash_floor_pct": cash_floor_pct(objective, plan, nav),
         # THE SOFT/HARD SPLIT, on the payload, because a card that spends into
         # the reserve has to be able to show the reader where it landed.
-        "cash_hard_floor_ils": CASH_HARD_FLOOR_ILS,
+        "cash_hard_floor_ils": cash_hard_floor_ils(),
         "reserve_used_ils": reserve_used,
         "reserve_reason": reserve_reason if reserve_used else None,
         "cash_after_ils": round(_after, 2),
@@ -720,7 +741,7 @@ def describe_funding(fund: dict, buying_class: str | None) -> str:
     # Threshold, not truthiness: below the minimum tradeable amount there is
     # nothing a reader could act on, so there is nothing to report.
     _short = float(fund.get("shortfall_ils") or 0.0)
-    if _short >= MIN_TRADE_ILS:
+    if _short >= min_trade_ils():
         line += f" That still leaves ₪{_short:,.0f} short."
     return line
 
@@ -814,15 +835,15 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     # it could have prevented is not a cap.
     gap = class_gap_ils(nav, mix, buying_class, class_target)
     room = name_room_ils(nav, ticker_weight, effective_name_cap(cap, tk, name_caps))
-    want = min(gap, room) if gap >= MIN_TRADE_ILS else room
-    if gap < MIN_TRADE_ILS and not allow_within_class_swap:
+    want = min(gap, room) if gap >= min_trade_ils() else room
+    if gap < min_trade_ils() and not allow_within_class_swap:
         # The class is at or over target. Absent an explicit opt-in there is no
         # honest card here: buying more of a class the plan already holds too
         # much of cannot be a move toward the plan.
         return None
     if requested_ils is not None:
         want = min(want, max(0.0, float(requested_ils)))
-    if want < MIN_TRADE_ILS:
+    if want < min_trade_ils():
         return None
 
     ex = {t.upper() for t in (exclude or set())} | {tk}
@@ -833,7 +854,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                         book_target=book_target, allow_reserve=allow_reserve,
                         reserve_reason=reserve_reason, name_caps=name_caps)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
-    if amount < MIN_TRADE_ILS:
+    if amount < min_trade_ils():
         return None
     if amount < want:
         # Re-plan at the size the book can actually pay for, so the funding legs
@@ -843,7 +864,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                             book_target=book_target, allow_reserve=allow_reserve,
                             reserve_reason=reserve_reason, name_caps=name_caps)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
-        if amount < MIN_TRADE_ILS:
+        if amount < min_trade_ils():
             return None
 
     # Simulate. This -- not the trade size, not the caller's intent -- is what
@@ -878,7 +899,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     # another class it is not a swap, it is an overshoot. Production 2026-09-30:
     # Fixed Income 14.26% vs 14.60% (gap ~₪80) sized to ₪841 from cash + USO,
     # taking it to 17.5% and labelled "toward target".
-    if gap < MIN_TRADE_ILS and kind != "within_class_swap":
+    if gap < min_trade_ils() and kind != "within_class_swap":
         return None
 
     # The buy can be right about its OWN class and still leave the book worse

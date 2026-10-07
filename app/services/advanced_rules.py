@@ -52,6 +52,12 @@ DEFAULTS = {"rebalance_band": 3.0, "profit_protect": 15.0, "trend_break": 200.0,
 # (rules_service.TAKE_PROFIT_FRACTION is the same 25%).
 DERISK_FRACTION = 0.25
 
+
+def _band_default() -> float:
+    """PR 104d: the rebalance band is a setting (plans.thresholds); 3 points by default."""
+    from app.services import thresholds
+    return float(thresholds.get("rebalance_band_pts", DEFAULTS["rebalance_band"]))
+
 _SIG_WORDS = {"long": "50-day average fell below its 200-day",
               "short": "20-day average fell below its 50-day"}
 
@@ -109,7 +115,7 @@ def band_side(rule, pos: dict) -> tuple[str | None, float, float]:
     if t is None:
         return None, 0.0, 0.0
     w = float(pos.get("weight_pct") or 0.0)
-    band = abs(float(rule.level or DEFAULTS["rebalance_band"]))
+    band = abs(float(rule.level or _band_default()))
     dev = w - float(t)
     nav = float(pos.get("nav") or 0.0)
     trade = abs(dev) / 100.0 * nav
@@ -656,7 +662,7 @@ async def _convert_caps_card(session, user, rules, idx) -> dict | None:
                     "This offer is shown once; Ignore keeps your caps"],
             "est_amount": None, "actionable": True,
             "apply": {"kind": "caps_to_bands", "rule_ids": [str(r.id) for r in caps],
-                      "band": DEFAULTS["rebalance_band"]}}
+                      "band": _band_default()}}
 
 
 async def apply_caps_to_bands(session, user, spec: dict) -> dict:
@@ -665,7 +671,7 @@ async def apply_caps_to_bands(session, user, spec: dict) -> dict:
     from app.models.tables import KVSetting, TradingRule
     from app.services import rules_service as rs
     ids = {str(x) for x in (spec.get("rule_ids") or [])}
-    band = float(spec.get("band") or DEFAULTS["rebalance_band"])
+    band = float(spec.get("band") or _band_default())
     done = []
     for r in (await session.scalars(select(TradingRule).where(
             TradingRule.subject == user.email))).all():

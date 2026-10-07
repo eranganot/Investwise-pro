@@ -150,7 +150,19 @@ def cap_breach_is_material(level: float, weight_pct: float, value_ils: float) ->
 #: winner running. Overridable per rule via ``meta``-free `note` parsing is
 #: deliberately NOT offered -- a number hidden in prose is a number nobody can
 #: audit. See `take_profit_fraction`.
-TAKE_PROFIT_FRACTION = 0.25
+TAKE_PROFIT_DEFAULT_FRACTION = 0.25
+
+
+def house_take_profit_fraction() -> float:
+    """PR 104d: the house slice is a setting (plans.thresholds); 25% by default."""
+    from app.services import thresholds
+    return float(thresholds.get("take_profit_fraction_pct", TAKE_PROFIT_DEFAULT_FRACTION * 100.0)) / 100.0
+
+
+def __getattr__(name):
+    if name == "TAKE_PROFIT_FRACTION":
+        return house_take_profit_fraction()
+    raise AttributeError(name)
 
 #: How much higher the next rung sits after one fires. The ladder is the whole
 #: point: a position that keeps trending gets sold in slices at successively
@@ -168,11 +180,11 @@ def take_profit_fraction(rule) -> float:
     """
     raw = getattr(rule, "trim_fraction", None)
     try:
-        frac = float(raw) if raw is not None else TAKE_PROFIT_FRACTION
+        frac = float(raw) if raw is not None else house_take_profit_fraction()
     except (TypeError, ValueError):
-        frac = TAKE_PROFIT_FRACTION
+        frac = house_take_profit_fraction()
     if not (0.0 < frac <= 1.0):
-        frac = TAKE_PROFIT_FRACTION
+        frac = house_take_profit_fraction()
     return frac
 
 
@@ -495,6 +507,12 @@ def _signal_side(flip: dict, ticker: str) -> str | None:
 
 
 async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = False) -> list[dict]:
+    try:   # PR 104d: rule firing honours the user's thresholds (take-profit slice, band)
+        from app.services import thresholds
+        from app.services.plan_service import get_plan
+        thresholds.use(await get_plan(session, user))
+    except Exception:  # noqa: BLE001
+        pass
     """Update peaks, latch newly-triggered rules, optionally push. Returns the
     list of rules that newly triggered this run."""
     idx, _nav = await _positions_index_and_nav(session, user)

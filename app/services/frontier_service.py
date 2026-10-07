@@ -358,6 +358,12 @@ TAIL_TOLERANCE_PTS = 1.0
 # A goal card must change the goal's odds or its risk: five points of
 # probability, or three of volatility with the odds still >= GOAL_CONFIDENCE.
 MATERIAL_PROB_PTS = 5.0
+
+
+def _material() -> float:
+    """PR 104d: the smallest goal-odds gain worth a card is a setting; 5 points by default."""
+    from app.services import thresholds
+    return float(thresholds.get("material_odds_pts", MATERIAL_PROB_PTS))
 GRID_POINTS = 16
 LAMBDA_MAX = 200.0
 # Fewer draws than the risk-mode resize: each goal draw walks a 16-point
@@ -522,10 +528,10 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         outcome = GOAL_LESS_RISK if material else GOAL_ON_TRACK
     elif reach0:
         material = acting and ok_after and dp > 0
-        outcome = GOAL_REBALANCE if material else GOAL_IMPROVE if acting and dp >= MATERIAL_PROB_PTS else GOAL_OUT_OF_REACH
-        material = material or (acting and dp >= MATERIAL_PROB_PTS)
+        outcome = GOAL_REBALANCE if material else GOAL_IMPROVE if acting and dp >= _material() else GOAL_OUT_OF_REACH
+        material = material or (acting and dp >= _material())
     else:
-        material = acting and dp >= MATERIAL_PROB_PTS
+        material = acting and dp >= _material()
         outcome = GOAL_IMPROVE if material else GOAL_OUT_OF_REACH
 
     # ---- PR 93: the same question on real, fat-tailed history -------------
@@ -876,14 +882,14 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
 
     best = max((r for r in rows if r["eligible"]), key=lambda r: (r["score_pct"], r["model_p_pct"]))
     switch = (best["id"] != current_core_id
-              and best["score_pct"] - cur["score_pct"] >= MATERIAL_PROB_PTS
+              and best["score_pct"] - cur["score_pct"] >= _material()
               and best["model_p_pct"] >= cur["model_p_pct"] and best["tail_p_pct"] >= cur["tail_p_pct"]
               and (best["win_share"] or 0) >= CORE_MIN_WIN_SHARE)
     return {"ok": True, "outcome": CORE_SWITCH if switch else CORE_KEEP,
             "current": cur, "best": best, "core_share_pct": round(core_share * 100, 2),
             "candidates": sorted(rows, key=lambda r: -r["score_pct"]),
             "not_modelled": [c["id"] for c, _ in not_modelled], "draws": draws,
-            "rule": (f"score = lower of model and history odds; switch only if +{MATERIAL_PROB_PTS:g} pts, "
+            "rule": (f"score = lower of model and history odds; switch only if +{_material():g} pts, "
                      f"no worse on either, and best in >= {CORE_MIN_WIN_SHARE:.0%} of {draws} redraws")}
 
 
@@ -932,9 +938,11 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
         return None
     cur_guard = round(g_spec["level"] * 100, 2) if g_spec else None
     guard_col = g_spec["col"] if g_spec else (int(np.argmax(unit_daily[:, :k].std(axis=0))) if k else None)
-    levels = [cur_guard] + [g for g in GUARD_LEVELS if g != cur_guard]
+    from app.services import thresholds
+    tried = list(thresholds.get("guard_levels", GUARD_LEVELS))      # PR 104d: a setting
+    levels = [cur_guard] + [g for g in tried if g != cur_guard]
     if cur_guard is None:
-        levels = [None] + list(GUARD_LEVELS)
+        levels = [None] + tried
 
     def guard_at(lvl):
         return _guard_spec(lvl, g_spec, guard_col)
@@ -949,7 +957,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
     ok = [c for c in cands if c["stats"]["p_halve_pct"] <= floor]
     best = max(ok, key=lambda c: (c["stats"]["p_goal_pct"], -c["stats"]["p_halve_pct"])) if ok else None
     material = bool(best and not best["current"]
-                    and best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= MATERIAL_PROB_PTS)
+                    and best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= _material())
     changes = {"pause_rule_ids": [], "pause_rules": [], "guard": None}
     if material:
         if best["retire_sleeve_exits"]:
@@ -1124,8 +1132,11 @@ async def compute_for(session, user, *, source: str = "on_demand",
     cash_pct = float(mix.get("Cash") or 0.0) * 100.0
     basket = await _core_basket(session, user, ctx["objective"])
     goal = await _goal_context(session, user, rows)
+    from app.services import thresholds as _thr
     from app.services.plan_service import get_plan as _gp
-    _st = settings_of(await _gp(session, user))
+    _plan_now = await _gp(session, user)
+    _thr.use(_plan_now)                     # PR 104d: the worker threads inherit this
+    _st = settings_of(_plan_now)
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
     from app.services import sleeve_service as _sv
     from app.services import strategies as _static_cat
@@ -1280,8 +1291,11 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
         return {"ok": False, "reason": "NO_GOAL"}
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
     rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct)
+    from app.services import thresholds as _thr
     from app.services.plan_service import get_plan as _gp
-    _st = settings_of(await _gp(session, user))
+    _plan_now = await _gp(session, user)
+    _thr.use(_plan_now)
+    _st = settings_of(_plan_now)
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
@@ -1751,7 +1765,7 @@ def rule_sleeve_order(rb: dict, v: dict | None = None) -> list[str]:
 def _protect_summary(rb: dict, tu: dict, v: dict | None = None) -> str:
     """The protection card's one or two sentences: what the rules cost, in the
     rules' own terms, else how the setup was chosen."""
-    if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
+    if rb.get("effect_pts") is not None and rb["effect_pts"] <= -_material():
         outs = [sleeve_label(sid) for sid, p in zip(rule_sleeve_order(rb, v),
                                                       (rb.get("on") or {}).get("pct_time_out") or []) if p]
         who = " and ".join(outs) if outs else "the holding"
@@ -1834,7 +1848,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         goal_line += (f" Chance the book halves at some point: {on['p_halve_pct']:g}% with your rules, "
                       f"{off['p_halve_pct']:g}% without. If a stop waited for a 15% rebound before buying back: "
                       f"{fix['p_goal_pct']:g}% chance, {fix['p_halve_pct']:g}% halving.")
-        if rb.get("effect_pts") is not None and rb["effect_pts"] <= -MATERIAL_PROB_PTS:
+        if rb.get("effect_pts") is not None and rb["effect_pts"] <= -_material():
             outs = [f"{sleeve_label(sid)} {p:g}%" for sid, p in zip(rule_sleeve_order(rb, v), on.get("pct_time_out") or []) if p]
             goal_line += (f" Your rules cost this goal {abs(rb['effect_pts']):g} points: after a stop or take-profit "
                           f"the app keeps the holding out until its price falls back below the sale price, so in "
@@ -1844,7 +1858,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     if cc.get("current") and cc.get("candidates"):
         spread = max(r["score_pct"] for r in cc["candidates"]) - min(r["score_pct"] for r in cc["candidates"])
         goal_line += (f" Changing your core ({len(cc['candidates'])} catalog cores modelled) moves the odds by "
-                      f"at most {spread:.1f} points" + (" - the sleeves decide this goal." if spread < MATERIAL_PROB_PTS
+                      f"at most {spread:.1f} points" + (" - the sleeves decide this goal." if spread < _material()
                                                         else "."))
     mt = lv.get("money_time_note")
     if mt:
