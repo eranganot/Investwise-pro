@@ -199,6 +199,6 @@ def test_no_smoke_script_hardcodes_a_ceiling(name):
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parents[1]
-    src = (root / "scripts" / "smoke" / name).read_text(encoding="utf-8")
+    src = (root / "scripts" / "archive" / "smoke" / name).read_text(encoding="utf-8")
     assert "$MaxDrawdownPct = 13.3" not in src
     assert "Resolve-Ceiling" in src, "it must read the user's stored ceiling"

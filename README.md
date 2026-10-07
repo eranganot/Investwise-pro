@@ -1,169 +1,77 @@
-# InvestWise Pro — Multi-Agent Wealth Operating System
+# InvestWise Pro
 
-A cloud-native FastAPI backend + single-file PWA dashboard for net-wealth
-optimization. A pipeline of agents (Research · Alpha/Lag · Risk · Tax · Decision ·
-Adversary) turns real market data into **actionable, sized, funded** to-dos on a
-"Today" screen, all normalized to a single base currency (ILS).
+A personal wealth cockpit: a FastAPI backend and a single-file installable PWA. Each day it turns your holdings, your
+plan and live market data into **a short list of sized, funded, explained cards**, each executable with one tap on
+the book it tracks. Everything is valued in **ILS**. Behind the cards sits one goal model that answers "what is my chance of reaching
+my goal, and what would change it?"
 
-> **Note:** This software produces recommendations from the rules and parameters
-> *you* configure, grounded in your holdings and live prices. **It is not
-> financial advice** and never invents numbers — every figure traces to your data
-> or a labelled, transparent assumption. Tax rates/thresholds are config-driven
-> (`.env`) and should be confirmed with your accountant.
+> **Not financial advice.** Every figure traces to your data, a market price, or a labelled assumption; the app
+> never invents numbers. Accepting a card updates the book InvestWise tracks. **It never places a brokerage order.**
+> Tax rates are config-driven; confirm them with your accountant.
 
-## What it does
+## Documentation
 
-- **Grounded recommendations.** Every Today card explains *why* it fired, its
-  *impact*, and — for a buy — *how much* and *how it's funded* (cash first down to
-  a plan-derived floor, then the worst-fitting holdings, with share counts and
-  estimated CGT). Cards the app can execute are marked as such; guidance you act
-  on yourself is labelled distinctly. Accepting an executable card really trades.
-- **One decision pipeline.** The Agents "war room" and the Today view share the
-  same grounded signals (spot vs. each name's own 50-day trend); the war room is
-  the audit trail *for* Today, not a parallel universe. Signals are checked
-  against your plan's target mix and concentration caps before they're shown.
-- **First-class cash.** Liquid cash is tracked, flows through NAV, the allocation
-  mix and the liquidity score, and funds buys.
-- **Strategy profiles.** Each strategy carries a computed risk/return profile
-  (expected return, volatility, rough drawdown, concentration, leverage) derived
-  from its basket, plus a "what changes if I apply this" diff against your plan.
-- **Coherent list.** Contradictory or duplicate cards are reconciled (e.g. a
-  multi-leg rebalance collapses to one; a risk-off note won't tell you to raise
-  and spend cash at once).
-- **PWA + push.** Installable app; web push for recommendations, risk alerts,
-  price moves and a weekly digest. Financial data is always fetched network-first
-  so it's never served stale.
+**→ [docs/README.md](docs/README.md)** is the entry point. In short:
 
-## Architecture
+| | |
+|---|---|
+| [Product](docs/PRODUCT.md) | What it is, who it's for, the principles |
+| [Architecture](docs/ARCHITECTURE.md) | System, layers, request flow, jobs |
+| [Domain logic](docs/DOMAIN.md) | How cards are made, funding, the goal, the invariants |
+| [Development](docs/DEVELOPMENT.md) | Run, test, migrate, ship (incl. per-PR smoke) |
+| [Operations](docs/OPERATIONS.md) | Production, deploy, secrets, runbook |
+| [Decisions](docs/DECISIONS.md) · [History](docs/HISTORY.md) · [Backlog](docs/BACKLOG.md) | Why, how we got here, what's next |
+| [STATUS.md](STATUS.md) | Changelog: one entry per shipped PR |
 
-```
-app/
-  core/        config (env-driven) + async SQLAlchemy engine
-  models/      11 SQLAlchemy tables (Section 4)
-  schemas/     Pydantic state machine (5 stages) + output contract (Section 7)
-  engines/     Tax · Lag · Risk · Decision · WHS · Simulation + orchestrator
-  api/routes/  all REST endpoints
-  static_app/  the simplified /app UI (single file)
-  static/      the advanced /dashboard UI (single file)
-  main.py      FastAPI app factory
-tests/         state machine tests
-```
-
-The lifecycle (Section 1) is type-enforced — each stage embeds the previous
-stage as a typed field, so **no stage can be skipped**:
-
-```
-Detected → Vetted → Optimized → Ranked → Displayed
-              └─ veto_flag → Vetoed (terminal, never shown)
-```
-
-## Quick start — option A: Docker (recommended, cloud-native)
+## Quick start
 
 ```bash
-# from investwise-pro/
-docker compose up --build
-# API:   http://localhost:8000   (docs at /docs)
-# DB:    Postgres 16 on :5432
+python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt -r requirements-dev.txt
+docker compose up -d db                                   # Postgres 16 on :5432
+alembic upgrade head
+uvicorn app.main:app --reload --port 8000                 # UI: http://localhost:8000/app/   API docs: /docs
 ```
 
-## Quick start — option B: local Python
-
-```bash
-# 1. install dependencies
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-dev.txt                 # for tests
-
-# 2. point DATABASE_URL at a running Postgres (or use docker compose up db)
-cp .env.example .env
-
-# 3. run the dev server
-uvicorn app.main:app --reload --port 8000
-```
-
-### Frontends
-
-Both UIs are self-contained single HTML files served by FastAPI — no build step:
-
-- **/app** — simplified, non-expert view (`app/static_app/index.html`)
-- **/dashboard** — advanced view (`app/static/index.html`)
+Or run everything in Docker with `docker compose up --build`. Data defaults to deterministic **illustrative** prices; set
+`MARKET_DATA_PROVIDER=yahoo` and `FX_PROVIDER=frankfurter` for live data. See [Development §2–3](docs/DEVELOPMENT.md).
 
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
-pytest -v
+pytest -q                     # ~2,290 tests, SQLite (CI job "test")
+ruff check app tests          # CI job "lint"
+DATABASE_URL=postgresql+asyncpg://investwise:investwise@127.0.0.1:5432/investwise pytest -q   # CI job "test-postgres"; run it before pushing
 ```
 
-## Database migrations (production)
+## Stack
 
-Dev auto-creates tables (`AUTO_CREATE_TABLES=true`). For production, use Alembic:
+Python 3.12 · FastAPI · SQLAlchemy 2 (async) · Postgres 16 / asyncpg · Alembic · APScheduler · NumPy · vanilla-JS PWA
+with Chart.js · Web Push (VAPID) · Google OAuth · Gemini (optional) · Yahoo / Frankfurter / FMP market data · Docker on Railway.
 
-```bash
-alembic revision --autogenerate -m "init"
-alembic upgrade head
+## Repository layout
+
+```
+app/
+  main.py          app factory, lifespan, middleware, /app static mount
+  core/            settings, DB engine, JWT/RBAC, audit, metrics
+  models/          29 SQLAlchemy tables
+  api/routes/      32 routers (~143 endpoints)
+  services/        business logic: Today cards, funding, plan/goal/frontier, rules, ledger, pricing, push
+  engines/         pure computation: frontier, backtest, Monte Carlo, tax, risk, blend …
+  agents/          Research, Opportunity, Fee, Allocation, Adversary
+  providers/       market data + FX behind a resilience tier
+  worker/          APScheduler jobs (+ vestigial Celery)
+  static_app/      the whole UI: index.html, sw.js, manifest, icons
+alembic/           migrations 0001–0028 (run as Railway preDeployCommand)
+tests/             ~2,290 tests, named as claims
+scripts/           PowerShell smokes, ops checks, operator CLIs (see scripts/README.md)
+qa/                Pixel 9 manual QA lists
+docs/              documentation (+ archive/ of superseded plans and status)
 ```
 
-## Deploy to Railway
+## Deploy
 
-1. Push this repo to GitHub.
-2. Railway → New Project → Deploy from GitHub repo (uses `railway.json` + `Dockerfile`).
-3. Add the **Postgres** plugin — Railway injects `DATABASE_URL` (auto-normalized to asyncpg).
-
-## Selected endpoints
-
-| Method | Path                          | Purpose                              |
-|--------|-------------------------------|--------------------------------------|
-| GET    | `/`                           | service info                         |
-| GET    | `/health`                     | health check                         |
-| GET    | `/health/ready`               | readiness probe (DB check)           |
-| GET    | `/api/v1/market/quote`        | Market quote (resilient provider)    |
-| GET    | `/api/v1/fx/rate`             | FX rate                              |
-| GET    | `/api/v1/research/events`     | Research Agent evidence (read-only)  |
-| GET    | `/api/v1/providers/health`    | Provider circuit-breaker status      |
-| GET    | `/api/v1/jobs`                | Async mode + supported jobs          |
-| POST   | `/api/v1/jobs/monte-carlo`    | Enqueue Monte Carlo (async/eager)    |
-| POST   | `/api/v1/jobs/simulation`     | Enqueue projection                   |
-| POST   | `/api/v1/auth/token`          | Login → access + refresh (JWT)       |
-| POST   | `/api/v1/auth/refresh`        | Rotate refresh token                 |
-| POST   | `/api/v1/auth/m2m`            | Issue M2M token (SUPERADMIN)         |
-| GET    | `/api/v1/auth/me`             | Current principal                    |
-| GET    | `/api/v1/decision-feed/demo`  | runs the lifecycle on sample signals |
-| GET    | `/api/v1/risk/preview`        | Monte Carlo risk + veto decision     |
-| POST   | `/api/v1/lag/scan`            | Lag divergence scan (depth-ranked)   |
-| GET    | `/api/v1/whs`                 | Wealth Health Score (weighted)       |
-| GET    | `/api/v1/simulation`          | Forward projection (CPI/FX/horizon)  |
-| POST   | `/api/v1/safety/check`        | Safety Layer (concentration/liquidity) |
-| POST   | `/api/v1/actions`             | Record accepted/ignored (learning)   |
-| GET    | `/api/v1/learning/profile`    | Personalization profile              |
-| POST   | `/api/v1/intake/portfolio`    | Ingest positions (JSON)              |
-| POST   | `/api/v1/intake/portfolio/csv`| Ingest positions (CSV upload)        |
-| GET    | `/api/v1/portfolio`           | List persisted positions             |
-| GET    | `/api/v1/entities`            | List entities (Personal/Spouse/Corp) |
-| GET/PUT| `/api/v1/plan`                | Goals/plan (tailors health & advice) |
-| GET    | `/api/v1/war-room`            | Grounded agent reasoning (audit for Today) |
-| GET    | `/api/v1/recommendations`     | Today cards (sized, funded, honesty flags) |
-| POST   | `/api/v1/recommendations/{id}/accept` | Execute or mark a card done  |
-| POST   | `/api/v1/recommendations/{id}/dismiss`| Ignore a card (7-day, restorable) |
-| POST   | `/api/v1/recommendations/restore`     | Un-ignore dismissed cards    |
-| POST   | `/api/v1/recommendations/restore-completed` | Bring back completed cards |
-| GET    | `/api/v1/portfolio/cash`      | Current liquid cash balance          |
-| POST   | `/api/v1/portfolio/cash`      | Set or adjust liquid cash            |
-| GET    | `/api/v1/mix`                 | Asset-class mix vs target (Cash always shown) |
-| GET    | `/api/v1/strategies`          | Strategy catalog + computed profiles |
-| GET    | `/api/v1/strategies/{id}/preview` | What changes if you apply it     |
-| POST   | `/api/v1/strategies/{id}/apply`   | Apply a strategy preset          |
-| GET    | `/api/v1/auth/status`         | Whether API-key auth is enabled      |
-| POST   | `/api/v1/allocation/analyze`  | SAA/TAA drift + cost-adjusted rebalance |
-| GET    | `/api/v1/health-check`        | Portfolio Health Check (≤5 opps)       |
-| GET    | `/api/v1/decision-feed/weekly`| Weekly feed (cap 10, categorized)    |
-| GET    | `/api/v1/tax/review`          | Tax Optimization Review (₪ savings)    |
-| GET    | `/api/v1/risk/alerts`         | Risk Alert Center (5 vectors)        |
-| POST   | `/api/v1/scenario`            | Scenario Planning (macro stress)     |
-
-Every Decision Feed item also carries an XAI **explanation** (why_now, supporting/contradicting factors, assumptions, confidence breakdown, expected outcomes, failure conditions).
-| POST   | `/api/v1/decision-feed/generate` | Run pipeline + persist to Postgres |
-| GET    | `/api/v1/decision-feed/latest`   | Read back the latest persisted feed |
-| GET    | `/app/`                       | Simplified guided UI (non-expert)    |
-| GET    | `/dashboard/`                 | Advanced web dashboard (power user)  |
-| GET    | `/docs`                       | OpenAPI / Swagger UI                 |
+Push to `main` and Railway builds the `Dockerfile`, runs `alembic upgrade head` as the pre-deploy step, and swaps traffic once
+`/health/ready` passes. **CI does not gate the deploy.** After every push, run that PR's smoke:
+`.\scripts\smoke\smoke-prNN-<slug>.ps1 -Sha <short-sha>`. See [Operations](docs/OPERATIONS.md).

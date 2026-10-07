@@ -1,17 +1,22 @@
 # InvestWise Pro — Claude working notes
 
-Personal investing dashboard / wealth system. Python, branch `main`. This is the **best-behaved repo**: sandbox-native git works directly, and CI runs the full suite (≈790 tests, lint/ruff on `app` **and** `tests`, plus a Postgres job) on push.
+Personal investing dashboard / wealth system. Python, branch `main`. This is the **best-behaved repo**: sandbox-native git works directly, and CI runs the full suite (≈2,290 tests, lint/ruff on `app` **and** `tests`, plus a Postgres job) on push.
+
+## Documentation map
+- `docs/README.md` is the index. The pages that matter most when you work: `docs/DOMAIN.md` (how cards are built, funding, goal, invariants → tests), `docs/ARCHITECTURE.md` (layers, Today request flow, jobs, `kv_settings` state), `docs/DEVELOPMENT.md` (tests, migrations, shipping + smoke template), `docs/BACKLOG.md` (**the single open-work list**), `docs/DECISIONS.md` (D-numbered decision log).
+- `STATUS.md` = the changelog, PR 88 onward (older history + the old backlog blocks: `docs/archive/status/`). Superseded plans live in `docs/archive/plans/` under their original names, so a code comment citing `PHASE_W_PLAN.md` still resolves there.
+- When you ship: add a STATUS entry, edit BACKLOG (close/open rows), add a `D` entry for any new decision, and fix any doc page your change made untrue.
 
 ## How to work in this repo
-- **Read `STATUS.md` first**; update after shipping or at session end.
+- **Read `STATUS.md` first** (and `docs/BACKLOG.md` for what's open); update after shipping or at session end.
 - The sandbox **can** run git here directly — commit, merge, push, and watch CI. Always run the suite locally before pushing: keep it green.
 - Use `app-bug-triage` for production issues and `ship-it` for the verify-after-deploy habit (CI is the gate here rather than Railway logs).
 
 ## Domain / behavior rules
 - The advisor assistant must **never invent numbers**; it reasons from grounded context (holdings, risk, asset-class concentration, available commodity/strategy options) and applies general investing principles. Always ends with "Not financial advice."
 - Currency is **ILS-normalized** across valuation + display; goal target, projections, and allocation mix all derive from the FX-normalized portfolio NAV — keep them aligned.
-- The legacy "Advanced" dashboard (`/dashboard`) must stay behind the auth gate (`REQUIRE_AUTH`).
-- A recommendation card **may not claim a portfolio change it does not produce**. Any "moves X toward target" claim must be computed from the *simulated post-trade mix*, never from trade size. Selling a class to buy the same class is a **swap** and must be labelled one. Every funded buy goes through `funding_service.propose_funded_buy()` — never `plan_funding` plus hand-written prose — and `describe_funding` requires its `buying_class` argument for exactly this reason. Verified in `tests/test_card_claims.py` by applying each card's `apply` spec and re-measuring, not by asserting on its text.
+- The data APIs stay behind the auth gate (`REQUIRE_AUTH=true` in production). The legacy "Advanced" dashboard no longer exists: `/dashboard` is only a redirect to `/app`, whose static shell is public and whose data endpoints are gated. Never add an unauthenticated endpoint that returns portfolio data.
+- A recommendation card **may not claim a portfolio change it does not produce**. Any "moves X toward target" claim must be computed from the *simulated post-trade mix*, never from trade size. Selling a class to buy the same class is a **swap** and must be labelled one. Every funded buy goes through `funding_service.propose_funded_buy()` — never `plan_funding` plus hand-written prose — and `describe_funding` requires its `buying_class` argument for exactly this reason. Verified in `tests/test_card_claims.py` by applying each card's `apply` spec and re-measuring, not by asserting on its text. *Known exceptions still open (`docs/BACKLOG.md` C1/C2): multi-leg sleeve funding (`strategy_service`) and the target solver's cost preview call `plan_funding` without `book_target`, and `redeploy_cash` sizes on its own path — don't copy those call sites.*
 - **Funding may only sell what the plan says you have too much of.** One overweight budget per asset class, spent down as the loop sells; a class at or under target is not a funding source while anything else is over.
 
 ## Known sharp edges

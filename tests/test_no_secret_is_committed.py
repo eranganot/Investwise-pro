@@ -170,7 +170,7 @@ def test_no_known_burned_credential_is_committed():
                 hits.append(f"  {rel}:{line} is {BURNED_SHA256[digest]}")
     assert not hits, (
         "A credential known to be published is committed:\n" + "\n".join(sorted(hits))
-        + "\n\nThese values can never be used again. See ROTATION.md.")
+        + "\n\nThese values can never be used again. See docs/ROTATION.md.")
 
 
 def test_the_private_key_file_is_git_ignored():

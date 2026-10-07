@@ -159,7 +159,7 @@ function Get-AgentKey {
                     Write-Host "  160+ commits of history, and it was pasted into chat. Making the" -ForegroundColor Yellow
                     Write-Host "  repo private did not un-publish it. The server still accepts it," -ForegroundColor Yellow
                     Write-Host "  which means AGENT_API_KEY on Railway has not been rotated yet." -ForegroundColor Yellow
-                    Write-Host "  See ROTATION.md." -ForegroundColor Yellow
+                    Write-Host "  See docs/ROTATION.md." -ForegroundColor Yellow
                     Write-Host ""
                 }
             }
@@ -182,7 +182,7 @@ function Get-AgentKey {
 
 # ROTATING IT. Step 4 is done as of PR 26, so this is now a two-machine chore
 # rather than a 33-file edit. The full runbook, including the SuperAdmin
-# password, is in ROTATION.md; the short version:
+# password, is in docs/ROTATION.md; the short version:
 #   1. Generate:  python -c "import secrets; print('iwk_' + secrets.token_urlsafe(36))"
 #   2. Set AGENT_API_KEY to the new value in Railway, and redeploy.
 #   3. Put the same value in scripts\.agent-key (git-ignored) on each machine.
