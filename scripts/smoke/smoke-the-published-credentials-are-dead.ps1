@@ -107,7 +107,7 @@ $AgentKey = Get-AgentKey -BaseUrl $BaseUrl -Quiet
 if (-not $AgentKey) {
     Bad "no agent key resolved, so nothing below could be checked"
     Note 'Set it: $env:IW_AGENT_KEY = "<the new key>"'
-    Note "or one line in scripts\.agent-key (git-ignored). See ROTATION.md."
+    Note "or one line in scripts\.agent-key (git-ignored). See docs/ROTATION.md."
 } else {
     if (Test-IsBurnedKey -Key $AgentKey) {
         Bad "the key on THIS MACHINE is the retired one"
@@ -175,7 +175,7 @@ if ($script:Skipped -gt 0) {
 }
 Write-Host ""
 if ($script:Fail -gt 0) {
-    Write-Host "  RED. See ROTATION.md." -ForegroundColor Red
+    Write-Host "  RED. See docs/ROTATION.md." -ForegroundColor Red
     exit 1
 }
 Write-Host "  Green. Both published credentials are refused." -ForegroundColor Green

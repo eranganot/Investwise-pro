@@ -7,6 +7,14 @@ disagreement is written down rather than smoothed over.
 
 Read `WHAT THIS MAP FOUND` at the bottom first if you only read one section.
 
+> **Currency note (2026-10-07).** The roster, the veto facts and the 7-vs-5 analysis are still true and are pinned by
+> `tests/test_the_agent_roster_is_what_actually_runs.py`. Most other `file:line` references were written at PR 23 (2026-08-30)
+> and have **drifted**, so search for the cited symbol. Examples: FeeAgent's call in `recommendations.py` is now near :1944, buy ideas
+> near :5164, `guarded_events` at `registry.py:198`. Today's copy of the war room is cached and not narrated (PR 104c.1), so
+> the narration latency figures apply only to the Agents tab. This page covers agents only. **The Today pipeline,
+> which is mostly plain producer functions rather than agents, is in [DOMAIN.md](DOMAIN.md).** The goal/frontier
+> solver and the holding review behave like agents but are not listed here.
+
 ---
 
 ## What counts as an agent
@@ -436,8 +444,10 @@ Four things that are not documentation problems:
    not blind. Nobody wired it. The contract test that would make this impossible
    rather than invisible is the natural companion to the Tier 4 work above.
 
-**All four are still open.** (1) and (2) are the same PR. (4) is half done —
+**Two are still open (as of 2026-10-07).** (1) and (2) were fixed together in
+PR 58 (see the Research Agent entry). (3) is open. (4) is half done:
 the wiring landed, the tilt is waiting on a basis that survives measurement.
+Both open items are tracked in `docs/BACKLOG.md` (P10, P11, L1).
 
 ---
 

@@ -319,7 +319,7 @@ def test_m_the_shared_commit_helper_is_path_limited():
     """
     from pathlib import Path
 
-    src = Path("scripts/deploy/_common.ps1").read_text(encoding="utf-8")
+    src = Path("scripts/archive/deploy/_common.ps1").read_text(encoding="utf-8")
     assert "git commit -F $msgPath -- $Files" in src, (
         "New-Commit must name its paths on the commit, not just on the add")
     assert "git diff --cached --name-only -- $Files" in src, (

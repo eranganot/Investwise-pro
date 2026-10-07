@@ -1,0 +1,166 @@
+# Decision log
+
+> Every significant product and technical decision, newest knowledge consolidated on 2026-10-07.
+> Format: **ID · date / PR · decision.** *Why.* Consequence. → source.
+> Sources under `docs/archive/` keep their original file names. "S" = `STATUS.md` (PR 88+) or
+> `docs/archive/status/STATUS-HISTORY-to-PR87.md` (earlier).
+>
+> **To add a decision:** append the next ID in the right section, keep it to three or four lines, and cite the PR.
+> If it reverses an earlier decision, mark the old one **Superseded by Dnn** instead of deleting it.
+
+---
+
+## Architecture and stack
+
+- **D01 · 2026-06-07 · Python 3.12, FastAPI async, SQLAlchemy 2 async, Postgres (asyncpg); SQLite for zero-setup tests.**
+  *The owner's choice at plan time.* The two backends are the source of the recurring "SQLite green, Postgres red" bugs (D27). → `archive/plans/EXECUTION_PLAN.md`
+- **D02 · 2026-06-07 · A type-safe lifecycle state machine (frozen Pydantic stages, each embedding its predecessor).**
+  *A stage cannot be skipped.* Today it is live only inside the war room ([DOMAIN.md §6](DOMAIN.md#6-engines-agents-and-the-war-room)). → `EXECUTION_PLAN.md` §4
+- **D03 · 2026-06 · Drop React/Vite; the UI is self-contained single HTML files served by FastAPI.**
+  *A simpler deploy with no build step.* `index.html` is ~4,100 lines; `frontend/` is a leftover. → `EXECUTION_PLAN.md` status line
+- **D04 · 2026-06-08 · Deterministic engine + agent pipeline, not LLM agents.** An "agent" is a component with judgement or a veto; an
+  "engine" computes. The war room still labels four engines as agents; this is documented, not hidden (PR 23 / [AGENTS.md](AGENTS.md)).
+  → `archive/reviews/ARCHITECTURE_AUDIT.md`
+- **D05 · 2026-06-14 · The LLM is Google Gemini, called through stdlib REST, not the SDK.** *The SDK's "client has been closed" errors
+  under FastAPI's loop.* Gemini "outages" later turned out to be billing (429), not code.
+- **D06 · 2026-06-14 · Google OAuth with an email allowlist, `REQUIRE_AUTH` in production, `X-Agent-Key` SUPERADMIN for scripts.**
+  *The portfolio had been world-readable.* → `archive/plans/IMPROVEMENT_PLAN.md` Phase A
+- **D07 · 2026-06-15 · An optional HS256 `JWT_SECRET`, so sessions survive redeploys.**
+- **D08 · 2026-06-14 → 06-28 · Real market data behind the existing provider interfaces:** Yahoo + Frankfurter (FMP optional), behind a
+  resilience tier (cache → rate limit → breaker → retry → single-flight). *Synthetic prices made the app's "financial substance 4/10"
+  (`archive/reviews/APP_REVIEW.md`).*
+- **D09 · 2026-06-22 · ILS is the base currency for valuation and display; the goal, projections and mix all derive from the FX-normalised NAV.**
+  It has been violated and fixed repeatedly: T0.3 summed ₪ + $, PR 18 agorot/pence, PR 45 intake 100×, PR 53 risk report in USD, PR 89 frontier inputs.
+- **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
+- **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
+  Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D12 · 2026-08-13 · A book is a core + N sleeves (`plan_sleeves`), funded on one budget; sleeves are enforced by a max-weight cap.** → `archive/plans/BEAT_MARKET_NEXT_PLAN.md`
+- **D13 · 2026-08-14 · Target solver (Phase T):** maximise excess CAGR over a benchmark under a hard drawdown ceiling. Never conflate the two
+  benchmarks. Blend by simulating, never by averaging headlines. The solver is a constraint the agents read, not an agent. **Abstaining is a
+  first-class result.** → `archive/plans/BEAT_MARKET_TARGET_SOLVER_PLAN.md`
+- **D14 · 2026-08-16 · Record real NAV daily (`nav_snapshots`, 22:10) with time-weighted returns over the contributions ledger.**
+  *Past NAV was unrecoverable; deposits must not read as performance.*
+- **D15 · 2026-08-23 (PR 3) / 09-28 (PR 73) · Every book change writes a `transactions` leg; a rebalance is trades and owes CGT.**
+  A test hook fails any quantity change without a ledger row. History repairs are preview-first, measured not balanced, and need two agreeing records.
+- **D16 · 2026-09-04 (PR 46–52, 57) · Alembic is the only schema author.**
+  - Migrations run as the Railway **preDeployCommand**, and `AUTO_CREATE_TABLES=false`.
+  - `/health/ready` gates traffic; `/health` reports `commit` and `schema_revision`.
+  - The container runs as non-root.
+
+  *Boot-time `create_all` plus a hand-kept ALTER list silently missed a column for 10 days; PR 47's `alembic && uvicorn` caused a 2-hour outage.*
+- **D17 · 2026-09 (applied in PR 80, 90, 104c.0, 104d.0) · A migration ships alone, add-only, nullable, guarded and mirrored into the startup
+  DDL. Nothing reads it until the next PR.** → [DEVELOPMENT.md §6](DEVELOPMENT.md#6-database-migrations)
+- **D18 · 2026-10-05 · One goal-seeking pipeline:** inputs (ILS, Black-Litterman) → propose (frontier) → validate → size (Kelly) → book
+  target → funding/cards. **Propose + Accept, never auto-rebalance.** The universe is asset classes plus a US/international split, not
+  tickers. *"Three optimisers quoting three targets would break one-function-one-answer."* → `archive/plans/EXECUTION_PLAN_2026-10-05_frontier.md`
+
+## Money truth and card honesty
+
+- **D19 · 2026-06 · The advisor never invents numbers; it uses grounded context only and ends with "Not financial advice."** PR 35: the digest
+  *cannot* compose a false sentence (post-verified).
+- **D20 · 2026-08-15 · A card may not claim a portfolio change it does not produce.**
+  - Claims come from the simulated post-trade mix.
+  - Selling and buying within the same class is labelled a swap.
+  - Every funded buy goes through `propose_funded_buy`.
+  - `tests/test_card_claims.py` applies each card and re-measures the result.
+
+  → `archive/plans/FIX_PLAN_card_claims.md`
+- **D21 · 2026-08-15 · Funding sells only what is overweight:** one budget per class, spent down as it sells; sleeves and the core are never raided.
+- **D22 · 2026-08-23 (PR 1) · Accepting a card conserves NAV; there is one `buy_into_book()` for every buy path.**
+  *`_rebalance_to` minted +4.8% NAV per tap.* → `archive/plans/FIX_PLAN_2026-08-23_audit.md`
+- **D23 · 2026-09-03 (PR 40) · A multi-leg buy prices every leg before the first write, and aborts untouched if it can't.**
+- **D24 · 2026-09-22 (PR 69) · The server alone decides which cards show; the per-device snooze is gone.**
+- **D25 · 2026-09-22 (PR 71) · One target mix:** sleeves + core + cash + a 10% Commodities carve-out from the core, summing to 1.0.
+  `targets_for` replaces rather than merges. *The old merge summed to 110%, so cards fought each other.*
+- **D26 · 2026-10-06 (PR 100–103):**
+  - Every number says what it measures, and no card gets a new sentence.
+  - Every card can be acted on, or it is a heads-up (enforced in CI).
+  - Every card has one shape: title → 1–2 sentences → "Accept will…" → before/after chips → Details.
+
+## Engineering process: incidents that became rules
+
+- **D27 · 2026-08-24 (incident `5a6dfef`) · Cross-loop sessions build their own NullPool engine; run the Postgres suite locally before pushing.**
+  *`5a6dfef` shipped with three failures that only `test-postgres` saw, while CLAUDE.md wrongly claimed that job couldn't be run locally.*
+- **D28 · 2026-08-24 · CI is not a gate; Railway deploys on push regardless. A red run is an incident.** Branch protection can't be enforced
+  on this plan, so `scripts/ops/pre-push` substitutes.
+- **D29 · 2026-08-24 (PR 2) · A job nothing calls is a job nobody has tested: every scheduled job has a test that runs it.**
+  *`run_nav_snapshot_blocking` imported a non-existent name inside the function and failed 7 nights out of 7.*
+- **D30 · 2026-09-04 (PR 47 → 49) · Never trust "Deployment successful": verify the pushed SHA is serving, behind a DB-backed healthcheck.**
+- **D31 · 2026-10-05 · Every PR ships a smoke test** (`scripts/smoke/smoke-prNN-<slug>.ps1` on `_smoke-common.ps1`, `Assert-Build`
+  first, read-only). It checks the PR's claims *and its non-changes*, runs with `-Sha` after the push, and its result goes in STATUS. Verify
+  field names against production first. *PRs 78–87 shipped without one.* (Owner rule.)
+- **D32 · 2026-08 → 10 · Smokes never pass on missing data.** Write PowerShell in ASCII with no backticks, and remember its variables are
+  case-insensitive. Give the owner exact commands.
+- **D33 · 2026-08-10 · A guard protects the path it is on: when fixing a data bug, find every writer of the field first.**
+  *`CASH` was re-quoted as NASDAQ:CASH through a second reprice path and NAV went ~9×. It recurred through the performance backfill and PR 68.*
+- **D34 · 2026-09 · Git hygiene:** never `git add -A`; use `git commit -F` without a BOM; never amend a pushed commit; one commit per round;
+  sandbox read-only git uses `--no-optional-locks` on the Windows mount.
+- **D35 · 2026-09-02 → · Plans are re-validated against production before work begins.** Mark each row PROVEN or INFERRED. Every new test
+  must fail on HEAD. Validate the instrument before believing the number.
+- **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
+- **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D38 · 2026-08-12 · Measure latency over a reused connection, with a control run in the same window.** *Two phantom defects were curl reconnecting.*
+- **D67 · 2026-08-31 · STATUS split:** `STATUS.md` = the per-PR history; the open-work list lives elsewhere (since 2026-10-07:
+  [BACKLOG.md](BACKLOG.md)). *The top "spine" repeatedly lagged HEAD.* 2026-10-07: older history moved to `docs/archive/status/`.
+
+## Security and ops
+
+- **D39 · 2026-08-31 (PR 26) · The repo went private on 08-30.** The published agent key and default password were retired: `auth_password`
+  has no default, `AUTH_PASSWORD` is authoritative, and published values are refused. → [ROTATION.md](ROTATION.md)
+- **D40 · 2026-09-05 · Rotate the Postgres password last, and only for a reason.** It is the only ops item whose failure mode is an outage.
+- **D41 · 2026-09-05 · Broker integration is parked.** Accept mutates the tracked book only. Un-park only on a decision to place real orders.
+  → `archive/plans/BROKER_INTEGRATION_PLAN.md`
+- **D42 · 2026-09-06 · TASE: Israeli companies yes (PR 62); Israeli index funds backlogged** (the provider can't price numeric fund symbols).
+
+## Investing and product (owner decisions)
+
+- **D43 · 2026-08-25 · The solver ranks on the recent window, with both windows measured.** This went against the spec's recommendation.
+- **D44 · 2026-08-29 (Phase W) · Walk-forward test: does fitting beat not fitting?** Result: not one strategy earns a win. The regime-gate threshold
+  was never a measurement, so it became a user setting. → `archive/plans/PHASE_W_PLAN.md`
+- **D45 · 2026-08-29 (PR 16) · Forward assumptions:** volatility is always measured; return is measured out-of-sample by default and never
+  silently (`ASSUMPTION_RETURN_BASIS`). *A static 12%/55% table was behind four wrong screens.* → `archive/plans/PR16_MEASURED_ASSUMPTIONS_PLAN.md`
+- **D46 · 2026-09-04 → 09-21 (PR 54, 64, 68.1) · Cash:** a **soft** target with a ₪150 **hard** floor. Spending the reserve needs a
+  `reserve_reason`. The redeploy card fires above ₪1,500 and invests down to the target.
+- **D47 · 2026-09-04 (B2, executed in PR 59) · Retire `btm_swing_dip`'s TQQQ overlay and hold QQQ** (the overlay returned 17.2% CAGR vs QQQ's 20.7%, with a deeper drawdown).
+- **D48 · 2026-09-05 (PR 55/56) · The book-volatility headline = today's exposure.** PR 55.1's σ/√f was withdrawn after one deploy.
+- **D49 · 2026-09-03 · A buy funded from a correctly-targeted class is shown as "corrects no drift."**
+- **D50 · 2026-09-22 (PR 70) · Health score = On plan + On track (goal odds), not generic risk/tax; one priority scale for every card.**
+  *The old score read risk 3/100 on a deliberately leveraged book.*
+- **D51 · 2026-09-28 (PR 74) · The goal is ROI on the money put in.** It is frozen except on deposits and withdrawals, the deadline governs, and no
+  card moves the goal. *The old target was NAV × 1.3⁶, so progress was mathematically stuck at 20.7%.* → `archive/plans/PLAN_2026-09-28_six_items.md`
+- **D52 · 2026-09-28 (PR 72) · A rule-vs-sleeve conflict becomes a decision card** (sell and lower the sleeve, or keep and update the rule; never retire).
+  The take-profit ladder re-arms on execution, and history is read-only.
+- **D53 · 2026-09-29 (PR 77) · The holding review sells only with a measured edge** (the signal beat holding over ~10 y, net of costs and 25% CGT).
+  Otherwise it arms a stop.
+- **D54 · 2026-09-28 (PR 76) · One return convention: stated returns are compound, converted once.** *The projection had counted volatility twice.*
+- **D55 · 2026-09-28 (PR 75) · Cash research, option B:** a held fund is replaced only by a fund, and a stock only by a stock.
+- **D56 · 2026-09-29 (PR 80/81) · Four advanced rules:** a rebalance band (3 pts), profit-protect (+20% activation), trend-break (200-day) and a
+  drawdown guard (10%). Their parameters live in `trading_rules.params`. A one-time card converts caps into bands.
+  → `archive/plans/PLAN_2026-09-29_advanced_rules.md`
+- **D57 · 2026-10-05 (PR 88–91) · Frontier and Kelly:**
+  - Propose + Accept.
+  - Kelly fraction by objective: Grow ½, Balanced ⅓, Preserve/Income ¼, never full.
+  - The Kelly fraction and return confidence are plan settings (migration 0026).
+- **D58 · 2026-10-05 (PR 92/93) · The ROI goal is the objective; the frontier and Kelly are tools.** On track = ≥ 70%, on both the model and fat-tailed
+  history. The goal picks the risk, capped at 1.0× Kelly. **Supersedes PR 91's ½-Kelly default** (it lowered the goal odds).
+- **D59 · 2026-10-05 (PR 95) · Return confidence defaults to "blended":** Black-Litterman with τ = 0.2 (the prior is worth 5 years); the shrunk estimate is shown as a stress line.
+- **D60 · 2026-10-05 (PR 96/97) · The crash-risk limit is a 1% chance of a 50% peak-to-trough fall.** The protection card can pause stops / set the guard to 15%.
+  Volatility is regime-weighted recent vol. Re-solve when a protective rule fires.
+- **D61 · 2026-10-05 (PR 101) · Backtest history is dividend-adjusted (total return).** *On closes alone, BND looked like −1.8%/yr instead of +1.25%, producing a false "Sell all BND" card.*
+- **D62 · 2026-10-05 (PR 99) · Goal cards compute the goal after Accept;** the deposit and deadline levers were removed (they raised the goal).
+  The definition of the goal itself is left as is, with a review on the backlog.
+- **D63 · 2026-10-06 (plan v2.2) · UI decisions:**
+  - The heads-up list sits at the bottom of Today.
+  - A near-cap card offers to raise the cap to target + band.
+  - Minimum actionable size: ₪50 for tax, max(₪100, 0.5% of the book) for others.
+  - "What would it take?" is folded into Explore.
+  - Plan tab = A's sub-tabs built the C way (`docs/design/`).
+  - Dividends first.
+
+  → `archive/plans/EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md`
+- **D64 · 2026-10-07 (PR 104c/d) · Every decision is a setting.** Every limit, bar or threshold the owner decides is a plan setting with his value as the
+  default, visible where it acts and editable in a sheet. *Trigger: "where did I set this limit of 1% maximum chance?"* (Owner rule.)
+- **D65 · 2026-10-06 · Pixel QA lists skip the Hebrew/RTL check unless the PR touches it or the owner asks.** (Owner preference.)
+- **D66 · 2026-08-29 · PR write-ups carry a "STILL BROKEN ON PURPOSE" block** (or "nothing knowingly left broken").
+- **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
+  unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.
