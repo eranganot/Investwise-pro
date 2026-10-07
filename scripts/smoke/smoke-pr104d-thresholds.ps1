@@ -28,7 +28,9 @@ $d = $p.thresholds_defaults
 $want = @{ min_card_tax_ils = 50; min_card_trade_ils = 100; min_card_trade_pct = 0.5; min_funded_trade_ils = 250; cash_floor_ils = 150;
            rebalance_band_pts = 3; take_profit_fraction_pct = 25; gain_line_pct = 25; material_odds_pts = 5 }
 $wrong = @($want.Keys | Where-Object { [double]$d.$_ -ne [double]$want[$_] })
-if ($wrong.Count -eq 0 -and (@($d.guard_levels) -join ',') -eq '15,20') { Ok "defaults are today's numbers" } else { Bad ("defaults changed: {0}" -f ($wrong -join ', ')) }
+# compare as numbers: JSON 15.0 prints as "15.0" in PowerShell, not "15"
+if ((@($d.guard_levels | ForEach-Object { [double]$_ }) -join ',') -ne '15,20') { $wrong += 'guard_levels' }
+if ($wrong.Count -eq 0) { Ok "defaults are today's numbers" } else { Bad ("defaults changed: {0}" -f ($wrong -join ', ')) }
 
 Sec "3  the page"
 $html = $null; try { $html = (Invoke-WebRequest -Uri "$BaseUrl/app/" -UseBasicParsing -TimeoutSec 60).Content } catch {}

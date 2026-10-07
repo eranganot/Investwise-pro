@@ -202,7 +202,7 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
   when the goal-odds gain or guard levels change). The ₪100-vs-₪250 conflict is visible as two settings he can align.
   `sw.js` → `iw-v51`.
 
-**Tests.** `tests/test_every_threshold_is_a_setting.py` (4). **Smoke.** `scripts/smoke/smoke-pr104d-thresholds.ps1`.
+**Tests.** `tests/test_every_threshold_is_a_setting.py` (4). **Smoke.** `scripts/smoke/smoke-pr104d-thresholds.ps1`. Ran 2eff74a: 4 PASS 1 FAIL -- the FAIL was the script (guard levels compared as text "15.0,20.0" vs "15,20"); fixed to compare numbers, 104d.1. Values are the defaults. Pixel QA: Today speed, risk dials, Edit buttons, thresholds sheet OK; Reset shows only on a value you saved (by design).
 
 ---
 
