@@ -67,6 +67,9 @@ async def lifespan(app: FastAPI):
                     # a 1% crash-risk limit and a 70% on-track bar.
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS halve_limit_pct DOUBLE PRECISION",
                     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS on_track_pct DOUBLE PRECISION",
+                    # Migration 0028 (PR 104d): card-threshold overrides; NULL =
+                    # every default.
+                    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS thresholds JSON",
                     # plans.strategy / strategy_sleeve_pct are DROPPED here, not
                     # added. They were the single-sleeve model and `plan_sleeves`
                     # replaced them; the last thing they said in production was

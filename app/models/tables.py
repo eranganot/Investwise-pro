@@ -350,6 +350,9 @@ class Plan(Base, PKMixin, TimestampMixin):
     # the app"). Crash-risk limit in % (NULL = 1.0); on-track bar in % (NULL = 70).
     halve_limit_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     on_track_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # PR 104d / migration 0028: overrides of the card thresholds (smallest card,
+    # cash floor, band, take-profit slice, ...); an absent key keeps the default.
+    thresholds: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # `strategy` and `strategy_sleeve_pct` lived here and are GONE. One id and
     # one size can describe exactly one sleeve, so the moment a book could run
     # several they became a pointer to the most recently applied -- and a
