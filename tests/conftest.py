@@ -39,6 +39,9 @@ os.environ.setdefault("DEBUG", "false")
 # Any test that WANTS the scheduler must start it explicitly. A background thread
 # that writes to the database is not test scaffolding, it is a second writer.
 os.environ.setdefault("ENABLE_SCHEDULER", "false")
+# PR 104d: no war-room reuse in tests -- a book's prices stay put while each test
+# feeds the war room different signals (104c.1's cache turned two into skips).
+os.environ.setdefault("WAR_ROOM_CACHE_TTL_SEC", "0")
 
 import pytest
 import pytest_asyncio

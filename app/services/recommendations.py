@@ -1034,7 +1034,6 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
     return out
 
 
-_WAR_ROOM_TTL_S = 600.0
 _WAR_ROOM_CACHE: dict = {}
 
 
@@ -1045,11 +1044,13 @@ async def _war_room_payload_cached(session, user, rows, compute) -> dict:
     Only a grounded answer is kept: a sample-price one is never reused."""
     key = (user.email, tuple(sorted(((p.ticker or "").upper(), round(float(p.quantity or 0), 6),
                                      round(float(p.current_price or 0), 4)) for p in rows)))
-    hit = _WAR_ROOM_CACHE.get(key)
-    if hit and time.monotonic() - hit[0] < _WAR_ROOM_TTL_S:
+    from app.core.config import get_settings
+    ttl = float(get_settings().war_room_cache_ttl_sec)
+    hit = _WAR_ROOM_CACHE.get(key) if ttl > 0 else None
+    if hit and time.monotonic() - hit[0] < ttl:
         return hit[1]
     payload = await compute(session, user, rows, narrate=False)
-    if payload.get("grounded"):
+    if payload.get("grounded") and ttl > 0:
         if len(_WAR_ROOM_CACHE) > 64:
             _WAR_ROOM_CACHE.clear()
         _WAR_ROOM_CACHE[key] = (time.monotonic(), payload)

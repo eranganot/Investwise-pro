@@ -23,7 +23,9 @@ def test_today_starts_every_request_before_awaiting_any():
     assert not re.search(r"await\(await fetch\(", body), "a block still fetches on its own, after the one before it"
 
 
-def test_the_war_room_is_not_recomputed_for_the_same_book():
+def test_the_war_room_is_not_recomputed_for_the_same_book(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "war_room_cache_ttl_sec", 600.0)   # production's
     calls = []
 
     def compute(grounded):

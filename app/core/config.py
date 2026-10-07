@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     # of sequential network latency. Separate TTLs by how fast the data actually
     # moves: daily bars for an hour, quarterly fundamentals for six.
     provider_history_cache_ttl_sec: float = 3600.0        # daily bars
+    # PR 104d: how long one book's war-room answer is reused (PR 104c.1). The
+    # test suite sets 0: its books keep their prices while the signals change.
+    war_room_cache_ttl_sec: float = 600.0
     provider_fundamentals_cache_ttl_sec: float = 21600.0  # quarterly filings
     # HOW LONG AN EXPIRED ANSWER STAYS BETTER THAN NO ANSWER.
     #

@@ -196,10 +196,19 @@ async def lifespan(app: FastAPI):
                 "run. Unset AUTO_CREATE_TABLES.")
         if not settings.api_key:
             logger.warning("API_KEY is not set in production - write endpoints are unauthenticated.")
+    _warm = None
     if settings.enable_scheduler:
         from app.worker.scheduler import start_scheduler
         start_scheduler()
+        # PR 104c.2: build Today once after start and every 45 min, so the first
+        # visit is not the one that pays for cold caches (22 s measured).
+        import asyncio as _aio
+
+        from app.services.warmup import warm_loop
+        _warm = _aio.create_task(warm_loop())
     yield
+    if _warm is not None:
+        _warm.cancel()
     if settings.enable_scheduler:
         from app.worker.scheduler import shutdown_scheduler
         shutdown_scheduler()
