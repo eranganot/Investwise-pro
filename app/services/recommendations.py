@@ -1034,6 +1034,28 @@ async def _core_ceiling_recs(session: AsyncSession, user: User) -> list[dict]:
     return out
 
 
+_WAR_ROOM_TTL_S = 600.0
+_WAR_ROOM_CACHE: dict = {}
+
+
+async def _war_room_payload_cached(session, user, rows, compute) -> dict:
+    """PR 104c.1: the war room was 2.8 s of the 3.5 s Today build, recomputed on
+    every load. Its signals move with prices (a 30-minute job) and holdings, so
+    the same book at the same prices within 10 minutes gets the same answer.
+    Only a grounded answer is kept: a sample-price one is never reused."""
+    key = (user.email, tuple(sorted(((p.ticker or "").upper(), round(float(p.quantity or 0), 6),
+                                     round(float(p.current_price or 0), 4)) for p in rows)))
+    hit = _WAR_ROOM_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < _WAR_ROOM_TTL_S:
+        return hit[1]
+    payload = await compute(session, user, rows, narrate=False)
+    if payload.get("grounded"):
+        if len(_WAR_ROOM_CACHE) > 64:
+            _WAR_ROOM_CACHE.clear()
+        _WAR_ROOM_CACHE[key] = (time.monotonic(), payload)
+    return payload
+
+
 async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -> list[dict]:
     """Turn approved agent signals into sized, plan-checked, executable cards.
 
@@ -1055,7 +1077,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
         # endpoint -- one live LLM call per signal, on the event loop, on a
         # single-worker server. Measured: war_room 6726ms vs every other agent
         # under 50ms.
-        payload = await _war_room_payload(session, user, rows, narrate=False)
+        payload = await _war_room_payload_cached(session, user, rows, _war_room_payload)
     except Exception:  # noqa: BLE001
         logger.warning("war-room recommendations unavailable", exc_info=True)
         return out

@@ -1043,7 +1043,12 @@ async def record(session, user, verdict: dict, *, source: str = "on_demand"):
                             outcome=str(verdict["outcome"])[:32], target_excess_pct=None,
                             max_drawdown_pct=None, solved_total_sleeve_pct=None,
                             floor_breaches_ceiling=False, binding_constraint="frontier",
-                            source=source[:16], detail=verdict)
+                            source=source[:16], detail=verdict,
+                            # Microseconds, set here: `latest()` orders by this, and
+                            # the database default (SQLite: whole seconds) let two
+                            # verdicts in one second come back in either order -- a
+                            # re-solve right after another could serve the older.
+                            created_at=datetime.now(timezone.utc))
         session.add(row)
         await session.commit()
         return row

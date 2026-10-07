@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-07 by Claude (PR 104c, Risk-dials sheet + crash-risk limit / on-track bar as settings; PR 104c.0, migration 0027 — the goal's two limits as settings; PR 104b (QA passed), Edit-goal / Edit-rules sheets with a live odds preview; PR 104a.2, paused rules are decisions / Ignore on Plan / review actions; PR 104a.1, retune Accept re-solves the goal; PR 104a, the Plan tab's three sub-tabs — **Pending QA: `qa/QA-2026-10-06-pr104a-plan-tabs.md`**; PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
+_Last updated: 2026-10-07 by Claude (PR 104c.1, speed + replay transparency + Edit buttons + solver answers; PR 104c, Risk-dials sheet + crash-risk limit / on-track bar as settings; PR 104c.0, migration 0027 — the goal's two limits as settings; PR 104b (QA passed), Edit-goal / Edit-rules sheets with a live odds preview; PR 104a.2, paused rules are decisions / Ignore on Plan / review actions; PR 104a.1, retune Accept re-solves the goal; PR 104a, the Plan tab's three sub-tabs — **Pending QA: `qa/QA-2026-10-06-pr104a-plan-tabs.md`**; PR 103 / 103.1 / 103.2, shorter cards; per-sleeve order on Postgres; PR 102, every card can be acted on — the rest is a heads-up; PR 100, every number says what it measures; PR 99.1, a stale measurement silences the goal; PR 99, the goal cards only promise what Accept delivers — `Execution plan v2`, order 101 → 99 → 100 → 102 → 103 → 104). Before that: PR 101, backtest history includes dividends. Before that: PR 98, one return basis. Before that: PR 97, the goal reacts to today's market. Before that: PR 96, protection tuned for the goal. Before that: PR 95, blended default + rules replay. Before that: PR 94, which core serves the goal. Before that: PR 93, the goal on fat-tailed history. Before that: PR 92, the goal is the objective. Before that: PR 91, the frontier card. Before that: PR 90, migration 0026. Before that: PR 89, the frontier's inputs. Before that: PR 88, the efficient-frontier engine. Before that: PR 87, no card spends a buy-back reserve; no overshoot as "toward target"; ledger repair). Before that: PR 86, a hold reserves only cash that exists; held-cash accepts reach the ledger. Before that: PR 85, the invest-elsewhere tile is always pre-filled. Before that: PR 84, the held-cash split reads the hold's volatility. Before that: PR 83, a card for cash a hold keeps back; holds are buy-back rules. Before that: PR 82, Rules layout + drawdown measurement. Before that: PR 81, four advanced trading rules. Before that: PR 80, migration 0025 rule params. Before that: PR 79, editable rules; rules vs the core target. Before that: PR 78, phantom cash in the core realign. Before that: 2026-09-28 (PR 73, item 2 / plan section 3). Before that: PR 72, items 1+5. Before that: 2026-09-28 (weekly status review — sandbox down; git read from `.git/logs/HEAD` only, working tree and `/health` NOT checked). Previous: 2026-09-22 (PR 71)._
 _Seeded from git history + prior transcripts._
 
 ---
@@ -177,6 +177,34 @@ un-park it, so the next reader is not re-deriving the reasoning from scratch.
 | **Israeli index funds on TASE** | Verified 2026-09-06: the price provider serves TASE **shares** completely — LUMI, ICL, BEZQ, TSEM and 12 more returned price, currency ILA, sector, P/E, growth and history — but every TASE **fund** trades under a numeric symbol (1159250, 1146836) and returns Not Found. `TA35.TA` resolves as the INDEX, which is not investable. Eran, 2026-09-06: *"let's start with the Israeli companies for now, add the Israeli indexes to the backlog"*. | A price provider that serves TASE fund symbols. Until then the class fallbacks (`VTI`, `BND`, `BIL`) stay US-listed. |
 | **Repo hygiene** — `_to_delete/`, `iw-src.tgz`, `plans.tgz`, 14 loose `scripts/` | Cosmetic. Nothing depends on it and nothing breaks. | Five spare minutes. |
 | **Rotate the Postgres password** | **Deliberately last, and this is a recommendation not an oversight.** It is the only ops item whose failure mode is an outage rather than exposure: never published, wired through Railway variable references, and a wrong move takes the database offline. | A reason — a suspected leak, a departing collaborator — not a schedule. |
+
+---
+
+## PR 104c.1 — speed, what the replay still simulates, Edit buttons, the two "What would it take?" answers
+
+**From Eran's QA of 104c (2026-10-07).**
+1. *"It takes very long time for the goals, holdings prices, and cards to upload."* Measured on production: each
+   endpoint 0.2–1 s; `/recommendations` 3.5 s of which **war_room 2.8 s**; and Today fetched its six blocks **one after
+   another**, so the goal and projection waited behind the card build. Now every Today request starts at once
+   (`loadToday` → `TP`), and the war-room payload is cached per book + prices for 10 min
+   (`_war_room_payload_cached`; only grounded answers kept).
+2. *"I paused all the relevant rules but it still shows a gap."* Still armed on the sleeves: QQQ stop-loss + trailing
+   stop, SOXL and QQQ **take-profits** (simulated, but not shown — My mix listed only stops and the guard), guard 30%.
+   Take-profits on sleeve tickers now appear in My mix and the Edit-rules sheet; the goal card names what is still
+   armed with an "edit rules" link.
+3. Edit buttons: centred against their row, highlighted (green, bold).
+4. *"It recommends 60% but the best split is 40+15 = 55."* Two questions: the Target answer keeps today's sleeve
+   RATIO (40:19) and scales; the split sizes each sleeve alone. When the split reaches the typed excess with LESS in
+   sleeves it now says so and says to prefer it; the "normally smaller" line shows only when true.
+5. *"My portfolio didn't change in the last couple of days."* Checked: every holding priced at the 2026-10-06 close;
+   nav history has every trading day (24,558 → 23,479 → 24,166 → 24,611 → 24,637 → 24,618, 25 Sep → 6 Oct) — it moved
+   ~₪1,200 over the week, ~₪25 over the last three days. Nothing stuck.
+
+**Tests.** `tests/test_today_loads_fast.py` (2); layout test (+take_profit). `sw.js` → `iw-v50`.
+Also: `frontier_service.latest()` orders verdicts by `created_at`, which came from the database default (SQLite:
+whole seconds), so two verdicts written in one second came back in either order — the cause of the order-dependent
+`test_a_rules_change_dates_the_goal` failure (CI 104c.0, local 104c.1), and in the app a re-solve right after another
+could serve the older one. `record()` now stamps `created_at` itself, to the microsecond.
 
 ---
 

@@ -989,9 +989,17 @@ function dayMon(d){const p=String(d||"").slice(0,10).split("-");
 
 async function loadToday(){
   loadTodayPerf();
+  // PR 104c.1 (Eran: "it takes very long time ... to upload"): every request
+  // starts NOW and each block renders as its own answer lands. They used to run
+  // one after another, so the goal and the projection waited ~3.5 s behind the
+  // card build they have nothing to do with.
+  const _J=u=>fetch(u).then(x=>x.json());
+  const TP={rules:_J("/api/v1/rules"),health:_J("/api/v1/health-check"),recs:_J("/api/v1/recommendations"),
+            plan:_J("/api/v1/plan"),proj:_J("/api/v1/plan/projection"),alerts:_J("/api/v1/risk/alerts")};
+  Object.values(TP).forEach(pr=>pr.catch(()=>{}));
   // Trading-rule alerts banner (top of Today)
-  try{ RULES_PAYLOAD=await(await fetch("/api/v1/rules")).json(); renderRuleBanner(); }catch(e){}
-  try{const h=await(await fetch("/api/v1/health-check")).json();
+  try{ RULES_PAYLOAD=await TP.rules; renderRuleBanner(); }catch(e){}
+  try{const h=await TP.health;
     if(h.wealth_health_score==null){show("setup");return;}
     const s=h.wealth_health_score;
     $("rating").textContent=rWord(s);$("rating").style.color=rCol(s);
@@ -1019,7 +1027,7 @@ async function loadToday(){
         : `<div class="mk" style="margin-top:6px">⚠️ Risk is scored on <b>${h.avg_volatility_pct}%</b> assumed volatility against your <b>${h.volatility_cap_pct}%</b> cap. That figure is the instrument table, not a measurement of the rules you run.</div>`;
     }
   }catch(e){}
-  try{const r=await(await fetch("/api/v1/recommendations")).json();
+  try{const r=await TP.recs;
     // Which triggered rules actually produced a card. Re-render the banner now
     // that the authoritative answer has arrived.
     REC_BANNER=r.rule_banner||null; renderRuleBanner();
@@ -1045,10 +1053,10 @@ async function loadToday(){
       + headsupList(r.headsups||[])
       + reviewTable(r.holding_review||[],all.concat(more));
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
-  try{const p=await(await fetch("/api/v1/plan")).json();
+  try{const p=await TP.plan;
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${(p.goal&&p.goal.deadline)||p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
   }catch(e){}
-  try{const r=await(await fetch("/api/v1/plan/projection")).json();const o=$("outcomes");
+  try{const r=await TP.proj;const o=$("outcomes");
     if(r&&!r.message){
       const lossP=Math.round((r.probability_of_loss_real||0)*100);
       const goalRow=(r.target_amount&&r.probability_meets_target!=null)
@@ -1072,7 +1080,7 @@ async function loadToday(){
       o.classList.remove("hide");
     }else o.classList.add("hide");
   }catch(e){$("outcomes").classList.add("hide");}
-  try{const r=await(await fetch("/api/v1/risk/alerts")).json();const a=(r.alerts||[])[0];
+  try{const r=await TP.alerts;const a=(r.alerts||[])[0];
     $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
   }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
@@ -2546,9 +2554,19 @@ function _tgtSplitBody(){
   // both are correct answers to DIFFERENT questions. Two green Accept buttons
   // with different numbers and nothing saying why is the card-claim invariant
   // broken across two cards instead of inside one.
-  if(s.question)
+  // PR 104c.1 (Eran: "it recommends 60% but the best split is 40+15 = 55"). The
+  // Target answer keeps your sleeves at TODAY'S RATIO; this one sizes each
+  // sleeve on its own. When this split reaches the excess you typed with LESS
+  // in sleeves, it is the better answer to the same question -- say so.
+  const _tot=(b.split_pct||[]).reduce((a,x)=>a+(+x||0),0), _res=TGT.res||{};
+  const _tT=_res.display_total_sleeve_pct!=null?+_res.display_total_sleeve_pct:null;
+  const _reach=Math.min(+b.oos_excess_pct,+b.excess_pct);
+  if(_tT!=null&&TGT.excess!=null&&_reach>=TGT.excess&&_tot<_tT)
+    out+=`<div class="ok" style="margin-top:6px;font-weight:700">This split reaches your ${TGT.excess}%/yr with ${_tot}% in sleeves, less than the ${_tT}% above.</div>
+      <div class="mk">The answer above keeps your sleeves at today's ratio and scales them together; this one sizes each sleeve on its own, so it can do the same with less. Prefer this one.</div>`;
+  else if(s.question)
     out+=`<div class="mk" style="margin-top:6px">This answers ${s.question.text}
-      <span class="warn">${s.question.differs_from}</span></div>`;
+      ${_tT!=null&&_tot<=_tT?`<span class="warn">${s.question.differs_from}</span>`:""}</div>`;
   // AND WHETHER THE SEARCH WAS CLIPPED RATHER THAN OPTIMISED. On this book every
   // top split had 40 in the first column because each sleeve holds one ticker
   // and the concentration cap is 40% -- the search ran into a wall. "The best
@@ -2945,7 +2963,7 @@ async function loadPlanExtras(){
     fetch("/api/v1/rules").then(x=>x.json()).then(j=>rules=j).catch(()=>{})]);
   const goalCards=r?[...(r.recommendations||[]),...(r.more_recommendations||[])].filter(o=>o.dimension==="goal"):[];
   goalCards.forEach(o=>{RECMAP[o.id]={amount:(o.est_amount==null?null:o.est_amount),severity:o.severity||null};});
-  $("goalSum").innerHTML=goalSummary(p||{},f||{});
+  $("goalSum").innerHTML=goalSummary(p||{},f||{},(rules&&rules.rules)||[]);
   const protect=goalCards.find(o=>String(o.id).startsWith("rec_goal_protect_"));
   PLX={p:p||{},f:f||{},rules:(rules&&rules.rules)||[],orders:orders||{orders:[],monthly_total_ils:0},protect};
   $("goalRows").innerHTML=goalRows(PLX);
@@ -2959,6 +2977,14 @@ async function loadPlanExtras(){
   $("protBox").innerHTML=protectionPanel((rules&&rules.rules)||[],f||{},protect);
 }
 
+// What the goal model still simulates: the stops and take-profits on the
+// sleeves' tickers, and the guard. Named, so "I paused everything" can be checked.
+function _stillArmed(rules){
+  const tick={}; ((MYSLEEVES&&MYSLEEVES.sleeves)||[]).forEach(x=>(x.tickers||[]).forEach(t=>tick[t.toUpperCase()]=1));
+  const on=(rules||[]).filter(x=>x.active&&((_STOP_TYPES[x.rule_type]&&tick[String(x.ticker).toUpperCase()])||x.rule_type==="drawdown_guard"));
+  if(!on.length) return "";
+  return ` Still armed: ${on.map(x=>x.rule_type==="drawdown_guard"?`the drawdown guard (${x.level}%)`:`${x.ticker} ${_STOP_TYPES[x.rule_type].toLowerCase()}`).join(", ")} — <a href="#" onclick="planTab('mix');openRulesSheet();return false">edit rules</a>.`;
+}
 async function resolveGoalNow(btn){
   if(btn){btn.disabled=true;btn.textContent="Solving… (~20 s)";}
   try{const r=await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
@@ -2999,15 +3025,15 @@ function _pvOdds(j){const h=j.headline||{};
 
 function goalRows(X){
   const p=X.p||{}, f=(p.frontier||{}), o=X.orders||{}, n=(o.orders||[]).filter(x=>x.active).length;
-  const row=(k,v,btn)=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)">
-    <div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">${k}</span>${btn}</div>
-    <div style="font-weight:650;margin-top:2px">${v}</div></div>`;
-  const ed=fn=>`<div class="acts" style="margin:0"><button onclick="${fn}">Edit</button></div>`;
+  // PR 104c.1 (Eran): the Edit button sits centred against its row, and stands out.
+  const row=(k,v,btn,last)=>`<div style="padding:10px 0;${last?"":"border-bottom:1px solid var(--line);"}display:flex;justify-content:space-between;align-items:center;gap:10px">
+    <div style="flex:1;min-width:0"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">${k}</span>
+    <div style="font-weight:650;margin-top:2px">${v}</div></div>${btn}</div>`;
+  const ed=fn=>`<div class="acts" style="margin:0"><button class="acc" style="font-weight:800;min-width:72px;min-height:40px" onclick="${fn}">Edit</button></div>`;
   return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
     +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
-    +`<div style="padding:10px 0"><div style="display:flex;justify-content:space-between;align-items:center"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">Risk dials</span>${ed("openDialsSheet()")}</div>
-      <div style="font-weight:650;margin-top:2px">${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}</div>
-      <div class="mk">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div></div>`;
+    +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
+      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"),true);
 }
 
 function openGoalSheet(){
@@ -3141,7 +3167,9 @@ function openRulesSheet(){
   const pause=new Set((ap&&ap.pause_rule_ids)||[]);
   const gTo=ap&&ap.guard&&ap.guard.to_pct!=null?ap.guard.to_pct:(guard?guard.level:null);
   const by={}; stops.forEach(x=>{(by[x.ticker]=by[x.ticker]||[]).push(x);});
-  const lvl=x=>x.status&&x.rule_type==="profit_protect"?x.status:x.mode==="pct"?`${x.level}% below the peak`:(+x.level).toLocaleString(undefined,{maximumFractionDigits:2});
+  const lvl=x=>x.status&&x.rule_type==="profit_protect"?x.status
+    :x.rule_type==="take_profit"?`sells a slice at ${(+x.level).toLocaleString(undefined,{maximumFractionDigits:2})}`
+    :x.mode==="pct"?`${x.level}% below the peak`:(+x.level).toLocaleString(undefined,{maximumFractionDigits:2});
   openSheet(_sheetHead("Your protective rules")
     +`<div class="mk">Ticked = armed. Untick to pause; a paused rule stays on Holdings › Rules and one tap re-arms it.${ap?" Pre-filled with the retune the app suggests.":""}</div>`
     +Object.keys(by).map(t=>`<div class="mk" style="text-transform:uppercase;letter-spacing:.06em;margin-top:10px">${esc(t)}</div>`
@@ -3180,7 +3208,7 @@ async function saveRulesSheet(btn){
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save rules";}
 }
 
-function goalSummary(p,f){
+function goalSummary(p,f,rules){
   const g=p.goal||{};
   if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
   const hl=(p.expectation&&p.expectation.headline)||null;
@@ -3213,7 +3241,7 @@ function goalSummary(p,f){
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
       ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${
           rb.tuning&&!rb.tuning.material?` This is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
-          :" After a stop fires, the holding sits out until its price falls back below the sale price."}</div>`:""}`;
+          :" After a stop fires, the holding sits out until its price falls back below the sale price."}${_stillArmed(rules)}</div>`:""}`;
 }
 
 // What you hold against the plan: each sleeve, the core, commodities and cash.
@@ -3254,7 +3282,11 @@ function mixPanel(){
 // The stops on what your sleeves hold, and the drawdown guard: what protects the
 // book, what it costs the goal, and the retune. Take-profits, caps and buy-back
 // holds stay on Holdings > Rules.
-const _STOP_TYPES={profit_protect:"Profit-protect",trailing_stop:"Trailing stop",stop_loss:"Stop-loss"};
+// PR 104c.1: take-profits on the sleeves' tickers are simulated by the goal
+// model too, so they are shown and editable here (Eran: "I paused all the
+// relevant rules but it still shows me that I have a gap" -- two take-profits
+// were armed and invisible).
+const _STOP_TYPES={profit_protect:"Profit-protect",trailing_stop:"Trailing stop",stop_loss:"Stop-loss",take_profit:"Take-profit"};
 function protectionPanel(rules,f,protect){
   const sleeves=(MYSLEEVES&&MYSLEEVES.sleeves)||[];
   const tick={}; sleeves.forEach(x=>(x.tickers||[]).forEach(t=>tick[t.toUpperCase()]=_stratName(x.strategy_id)));
@@ -3262,6 +3294,7 @@ function protectionPanel(rules,f,protect){
   const guard=rules.find(x=>x.rule_type==="drawdown_guard");
   if(!stops.length&&!guard) return "";
   const lvl=x=>x.status&&x.rule_type==="profit_protect"?x.status
+    :x.rule_type==="take_profit"?`sells a slice at ${(+x.level).toLocaleString(undefined,{maximumFractionDigits:2})}`
     :x.mode==="pct"?`${x.level}% below the peak`:(+x.level).toLocaleString(undefined,{maximumFractionDigits:2});
   const by={}; stops.forEach(x=>{(by[x.ticker]=by[x.ticker]||[]).push(x);});
   const groups=Object.keys(by).map(t=>`<div style="padding:4px 0"><b>${t}</b> <span class="mk">· ${tick[t.toUpperCase()]}</span>

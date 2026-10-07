@@ -38,7 +38,9 @@ def test_what_would_it_take_is_folded_at_the_foot_of_explore():
 
 def test_the_rules_section_shows_only_stops_and_the_guard():
     m = re.search(r"const _STOP_TYPES=\{([^}]*)\}", HTML)
-    assert m and set(re.findall(r"(\w+):", m.group(1))) == {"profit_protect", "trailing_stop", "stop_loss"}
+    # PR 104c.1: take-profits on the sleeves are simulated by the goal model, so they are shown too.
+    assert m and set(re.findall(r"(\w+):", m.group(1))) == {"profit_protect", "trailing_stop", "stop_loss",
+                                                             "take_profit"}
     assert 'rule_type==="drawdown_guard"' in HTML
 
 
