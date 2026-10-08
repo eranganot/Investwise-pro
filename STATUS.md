@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-07 by Claude (docs overhaul: `docs/` written, root plans and old scripts archived; no app behaviour changed). Last product PR: **PR 104d.1** (`96427f5`), smoke green. Plan v2.2 is done._
+_Last updated: 2026-10-08 by Claude (investigation + execution plan v3, docs only; no app behaviour changed). Last product PR: **PR 104d.1** (`96427f5`), smoke green. Production serves `88bb5d4` (docs PR #1 merge)._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -14,19 +14,28 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Code comments and tests that cite "STATUS.md PR 58", "STATUS.md PR 57" and so on (any PR ≤ 87) mean that file. Their
   `STATUS.md:NNNN` line numbers are from before the split.
 
-## Where things are — 2026-10-07
+## Where things are — 2026-10-08
 
-- **HEAD / production:** PR 104d.1 (`96427f5`), schema `0028_plan_thresholds`, `sw.js` `iw-v51`.
-  QA passed for 104b, 104c, 104c.1 and 104d; 104a's own Pixel list (`qa/QA-2026-10-06-pr104a-plan-tabs.md`) has no recorded result.
-- **No execution plan is active.** v2.2 (PR 99–104) and the frontier plan (PR 88–98) are complete. Write the next one from
-  `docs/BACKLOG.md`, re-validated against production first.
-- **Top of the backlog:**
-  - Ops: VAPID pin (verify live), GitHub + Railway token rotation, DB backups.
-  - Correctness: sleeve funding without `book_target` (C1), ILS leak in the assistant context (C3), jobs that swallow errors or have no test (C4/C5), the mock broker sync writing into the real book (C6).
-  - Owner decisions: the goal definition (P1), the ₪100 vs ₪250 minimum (P2).
-- **Untracked in the main checkout** (belong in the repo): `EXECUTION_PLAN_2026-09-14_v8.md` and
-  `EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md` → `docs/archive/plans/`; `InvestWise Plan tab options.html` →
-  `docs/design/plan-tab-options-2026-10-05.html`; `app/services/candidate_search.py` + test → land or delete (BACKLOG L13).
+- **Production:** `88bb5d4` (PR #1 docs merge on top of PR 104d.1), schema `0028_plan_thresholds`, `sw.js` `iw-v51`.
+  Read live on 2026-10-07 at 22:00 UTC:
+  - Today: 0 actionable cards, 1 heads-up.
+  - Jobs: all `failures: 0`.
+  - VAPID: pinned (`vapid_pinned_by_env: true`, `vapid_env_matches_db: true`).
+  - Data: live Yahoo + Frankfurter.
+- **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md`](docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md),
+  PR 105–119. **Waiting on owner decisions D-a … D-j** (§3 of the plan).
+- **Critical, latent (PR 105 first):**
+  - The sleeve-drift trim card oversells by the USD/ILS rate.
+  - "Replace book" multiplies NAV by the rate (the UI blocks it while sleeves exist; the server doesn't).
+
+  Both are proven by probes in `docs/plans/evidence-2026-10-08/`. Neither is live on Today right now.
+- **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
+- **Owner ops (plan Wave 0):**
+  - Check Railway Postgres backups.
+  - Delete the orphan `redis-volume`.
+  - Delete the untracked `candidate_search.py` draft.
+  - Commit the untracked v8 / v2.2 plans and the Plan-tab design file.
+  - Rotate the GitHub PAT and the Railway token.
 
 ---
 

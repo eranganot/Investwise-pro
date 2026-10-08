@@ -20,7 +20,7 @@ wins**: fix the page in the same PR.
 | Production, deploy, health, secrets, runbook, incidents | [OPERATIONS.md](OPERATIONS.md) · [ROTATION.md](ROTATION.md) |
 | Why things are the way they are | [DECISIONS.md](DECISIONS.md) |
 | How we got here; incidents that became rules | [HISTORY.md](HISTORY.md) |
-| **What's open / next** | [BACKLOG.md](BACKLOG.md) |
+| **What's open / next** | [BACKLOG.md](BACKLOG.md) · active plan: [plans/EXECUTION_PLAN_2026-10-08_hardening.md](plans/EXECUTION_PLAN_2026-10-08_hardening.md) |
 | Words | [GLOSSARY.md](GLOSSARY.md) |
 | Design explorations | [design/](design/) |
 | Old plans, reviews, status (verbatim) | [archive/](archive/README.md) |
@@ -40,4 +40,7 @@ wins**: fix the page in the same PR.
 - A PR that changes behaviour updates the page that describes it. A new decision gets a `D` entry in DECISIONS.md.
 - Opening or closing work edits BACKLOG.md. Shipping adds a STATUS.md entry.
 - `tests/test_the_agent_roster_is_what_actually_runs.py` pins AGENTS.md's claims to the code. If you change the roster, both change.
-- Don't start a new top-level `PLAN_*.md`. Put a new plan in `docs/plans/` (create it), and move it to `docs/archive/plans/` when it's done.
+- Don't start a new top-level `PLAN_*.md`. Put a new plan in `docs/plans/`, keep its evidence beside it
+  (`docs/plans/evidence-<date>/`), and move both to `docs/archive/plans/` when it's done.
+- The probes in `docs/plans/evidence-*/probes/` are scratch reproductions, outside `testpaths`, so CI never runs them. A PR that fixes a
+  finding promotes its probe into `tests/` as the regression test.

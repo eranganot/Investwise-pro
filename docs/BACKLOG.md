@@ -4,9 +4,16 @@
 > and a full code review done for the docs overhaul. It replaces the "Next", "Backlog" and "Ops actions" tables that
 > used to sit at the top of STATUS.md (archived verbatim in `archive/status/STATUS-HISTORY-to-PR87.md`, with their evidence).
 >
-> **Status of plans:** execution plan v2.2 (`archive/plans/EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md`) is
-> **complete**, and so is the frontier plan. **No successor plan exists yet.** Write one by re-validating the rows
-> below against production first (D35).
+> **Active plan:** [`plans/EXECUTION_PLAN_2026-10-08_hardening.md`](plans/EXECUTION_PLAN_2026-10-08_hardening.md)
+> (PR 105–119) sequences the rows below. Every C/S/L row was re-investigated on 2026-10-08 and is now PROVEN or
+> INFERRED with a reproducing probe ([`plans/evidence-2026-10-08/`](plans/evidence-2026-10-08/)). The **PR** column says
+> which PR closes each row. Plans v2.2 and frontier are complete.
+>
+> **New on 2026-10-08 (critical, latent):**
+> - **C2b:** the sleeve-drift trim card oversells by the USD/ILS rate (`recommendations.py:2556`).
+> - **C3+:** "Replace book" multiplies NAV by the rate (`strategy_service.py:1201`).
+>
+> Both go into PR 105.
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -19,9 +26,10 @@
 
 | # | Item | Status | Pri |
 |---|---|---|---|
-| O1 | **Pin the VAPID keypair in Railway.** A DB rebuild would silently kill push. | Sources disagree: V7 (09-06) says done, while the STATUS ops table (09-28) said `vapid_pinned_by_env: false`. **Check `/api/v1/push/status` live.** Runbook: [OPERATIONS.md §6](OPERATIONS.md#6-ops-runbook-owner-only) | P1 |
-| O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open | P1 |
-| O3 | **Database backups and a restore procedure.** Nothing in the repo describes them. | Open, newly identified 10-07 | P1 |
+| O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
+| O3 | **Database backups and a restore procedure.** Nothing in the repo describes them; the Railway CLI can't show backup status. | Confirmed gap 10-08. Check the Railway dashboard → Postgres → Backups (plan W0-1) | P1 |
+| R1 | **Railway Config-as-Code (`railway.json`) is deprecated and stops working on 2026-12-01** (CLI warning, observed 10-08). It carries the preDeploy migration and the healthcheck. | Plan PR 119, **before 2026-11-15** | P1 (dated) |
+| R2 | Orphan `redis-volume` (150 MB, attached to nothing) in the Railway project | Plan W0-2 | P3 |
 | O4 | Install the `pre-push` hook on every machine (the branch-protection substitute) | Check with `ops-check.ps1` | P2 |
 | O5 | Rotate the Postgres password | Parked deliberately: only for a reason (D40) | Parked |
 
@@ -30,9 +38,9 @@
 | # | Item | Source | Pri |
 |---|---|---|---|
 | P1 | **Review the goal definition.** Should deposits or extra years raise the "30% on every shekel" target? Plan v2.2 promised this backlog entry but it never reached STATUS. | plan v2.2, PR 99 "Decided 2026-10-05" | ? |
-| P2 | **Align the two minimum-trade numbers:** ₪100 card minimum (`min_card_trade_ils`) vs ₪250 funded-leg minimum (`min_funded_trade_ils`). Both are settings now, but not aligned. | STATUS PR 104c/104d | ? |
+| P2 | **Align the two minimum-trade numbers:** ₪100 card minimum (`min_card_trade_ils`) vs ₪250 funded-leg minimum (`min_funded_trade_ils`). Both are settings now, but not aligned. **Verified 10-08:** below NAV ≈ ₪50k the ₪100 setting is inert, and the commodity card degrades into an un-actable "Buy ₪180 of X" heads-up. | STATUS PR 104c/104d | PR 115 (D-c) |
 | P3 | The goal model doesn't simulate stops on BND/GOOGL/VTI/UGA/USO (only sleeve tickers + the guard). It is disclosed in the UI but not modelled. | STATUS PR 104b/104c.1 | P2 |
-| P4 | Remaining hard-coded decisions → settings ("every decision is a setting"): `RISK_CAPS`, `CASH_FLOOR_PCT`, `OBJ_TARGET`, the 5-pt sleeve drift band, mute/done TTLs and re-fire deltas, near-rule/near-cap constants, card-priority weights, frontier draws/bands, Kelly-by-objective. | Code review 10-07 | P2 (owner to pick which) |
+| P4 | Remaining hard-coded decisions → settings ("every decision is a setting"): `RISK_CAPS`, `CASH_FLOOR_PCT`, `OBJ_TARGET`, the 5-pt sleeve drift band, mute/done TTLs and re-fire deltas, near-rule/near-cap constants, card-priority weights, frontier draws/bands, Kelly-by-objective. **Inventoried 10-08:** 35 constants, 13 recommended (no migration needed). | Code review 10-07; `plans/evidence-2026-10-08/inv-cleanup.md` §P4 | PR 115 (D-d) |
 | P5 | Broker integration (real orders). | `archive/plans/BROKER_INTEGRATION_PLAN.md` | Parked (D41) |
 | P6 | Israeli index funds on TASE. | Provider can't price numeric symbols | Parked |
 | P7 | B1: what `/plan` shows for volatility (store in-market vol nightly; match windows). | STATUS backlog B1 | Parked |
@@ -41,55 +49,65 @@
 | P10 | Promote engines to agents ("Tier 4") + a synthesising "Chief" agent (decided 2026-08-30, not started). Or drop it. | [AGENTS.md](AGENTS.md) | ? |
 | P11 | The objective tilt for the screener (`OBJECTIVE_WEIGHTS` is empty and `OWNER_REVIEWED = False`). | AGENTS.md | ? |
 
-## Correctness (found in code)
 
-| # | Item | Where | Pri |
+## Correctness (verified 2026-10-08)
+
+Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED (the plan says how to prove it). Evidence is in
+[`plans/evidence-2026-10-08/`](plans/evidence-2026-10-08/).
+
+| # | Item | Where | Verdict | Sev | PR |
+|---|---|---|---|---|---|
+| **C2b** | **Sleeve-drift trim card divides ₪ by a USD price**: "Trim ₪18,550 back to 25%" sells 185 sh (₪68,635), so the sleeve falls to ~11.5%. A sibling of the bug PR 102 fixed; `test_card_claims` skips trims | `recommendations.py:2555-2558` | P | **Critical** | 105 |
+| **C3+** | **"Replace book" (load basket, mode=replace) multiplies NAV by the USD/ILS rate** (₪37,100 → ₪137,641). The UI blocks it while sleeves exist; the server does not | `strategy_service.py:1183-1207` | P | **Critical** | 105 |
+| C3 | ILS leak: assistant/digest context, risk validation, fee savings value holdings as `qty × price` in native currency | `context_service.py:59,66`, `recommendations.py:2928`, `fee_agent.py:19` (+ I: `:3791`, `routes/backtest.py:17`) | P | Med | 105 |
+| C3r | `_apply_redeploy_cash` lacks `to_major_units` (a `.TA` leg would buy 100× too few shares) | `recommendations.py:6386-6390` | I | Med | 105 |
+| C15 | `POST /portfolio/add` writes no ledger leg / contribution and doesn't debit cash | `routes/intake.py:352-398` | I | Med | 105 (step 0) |
+| C1 | Sleeve funding + solver cost preview ignore `book_target`: they sell an *under*-target class and call it "most overweight" | `strategy_service.py:780, 891, ~995`, `target_solver.py:603` | P | High | 106 |
+| C2 | Sleeve funding has no post-trade drift gate (drift 0.44 → 0.64 observed). `redeploy_cash` was probed and holds (0.50 → 0.23) | `strategy_service` | P | High | 106 |
+| C4 | **Six** jobs record success when they fail: `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`, `futures_warm`, `market_refresh`. One bad subscriber aborts the whole push fan-out | see plan PR 107 | P | High | 107 |
+| C5 | Five jobs are never executed by a test (`backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`, `futures_warm`); `price_refresh` only partly | `tests/` | P | Med | 107 |
+| C11 | Futures "day change" is a ~4-session change; sign flipped live on ES/NQ/VIX; feeds the regime → Today's risk card | `markets_service.py:50` | P (live) | Med | 108 |
+| C10 | Today's risk-off card uses the futures regime that the code calls display-only, not `engines/regime`; `cached_regime` has no TTL | `recommendations.py:2165-2184` | P | Med | 108 (D-a) |
+| C16 | `_OBJ_RETURN` hand-typed returns still size "behind goal" levers after PR 98 | `recommendations.py:3153, 1918-1922` | I | Med | 108 |
+| C9 | A GET of Today **deletes** rules on unheld tickers (including fired `buy_dip`/`price_below` watch alerts); I: the orphan heal can retire an unseen stop | `rules_service.py:304-345`, `recommendations.py:3061-3080` | P | Med | 109 (D-b) |
+| C6 | `/broker/connect` + `/broker/sync` inject mock TEVA/GOLD/BOND into the real book (READ_ONLY suffices, no ledger row) | `brokers/registry.py:12-14`, `broker_sync.py:107` | P | Med | 110 / 112 |
+| C7b | `/whatif` (a **UI** route) falls back to demo TEVA/GOLD/HYPE on an empty book, ignoring `demo_signals` | `whatif.py:53` | P | Low | 110 |
+| C7 | `/decision-feed/weekly` same fallback (empty book only; no UI caller) | `workflows.py:162-163` | P | Low | 113 |
+| C8 | `/ask` and the AI summaries return model text unverified; an invented 37.4% / 412 came back verbatim, no disclaimer | `ask_service.py:37-45`, `ai_service.py` | P | Med | 110 |
+| C12 | `broker_sync.py:33` raw price fallback; `intake_service` whole-dict `meta` assignments | V7 | — | P3 | 112 (broker deleted) |
+| C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
+| C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
+
+## Security posture (verified 2026-10-08)
+
+| # | Item | Verdict | Sev | PR |
+|---|---|---|---|---|
+| S1 | 25 of 67 write routes accept READ_ONLY (card accept, position PUT/DELETE, rules, push, broker). Reachable only via an m2m token today | P | Low (latent Med) | 110 |
+| S2 | Logout doesn't end the session: bearer and replayed cookie both 200 after `/auth/logout` | P | Med-Low | 111.0 + 111 (D-f) |
+| S3 | `/push/unsubscribe` and `/subscribe` aren't caller-scoped | P | Low | 110 |
+| S4 | Anonymous: `/providers/health` leaks held tickers; `/markets/summary` does an uncached Gemini call per hit; `/adversary/diagnostics` too when enabled; `/docs` maps the API. No anonymous route returns holdings or NAV | P | Low-Med | 110 |
+| S5 | `API_KEY` / `require_api_key` dead; the boot warning is false | P | Low | 110 |
+| S6 | No inbound rate limiting | P | Low | parked (S4 removes the anonymous LLM spend) |
+
+## Cleanup and tech debt (verified 2026-10-08)
+
+| # | Item | Verdict | PR |
 |---|---|---|---|
-| C1 | **Sleeve funding and the target solver's cost preview call `plan_funding` without `book_target`**, so overweight is measured against the objective table (the PR 42 defect class). The AST guard only scans two files. | `strategy_service.py` ~780/891/995, `target_solver.py` ~603, `tests/test_every_funding_call_passes_the_book_target.py` `MODULES` | P1 |
-| C2 | Multi-leg sleeve funding and `redeploy_cash` skip `propose_funded_buy`, so there is no post-trade mix simulation or drift check. CLAUDE.md's "every funded buy" claim is not literally true. | `strategy_service`, RC `_plan_weight_pass` | P2 |
-| C3 | **ILS leak:** the assistant/digest context and the backtest-validation input value holdings as `qty × price` in native currency. | `context_service.py` ~59, RC ~2927 | P1 |
-| C4 | Four scheduled jobs swallow exceptions and record success: `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`. | `backtest_service`, `strategy_signal_service`, `push_service` | P1 |
-| C5 | Five scheduled jobs have no test that runs them by name (the four above + `futures_warm`). This violates D29. Verify they aren't covered indirectly, then add tests. | `tests/` | P1 |
-| C6 | `POST /broker/sync` with the mock default writes three fake holdings into the real book (READ_ONLY suffices). | `broker_sync.py` | P1 (gate or delete) |
-| C7 | `/decision-feed/weekly` silently falls back to demo observations. | `workflows.py` ~162 | P2 (delete with L1) |
-| C8 | The `/ask` "never invent numbers / Not financial advice" rule is prompt-only: no output verification and no test asserting the suffix. | `ask_service.py` | P2 |
-| C9 | GET `/recommendations` has write side effects (releases holds, resolves rules/signals). The warm loop and assistant therefore mutate state. Document it, or move the writes to a job. | RC | P3 |
-| C10 | Two regimes: futures `cached_regime()` drives Today's risk-off note, while `engines/regime.py` says futures are never an input. Pick one. | RC ~2167, `markets_service` | P3 |
-| C11 | V8 P0: market day-change uses `chartPreviousClose` (crude +5.5% vs +1.28%). Verify at HEAD. | `markets_service` | P2 (verify) |
-| C12 | `broker_sync.py:33` raw price fallback; `intake_service` whole-dict `meta` assignments. | V7 | P3 |
-| C13 | The unspent-leg refund (`unspent_ils`) has no test. | V7 | P3 |
-| C14 | Israeli CGT inflation-indexed basis is not modelled (disclosed only); needs accountant sign-off. | `tax_engine` | P3 |
-
-## Security posture
-
-| # | Item | Pri |
-|---|---|---|
-| S1 | Many write endpoints require only READ_ONLY (`acting_user`), while others require ANALYST. Make it consistent. | P3 (single user) |
-| S2 | Logout doesn't revoke the 30-day session JWT; `require_role` never checks `revoked_tokens`. | P3 |
-| S3 | `POST /push/unsubscribe` deletes any endpoint, not scoped to the caller. | P3 |
-| S4 | `/metrics`, `/docs`, `/openapi.json`, `/providers/health`, `/markets/*` are unauthenticated. | P3 |
-| S5 | `API_KEY` / `require_api_key` is dead code, so the production warning "write endpoints are unauthenticated" is misleading. Delete it. | P3 |
-| S6 | No rate limiting on the app's own endpoints. | P3 (posture decision) |
-
-## Cleanup and tech debt
-
-| # | Item | Pri |
-|---|---|---|
-| L1 | **Delete the legacy pipeline** or mark it legacy: `pipeline.py`, `AllocationAgent`, `SafetyEngine`, XAI, learning, `decision_feeds/items`, `user_actions`, the standalone calculator routes, Celery `/jobs` (+ the `celery`/`redis` deps), `market_refresh` job, `buckets`, `tax_profiles`. See [API.md § Legacy](API.md#legacy--not-used-by-the-ui). | P2 |
-| L2 | **`investwise.db`** (tracked SQLite, unused; `*.db` is gitignored) → `git rm --cached`. **`frontend/`** (only a stale `package-lock.json`) → delete; also change the `FRONTEND_ORIGIN` default (`localhost:5173`). *Left for the owner in the 10-07 overhaul.* | P2 |
-| L3 | `google-genai` pinned but never imported; `sentry-sdk` imported but not pinned. | P3 |
-| L4 | Naming debt: `cash_floor_pct()` / `cash_floor_ils()` return the soft target, while the setting `cash_floor_ils` is the hard floor; `MIN_TRADE_ILS` exists in two modules with two values; `signal_service` "listing price" = 50-day SMA; `rebalance_to_objective` targets the book target. | P3 |
-| L5 | Stale comments: `tables.py:1` ("All 11 tables"), the `NavSnapshot` docstring ("transactions never written"), `buyback_hold.py:29` (kv_settings), `PlanSleeve.is_core` ("nothing reads"), `test_startup_ddl_covers_migrations.py` docstring, conftest :61, `market_state.py`, the `frontier.py` pipeline docstring. | P3 |
-| L6 | Stale UI copy: Edit-goal says "change them on the Cash tab" (no such tab); `goalSummary` empty state points at a removed "Goal settings" form; the commodity input says "$ amount". | P2 (small PR) |
-| L7 | Fat route modules: `routes/plan.py` (1,123 lines) and `routes/intake.py` (944) hold business logic. | P3 |
-| L8 | Floats → Decimal across money paths (553 `float(` vs 38 `Decimal(` at 09-06). All or nothing. | P3 |
-| L9 | Two `money()` helpers with different precision/rounding. | P3 |
-| L10 | Bypasses of the provider resilience tier: futures fetch, secondary Yahoo quote fallback. | P3 |
-| L11 | Startup does synchronous network I/O (market refresh + 8 futures fetches) before serving. | P3 |
-| L12 | Frontend: no focus styles or sheet focus trap, clickable non-focusable elements, `.seg` defined twice, undefined CSS vars, inline styles in PR 104 UI, native `alert`/`confirm`. | P3 |
-| L13 | `candidate_search.py` + its test sit **untracked** in the main checkout (since 2026-08-25, zero callers). Land them or delete them. | P3 |
-| L14 | CANE in the commodity screen vs IAU/DBC in the core. | P3 |
-| L15 | Surface the Gemini error class in the UI (a billing 429 looked like an outage). | P3 |
+| L1 | Delete the legacy subsystem in 3 stages (routes/Celery/broker/no-op job → decision-feed cluster → 6 tables). **Keep** `engines/state_machine.py` and the lag/decision/risk/tax engines (war room, what-if use them) | Analysis | 112–114 (D-j) |
+| L2 | `investwise.db` (Phase-2 snapshot, no `alembic_version`) and `frontend/` are unused; the CORS default is a ghost | P | W0-5 / 116 |
+| L3 | `google-genai` pinned, never imported; `sentry-sdk` imported, unpinned (SENTRY_DSN does nothing) | P | 112 / 116 (D-h) |
+| L4 | Naming: `cash_floor_*()` returns the soft target (₪3,000) while the setting `cash_floor_ils` is the hard floor (₪150); the UI says "floor" for the target; two `MIN_TRADE_ILS` | P | 116 |
+| L5 | Stale docstrings: 7 in `app/` + 2 in tests + a dead `pyproject.toml` warning filter (suite: 2291 passed, 0 warnings without it) | P | 116 |
+| L6 | Stale copy: "Cash tab" (`index.html:3052` **and** `frontier_service.py:2025` on a Today card), "Goal settings" (`:3252`), "the Rules tab". *"$ amount" is correct: the server sizes in USD* | P | 116 |
+| L7 | Fat routes; **3 services import from `app.api.routes.plan`** (layering inversion) | P | 118a/b |
+| L8 | float vs Decimal: 1,051 vs 45 in `app/`; no bug traced to it | P (count) | parked |
+| L9 | Two `money()` helpers (2-dp float display vs 4-dp Decimal DB), same name | P | 116 |
+| L10 | Futures bypass the resilience tier: an outage overwrites a good cache with empty → regime silently "neutral". Pricing bypass is dormant in production | P | 107 |
+| L11 | Boot waits for the slowest of 8 futures fetches; `_http_text`'s cap isn't a cap | P | 107 |
+| L12 | `.seg` defined twice; `--muted` undefined (bright "Ignored" labels); 17 non-focusable click targets; 0 `:focus` rules; no Escape/focus handling | P | 117 (D-i) |
+| L13 | `candidate_search.py` (untracked) is the dead first draft of `sleeve_count.py` | P | W0-3 (delete) |
+| L14 | The commodity screen is plan-blind: it buys CANE (sugar) while the goal model prices commodities as IAU/DBC | P | 116 (D-g) |
+| L15 | Gemini errors: done except grounded per-holding research (a 429 shows "temporarily unavailable" and is retried) | P | 110 |
 
 ## Verification debt
 
@@ -100,8 +118,11 @@
 
 ## Recently closed (do not re-open)
 
+- **O1 VAPID pin: closed 2026-10-08, live.** `/api/v1/push/status`: `vapid_pinned_by_env: true`, `vapid_env_matches_db: true`; daily 07:00 digests delivered.
+- **C2c `redeploy_cash` claim: holds** (probe: drift vs book target 0.50 → 0.23).
+- **"$ amount" commodity copy: correct**; the amount is in the instrument's currency (USD).
 - B2 overlay retirement: executed in PR 59 (`btm_qqq_hold`).
 - `cash_target_pct`: superseded by PR 64/68.1 (₪150 floor, ₪1,500 trigger).
 - `alembic upgrade head` from nothing: fixed in PR 46 and tested.
 - Agent key + default password rotation: done (PR 26 + 08-31).
-- Repo hygiene of root plan files and old scripts: done in the 2026-10-07 docs overhaul.
+- Repo hygiene of root plan files and old scripts: done in the 2026-10-07 docs overhaul (PR #1).

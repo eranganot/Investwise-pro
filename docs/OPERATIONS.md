@@ -83,8 +83,9 @@ Full steps: [`scripts/ops/OPS_RUNBOOK.md`](../scripts/ops/OPS_RUNBOOK.md).
 
 1. **Branch protection:** not enforceable on the free private plan. Install the hook instead: `cp scripts/ops/pre-push .git/hooks/pre-push`.
 2. **Rotate the GitHub PAT.**
-3. **Pin the VAPID keypair.** The pair lives only in a `kv_settings` row. A DB rebuild mints a new pair and **silently kills every push
-   subscription**.
+3. **Pin the VAPID keypair.** **Done:** verified live 2026-10-08, with `vapid_pinned_by_env: true` and `vapid_env_matches_db: true` on
+   `/api/v1/push/status`. Keep checking it after any DB rebuild. Without the pin, the pair lives only in a `kv_settings` row,
+   and a DB rebuild mints a new pair and **silently kills every push subscription**. The procedure, if it ever has to be redone:
    1. `verify-vapid-pin.ps1 -Before`
    2. Read the pair with `scripts/pin-vapid-from-db.sql` (Railway console) and set both env vars.
    3. `verify-vapid-pin.ps1 -After -TestPush`
@@ -92,12 +93,22 @@ Full steps: [`scripts/ops/OPS_RUNBOOK.md`](../scripts/ops/OPS_RUNBOOK.md).
 4. **Rotate the Railway token** (one project-scoped token).
 5. Check whether Railway Postgres exposes `DATABASE_PUBLIC_URL`. The internal host doesn't resolve from a laptop.
 6. Postgres password: see §5.
+7. **Migrate Railway Config-as-Code before 2026-12-01.** The Railway CLI (5.54) warns that `railway.json` is deprecated and that
+   existing files "keep working until 2026-12-01". `railway.json` holds the preDeploy migration command, the healthcheck and the
+   restart policy, so losing it silently would deploy without migrations. Run `railway config migrate`, check the generated
+   `.railway/railway.ts` keeps all three, and update the two tests that pin `railway.json` (plan PR 119).
+8. Delete the orphan `redis-volume` (150 MB, attached to nothing; a Celery-era leftover). `railway volume list` shows it.
 
 Current state of these items: [BACKLOG.md § Ops](BACKLOG.md#ops-owner-only).
 
 ## 7. Backups and recovery
 
-**Nothing in the repo describes database backups or a restore procedure.** This is an open gap ([BACKLOG.md](BACKLOG.md)).
+**Nothing in the repo describes database backups or a restore procedure.** This is an open gap ([BACKLOG.md](BACKLOG.md) O3).
+The Railway CLI cannot show backup status. `railway volume list` shows `postgres-volume` (243 MB of 5 GB, 2026-10-08).
+Check Railway dashboard → Postgres → **Backups**, enable a schedule, and record the schedule and retention here.
+Then add `scripts/ops/backup-db.ps1` (`pg_dump` via `DATABASE_PUBLIC_URL`, if exposed) and do **one restore drill into a scratch DB,
+never into production**. At stake: `nav_snapshots`, the `transactions` ledger and `kv_settings`. The VAPID pair also lives in the
+Railway env.
 What exists today:
 - `nav_snapshots` and the `transactions` ledger are the durable history. Earlier NAV (before 2026-08-16) is unrecoverable.
 - History repairs are preview-first: `GET/POST /api/v1/portfolio/ledger/repair` (`confirm`), plus the one-shot scripts in

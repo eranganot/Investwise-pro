@@ -329,7 +329,15 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
 
 ## 10. Known gaps and naming debt
 
-These are tracked in [BACKLOG.md](BACKLOG.md). Read them before trusting a name:
+These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
+[plans/EXECUTION_PLAN_2026-10-08_hardening.md](plans/EXECUTION_PLAN_2026-10-08_hardening.md). Read them before trusting a name.
+
+**Proven on 2026-10-08, and they break the invariants in §2 (fix in plan PR 105/106):**
+- **Sleeve-drift trim** (`recommendations.py:2555-2558`) sizes shares as ₪ ÷ native price. On a USD sleeve, Accept sells about
+  3.7× the amount the card states. This breaks rule 1, and `test_card_claims` skips trims.
+- **"Replace book"** (`strategy_service._replace_book`) sizes the basket as ₪ budget ÷ USD price, which multiplies NAV by the rate.
+  This breaks rule 5 (Accept conserves NAV). The UI blocks it while sleeves exist; the server does not.
+- **Sleeve funding sells an under-target class** (no `book_target`) and raises total drift. This breaks rule 2.
 
 - **Funding outside `propose_funded_buy`:**
   - Multi-leg sleeve funding (`strategy_service.py` ~780/891) and the target solver's cost preview call `plan_funding`

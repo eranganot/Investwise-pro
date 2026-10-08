@@ -163,9 +163,17 @@ exposed at `/api/v1/push/status`. Times are container time (UTC on Railway).
 | `strategy_signals` | 06:15 | Evaluate rule-based sleeves → `strategy_signal_state` flips → card + push |
 
 **Cross-loop rule** (from incident `5a6dfef`): every job calls `asyncio.run()` in its own thread, so it
-**must build its own engine** (NullPool) in that loop and never borrow `app.core.database.engine`.
+**must build its own engine** in that loop and never borrow `app.core.database.engine`.
 asyncpg rejects a connection from another loop; SQLite doesn't, which is why only the Postgres CI job
 catches it. The same rule applies to test fixtures next to `TestClient`; use the `own_session` fixture there.
+All 9 DB jobs comply (audited 2026-10-08). Five use NullPool (nav, solver, holding review, standing orders, warm-up via
+injection). Four use a pooled engine created and disposed inside their own `asyncio.run` (pricing, push, backtest, strategy
+signals). Both are loop-safe; use NullPool for new jobs.
+
+> **Known defect (2026-10-08, plan PR 107):** `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`,
+> `futures_warm` and `market_refresh` catch their own exceptions and return an empty result, so `JOB_STATE` says
+> `last_ok: true` even when they failed. Until PR 107 ships, a green `/push/status` does **not** prove those six ran.
+> The Railway logs (WARNING lines) do.
 
 Celery (`app/worker/celery_app.py`) is wired but runs **eagerly in-process** (no `REDIS_URL`), serving
 only three demo `/api/v1/jobs/*` endpoints the UI never calls.
