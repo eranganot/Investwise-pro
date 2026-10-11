@@ -65,7 +65,7 @@ The two critical bugs are **latent**:
 | **R1** | OBSERVED (Railway CLI) | `railway.json` "Config as Code is deprecated … existing files keep working until **2026-12-01**" | Platform change. `railway.json` carries `preDeployCommand` (migrations) and the healthcheck |
 | O3 | Gap confirmed | No backup/restore anything in the repo; Railway backup status not visible from the CLI (`railway volume list`: `postgres-volume` 243 MB/5 GB) | — |
 | R2 | OBSERVED | A detached `redis-volume` (150 MB) is still in the project; no Redis service uses it | Leftover from the Celery era |
-| L-ledger | INFERRED | `POST /portfolio/add` (Holdings "add commodity by amount") calls `upsert_positions` but neither `record_leg` nor `record_contribution`, and doesn't debit cash | `routes/intake.py:352-398`. Prove first (PR 105 step 0) |
+| L-ledger | **PROVEN 2026-10-11, worse than inferred** | `POST /portfolio/add` on a held ticker **replaces** the position: IAU 100 sh + "$1,000" → 7.54 sh (₪18,550 → ₪3,710). No ledger row, no contribution, cash untouched | `routes/intake.py:352-398` calls `upsert_positions` (an intake overwrite) instead of `buy_into_book`. Fixed in PR 105: blend, record the leg, debit cash (owner: buys come out of cash) |
 | `_OBJ_RETURN` | INFERRED | Hand-typed return assumptions (Grow 8.5% …) still size the "behind goal" levers after PR 98's "one return basis" | `recommendations.py:3153, :1918-1922`. Investigate in PR 108 |
 
 The rest (L2, L3, L4, L5, L6, L7, L9, L12–L15, P4) are proven debt: wording, dead pins, stale comments, naming, a11y, and fat routes. The details are in `evidence-2026-10-08/inv-cleanup.md`.
@@ -99,8 +99,8 @@ Stop early, mid-wave, on any of:
 - a test that won't go green
 - a finding that contradicts this plan's evidence (re-run `investigate-issue`; don't push through)
 
-Order: Wave A (PR 105, 106) → Wave B (107, 108, 109) → Wave C (110, 111.0, 111) → Wave D (112, 113, 114.0, 114) →
-Wave E (115, 116, 117) → Wave F (118a, 118b). PR 119 (Railway config) must land before **2026-11-15**, whichever wave is running;
+Order: Wave A (PR 105, 106) → Wave B (107, 108, 109, 120) → Wave C (110, 111.0, 111) → Wave D (112, 113, 114.0, 114) →
+Wave E (115, 121, 116, 117) → Wave F (118a, 118b). PR 119 (Railway config) must land before **2026-11-15**, whichever wave is running;
 raise it with the owner at a wave boundary in early November at the latest.
 
 ## 3. Decisions
@@ -275,6 +275,28 @@ Format per PR: **Goal**, **Changes** (file:line at `88bb5d4`), **Tests first** (
   - The banner `rule_banner.carded` still equals the visible rule cards.
 - **Risk:** medium. The heals exist to prevent banner deadlocks, so the evaluator must own them before they leave the build. **Effort:** M.
 
+#### PR 120: one goal chance on every screen *(Medium; added 2026-10-11)*
+
+- **Found by the owner, 2026-10-11:** Today's health card said "35.3% chance of ₪82,692" while the Plan tab said
+  16.3% for the same goal at the same moment.
+- **Root cause (proven live):** three numbers answer one question.
+  - Today's "On track" (`plan_health.py:229-247`) quotes `/plan/projection`'s `probability_meets_target`: one lognormal
+    over the whole book, no rules, no rebalancing (35.3%).
+  - The Plan headline is the goal solver's path simulation with the protective rules as they are (16.3%; 31.0% after the
+    guard was paused). Its own rules-off figure is 30.1%, so the two engines disagree by 5 points even with the rules
+    out.
+  - PR 99 promised "the same figure everywhere it appears". The health score was missed, and On track is **half**
+    the health score.
+- **Changes:**
+  - `plan_health` On track reads the goal headline (`book_expectation().headline.p_goal_pct`) when a fresh verdict exists. It
+    falls back to the projection, labelled "rough estimate, rules not simulated", only when there is none.
+  - The projection card keeps its chart, but its chance line quotes the same headline, with its own figure labelled as the
+    chart's.
+- **Tests first:** with a fresh verdict, health `on_track` equals the Plan headline. With none, the fallback is labelled.
+  A guard test checks that every goal-chance key a route returns comes from one function.
+- **Smoke:** `/plan-health` `on_track` equals `/plan/frontier` `headline.p_goal_pct` (±0.1).
+- **QA:** Today's health card and the Plan goal card show the same chance (Pixel). **Effort:** S.
+
 ### Wave C: close the doors
 
 #### PR 110: authorisation and honesty at the edges *(Medium)*
@@ -394,6 +416,29 @@ All three stages come from `evidence/inv-security.md` §L1. None touches a UI pa
   - `sw.js` bump.
 - **QA:** Pixel: the changed strings (3 checks). **Effort:** M.
 
+#### PR 121: the protection retune searches properly *(added 2026-10-11)*
+
+- **Found 2026-10-11:** the goal card says "this is already the best chance that keeps halving at or under your limit". Live,
+  that rested on **two** candidates: guard 15% vs 20%, with the sleeve stops already paused (`_tune_protection`,
+  `frontier_service.py:934-975`). It never tries:
+  - another guard level (17.5%, 25%), sell fraction or re-arm;
+  - the take-profits. The card says they "measured neutral", but nothing in the search re-measures them; QQQ +6% / sells 25% fires about twice a year.
+- **Changes:**
+  - Widen the grid: guard level × sell fraction × re-arm, plus each sleeve's take-profit on/off. Keep it in budget with
+    the `light` run, and cap the candidate count.
+  - Every searched axis becomes a setting next to `guard_levels` (the PR 115 pattern).
+  - The "already the best" sentence names how many setups were tried. "Take-profits measured neutral" is stated only when
+    the search measured it.
+  - The rules card can then propose a take-profit change too, through the same Accept and re-arm path.
+- **Tests first:**
+  - A book where a take-profit costs the goal → the retune proposes pausing it.
+  - A book where guard 17.5% beats 15% under the limit → that is proposed.
+  - The sentence never claims a setup it didn't try.
+- **Smoke:** `/plan/frontier` `rules.tuning.candidates` count ≥ the grid size; defaults unchanged.
+- **QA:** the Plan goal card and the Edit-rules preview (Pixel). **Effort:** M.
+- **Why Wave E:** it is a recommendation-quality improvement, not a wrong trade or a hidden failure, and it builds on PR 115's
+  settings work.
+
 #### PR 117: keyboard and focus *(needs D-i)*
 - **L12:**
   - One `.seg`.
@@ -426,10 +471,10 @@ All three stages come from `evidence/inv-security.md` §L1. None touches a UI pa
 ```
 Wave 0 (owner, parallel) ─ W0-1 backups · W0-2 redis volume · W0-3 draft · W0-4 plans · W0-6 tokens
 PR 105 ─ PR 106                          money safety          (needs D-e)
-PR 107 ─ PR 108 ─ PR 109                 truthful instruments  (needs D-a, D-b)
+PR 107 ─ PR 108 ─ PR 109 ─ PR 120       truthful instruments  (needs D-a, D-b)
 PR 110 ─ PR 111.0 ─ PR 111               doors                 (needs D-f)
 PR 112 ─ PR 113 ─ PR 114.0 ─ PR 114      legacy removal        (needs D-j)
-PR 115 ─ PR 116 ─ PR 117                 settings + wording    (needs D-c, D-d, D-g, D-h, D-i)
+PR 115 ─ PR 121 ─ PR 116 ─ PR 117       settings + wording    (needs D-c, D-d, D-g, D-h, D-i)
 PR 118a ─ PR 118b                        structure
 PR 119 (before 2026-11-15)               Railway config migration
 ```
@@ -437,7 +482,7 @@ PR 119 (before 2026-11-15)               Railway config migration
 - **PR 105 and 106 come first and go alone.** They touch money. Ship each, run its smoke, and wait for one quiet nightly cycle (04:10 solver, 07:00 digest) before the next.
 - **Waves B and C may interleave.** They touch different files: jobs/markets/rules vs auth/routes.
 - **PR 112–114 go after 110**, so the broker hazard is closed at least once before the code disappears.
-- Rough size: 15 PRs, about 12–16 Claude session-days. The critical pair (105, 106) is about 2 days.
+- Rough size: 17 PRs (PR 120, 121 added 2026-10-11), about 13–18 Claude session-days. The critical pair (105, 106) is about 2 days.
 
 ## 6. Definition of done for the plan
 

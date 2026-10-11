@@ -105,7 +105,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | L10 | Futures bypass the resilience tier: an outage overwrites a good cache with empty → regime silently "neutral". Pricing bypass is dormant in production | P | 107 |
 | L11 | Boot waits for the slowest of 8 futures fetches; `_http_text`'s cap isn't a cap | P | 107 |
 | L12 | `.seg` defined twice; `--muted` undefined (bright "Ignored" labels); 17 non-focusable click targets; 0 `:focus` rules; no Escape/focus handling | P | 117 (D-i) |
-| L13 | `candidate_search.py` (untracked) is the dead first draft of `sleeve_count.py` | P | W0-3 (delete) |
 | L14 | The commodity screen is plan-blind: it buys CANE (sugar) while the goal model prices commodities as IAU/DBC | P | 116 (D-g) |
 | L15 | Gemini errors: done except grounded per-holding research (a 429 shows "temporarily unavailable" and is retried) | P | 110 |
 

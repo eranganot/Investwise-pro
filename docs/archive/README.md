@@ -27,15 +27,12 @@ They were moved here from the repo root on 2026-10-07. **Nothing in this folder 
 | `EXECUTION_PLAN_2026-09-02_v5.md` | 09-02 | Re-validated open list | Superseded by V6 |
 | `EXECUTION_PLAN_2026-09-03_v6.md` | 09-03 | Re-validated open list | Superseded by V7 |
 | `EXECUTION_PLAN_2026-09-06_v7.md` | 09-06 | The last full open-items sweep (waves, ops track) | Superseded by [`BACKLOG.md`](../BACKLOG.md) |
+| `EXECUTION_PLAN_2026-09-14_v8.md` | 09-14 | V8, "the ₪1,395 drop" instruments → PR 67/68 | Done |
 | `PLAN_2026-09-28_six_items.md` | 09-28 | The owner's six items → PR 72–77 | Done |
 | `PLAN_2026-09-29_advanced_rules.md` | 09-29 | Four advanced rules → PR 80/81 | Done |
+| `EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md` | 10-05 | Execution plan v2.2: true numbers, actionable cards, the Plan tab → PR 99–104 | Done |
 | `EXECUTION_PLAN_2026-10-05_frontier.md` | 10-05 | The goal-seeking frontier pipeline → PR 88–98 | Done |
 | `BROKER_INTEGRATION_PLAN.md` | 06-14 | Broker abstraction + phased rollout | **Parked** (D41) |
-
-**Missing from the repo.** Two governing plans were never committed. They sit untracked in the owner's main checkout
-and belong in this folder:
-- `EXECUTION_PLAN_2026-09-14_v8.md` (V8, "the ₪1,395 drop" instruments → PR 67/68)
-- `EXECUTION_PLAN_2026-10-05_cards-truth-and-plan-tab.md` ("Execution plan v2.2" → PR 99–104)
 
 ## reviews/
 
