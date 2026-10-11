@@ -47,9 +47,17 @@ def _fetch_one(symbol: str) -> dict | None:
         return None
     meta = result[0].get("meta") or {}
     price = meta.get("regularMarketPrice")
-    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
     if price is None:
         return None
+    # PR 108 (C11): THE PREVIOUS DAILY BAR, not `chartPreviousClose`. With
+    # range=5d that field is the close BEFORE the window -- about four sessions
+    # ago -- and `previousClose` is always None on this endpoint. Live on
+    # 2026-10-11: ES=F showed -0.18% for a +0.56% day, NQ=F -1.19% for +0.45%.
+    # The last bar is today's (or the last session's) own bar, so the one
+    # before it is the previous close whether the market is open or shut.
+    closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
+    earlier = [c for c in closes[:-1] if c is not None]
+    prev = earlier[-1] if earlier else None
     chg_pct = None
     if prev:
         try:
@@ -149,8 +157,18 @@ def regime() -> dict:
     return futures_snapshot().get("market", {"regime": "neutral", "tone": "warn", "rationale": "no data"})
 
 
+CACHED_REGIME_MAX_AGE_SEC = 1800
+
+
 def cached_regime() -> dict:
-    """Regime from the cache only — never hits the network. Returns {} if cold.
-    Used on hot paths (recommendation building) so Today never blocks on Yahoo."""
+    """The FUTURES regime from the cache only -- never hits the network.
+
+    Display / cross-check only (PR 108, D-a): nothing that acts reads it; the
+    regime that acts is `regime_service.cached_regime_proxy()`. Returns {} when
+    cold, stale, or older than CACHED_REGIME_MAX_AGE_SEC (it had no TTL, so a
+    days-old futures reading could be quoted as today's).
+    """
     data = _CACHE.get("data")
-    return (data or {}).get("market", {}) if data else {}
+    if not data or data.get("stale") or (time.time() - float(_CACHE.get("ts") or 0)) > CACHED_REGIME_MAX_AGE_SEC:
+        return {}
+    return data.get("market", {}) or {}

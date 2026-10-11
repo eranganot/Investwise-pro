@@ -237,7 +237,10 @@ def test_a_futures_outage_keeps_the_last_snapshot(monkeypatch):
         ms.futures_snapshot(force=True, raise_on_outage=True)
     kept = ms.futures_snapshot()
     assert kept["futures"] == first["futures"] and kept.get("stale") is True
-    assert ms.cached_regime() == first["market"]
+    # PR 108: the regime read from a stale snapshot is UNKNOWN ({}), never a
+    # silent "neutral" (the L10 bug) and never yesterday's reading passed off
+    # as today's.
+    assert ms.cached_regime() == {}
 
 
 def test_the_http_cap_is_a_cap(monkeypatch):

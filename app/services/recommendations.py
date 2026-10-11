@@ -813,7 +813,9 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
     macro = by_id.get(_rid("macro", "riskoff"))
     if macro and redeploys_cash and macro["id"] not in drop:
         macro["title"] = "Markets look risk-off — phase the rebalance in"
-        macro["action"] = (f"The market backdrop is risk-off ({market.get('rationale', '')}). "
+        from app.services.regime_service import describe as _describe_regime
+        _mwhy = _describe_regime(market) if market.get("components") else market.get("rationale", "")
+        macro["action"] = (f"The market backdrop is risk-off ({_mwhy}). "
                            "That's not a reason to abandon the rebalance above, but it is a reason "
                            "to phase it in over a few weeks rather than all at once.")
         macro["why"] = ("A risk-off backdrop raises the odds of a near-term drawdown, so the timing "
@@ -2168,17 +2170,22 @@ async def build_recommendations(session: AsyncSession, user: User,
         logger.warning("benchmark-lag recommendation failed", exc_info=True)
         degraded.append("performance")
 
-    # Macro signal: factor the futures-derived market regime into the agents. A
-    # risk-off backdrop surfaces a defensive action. Defensive - never break Today.
+    # Macro signal. PR 108 (D-a): THE STRATEGIES' REGIME, not the futures one.
+    # This read `cached_regime()` -- futures, which the code itself calls
+    # display-only -- and on 2026-10-07 told the owner to raise cash while the
+    # regime his strategies gate on read risk_on 0.95. Cache-only: Today never
+    # waits on a fetch; a cold cache means no card, not a guess.
     market = {}
     try:
-        from app.services.markets_service import cached_regime
-        market = cached_regime()  # cache-only: never blocks Today on a network call
-        if market.get("regime") == "risk-off":
+        from app.services.regime_service import cached_regime_proxy, describe
+        market = cached_regime_proxy()
+        if market.get("ok") and market.get("state") == "risk_off":
+            _why = describe(market)
             recs.append({"id": _rid("macro", "riskoff"), "dimension": "macro", "severity": "MEDIUM",
                          "title": "Markets look risk-off",
-                         "why": f"The futures-derived market regime has turned risk-off ({market.get('rationale','')}).",
-                         "action": (f"The market backdrop is risk-off ({market.get('rationale','')}). "
+                         "why": (f"The market regime your strategies gate on has turned risk-off "
+                                 f"({_why}; score {market.get('score')})."),
+                         "action": (f"The market backdrop is risk-off ({_why}). "
                                     "Consider keeping more cash on hand and trimming your most volatile "
                                     "positions until conditions calm."),
                          "impact": "More cash and less volatility reduce your exposure to a near-term drawdown.",

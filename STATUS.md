@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave B: PR 107). Last product PR: **PR 107**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave B: PR 107, 108). Last product PR: **PR 108**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,57 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 108 — one regime acts, and the futures cross-check is measured right
+
+**Plan v3, Wave B, second PR (D-a).**
+
+**What was wrong, and the root cause.**
+- **C11 (re-proven live 2026-10-11).** The futures "day change" used `chartPreviousClose`. With `range=5d` that is the
+  close before the window, about four sessions back, and `previousClose` is always `None` on that endpoint. ES=F
+  showed −0.18% on a +0.56% day, NQ=F −1.19% on +0.45%, and CL=F +2.69% on +0.39%. `_fetch_one` now uses the
+  previous daily bar: the last non-null close before the last bar.
+- **C10 / D-a.** Today's "Markets look risk-off" card read `cached_regime()`, the futures regime the code itself calls
+  display-only, which had no TTL. The strategies gate on `engines/regime` (SPY's 200-day trend, realised-volatility
+  percentile, breadth). New `regime_service`:
+  - `regime_proxy()` moved here from the route, so services no longer import a route.
+  - `refresh_regime_proxy()` refreshes at most hourly; `futures_warm` and the Markets route call it.
+  - `cached_regime_proxy()` is cache-only and empty when cold or more than 6 h old. Today reads it, and a cold cache
+    means no card rather than a guess.
+  - `cached_regime()` (futures) gets a 30-minute TTL and ignores stale snapshots.
+- **Two more futures readers on Today, found while fixing:**
+  - The reconciled "Markets look risk-off — phase the rebalance in" heads-up read a futures-only `rationale` field, so
+    it would have printed "risk-off ()".
+  - The Today AI portfolio summary described the futures regime.
+
+  Both now describe the strategies' regime (`regime_service.describe`).
+- **A PR 105 sibling the guard couldn't see.** The AI summary's holdings `value_pct` was `price × qty` over an ILS
+  NAV, so a USD holding read at about 27% of its real weight. It now goes through `fx.holding_value_ils`. The PR 105
+  AST guard keys on `*ils*` names and this key is `value_pct`, so it slipped past.
+- **Markets tab.** The regime card leads with "Market regime (what your strategies read)" plus its components; the
+  futures reading is one labelled cross-check line. `sw.js` → `iw-v53`.
+- **C16 `_OBJ_RETURN`: investigated, no change.** The hand-typed objective returns feed only the older "behind your
+  goal" card. That card stands down whenever a fresh goal verdict exists (`goal_story_active`; it does on the live
+  book), takes its headline from the measured return, and labels the objective-table lines as such.
+
+**Why it was silent.**
+- The futures numbers were plausible, just shifted by four sessions.
+- No test compared the two regimes or pinned the risk card's source.
+
+**Tests (all 5 fail on HEAD).** `tests/test_one_regime_measured_correctly.py`:
+- the live 2026-10-06..09 bars give ES +0.56 / NQ +0.45 / CL +0.39 / VIX −3.7;
+- futures risk-off with the proxy risk_on gives no card;
+- the proxy risk_off gives the message, naming SPY's trend and the 91st percentile, never "()";
+- a cold or old cache says nothing;
+- the Markets route computes the proxy once per hour.
+
+**Smoke.** `scripts/smoke/smoke-pr108-one-regime.ps1 -Sha <sha>`. Against `1661441` it FAILs, as it should: all three
+futures signs are wrong against Yahoo's own previous bar, and the page and `sw.js` are unchanged.
+
+**QA (Pixel).** Markets tab: the regime card shows your strategies' regime with its components, and the futures
+cross-check line under it. The tiles' day changes match a broker app.
+
+---
+
 ## PR 107 — a job that fails says so
 
 **Plan v3, Wave B, first PR.** Re-proven at HEAD (`8056cb8`) with the C4 probe: with a raise injected, or pointed at a
@@ -91,7 +142,9 @@ waiting for the futures.
 **Docs.** ARCHITECTURE §7 (the PR 107 rule replaces the known-defect note; job table). BACKLOG: C4, C5, L10, L11 closed.
 
 **Smoke.** `scripts/smoke/smoke-pr107-jobs-fail-loudly.ps1 -Sha <sha>`. Against `8056cb8` it FAILs, as it should:
-`market_refresh` hasn't run since boot, because it was not primed. **Next morning:** confirm the 07:00 digest ran
+`market_refresh` hasn't run since boot, because it was not primed. **Ran against `1661441` (GitHub PR #8 merge): 10
+PASS, 0 FAIL.** All 11 jobs registered; `market_refresh`, `futures_warm`, `price_refresh` and `standing_orders` ran at
+boot; none failed. **Next morning:** confirm the 07:00 digest ran
 green and was delivered (`recent_notifications`).
 
 ---

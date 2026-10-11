@@ -194,7 +194,7 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
 | 13 | `commodity_add` | Commodities under target | `buy_funded` |
 | 14 | `buy_idea` (≤ 2) | Screener ideas that `propose_funded_buy` accepts | `buy_funded` |
 | 15 | `benchmark_lag` | Trailing the benchmark | heads-up |
-| 16 | `macro`: risk-off | Futures regime is risk-off | heads-up |
+| 16 | `macro`: risk-off | The strategies' regime (`engines/regime`, cached) is risk_off (PR 108; futures no longer drive it) | heads-up |
 | 17 | `raise_cash` | Cash < hard floor | `trim` of the worst-fitting names |
 | 18 | `stale_price` | A quote is frozen | heads-up |
 | 19 | `core_breach` | The target solver says the floor breaches the ceiling | none, by design |
@@ -347,8 +347,10 @@ These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
   0.50 → 0.23, the claim holds).
 - **`cash_floor_pct()` / `cash_floor_ils()` return the soft *target*,** while the *setting* `cash_floor_ils` is the hard floor.
 - **Two different `MIN_TRADE_ILS` values:** 100 (heads-up demotion) and 250 (funded leg).
-- **Two regimes:** the price-derived `engines/regime.py` (whose docstring says futures are never an input) and the futures `cached_regime()`,
-  which *does* drive Today's risk-off note.
+- *Closed in PR 108:* **one regime acts.** Today's risk card, its reconciled heads-up and the Today AI summary read
+  `regime_service.cached_regime_proxy()` (the price-derived `engines/regime`, cached hourly by `futures_warm`). Futures are
+  a labelled cross-check on the Markets tab, their day change is measured against the previous daily bar, and
+  `cached_regime()` has a 30-minute TTL.
 - **Decisions still hard-coded** (vs "every decision is a setting"): `RISK_CAPS`, `CASH_FLOOR_PCT`, `OBJ_TARGET`, the 5-pt sleeve drift
   band, mute/done TTLs, the near-rule/near-cap constants, card-priority weights, frontier draws/bands, and the Kelly-by-objective table.
 - **Stale comments:** `buyback_hold.py` (says kv_settings; it has been `trading_rules` since PR 83); `PlanSleeve.is_core` (says unread; it is read).

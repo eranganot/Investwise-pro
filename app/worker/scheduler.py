@@ -156,6 +156,10 @@ def start_scheduler() -> None:
         # scheduler instead of the startup thread, so boot no longer waits for
         # the slowest of eight Yahoo fetches (12 s stub -> 12.1 s boot).
         def _warm_futures():
+            # PR 108: the strategies' regime first (hourly at most), so Today's
+            # risk card has a warm cache; then the futures cross-check.
+            from app.services.regime_service import refresh_regime_proxy
+            refresh_regime_proxy()
             futures_snapshot(force=True, raise_on_outage=True)
         _scheduler.add_job(_guarded("futures_warm", _warm_futures), "interval",
                            minutes=5, id="futures_warm", next_run_time=datetime.now(timezone.utc))
