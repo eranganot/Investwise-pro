@@ -99,7 +99,7 @@ Stop early, mid-wave, on any of:
 - a test that won't go green
 - a finding that contradicts this plan's evidence (re-run `investigate-issue`; don't push through)
 
-Order: Wave A (PR 105, 106) → Wave B (107, 108, 109, 120) → Wave C (110, 111.0, 111) → Wave D (112, 113, 114.0, 114) →
+Order: Wave A (PR 105, 106, 120) → Wave B (107, 108, 109) → Wave C (110, 111.0, 111) → Wave D (112, 113, 114.0, 114) →
 Wave E (115, 121, 116, 117) → Wave F (118a, 118b). PR 119 (Railway config) must land before **2026-11-15**, whichever wave is running;
 raise it with the owner at a wave boundary in early November at the latest.
 
@@ -275,7 +275,7 @@ Format per PR: **Goal**, **Changes** (file:line at `88bb5d4`), **Tests first** (
   - The banner `rule_banner.carded` still equals the visible rule cards.
 - **Risk:** medium. The heals exist to prevent banner deadlocks, so the evaluator must own them before they leave the build. **Effort:** M.
 
-#### PR 120: one goal chance on every screen *(Medium; added 2026-10-11)*
+#### PR 120: one goal chance on every screen *(Medium; added 2026-10-11; owner moved it to right after PR 106, end of Wave A)*
 
 - **Found by the owner, 2026-10-11:** Today's health card said "35.3% chance of ₪82,692" while the Plan tab said
   16.3% for the same goal at the same moment.
@@ -470,8 +470,8 @@ All three stages come from `evidence/inv-security.md` §L1. None touches a UI pa
 
 ```
 Wave 0 (owner, parallel) ─ W0-1 backups · W0-2 redis volume · W0-3 draft · W0-4 plans · W0-6 tokens
-PR 105 ─ PR 106                          money safety          (needs D-e)
-PR 107 ─ PR 108 ─ PR 109 ─ PR 120       truthful instruments  (needs D-a, D-b)
+PR 105 ─ PR 106 ─ PR 120                 money safety + one goal number (needs D-e)
+PR 107 ─ PR 108 ─ PR 109                 truthful instruments  (needs D-a, D-b)
 PR 110 ─ PR 111.0 ─ PR 111               doors                 (needs D-f)
 PR 112 ─ PR 113 ─ PR 114.0 ─ PR 114      legacy removal        (needs D-j)
 PR 115 ─ PR 121 ─ PR 116 ─ PR 117       settings + wording    (needs D-c, D-d, D-g, D-h, D-i)

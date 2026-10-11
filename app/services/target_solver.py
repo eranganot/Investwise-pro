@@ -600,11 +600,20 @@ async def _funding_preview(session, user, sleeves, solved_pct, nav) -> dict | No
         snap = _snapshot(rows)
         plan = await get_plan(session, user)
         _held_ils(rows, snap)
+        # PR 106 (C1): measured against the book's own target, and told what the
+        # proceeds buy, exactly as the sleeve funder now is -- a preview that
+        # prices a different plan from the one Fund would run is not a preview.
+        from app.services.funding_service import buying_class_of
+        from app.services.strategy_service import _book_target_mix
+        _obj = getattr(plan, "objective", None) or "Grow"
+        _sl_tk = await sv.sleeve_tickers(session, user)
         fund = plan_funding(
-            rows, snap, plan, getattr(plan, "objective", None) or "Grow",
+            rows, snap, plan, _obj,
             float(effective_caps(plan)["concentration_cap"]), amount,
             cash_ils=float(await get_cash(session, user) or 0.0),
-            exclude=await sv.sleeve_tickers(session, user))
+            exclude=_sl_tk,
+            buying_class=buying_class_of([{"ticker": t} for t in _sl_tk]),
+            book_target=await _book_target_mix(session, user, _obj))
     except Exception:  # noqa: BLE001
         logger.warning("target: funding preview unavailable", exc_info=False)
         return {"needed_ils": amount, "degraded": True,

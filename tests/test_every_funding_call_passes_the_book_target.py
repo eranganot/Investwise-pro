@@ -31,9 +31,12 @@ import pathlib
 # points on this book and can differ in sign.
 FUNDING_CALLS = {"propose_funded_buy", "plan_funding", "rank_trim_candidates"}
 
-MODULES = ("app/services/recommendations.py", "app/services/funding_service.py")
-
 REPO = pathlib.Path(__file__).resolve().parent.parent
+
+# PR 106: ALL of app/, not a list. The list named two files, so the sleeve
+# funder (strategy_service) and the solver's cost preview (target_solver) called
+# `plan_funding` with no target for weeks -- they opted out by existing (C1).
+MODULES = tuple(sorted(p.relative_to(REPO).as_posix() for p in (REPO / "app").rglob("*.py")))
 
 
 def _calls_missing_book_target(path: pathlib.Path):

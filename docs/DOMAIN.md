@@ -32,8 +32,8 @@ guarded by tests ([§8](#8-invariants-and-the-tests-that-guard-them)).
    - A class at or under target is not a funding source while anything else is over.
    - Sleeves and the core basket are never raided to fund a card.
 3. **Every funded buy goes through `funding_service.propose_funded_buy()`**, never `plan_funding` with hand-written prose.
-   `describe_funding` requires `buying_class`. *(Known exceptions: multi-leg sleeve funding and cash redeploy.
-   See [§10](#10-known-gaps-and-naming-debt).)*
+   `describe_funding` requires `buying_class`. *(Two paths still call `plan_funding` directly: multi-leg sleeve funding,
+   which passes `book_target` and runs a post-trade drift gate since PR 106, and cash redeploy. See [§10](#10-known-gaps-and-naming-debt).)*
 4. **Every card can be acted on, or it is a heads-up** (PR 102).
 5. **Accept conserves NAV** (only the card's tax leaves the book), and every share change is a ledger row.
 6. **The server alone decides which cards show.** There is no per-device snooze (PR 69).
@@ -333,17 +333,14 @@ These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
 [plans/EXECUTION_PLAN_2026-10-08_hardening.md](plans/EXECUTION_PLAN_2026-10-08_hardening.md). Read them before trusting a name.
 
 **Proven on 2026-10-08, and they break the invariants in §2 (fix in plan PR 105/106):**
-- **Sleeve-drift trim** (`recommendations.py:2555-2558`) sizes shares as ₪ ÷ native price. On a USD sleeve, Accept sells about
-  3.7× the amount the card states. This breaks rule 1, and `test_card_claims` skips trims.
-- **"Replace book"** (`strategy_service._replace_book`) sizes the basket as ₪ budget ÷ USD price, which multiplies NAV by the rate.
-  This breaks rule 5 (Accept conserves NAV). The UI blocks it while sleeves exist; the server does not.
-- **Sleeve funding sells an under-target class** (no `book_target`) and raises total drift. This breaks rule 2.
-
-- **Funding outside `propose_funded_buy`:**
-  - Multi-leg sleeve funding (`strategy_service.py` ~780/891) and the target solver's cost preview call `plan_funding`
-    **without `book_target`**. The AST guard only scans `recommendations.py` and `funding_service.py`.
-  - `redeploy_cash` sizes on its own path.
-- **ILS leaks:** `context_service` (assistant/digest context) and the backtest-validation input value holdings as `qty × price` in native currency.
+- *Closed in PR 105:* the sleeve-drift trim sized ₪ ÷ native price, "Replace book" multiplied NAV by the rate, and five
+  ILS leaks (assistant context, risk validation, sector card, fee scan, `/backtest`). Guarded by
+  `test_no_native_value_is_called_shekels.py` (all of `app/`) and by `test_card_claims` measuring trims.
+- *Closed in PR 106:* sleeve funding and the solver's cost preview now pass `book_target`, and sleeve funding runs a
+  post-trade drift gate (`funding_service.funding_drift`). The AST guard walks all of `app/`.
+- **Funding outside `propose_funded_buy`:** multi-leg sleeve funding still calls `plan_funding` directly (with
+  `book_target` and the drift gate, so rule 2 holds), and `redeploy_cash` sizes on its own path (probed: drift
+  0.50 → 0.23, the claim holds).
 - **`cash_floor_pct()` / `cash_floor_ils()` return the soft *target*,** while the *setting* `cash_floor_ils` is the hard floor.
 - **Two different `MIN_TRADE_ILS` values:** 100 (heads-up demotion) and 250 (funded leg).
 - **Two regimes:** the price-derived `engines/regime.py` (whose docstring says futures are never an input) and the futures `cached_regime()`,

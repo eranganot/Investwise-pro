@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave A: PR 105). Last product PR: **PR 105**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave A: PR 105, PR 106). Last product PR: **PR 106**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -26,8 +26,8 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   PR 105–119. **Approved 2026-10-08; execute wave by wave.** Decided: D-e, D-a, D-b (DECISIONS D69–D72). Next: **Wave A (PR 105, 106)**.
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
-  multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). Next: **PR 106** (sleeve
-  funding obeys the book target), after one quiet nightly cycle (owner, 2026-10-11).
+  multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
+  obeys the book target) followed the same day. Next: **PR 120** (one goal chance on Today and Plan), then the Wave A report.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,52 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 106 — sleeve funding obeys the book target
+
+**Plan v3, Wave A, second PR.** The owner chose to go ahead the same day rather than wait a night after PR 105.
+
+**What was wrong, and the root cause.**
+- **C1, live on the owner's book.** The production "Fund sleeves" dry run (`95cbd7e`, 2026-10-11) sold ₪377 of BND:
+  Fixed Income was 12.11% held against a 12.14% book target, while Cash was the only class over. Re-proven on the
+  probe book (Grow + `bal_6040` core + SOXL 10%: FI 20% held vs 32% target). Funding sold ₪37,100 of BND as "the most
+  overweight class (20% vs 10%)".
+  - **Root cause:** `_fund_sleeve`, `fund_plan`'s `_fits` and the solver's `_funding_preview` called `plan_funding`
+    without `book_target`, so they measured against the objective table. The AST guard that should have caught it
+    scanned two named files.
+  - **Fix:** all three resolve `book_target(...)["target"]` once and pass it. The solver preview also passes the
+    sleeves' `buying_class`.
+  - **Result:** the probe book now sells V (Equities, 80% vs 58%), labelled as a same-class swap.
+- **C2, no post-trade check.** `propose_funded_buy` simulates its trade; sleeve funding didn't (drift 0.44 → 0.64).
+  - New `funding_service.funding_drift` simulates legs + sells against the book target.
+  - `strategy_service._drift_gate` refuses when total drift rises and a sell comes from a class the legs don't buy.
+    A same-class sell is a swap and passes.
+  - The refusal names the class: "It would have to sell Fixed Income (20% held, 32% target), which your plan says
+    you hold too little of."
+
+**Why it was silent.**
+- The funding guard listed `MODULES` by hand, so a new module opted out by existing. It now walks all of `app/`.
+- The probe book's numbers looked plausible: "most overweight class" was true against the wrong table.
+
+**Risk, as the plan said.** Some sleeves will now report "not enough fundable money" where they used to sell bonds.
+That is the rule working.
+
+**Docs made true.**
+- DOMAIN §3 and §10 now say C1/C2 are closed. They also cover PR 105's closures, which that PR left stale.
+- The CLAUDE.md funding rule no longer lists C1/C2 as open.
+- BACKLOG: C1 and C2 closed.
+- Plan: PR 120 moves to right after PR 106 (owner, 2026-10-11).
+
+**Tests (fail on HEAD).**
+- `tests/test_sleeve_funding_obeys_the_book_target.py` (3): fund-plan dry run, single sleeve + solver preview, and
+  the drift gate.
+- `tests/test_every_funding_call_passes_the_book_target.py` now walks all of `app/`.
+
+**Smoke.** `scripts/smoke/smoke-pr106-sleeve-funding-target.ps1 -Sha <sha>`. Against `95cbd7e` it FAILs, as it should:
+"sells BND (Fixed Income): 12.11% held vs 12.14% target, while Cash is over". The post-deploy result is recorded with
+the next PR.
+
+---
 
 ## PR 105 — every share count is sized in the price's own currency
 
@@ -96,7 +142,8 @@ Today, so none of these fired on production in the window measured.
   `qty × price` stored under an `*ils*` name or key without an FX step, and it proves itself on a planted line.
 
 **Smoke.** `scripts/smoke/smoke-pr105-own-currency.ps1 -Sha <sha>`. Dry run against `88bb5d4` (no `-Sha`): 5 PASS,
-0 FAIL, 3 SKIP. The post-deploy run is recorded below once merged.
+0 FAIL, 3 SKIP. **Ran against `95cbd7e` (GitHub PR #4 merge): 8 PASS, 0 FAIL, 1 SKIP.** The skip: no sized trim card on
+Today. `/portfolio/add` refused "not enough cash" (₪730 in cash) and the book was untouched.
 
 ---
 
