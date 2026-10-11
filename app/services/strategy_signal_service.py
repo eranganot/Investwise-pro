@@ -445,11 +445,11 @@ async def _evaluate_all_job() -> dict:
 
 
 def run_strategy_signals_blocking() -> dict:
-    """Sync entrypoint for APScheduler (runs in its own thread)."""
-    try:
-        res = asyncio.run(_evaluate_all_job())
-        logger.info("strategy signals: %s", res)
-        return res
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled strategy signal run failed", exc_info=True)
-        return {"checked": 0, "flipped": 0}
+    """Sync entrypoint for APScheduler (runs in its own thread).
+
+    PR 107 (C4): a failure raises, so `_guarded` records it (this returned the
+    healthy-empty shape on any exception).
+    """
+    res = asyncio.run(_evaluate_all_job())
+    logger.info("strategy signals: %s", res)
+    return res

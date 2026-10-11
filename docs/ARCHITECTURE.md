@@ -151,8 +151,8 @@ exposed at `/api/v1/push/status`. Times are container time (UTC on Railway).
 | Job | Schedule | What it does |
 |---|---|---|
 | `price_refresh` | every 30 min (primed at boot) | Reprice every position (primary → Yahoo fallback, minor-unit/currency repair), then evaluate trading rules |
-| `futures_warm` | every 5 min | Futures snapshot + regime proxy cache read by Today |
-| `market_refresh` | every 60 min | Research scan. **Vestigial**: no economic source, no reader |
+| `futures_warm` | every 5 min (primed at boot) | Futures snapshot + regime proxy cache read by Today; an outage keeps the last snapshot, marked stale, and fails the job |
+| `market_refresh` | every 60 min (primed at boot) | Research scan. **Vestigial**: no economic source, no reader (deleted in plan PR 112) |
 | `push_evaluate` | every 60 min | Per subscriber: push new important cards, risk alerts, price moves |
 | `standing_orders` | every 60 min | Credit due monthly deposits (contribution + cash), idempotent |
 | `push_digest` | 07:00 daily | Daily digest push |
@@ -170,10 +170,13 @@ All 9 DB jobs comply (audited 2026-10-08). Five use NullPool (nav, solver, holdi
 injection). Four use a pooled engine created and disposed inside their own `asyncio.run` (pricing, push, backtest, strategy
 signals). Both are loop-safe; use NullPool for new jobs.
 
-> **Known defect (2026-10-08, plan PR 107):** `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`,
-> `futures_warm` and `market_refresh` catch their own exceptions and return an empty result, so `JOB_STATE` says
-> `last_ok: true` even when they failed. Until PR 107 ships, a green `/push/status` does **not** prove those six ran.
-> The Railway logs (WARNING lines) do.
+**A job that fails says so (PR 107, D29).** No job catches its own failure: it raises, and `_guarded` records
+`last_ok: false` with the error. A fan-out (push per subscriber, NAV per user) carries on past one bad item, counts it, and
+raises at the end. `tests/test_every_job_says_when_it_fails.py` captures every `add_job` from `start_scheduler()` and
+requires a healthy run and an injected failure for each, so a new job without a failure test fails CI.
+`price_refresh`, `market_refresh`, `futures_warm` and `standing_orders` are primed with `next_run_time=now`, never
+called on the startup thread, so boot never waits on a provider. A futures outage keeps the last snapshot (marked
+`stale`) instead of caching an empty one.
 
 Celery (`app/worker/celery_app.py`) is wired but runs **eagerly in-process** (no `REDIS_URL`), serving
 only three demo `/api/v1/jobs/*` endpoints the UI never calls.

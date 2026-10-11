@@ -12,6 +12,7 @@
 > **Closed in PR 105 (2026-10-11):** C2b (sleeve-drift trim oversold by the USD/ILS rate), C3+ ("Replace book"
 > multiplied NAV by the rate), C3, C3r and C15 (`/portfolio/add` replaced the holding). See STATUS.md PR 105.
 > **Closed in PR 106:** C1, C2 (sleeve funding sold an under-target class; no post-trade drift gate).
+> **Closed in PR 107:** C4, C5, L10, L11 (jobs that reported success when they failed; untested jobs; futures outage cache; boot waiting on Yahoo).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -55,8 +56,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Where | Verdict | Sev | PR |
 |---|---|---|---|---|---|
-| C4 | **Six** jobs record success when they fail: `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`, `futures_warm`, `market_refresh`. One bad subscriber aborts the whole push fan-out | see plan PR 107 | P | High | 107 |
-| C5 | Five jobs are never executed by a test (`backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`, `futures_warm`); `price_refresh` only partly | `tests/` | P | Med | 107 |
 | C11 | Futures "day change" is a ~4-session change; sign flipped live on ES/NQ/VIX; feeds the regime → Today's risk card | `markets_service.py:50` | P (live) | Med | 108 |
 | C10 | Today's risk-off card uses the futures regime that the code calls display-only, not `engines/regime`; `cached_regime` has no TTL | `recommendations.py:2165-2184` | P | Med | 108 (D-a) |
 | C16 | `_OBJ_RETURN` hand-typed returns still size "behind goal" levers after PR 98 | `recommendations.py:3153, 1918-1922` | I | Med | 108 |
@@ -93,8 +92,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | L7 | Fat routes; **3 services import from `app.api.routes.plan`** (layering inversion) | P | 118a/b |
 | L8 | float vs Decimal: 1,051 vs 45 in `app/`; no bug traced to it | P (count) | parked |
 | L9 | Two `money()` helpers (2-dp float display vs 4-dp Decimal DB), same name | P | 116 |
-| L10 | Futures bypass the resilience tier: an outage overwrites a good cache with empty → regime silently "neutral". Pricing bypass is dormant in production | P | 107 |
-| L11 | Boot waits for the slowest of 8 futures fetches; `_http_text`'s cap isn't a cap | P | 107 |
 | L12 | `.seg` defined twice; `--muted` undefined (bright "Ignored" labels); 17 non-focusable click targets; 0 `:focus` rules; no Escape/focus handling | P | 117 (D-i) |
 | L14 | The commodity screen is plan-blind: it buys CANE (sugar) while the goal model prices commodities as IAU/DBC | P | 116 (D-g) |
 | L15 | Gemini errors: done except grounded per-holding research (a 429 shows "temporarily unavailable" and is retried) | P | 110 |

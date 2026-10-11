@@ -1109,6 +1109,12 @@ def run_nav_snapshot_blocking() -> dict:
                 await session.commit()
         finally:
             await engine.dispose()
+        if failed:
+            # PR 107 (C4): the rows that worked are committed above; the run
+            # still says it failed. "failed: 1" inside a `last_ok: True` result
+            # is a lost day of history that nothing alerts on.
+            raise RuntimeError(f"nav snapshot failed for {failed} user(s) "
+                               f"({done} recorded)")
         return {"nav_rows": done, "health_rows": health, "failed": failed,
                 "skipped": skipped, "detail": why}
 

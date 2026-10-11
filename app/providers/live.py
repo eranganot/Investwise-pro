@@ -21,6 +21,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_HTTP_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="http")
+
+
 def _http_text(url: str, timeout: float = 10.0, *, opener=None,
                user_agent: str = "InvestWise/1.0") -> str:
     """Blocking GET in a worker thread (keeps the event loop free).
@@ -33,8 +36,11 @@ def _http_text(url: str, timeout: float = 10.0, *, opener=None,
         _open = opener.open if opener is not None else urllib.request.urlopen
         with _open(req, timeout=timeout) as r:
             return r.read().decode("utf-8", "ignore")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(_call).result(timeout=timeout + 5)
+    # PR 107 (L11): a SHARED pool, not a `with` block. Leaving the `with`
+    # joins the worker, so `result(timeout=...)` raised on time and then the
+    # caller waited for the hung call anyway (10 s against a nominal 6 s). A
+    # hung worker is now abandoned and the caller gets its timeout.
+    return _HTTP_POOL.submit(_call).result(timeout=timeout + 5)
 
 
 # Yahoo checks the User-Agent as well as the cookie. Kept as a constant so the

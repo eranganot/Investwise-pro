@@ -22,11 +22,10 @@ _refresh_count = 0
 def refresh_market_data() -> dict:
     """Re-scan research events and stamp the refresh time. Safe to call hourly."""
     global _last_refreshed, _refresh_count
-    try:
-        from app.agents.research_agent import ResearchAgent
-        ResearchAgent().scan()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("market refresh scan failed: %s", exc)
+    # PR 107 (C4): a failed scan raises, so `_guarded` records it and the
+    # "last refreshed" stamp is not moved by a refresh that did not happen.
+    from app.agents.research_agent import ResearchAgent
+    ResearchAgent().scan()
     _last_refreshed = datetime.now(timezone.utc)
     _refresh_count += 1
     logger.info("market data refreshed (#%d) at %s", _refresh_count, _last_refreshed.isoformat())

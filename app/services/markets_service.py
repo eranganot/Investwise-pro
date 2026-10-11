@@ -105,8 +105,18 @@ def _regime(items: list[dict]) -> dict:
             "vix": vix, "equity_avg_change_pct": eq_avg, "rationale": rationale}
 
 
-def futures_snapshot(force: bool = False) -> dict:
-    """All tracked futures + a derived market regime. Cached for _TTL_SEC."""
+class FuturesUnavailable(RuntimeError):
+    """Every futures fetch failed. The previous snapshot was kept, marked stale."""
+
+
+def futures_snapshot(force: bool = False, *, raise_on_outage: bool = False) -> dict:
+    """All tracked futures + a derived market regime. Cached for _TTL_SEC.
+
+    PR 107 (L10): when EVERY fetch fails, the previous snapshot is kept and
+    marked ``stale`` instead of being overwritten by an empty one -- which read
+    as a silent "neutral" regime. ``raise_on_outage`` is for the warm job, so
+    the outage reaches `JOB_STATE` instead of passing as a healthy run.
+    """
     now = time.time()
     if not force and _CACHE["data"] is not None and (now - _CACHE["ts"]) < _TTL_SEC:
         return _CACHE["data"]
@@ -118,6 +128,17 @@ def futures_snapshot(force: bool = False) -> dict:
                 items.append(row)
     order = list(FUTURES.keys())
     items.sort(key=lambda r: order.index(r["symbol"]) if r["symbol"] in order else 99)
+    if not items:
+        prev = _CACHE.get("data")
+        if prev and prev.get("futures"):
+            snap = {**prev, "stale": True, "stale_since": prev.get("stale_since") or _now()}
+        else:
+            snap = {"as_of": _now(), "futures": [], "market": _regime([]), "stale": True}
+        _CACHE.update(ts=now, data=snap)
+        if raise_on_outage:
+            raise FuturesUnavailable(f"all {len(FUTURES)} futures fetches failed; "
+                                     f"kept the snapshot from {snap.get('as_of')}")
+        return snap
     snap = {"as_of": _now(), "futures": items, "market": _regime(items)}
     _CACHE.update(ts=now, data=snap)
     return snap
