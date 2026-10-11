@@ -170,5 +170,10 @@
   only exit rules of sold positions are purged. *A GET of Today was deleting fired watch alerts.* → PR 109
 - **D72 · 2026-10-08 · Plan v3 runs wave by wave:** each PR fully gated and smoked; stop and report at each wave's end; the next wave's
   open decisions are asked then. (Owner preference.)
+- **D73 · 2026-10-11 · Logout ends only this browser's session** (D-f, option 2): `/auth/logout` revokes the cookie's `jti` in
+  `revoked_tokens`; other devices stay signed in. No migration (the table exists). → PR 111
+- **D74 · 2026-10-11 · The owner (SUPERADMIN) can do everything.** Tightening write routes to ANALYST+ (S1) never narrows what the
+  owner's session or the agent key can do; it only stops a READ_ONLY token from writing. → PR 110
+- **D75 · 2026-10-11 · Wave cadence adjusted by the owner:** PR 120 moved into Wave A; PR 105→106 shipped the same day, no night's wait.
 - **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
   unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.

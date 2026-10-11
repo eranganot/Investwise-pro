@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
+from app.core.auth import Role, require_role
 from app.core.database import get_session
 from app.models.tables import User
 from app.services import rules_service
@@ -40,7 +41,7 @@ async def rule_events(limit: int = 50, session: AsyncSession = Depends(get_sessi
     return {"events": await rules_service.list_events(session, user, limit=min(limit, 200))}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_role(Role.ANALYST))])
 async def create_rule(body: RuleIn, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     try:
@@ -61,7 +62,7 @@ class RuleEdit(BaseModel):
     force: bool = False      # save a cap below the plan target after the warning
 
 
-@router.patch("/{rule_id}")
+@router.patch("/{rule_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def edit_rule(rule_id: str, body: RuleEdit, session: AsyncSession = Depends(get_session),
                     user: User = Depends(acting_user)) -> dict:
     """PR 79: change a rule's level and note in place. A max-weight cap below the
@@ -76,19 +77,19 @@ async def edit_rule(rule_id: str, body: RuleEdit, session: AsyncSession = Depend
     return out
 
 
-@router.delete("/{rule_id}")
+@router.delete("/{rule_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def delete_rule(rule_id: str, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     return {"ok": await rules_service.delete_rule(session, user, rule_id)}
 
 
-@router.post("/{rule_id}/toggle")
+@router.post("/{rule_id}/toggle", dependencies=[Depends(require_role(Role.ANALYST))])
 async def toggle_rule(rule_id: str, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     return {"ok": await rules_service.toggle_rule(session, user, rule_id)}
 
 
-@router.post("/evaluate")
+@router.post("/evaluate", dependencies=[Depends(require_role(Role.ANALYST))])
 async def evaluate_now(session: AsyncSession = Depends(get_session),
                        user: User = Depends(acting_user)) -> dict:
     return {"triggered": await rules_service.evaluate_user(session, user, notify=True)}

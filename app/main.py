@@ -197,8 +197,11 @@ async def lifespan(app: FastAPI):
                 "the pre-deploy 'alembic upgrade head' in railway.json; building "
                 "it from the models at boot can hide a migration that did not "
                 "run. Unset AUTO_CREATE_TABLES.")
-        if not settings.api_key:
-            logger.warning("API_KEY is not set in production - write endpoints are unauthenticated.")
+        # PR 110 (S5): the old "API_KEY is not set - write endpoints are
+        # unauthenticated" was false (no route read API_KEY). This is the
+        # condition that actually means it.
+        if not settings.require_auth:
+            logger.error("REQUIRE_AUTH is off in production: every API is open to anyone.")
     _warm = None
     if settings.enable_scheduler:
         from app.worker.scheduler import start_scheduler
@@ -237,10 +240,15 @@ class _NoCacheShell(StaticFiles):
 
 
 def create_app() -> FastAPI:
+    _prod = (settings.environment or "").lower() == "production"
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
         lifespan=lifespan,
+        # PR 110 (S4): no anonymous map of every path and schema in production.
+        docs_url=None if _prod else "/docs",
+        redoc_url=None if _prod else "/redoc",
+        openapi_url=None if _prod else "/openapi.json",
     )
     app.add_middleware(
         CORSMiddleware,

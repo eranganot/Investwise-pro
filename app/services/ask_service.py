@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
 from app.services.context_service import for_prompt, gather
+from app.services.digest_service import unsupported_numbers
 from app.services.llm import gemini_enabled, gemini_generate_ex
 
 _PROMPT = (
@@ -20,6 +21,15 @@ _PROMPT = (
     "₪ where relevant. End with: 'Not financial advice.'\n\n"
     "DATA:\n{data}\n\nQUESTION: {q}"
 )
+
+
+DISCLAIMER = "Not financial advice."
+
+
+def with_disclaimer(text: str) -> str:
+    """The text, ending with the disclaimer (PR 110: it was prompt-only)."""
+    t = (text or "").rstrip()
+    return t if "not financial advice" in t.lower() else f"{t}\n\n{DISCLAIMER}"
 
 
 async def answer(session: AsyncSession, user: User, question: str) -> dict:
@@ -42,4 +52,14 @@ async def answer(session: AsyncSession, user: User, question: str) -> dict:
         # (a two-minute fix) look identical to a permanent outage.
         return {"llm": False, "grounded_on": grounded, "error": err,
                 "answer": err or "The assistant couldn't reach the model just now - try again shortly."}
-    return {"llm": True, "answer": out, "grounded_on": grounded}
+    # PR 110 (C8): "never invent numbers" was prompt-only. A stubbed reply
+    # ("returned 37.4% ... TEVA will hit 412") reached the screen verbatim
+    # while the digest's own checker flags both figures. Numbers the user
+    # typed are allowed ("should I buy 50 shares?").
+    bad = unsupported_numbers(out, {"ctx": ctx, "question": question})
+    if bad:
+        return {"llm": False, "verified": False, "unsupported_numbers": bad, "grounded_on": grounded,
+                "answer": ("I couldn't answer that from your data without quoting figures your data "
+                           "doesn't contain, so I'm not showing that answer. Try asking about a "
+                           "specific holding, your mix or your goal. " + DISCLAIMER)}
+    return {"llm": True, "verified": True, "answer": with_disclaimer(out), "grounded_on": grounded}

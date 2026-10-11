@@ -1,12 +1,9 @@
 """Auth + multi-entity tests (Phase 9)."""
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 import app.models.tables as tables  # noqa: F401
-from app.core import security
-from app.core.config import Settings
 from app.models.base import Base
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import Market
@@ -26,20 +23,6 @@ async def session():
     async with Session() as s:
         yield s
     await engine.dispose()
-
-
-async def test_auth_disabled_passes(monkeypatch):
-    monkeypatch.setattr(security, "get_settings", lambda: Settings(api_key=""))
-    assert await security.require_api_key(None) is None
-
-
-async def test_auth_enabled_enforced(monkeypatch):
-    monkeypatch.setattr(security, "get_settings", lambda: Settings(api_key="k"))
-    with pytest.raises(HTTPException):
-        await security.require_api_key(None)
-    with pytest.raises(HTTPException):
-        await security.require_api_key("wrong")
-    assert await security.require_api_key("k") is None
 
 
 async def test_entities_listed_and_portfolio_filtered(session):

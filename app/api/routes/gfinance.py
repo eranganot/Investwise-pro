@@ -47,8 +47,10 @@ async def markets_futures() -> dict:
                 "strategies read.")}
 
 
-@router.get("/markets/summary")
+@router.get("/markets/summary", dependencies=[Depends(acting_user)])
 async def markets_summary() -> dict:
+    """Signed-in only, cached 15 min (PR 110, S4): it was an uncached Gemini
+    call per anonymous request."""
     """AI 'what's moving' note over the futures snapshot."""
     return await ai_service.macro_summary()
 

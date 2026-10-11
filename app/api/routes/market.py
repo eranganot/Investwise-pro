@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research_agent import ResearchAgent
 from app.api.deps import acting_user
+from app.core.auth import Role, require_role
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.offload import offload
@@ -69,8 +70,9 @@ async def research_events(
             "events": annotate(events, rows)}
 
 
-@router.get("/providers/health")
+@router.get("/providers/health", dependencies=[Depends(require_role(Role.SUPERADMIN))])
 async def providers_health() -> dict:
+    """SUPERADMIN (PR 110, S4): its failing keys name held tickers ("quote:SOXL")."""
     return provider_health()
 
 

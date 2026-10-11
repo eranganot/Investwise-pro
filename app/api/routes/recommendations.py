@@ -40,7 +40,7 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
     return await build_recommendations(session, user, simulate_cash_ils=simulate_cash)
 
 
-@router.post("/recommendations/{rec_id}/accept")
+@router.post("/recommendations/{rec_id}/accept", dependencies=[Depends(require_role(Role.ANALYST))])
 async def accept_recommendation(rec_id: str, state: CardState | None = None,
                                 choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy)$"),
                                 level: float | None = Query(None, gt=0),
@@ -67,7 +67,7 @@ async def accept_recommendation(rec_id: str, state: CardState | None = None,
     return {"ok": True, **result}
 
 
-@router.post("/recommendations/{rec_id}/dismiss")
+@router.post("/recommendations/{rec_id}/dismiss", dependencies=[Depends(require_role(Role.ANALYST))])
 async def dismiss_recommendation_route(rec_id: str, state: CardState | None = None,
                                        session: AsyncSession = Depends(get_session),
                                        user: User = Depends(acting_user)) -> dict:
@@ -77,7 +77,7 @@ async def dismiss_recommendation_route(rec_id: str, state: CardState | None = No
     return {"ok": True}
 
 
-@router.post("/recommendations/headsups/{hid}/dismiss")
+@router.post("/recommendations/headsups/{hid}/dismiss", dependencies=[Depends(require_role(Role.ANALYST))])
 async def dismiss_headsup_route(hid: str, session: AsyncSession = Depends(get_session),
                                 user: User = Depends(acting_user)) -> dict:
     """PR 102: a heads-up dismissed is gone for good -- it never re-fires."""
@@ -86,21 +86,21 @@ async def dismiss_headsup_route(hid: str, session: AsyncSession = Depends(get_se
     return {"ok": True}
 
 
-@router.post("/recommendations/restore")
+@router.post("/recommendations/restore", dependencies=[Depends(require_role(Role.ANALYST))])
 async def restore_recommendations(session: AsyncSession = Depends(get_session),
                                   user: User = Depends(acting_user)) -> dict:
     """Un-ignore every dismissed recommendation so they reappear on Today."""
     return {"ok": True, "restored": await restore_dismissed(session, user)}
 
 
-@router.post("/recommendations/restore-completed")
+@router.post("/recommendations/restore-completed", dependencies=[Depends(require_role(Role.ANALYST))])
 async def restore_completed_recommendations(session: AsyncSession = Depends(get_session),
                                             user: User = Depends(acting_user)) -> dict:
     """Bring back cards previously marked as done."""
     return {"ok": True, "restored": await restore_completed(session, user)}
 
 
-@router.post("/recommendations/{rec_id}/restore")
+@router.post("/recommendations/{rec_id}/restore", dependencies=[Depends(require_role(Role.ANALYST))])
 async def restore_one_recommendation(rec_id: str, session: AsyncSession = Depends(get_session),
                                      user: User = Depends(acting_user)) -> dict:
     """Bring back ONE ignored or done card, and nothing else.

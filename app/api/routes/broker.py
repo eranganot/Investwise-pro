@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
+from app.core.auth import Role, require_role
 from app.brokers.base import NotConfiguredError
 from app.core.database import get_session
 from app.models.tables import User
@@ -22,7 +23,7 @@ class SyncRequest(BaseModel):
     connection_id: str | None = None
 
 
-@router.post("/connect")
+@router.post("/connect", dependencies=[Depends(require_role(Role.SUPERADMIN))])
 async def broker_connect(req: ConnectRequest | None = None,
                          session: AsyncSession = Depends(get_session),
                          user: User = Depends(acting_user)) -> dict:
@@ -33,7 +34,7 @@ async def broker_connect(req: ConnectRequest | None = None,
         return {"ok": False, "error": str(e), "hint": "Set BROKER_ENABLED=true and provider credentials."}
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(require_role(Role.SUPERADMIN))])
 async def broker_sync(req: SyncRequest | None = None,
                       session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:

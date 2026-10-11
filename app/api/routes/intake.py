@@ -526,7 +526,7 @@ async def portfolio_nav_snapshot(session: AsyncSession = Depends(get_session),
     return out
 
 
-@router.delete("/portfolio/position")
+@router.delete("/portfolio/position", dependencies=[Depends(require_role(Role.ANALYST))])
 async def remove_position(ticker: str, market: str | None = None,
                           session: AsyncSession = Depends(get_session),
                           user: User = Depends(acting_user)) -> dict:
@@ -579,7 +579,7 @@ class EditPositionRequest(BaseModel):
     current_price: float | None = None
 
 
-@router.put("/portfolio/position/{position_id}")
+@router.put("/portfolio/position/{position_id}", dependencies=[Depends(require_role(Role.ANALYST))])
 async def edit_position(position_id: str, body: EditPositionRequest,
                         session: AsyncSession = Depends(get_session),
                         user: User = Depends(acting_user)) -> dict:
