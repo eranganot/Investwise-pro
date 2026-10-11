@@ -30,7 +30,7 @@ from app.services import strategies as cat
 from app.services import strategy_catalog
 from app.services.allocation_mix import current_mix
 from app.services.funding_service import (
-    describe_funding, min_trade_ils, plan_funding)
+    describe_funding, drift_refusal, funding_drift, min_trade_ils, plan_funding)
 # The single asset class a set of buy legs lands in, or None if mixed. Lives in
 # funding_service beside the argument it feeds: `describe_funding` cannot do its
 # job without one, and owning a private copy here is exactly how the Today path
@@ -706,6 +706,47 @@ def _legs_for(targets: dict[str, float], nav: float, held: dict[str, float],
     return legs
 
 
+async def _book_target_mix(session: AsyncSession, user: User, objective: str) -> dict | None:
+    """The book's own target mix (sleeves + core), resolved once per funding pass.
+
+    PR 106 (C1). Sleeve funding called `plan_funding` without it, so the funder
+    measured against the objective table: on Grow + a 60/40 core + SOXL 10%,
+    Fixed Income is 20% held against a 32% book target, and the funder sold
+    ₪37,100 of BND as "the most overweight class (20% vs 10%)".
+    """
+    from app.services.book_target import book_target
+    try:
+        return (await book_target(session, user, objective)).get("target")
+    except Exception:  # noqa: BLE001 - logged; the objective table is the fallback
+        import logging
+        logging.getLogger(__name__).warning("book target unavailable for sleeve funding", exc_info=True)
+        return None
+
+
+def _buys_by_class(legs) -> dict[str, float]:
+    from app.services.allocation_mix import classify
+    out: dict[str, float] = {}
+    for lg in legs or []:
+        cls = classify(str(lg.get("ticker") or "").upper(), "NASDAQ", None)
+        out[cls] = out.get(cls, 0.0) + float(lg.get("buy_ils") or 0.0)
+    return out
+
+
+def _drift_gate(rows, snap, fund, legs, objective, book_tgt) -> dict | None:
+    """The refusal, when funding these legs moves the book away from its plan.
+
+    PR 106 (C2a). A sell from a class the legs also buy is a swap and moves no
+    weight; a sell from any OTHER class that leaves total drift higher is the
+    trade the funding rule forbids, whatever the per-class budget said.
+    """
+    buys = _buys_by_class(legs)
+    gate = funding_drift(rows, snap, fund, buys, objective, book_tgt)
+    cross = {s.get("asset_class") for s in (fund or {}).get("sells", []) or []} - set(buys)
+    if gate["rises"] and cross:
+        return {**gate, "reason": drift_refusal(gate)}
+    return None
+
+
 async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: dict,
                        *, total: float | None, sleeve_pct: float | None,
                        dry_run: bool, honour_holds: bool = False) -> dict:
@@ -777,9 +818,10 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     prefer = {tk for tk in held
               if tk not in exclude
               and any(_cat.steps_back_to(tk, want) for want in targets)}
+    book_tgt = await _book_target_mix(session, user, objective)
     fund = plan_funding(rows, snap, plan, objective, cap, amount,
                         cash_ils=cash_ils, exclude=exclude,
-                        buying_class=buying_class, prefer=prefer)
+                        buying_class=buying_class, prefer=prefer, book_target=book_tgt)
 
     # Abstain rather than half-execute: a partially funded sleeve is a position
     # nobody chose, at a size nobody chose. Judged in points of NAV, not shekels
@@ -805,6 +847,13 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                 "achievable_sleeve_pct": round(achievable_pct, 1),
                 "buys": legs, "funding": fund,
                 "funding_summary": describe_funding(fund, _buying_class(legs))}
+
+    refused = _drift_gate(rows, snap, fund, legs, objective, book_tgt)
+    if refused:
+        return {"ok": False, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
+                "error": "funding this sleeve would move the book away from your plan",
+                "reason": refused["reason"], "drift": {k: refused[k] for k in ("before", "after")},
+                "buys": legs, "funding": fund}
 
     preview = {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                "sleeve_pct": sleeve_pct, "amount_ils": amount,
@@ -887,10 +936,12 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
             _all_targets[_tk.upper()] = _all_targets.get(_tk.upper(), 0.0) + float(_w)
     _sleeve_class = _buying_class([{"ticker": tk} for tk in _all_targets])
 
+    book_tgt = await _book_target_mix(session, user, objective)
+
     def _fits(total_ils: float) -> dict:
         return plan_funding(rows, snap, plan, objective, cap, total_ils,
                             cash_ils=cash_ils, exclude=exclude,
-                            buying_class=_sleeve_class)
+                            buying_class=_sleeve_class, book_target=book_tgt)
 
     # Largest first. Ties broken by strategy id so the order is deterministic --
     # a funding plan that changes between two identical previews is untrustworthy
@@ -967,6 +1018,13 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
 
     funded = [x for x in out if x["status"] == "funded"]
     fund = _fits(running) if running >= min_trade_ils() else None
+    refused = (_drift_gate(rows, snap, fund, [lg for x in funded for lg in x["buys"]],
+                           objective, book_tgt) if fund else None)
+    if refused:
+        return {"ok": False, "mode": FUND_PLAN, "nav": round(nav, 2), "sleeves": out,
+                "error": "funding these sleeves would move the book away from your plan",
+                "reason": refused["reason"], "drift": {k: refused[k] for k in ("before", "after")},
+                "funding": fund}
     # Read off the plan that will actually run, not the trial that accepted the
     # last sleeve, and reported rather than buried: whole-share rounding and tax
     # mean this is normally small but rarely zero.

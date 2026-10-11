@@ -656,6 +656,62 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
     }
 
 
+def funding_drift(rows, snap, fund: dict, buys_ils: dict, objective: str | None,
+                  book_target: dict | None) -> dict:
+    """Total drift from the book target before and after a funded multi-leg buy.
+
+    PR 106. `propose_funded_buy` simulates its trade before it may claim
+    anything; the sleeve funder did not, and on a Grow + 60/40 core book it sold
+    Fixed Income (20% held, 32% target) to buy SOXL and called it "the most
+    overweight class" -- total drift 0.44 -> 0.64. This is the same simulation
+    for a buy spread across classes. `buys_ils` maps asset class -> shekels
+    bought. Drift is measured on invested holdings, as `propose_funded_buy`
+    measures it (cash is spent, not held to a weight here).
+
+    Returns ``before``, ``after``, ``rises`` and ``sold_at_or_under_target``:
+    the classes a sell leg takes from that were not over their target.
+    """
+    targets = targets_for(objective, book_target)
+    before: dict[str, float] = {}
+    for p in _position_rows(rows, snap):
+        before[p["asset_class"]] = before.get(p["asset_class"], 0.0) + p["value_ils"]
+    after = dict(before)
+    for cls, amt in (buys_ils or {}).items():
+        after[cls] = after.get(cls, 0.0) + float(amt or 0.0)
+    sold_classes = set()
+    for s in (fund or {}).get("sells", []) or []:
+        cls = s.get("asset_class")
+        if cls:
+            after[cls] = after.get(cls, 0.0) - float(s.get("value_ils") or 0.0)
+            sold_classes.add(cls)
+
+    def drift(values: dict) -> float:
+        tot = sum(values.values())
+        if tot <= 0:
+            return 0.0
+        return sum(abs(values.get(c, 0.0) / tot - float(targets.get(c, 0.0) or 0.0))
+                   for c in set(values) | set(targets))
+
+    tot_b = sum(before.values()) or 1.0
+    under = sorted(c for c in sold_classes
+                   if before.get(c, 0.0) / tot_b <= float(targets.get(c, 0.0) or 0.0) + 1e-9)
+    d0, d1 = drift(before), drift(after)
+    return {"before": round(d0, 4), "after": round(d1, 4), "rises": d1 > d0 + 1e-4,
+            "sold_at_or_under_target": under,
+            "targets": {c: round(float(targets.get(c, 0.0) or 0.0), 4) for c in under},
+            "held": {c: round(before.get(c, 0.0) / tot_b, 4) for c in under}}
+
+
+def drift_refusal(gate: dict) -> str:
+    """The sentence that says WHICH class the plan is short of."""
+    parts = [f"{c} ({gate['held'][c]:.0%} held, {gate['targets'][c]:.0%} target)"
+             for c in gate.get("sold_at_or_under_target") or []]
+    named = (" It would have to sell " + ", ".join(parts)
+             + ", which your plan says you hold too little of.") if parts else ""
+    return (f"Funding this would move the book further from your plan "
+            f"(drift {gate['before']:.2f} -> {gate['after']:.2f}).{named}")
+
+
 def buying_class_of(legs) -> str | None:
     """The single asset class a set of buy legs lands in, or None if mixed.
 
