@@ -3180,6 +3180,8 @@ function openThresholdsSheet(){
         <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
           <input id="th_${k}" ${isList?'type="text" inputmode="decimal"':`type="number" step="any" min="${s.min}" max="${s.max}"`} value="${fmt(eff[k])}" style="flex:1">
           ${mine[k]!==undefined?`<button class="ghost" onclick="document.getElementById('th_${k}').value='${fmt(def[k])}';document.getElementById('th_${k}').dataset.reset='1'">Reset</button>`:""}</div></div>`;}).join("")
+    // PR 115 (D-c): the ONE minimum in force -- the larger of the two card minimums and the smallest funded trade.
+    +(p.thresholds_effective_card_floor_ils!=null?`<div class="mk" style="margin-top:10px"><b>Smallest trade card today: ${ils(p.thresholds_effective_card_floor_ils)}</b>, the larger of the two card minimums above and the smallest funded trade. Nothing smaller becomes a card.</div>`:"")
     +`<div class="acts" style="margin-top:12px"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
        <button class="acc" style="flex:2" onclick="saveThresholdsSheet(this)">Save thresholds</button></div>`);
 }

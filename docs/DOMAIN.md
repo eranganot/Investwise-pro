@@ -357,8 +357,7 @@ These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
   `regime_service.cached_regime_proxy()` (the price-derived `engines/regime`, cached hourly by `futures_warm`). Futures are
   a labelled cross-check on the Markets tab, their day change is measured against the previous daily bar, and
   `cached_regime()` has a 30-minute TTL.
-- **Decisions still hard-coded** (vs "every decision is a setting"): `RISK_CAPS`, `CASH_FLOOR_PCT`, `OBJ_TARGET`, the 5-pt sleeve drift
-  band, mute/done TTLs, the near-rule/near-cap constants, card-priority weights, frontier draws/bands, and the Kelly-by-objective table.
+- *Closed in PR 115 (D-c, D-d):* 13 more decisions are settings on the Card-thresholds sheet (23 in all): the concentration cap (default = your risk tolerance), sleeve drift band, resize minimum and the two materiality bars, the Ignore/Done mute days and the re-fire change, the near-take-profit/trail/cap heads-ups, and the buy-idea counts. One card minimum: the larger of the card minimums and the smallest funded trade. Still constants by choice: `CASH_FLOOR_PCT` and Kelly (already overridden per plan), `OBJ_TARGET` (the book target now comes from the core/frontier), ranking internals and computational sizes.
 - **Stale comments:** `buyback_hold.py` (says kv_settings; it has been `trading_rules` since PR 83); `PlanSleeve.is_core` (says unread; it is read).
 - **The goal model doesn't simulate stops** on non-sleeve tickers (BND/GOOGL/VTI/UGA/USO). This is disclosed in the UI.
 - *Deleted in PR 113:* the legacy pipeline (`pipeline.py`, `AllocationAgent` veto, `SafetyEngine`, XAI, learning, decision feed).

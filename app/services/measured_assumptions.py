@@ -447,6 +447,7 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
     core_tickers: set[str] = set()
     core_row_id = core_id
     if core_row_id:
+        from app.services import thresholds
         from app.services.recommendations import SLEEVE_DRIFT_BAND_PCT
         from app.services.strategies import core_weights as _core_weights
         from app.services.strategies import get as _static_get
@@ -466,7 +467,7 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
                 if str(meta.get("asset_class") or "") != "Cash" and tk != "CASH"
                 and (str(meta.get("asset_class") or "") or _cls(tk, "")) not in _carved}
         matched, evidence = core_matches_basket(held, basket,
-                                                band_pct=SLEEVE_DRIFT_BAND_PCT)
+                                                band_pct=thresholds.get("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT))
         crow = by_id.get(core_row_id)
         cok, cwhy = usable(crow, engine_version=ENGINE_VERSION)
         core_w = round(sum(held.values()) / nav * 100.0, 4)

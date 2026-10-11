@@ -39,17 +39,68 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
                           "A goal change that moves the odds less than this is not offered.", 0.5, 50.0),
     "guard_levels": ("Drawdown-guard levels the retune tries (%)",
                      "The guard levels compared when the app looks for better protection.", 1.0, 90.0),
+    # PR 115 (D-d, owner 2026-10-11: "all of them become editable"). Each default
+    # still lives beside the code that uses it.
+    "concentration_cap_pct": ("Largest single holding (% of the book)",
+                              "No buy takes one name past this; a holding above it gets a trim card. "
+                              "Default follows your risk tolerance.", 5.0, 100.0),
+    "sleeve_drift_band_pts": ("Sleeve drift band (± points)",
+                              "How far a sleeve may drift from the size you chose before Today asks to resize it.",
+                              0.5, 30.0),
+    "min_resize_pts": ("Smallest sleeve resize worth a card (points)",
+                       "A goal-solver resize smaller than this is not offered.", 0.1, 20.0),
+    "material_gap_close_pct": ("Resize must close at least (% of the gap)",
+                               "A resize earns its card if it closes this much of the gap to the goal...", 1.0, 100.0),
+    "material_vol_drop_pts": ("...or cut volatility by at least (points)",
+                              "...or lowers the book's volatility by this much.", 0.1, 30.0),
+    "ignore_mute_days": ("Ignore hides a card for (days)",
+                         "How long Ignore keeps a card off Today.", 1.0, 90.0),
+    "done_mute_days": ("Done hides a card for (days)",
+                       "How long Done keeps a card off Today (a HIGH card uses the Ignore window).", 1.0, 180.0),
+    "refire_change_pct": ("A hidden card returns if its number moves (%)",
+                          "A muted card comes back early when its amount changes by more than this.", 1.0, 500.0),
+    "near_rule_pct": ("\"Close to your take-profit\" within (%)",
+                      "How near the price must be to a take-profit level for a heads-up.", 1.0, 50.0),
+    "near_trail_giveback_pct": ("\"Closing on your trailing stop\" after giving back (%)",
+                                "How much of the trail's room must be used up before a heads-up.", 10.0, 100.0),
+    "near_cap_pts": ("\"Nearly at your cap\" within (points)",
+                     "How close a holding must be to its max-weight cap for a heads-up.", 0.1, 20.0),
+    "ideas_shown": ("Buy ideas listed", "How many screener ideas the cash card lists.", 1.0, 20.0),
+    "max_idea_cards": ("Buy ideas that become cards", "How many screener names may become cards on Today.",
+                       0.0, 10.0),
 }
 
+# Whole-number settings: stored and returned as int.
+_INTEGER = {"ideas_shown", "max_idea_cards", "ignore_mute_days", "done_mute_days"}
 
-def defaults() -> dict:
-    """Today's values, read from the constants that own them."""
+
+def defaults(plan=None) -> dict:
+    """Today's values, read from the constants that own them.
+
+    `plan` only matters for `concentration_cap_pct`, whose default is the row of
+    your risk tolerance (Low 15 / Medium 25 / High 40).
+    """
     from app.services import frontier_service as fs
     from app.services import funding_service as fund
     from app.services import headsup
     from app.services import recommendations as rec
     from app.services.advanced_rules import DEFAULTS as ADV
-    return {"min_card_tax_ils": headsup.MIN_TAX_SAVING_ILS,
+    from app.services.plan_service import RISK_CAPS
+    _row = RISK_CAPS.get(getattr(plan, "risk_tolerance", None) or "Medium", RISK_CAPS["Medium"])
+    return {"concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
+            "sleeve_drift_band_pts": rec.SLEEVE_DRIFT_BAND_PCT,
+            "min_resize_pts": fs.MIN_MOVE_PCT,
+            "material_gap_close_pct": round(fs.MATERIAL_GAP_CLOSE * 100.0, 2),
+            "material_vol_drop_pts": fs.MATERIAL_VOL_DROP_PCT,
+            "ignore_mute_days": rec._DISMISS_TTL_DAYS,
+            "done_mute_days": rec._DONE_TTL_DAYS,
+            "refire_change_pct": round(rec._REFIRE_DELTA * 100.0, 2),
+            "near_rule_pct": round(rec._NEAR_RULE_FRAC * 100.0, 2),
+            "near_trail_giveback_pct": round(rec._TRAIL_GIVEBACK * 100.0, 2),
+            "near_cap_pts": rec._NEAR_CAP_PCT_POINTS,
+            "ideas_shown": rec.IDEAS_SHOWN,
+            "max_idea_cards": rec._MAX_BUY_IDEA_CARDS,
+            "min_card_tax_ils": headsup.MIN_TAX_SAVING_ILS,
             "min_card_trade_ils": headsup.MIN_TRADE_ILS,
             "min_card_trade_pct": headsup.MIN_TRADE_PCT_OF_BOOK,
             "min_funded_trade_ils": fund.MIN_TRADE_DEFAULT_ILS,
@@ -79,7 +130,7 @@ def clean(raw: dict | None) -> dict:
             x = float(v)
             if not lo <= x <= hi:
                 raise ValueError(f"{k}: must be between {lo:g} and {hi:g}")
-            out[k] = x
+            out[k] = int(round(x)) if k in _INTEGER else x
     return out
 
 
@@ -92,7 +143,20 @@ def overrides_of(plan) -> dict:
 
 def effective(plan) -> dict:
     """Every threshold as it applies to this plan: the override, else the default."""
-    return {**defaults(), **overrides_of(plan)}
+    return {**defaults(plan), **overrides_of(plan)}
+
+
+def card_floor_ils(nav: float) -> float:
+    """THE smallest trade a card may ask for (PR 115, D-c): the largest of the
+    card's ₪ and %-of-book minimums AND the smallest funded trade.
+
+    There were two minimums. A card could be ₪100+ while funding refused any
+    leg under ₪250, so below a ~₪50k book the ₪100 setting was inert and a
+    commodity card for ₪180 degraded into an un-actable heads-up. One number now.
+    """
+    from app.services import headsup
+    from app.services.funding_service import min_trade_ils
+    return max(headsup.min_trade_ils(nav), float(min_trade_ils()))
 
 
 def use(plan) -> None:

@@ -19,6 +19,7 @@
 > **Closed in PR 111:** S2 (logout revokes this browser's token; D73).
 > **Closed in PR 113:** C7 (`/decision-feed/weekly` deleted with the decision-feed cluster).
 > **Closed in PR 112–114b:** L1 (legacy subsystem deleted in 3 stages, D76; tables dropped by migration 0029).
+> **Closed in PR 115:** P2 (one card minimum, D-c), P4 (13 decisions became settings, D-d).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -43,9 +44,7 @@
 | # | Item | Source | Pri |
 |---|---|---|---|
 | P1 | **Review the goal definition.** Should deposits or extra years raise the "30% on every shekel" target? Plan v2.2 promised this backlog entry but it never reached STATUS. | plan v2.2, PR 99 "Decided 2026-10-05" | ? |
-| P2 | **Align the two minimum-trade numbers:** ₪100 card minimum (`min_card_trade_ils`) vs ₪250 funded-leg minimum (`min_funded_trade_ils`). Both are settings now, but not aligned. **Verified 10-08:** below NAV ≈ ₪50k the ₪100 setting is inert, and the commodity card degrades into an un-actable "Buy ₪180 of X" heads-up. | STATUS PR 104c/104d | PR 115 (D-c) |
 | P3 | The goal model doesn't simulate stops on BND/GOOGL/VTI/UGA/USO (only sleeve tickers + the guard). It is disclosed in the UI but not modelled. | STATUS PR 104b/104c.1 | P2 |
-| P4 | Remaining hard-coded decisions → settings ("every decision is a setting"): `RISK_CAPS`, `CASH_FLOOR_PCT`, `OBJ_TARGET`, the 5-pt sleeve drift band, mute/done TTLs and re-fire deltas, near-rule/near-cap constants, card-priority weights, frontier draws/bands, Kelly-by-objective. **Inventoried 10-08:** 35 constants, 13 recommended (no migration needed). | Code review 10-07; `plans/evidence-2026-10-08/inv-cleanup.md` §P4 | PR 115 (D-d) |
 | P5 | Broker integration (real orders). | `archive/plans/BROKER_INTEGRATION_PLAN.md` | Parked (D41) |
 | P6 | Israeli index funds on TASE. | Provider can't price numeric symbols | Parked |
 | P7 | B1: what `/plan` shows for volatility (store in-market vol nightly; match windows). | STATUS backlog B1 | Parked |

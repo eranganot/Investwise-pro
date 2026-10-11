@@ -34,8 +34,9 @@ _KV_PREFIX = "headsups_dismissed:"
 
 
 def min_trade_ils(nav: float) -> float:
-    """The smallest trade a card may ask for: 100 ILS or 0.5% of the book, whichever is
-    larger (PR 104d: both are settings, `plans.thresholds`)."""
+    """The card's own minimums: 100 ILS or 0.5% of the book, whichever is larger
+    (PR 104d: both are settings). The floor actually applied is
+    `thresholds.card_floor_ils`, which also never goes under the funded minimum."""
     from app.services import thresholds
     ils = float(thresholds.get("min_card_trade_ils", MIN_TRADE_ILS))
     pct = float(thresholds.get("min_card_trade_pct", MIN_TRADE_PCT_OF_BOOK))
@@ -70,7 +71,8 @@ def split(recs: list[dict], *, nav: float, actionable) -> tuple[list[dict], list
     whether Accept does something (`recommendations._is_actionable`)."""
     from app.services import thresholds
     cards, heads, dropped = [], [], []
-    floor = min_trade_ils(nav)
+    # PR 115 (D-c): ONE floor -- never under the smallest funded trade.
+    floor = thresholds.card_floor_ils(nav)
     for c in recs:
         kind = (c.get("apply") or {}).get("kind") or "none"
         if (c.get("meta") or {}).get("headsup_kind") in _REMOVED_IDS:

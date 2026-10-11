@@ -39,7 +39,13 @@ _SEV = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 # How far the sleeve may wander from the size you chose before Today says so.
 # Wide enough that ordinary price movement does not nag; narrow enough that a
 # sleeve quietly becoming something else gets noticed.
-SLEEVE_DRIFT_BAND_PCT = 5.0
+SLEEVE_DRIFT_BAND_PCT = 5.0       # default; the setting is `sleeve_drift_band_pts` (PR 115)
+
+
+def _setting(key: str, default):
+    """PR 115: a decision the owner can change (`plans.thresholds`), else its default."""
+    from app.services import thresholds
+    return thresholds.get(key, default)
 
 # Apply kinds that genuinely mutate holdings/plan/rules. Anything else is advice
 # the app can't execute for you -- Accept on those used to fall through every
@@ -454,7 +460,7 @@ def moved_on(entry, card: dict, *, done: bool = False) -> str | None:
     except (TypeError, ValueError):
         return None
     base = max(abs(then_amt), _REFIRE_FLOOR_ILS)
-    if abs(now_amt - then_amt) / base > _REFIRE_DELTA:
+    if abs(now_amt - then_amt) / base > float(_setting("refire_change_pct", _REFIRE_DELTA * 100.0)) / 100.0:
         return (f"it asked for about {then_amt:,.0f} ILS when you filed it "
                 f"and asks for about {now_amt:,.0f} ILS now")
 
@@ -615,7 +621,7 @@ async def _clear(session: AsyncSession, key: str, ttl_days: int) -> int:
 
 async def load_dismissed(session: AsyncSession, user: User) -> set[str]:
     """Cards the user chose to IGNORE (7-day window, restorable)."""
-    return await _active(session, _dismiss_key(user), _DISMISS_TTL_DAYS)
+    return await _active(session, _dismiss_key(user), int(_setting("ignore_mute_days", _DISMISS_TTL_DAYS)))
 
 
 async def load_completed(session: AsyncSession, user: User) -> set[str]:
@@ -625,7 +631,7 @@ async def load_completed(session: AsyncSession, user: User) -> set[str]:
     one bucket made "Mark as done" look identical to "Ignore" -- the card landed
     in the ignored list, which is what the user reported.
     """
-    return await _active(session, _done_key(user), _DONE_TTL_DAYS)
+    return await _active(session, _done_key(user), int(_setting("done_mute_days", _DONE_TTL_DAYS)))
 
 
 async def _resolve_if_rule_card(session: AsyncSession, user: User, rec_id: str,
@@ -647,24 +653,24 @@ async def _resolve_if_rule_card(session: AsyncSession, user: User, rec_id: str,
 
 async def dismiss_recommendation(session: AsyncSession, user: User, rec_id: str,
                                  state: dict | None = None) -> None:
-    await _mark(session, _dismiss_key(user), rec_id, _DISMISS_TTL_DAYS, state)
+    await _mark(session, _dismiss_key(user), rec_id, int(_setting("ignore_mute_days", _DISMISS_TTL_DAYS)), state)
     await _resolve_if_rule_card(session, user, rec_id, "dismissed")
 
 
 async def complete_recommendation(session: AsyncSession, user: User, rec_id: str,
                                   state: dict | None = None) -> None:
-    await _mark(session, _done_key(user), rec_id, _DONE_TTL_DAYS, state)
+    await _mark(session, _done_key(user), rec_id, int(_setting("done_mute_days", _DONE_TTL_DAYS)), state)
     await _resolve_if_rule_card(session, user, rec_id, "acknowledged")
 
 
 async def restore_dismissed(session: AsyncSession, user: User) -> int:
     """Bring back everything the user ignored (does not touch completed cards)."""
-    return await _clear(session, _dismiss_key(user), _DISMISS_TTL_DAYS)
+    return await _clear(session, _dismiss_key(user), int(_setting("ignore_mute_days", _DISMISS_TTL_DAYS)))
 
 
 async def restore_completed(session: AsyncSession, user: User) -> int:
     """Bring back everything the user marked done."""
-    return await _clear(session, _done_key(user), _DONE_TTL_DAYS)
+    return await _clear(session, _done_key(user), int(_setting("done_mute_days", _DONE_TTL_DAYS)))
 
 
 async def restore_one(session: AsyncSession, user: User, rec_id: str) -> dict:
@@ -1711,7 +1717,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                     _held[_tk] = _held.get(_tk, 0.0) + _v
 
             _ok, _ev = core_matches_basket(_held, _basket,
-                                           band_pct=SLEEVE_DRIFT_BAND_PCT)
+                                           band_pct=_setting("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT))
             if _basket and not _ok and not _ev.get("reason"):
                 # ONE CARD, AND IT ACTS.
                 #
@@ -1790,7 +1796,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                         "want_ils": _plan.get("want_ils"),
                         "have_ils": _plan.get("have_ils"),
                         "legs": _plan.get("legs"),
-                        "band_pct": SLEEVE_DRIFT_BAND_PCT},
+                        "band_pct": _setting("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT)},
                         formulas=[
                             f("Leg target", "target = core_pct x basket_weight x NAV",
                               result=str(_plan.get("want_ils"))),
@@ -2396,7 +2402,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                 _target_pct = _w * 100.0
                 _actual_pct = (_weights.get(_tk, 0.0) or 0.0) * 100.0
                 _gap = _target_pct - _actual_pct
-                if abs(_gap) < SLEEVE_DRIFT_BAND_PCT:
+                if abs(_gap) < _setting("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT):
                     continue
                 if _gap > 0 and _tk in _held_tks:
                     continue      # sold on its take-profit; not bought back yet
@@ -2880,7 +2886,7 @@ async def build_recommendations(session: AsyncSession, user: User,
         # untrue. It goes away when the condition does -- by not being generated.
         _persistent = {r.get("id") for r in recs if r.get("persistent")}
         _high = {r.get("id") for r in recs if r.get("severity") == "HIGH"}
-        _high_cut = datetime.now(timezone.utc) - timedelta(days=_DISMISS_TTL_DAYS)
+        _high_cut = datetime.now(timezone.utc) - timedelta(days=int(_setting("ignore_mute_days", _DISMISS_TTL_DAYS)))
         _stale_high = {rid for rid in (completed & _high)
                        if _parse_dt(_at(_done_map.get(rid)) or _now_iso()) < _high_cut}
 
@@ -3630,7 +3636,7 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
                 # Approaching a level from BELOW: distance as a share of price
                 # is the right measure, and it shrinks as the position runs.
                 gap = (target - price) / price
-                if not (0 < gap <= _NEAR_RULE_FRAC):
+                if not (0 < gap <= float(_setting("near_rule_pct", _NEAR_RULE_FRAC * 100.0)) / 100.0):
                     continue
                 near_pct = gap * 100.0
             else:
@@ -3647,7 +3653,7 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
                 if span <= 0:
                     continue
                 given = (peak - price) / span
-                if given < _TRAIL_GIVEBACK:
+                if given < float(_setting("near_trail_giveback_pct", _TRAIL_GIVEBACK * 100.0)) / 100.0:
                     continue
                 near_pct = given * 100.0
             # The slice that rule would actually sell, valued through the same
@@ -3731,7 +3737,7 @@ def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> 
             except (TypeError, ValueError):
                 continue
             headroom = cap_pct - w_pct
-            if not (0 < headroom <= _NEAR_CAP_PCT_POINTS):
+            if not (0 < headroom <= float(_setting("near_cap_pts", _NEAR_CAP_PCT_POINTS))):
                 continue
             over_at_cap = round(nav * (w_pct - cap_pct) / 100.0, 2)
             out.append({
@@ -4268,7 +4274,7 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
                               or [f"screener score {idea.get('score')}"]),
                       "flags": list(idea.get("flags") or [])})
         seen.add(tk)
-        if sum(1 for d in dests if d["kind"] == "idea") >= IDEAS_SHOWN:
+        if sum(1 for d in dests if d["kind"] == "idea") >= int(_setting("ideas_shown", IDEAS_SHOWN)):
             break
     for d in dests:
         cls = d["asset_class"]
@@ -4942,7 +4948,7 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
             if float(getattr(r, "quantity", 0) or 0) > 0}
 
     for idea in ideas:
-        if len(out) >= _MAX_BUY_IDEA_CARDS:
+        if len(out) >= int(_setting("max_idea_cards", _MAX_BUY_IDEA_CARDS)):
             break
         tk = str(idea.get("ticker") or "").upper()
         if not tk or tk in already_named or tk in sleeve_names:
@@ -5104,6 +5110,11 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
     pick_name = getattr(pick, "name", "") or "a broad commodity basket"
     alts = ", ".join(names[1:3]) if len(names) > 1 else "GLD (gold) or DBA (agriculture)"
     gap_ils = round(max(0.0, target - com_w) * nav, 2)
+    # PR 115 (D-c): below the ONE card floor there is no card and no heads-up.
+    # A ₪180 gap on a small book used to become "Buy ₪180 of X" with nothing to
+    # press, because funding refuses any leg under the funded minimum.
+    if gap_ils < _thr.card_floor_ils(nav):
+        return out
     action = (f"Buy {_ils(gap_ils)} of {pick_tk} ({pick_name}) — that lifts commodities from "
               f"{com_w:.0%} to your {target:.0%} target. Alternatives if you'd rather: {alts}.")
     how = [f"Buy {_ils(gap_ils)} of {pick_tk} ({pick_name})"]
