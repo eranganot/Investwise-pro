@@ -34,6 +34,7 @@ class Principal(BaseModel):
     sub: str
     role: Role
     token_type: str = "access"
+    jti: str | None = None
 
 
 @lru_cache
@@ -103,7 +104,46 @@ def _principal_from_token(token: str) -> Principal:
     if payload.get("type") == "refresh":
         raise HTTPException(401, "refresh token cannot access resources")
     return Principal(sub=payload["sub"], role=Role(payload.get("role", "READ_ONLY")),
-                     token_type=payload.get("type", "access"))
+                     token_type=payload.get("type", "access"), jti=payload.get("jti"))
+
+
+# --- logout ends THIS browser's session (PR 111, D73) -------------------------
+#
+# `/auth/logout` used to delete the cookie and nothing else, so the token inside
+# it stayed valid for its full 30 days: a copied cookie or bearer replayed after
+# logout got 200 (S2). Logout now writes the token's `jti` to `revoked_tokens`
+# (the table refresh-token rotation already uses), and every authenticated
+# request checks it. Owner's choice (D-f option 2): only the browser you log out
+# of is signed out; other devices keep their sessions.
+#
+# PR 111.1: IN MEMORY, LOADED AT BOOT -- no database read in the auth path.
+# 111 checked `revoked_tokens` per request (cached 60 s). On Postgres that put a
+# pooled connection into every authenticated request, including tests that
+# drive the app without its lifespan, and asyncpg left `Connection._cancel`
+# un-awaited across loops (the CLAUDE.md cross-loop trap; CI warning on
+# test_rbac_enforced_when_auth_on). The app is one process: logout adds the jti
+# here and to the table; boot reloads the table (`load_revoked`), so a restart
+# forgets nothing.
+_REVOKED: set[str] = set()
+
+
+def mark_revoked(jti: str) -> None:
+    _REVOKED.add(jti)
+
+
+def is_revoked(jti: str | None) -> bool:
+    return bool(jti) and jti in _REVOKED
+
+
+async def load_revoked(session) -> int:
+    """Reload every revoked jti from the database. Called once at startup."""
+    from sqlalchemy import select
+
+    from app.models.tables import RevokedToken
+    jtis = (await session.scalars(select(RevokedToken.jti))).all()
+    _REVOKED.clear()
+    _REVOKED.update(j for j in jtis if j)
+    return len(_REVOKED)
 
 
 def require_role(min_role: Role):
@@ -126,6 +166,8 @@ def require_role(min_role: Role):
         if not token:
             raise HTTPException(401, "not authenticated")
         principal = _principal_from_token(token)
+        if is_revoked(principal.jti):
+            raise HTTPException(401, "this session was logged out")
         # Email allowlist: user tokens must be allow-listed (m2m tokens exempt).
         allowed = s.allowed_email_list
         if allowed and "@" in principal.sub and principal.sub.lower() not in allowed:

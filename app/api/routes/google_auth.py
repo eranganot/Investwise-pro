@@ -17,6 +17,7 @@ import urllib.request
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Role, create_token
@@ -144,7 +145,33 @@ async def google_callback(request: Request, code: str = "", state: str = "",
 
 
 @router.get("/auth/logout")
-async def logout(request: Request):
+async def logout(request: Request, session: AsyncSession = Depends(get_session)):
+    """End THIS browser's session (PR 111, D73).
+
+    Deleting the cookie was all this did, so the token stayed valid for 30 days
+    to anyone holding a copy. Its `jti` is now revoked server-side. Other
+    devices keep their own sessions (owner's choice, D-f option 2). A bearer
+    token sent with the request is revoked the same way.
+    """
+    from app.core.auth import decode_token, mark_revoked
+    from app.models.tables import RevokedToken
+    s = get_settings()
+    tokens = [request.cookies.get(s.session_cookie_name)]
+    authz = request.headers.get("authorization") or ""
+    if authz.startswith("Bearer "):
+        tokens.append(authz.split(" ", 1)[1])
+    for tok in filter(None, tokens):
+        try:
+            jti = decode_token(tok).get("jti")
+        except Exception:  # noqa: BLE001 -- an expired or foreign token needs no revoking
+            continue
+        if not jti:
+            continue
+        exists = await session.scalar(select(RevokedToken.id).where(RevokedToken.jti == jti))
+        if exists is None:
+            session.add(RevokedToken(jti=jti))
+        mark_revoked(jti)
+    await session.commit()
     resp = RedirectResponse("/login")
-    resp.delete_cookie(get_settings().session_cookie_name)
+    resp.delete_cookie(s.session_cookie_name)
     return resp

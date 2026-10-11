@@ -44,9 +44,11 @@ if (-not $Sha) { Skip "needs -Sha: on an old build this POST would WRITE mock ho
 else {
     $pf0 = Api GET "/api/v1/portfolio"
     $b = $null
-    try { $b = Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/broker/sync" -Headers $script:ApiHeaders -ContentType 'application/json' -Body '{}' -TimeoutSec 60 } catch {}
+    # /connect, not /sync: sync without a connection stops earlier ("No brokerage
+    # connection") and would pass without proving the production refusal.
+    try { $b = Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/broker/connect" -Headers $script:ApiHeaders -ContentType 'application/json' -Body '{}' -TimeoutSec 60 } catch {}
     $pf1 = Api GET "/api/v1/portfolio"
-    if ($b -and $b.ok -eq $false -and @($pf1.positions).Count -eq @($pf0.positions).Count) { Ok ("refused: {0}" -f $b.error) }
+    if ($b -and $b.ok -eq $false -and "$($b.error)" -match 'disabled in production' -and @($pf1.positions).Count -eq @($pf0.positions).Count) { Ok ("refused: {0}" -f $b.error) }
     else { Bad ("broker sync not refused: {0}" -f ($b | ConvertTo-Json -Compress)) }
 }
 
