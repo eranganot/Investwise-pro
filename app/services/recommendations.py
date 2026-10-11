@@ -1367,9 +1367,15 @@ async def build_recommendations(session: AsyncSession, user: User,
     degraded: list[str] = []
 
     # 1) Concentration trim
-    if snap["max_weight"] > cap and nav:
-        tk = max(snap["exposure_ticker"], key=snap["exposure_ticker"].get)
-        w = snap["exposure_ticker"][tk]
+    # PR 105: over HOLDINGS, not the cash row. `exposure_ticker` includes CASH,
+    # so a cash-heavy book got "Trim CASH: sell about ₪13,225 of CASH (~13225
+    # shares)". Found the first time `test_card_claims` measured trims instead of
+    # skipping them.
+    from app.services.intake_service import is_cash_position as _is_cash
+    _exp = {t: w for t, w in (snap.get("exposure_ticker") or {}).items() if not _is_cash(t)}
+    if _exp and max(_exp.values()) > cap and nav:
+        tk = max(_exp, key=_exp.get)
+        w = _exp[tk]
         price = next((float(r.current_price or 0) for r in rows if r.ticker == tk), 0)
         trim = (w - cap) * nav
         # PR 102: the share of the POSITION that goes, not ILS over a native
@@ -2552,10 +2558,15 @@ async def build_recommendations(session: AsyncSession, user: User,
                             "Every funding leg and its estimated tax is named first",
                             "The real trade is yours to place at your broker"],
                     "est_amount": round(_amount, 2),
+                    # PR 105: the share of the POSITION that goes. This divided
+                    # `_amount` (shekels) by `current_price` (the ticker's own
+                    # currency), so a USD sleeve sold ~3.7x what the card said:
+                    # "trim ₪18,550 of SOXL" sold 185 of 300 shares. The sibling
+                    # at the concentration trim was fixed the same way in PR 102.
                     "apply": ({"kind": "trim", "ticker": _tk,
-                               "shares": max(1, int(_amount / max(
-                                   1e-9, next((float(r.current_price or 0) for r in rows
-                                               if (r.ticker or "").upper() == _tk), 0) or 1e-9)))}
+                               "shares": round(sum(float(r.quantity or 0) for r in rows
+                                                   if (r.ticker or "").upper() == _tk)
+                                               * abs(_gap) / _actual_pct, 6)}
                               if _over else _fund_action(_wanted_by.get(_tk) or [])),
                     "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
@@ -2924,8 +2935,9 @@ async def build_recommendations(session: AsyncSession, user: User,
                              _SEV.get(r["severity"], 9)))
     _tm.mark("reconcile_and_filter")
     # Phase 3.3: validate the Risk Agent's beta against history before surfacing.
+    from app.services.fx import holding_value_ils as _hv
     bt_holdings = [{"ticker": d["ticker"], "asset_class": d.get("asset_class") or "Equities",
-                    "value_ils": d["quantity"] * d["current_price"]} for d in pdicts]
+                    "value_ils": _hv(d)} for d in pdicts]
     bt = BacktestEngine().run(bt_holdings, portfolio_vol_pct=snap["avg_volatility_pct"])
     _tm.mark("backtest")
 
@@ -3774,6 +3786,7 @@ def _pct(x: float) -> str:
 
 def _hedge_recs(rows, snap) -> list[dict]:
     """Flag sector/factor concentration and suggest a diversifier or hedge."""
+    from app.services.fx import position_value_ils
     out: list[dict] = []
     nav = snap["nav"]
     if not nav or len(rows) < 2:
@@ -3788,7 +3801,7 @@ def _hedge_recs(rows, snap) -> list[dict]:
             continue
         f = _fundamentals(p.ticker)
         sector = (f.sector if f and f.sector else "Unknown")
-        val = float(p.quantity) * float(p.current_price or 0)
+        val = position_value_ils(p)   # PR 105: was qty * native price, read as ILS
         sector_w[sector] = sector_w.get(sector, 0.0) + val / nav
     sector_w.pop("Unknown", None)
     if not sector_w:
@@ -6367,7 +6380,7 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
     that isn't there.
     """
     from app.providers.registry import guarded_quote
-    from app.services.fx import fx_rate
+    from app.services.fx import quote_in_ils
     from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     cash = await get_cash(session, user)
@@ -6387,7 +6400,9 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
         if q is None or not q.price:
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
-        price_ils = float(q.price) * fx_rate(getattr(q, "currency", None) or "USD")
+        # PR 105: major units first -- a `.TA` quote arrives in agorot, and
+        # `fx_rate("ILA")` is 1.0, so this booked 100x too few shares.
+        price, _ccy, price_ils = quote_in_ils(float(q.price), getattr(q, "currency", None) or "USD")
         if price_ils <= 0:
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
@@ -6401,10 +6416,10 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
         # only fires on a leg for a ticker you do not already own.
         is_new = await buy_into_book(
             session, user, ticker=tk, market=getattr(q, "market", None) or "NASDAQ",
-            price=float(q.price), shares=shares, depth=3)
+            price=price, shares=shares, depth=3)
         cash = round(cash - amount, 2)
         bought.append({"ticker": tk, "shares": shares, "amount_ils": round(amount, 2),
-                       "price": float(q.price), "new_position": is_new})
+                       "price": price, "new_position": is_new})
     await set_cash(session, user, cash)
     await session.commit()
     return {"bought": bought, "skipped": skipped, "cash_remaining_ils": round(cash, 2),

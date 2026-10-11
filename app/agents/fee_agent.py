@@ -10,13 +10,14 @@ import hashlib
 from app.engines.fee_engine import FeeEngine
 from app.schemas.fees import FeeReport
 from app.services.audit_trail import audit_for, f
+from app.services.fx import holding_value_ils
 
 
 def positions_to_holdings(pdicts: list[dict]) -> list[dict]:
     """Map portfolio positions to fee-scan holdings (value + expense ratio)."""
     out = []
     for p in pdicts:
-        value = float(p.get("quantity") or 0) * float(p.get("current_price") or 0)
+        value = holding_value_ils(p)   # PR 105: was qty * native price, read as ILS
         out.append({"ticker": p["ticker"], "asset_class": p.get("asset_class") or "Equities",
                     "value_ils": value, "expense_ratio_pct": p.get("expense_ratio_pct")})
     return out

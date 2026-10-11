@@ -23,6 +23,8 @@ def test_commodities_endpoint():
 
 def test_add_commodity_by_amount_prices_live():
     with TestClient(app) as c:  # builtin provider gives a deterministic price
+        # PR 105: a buy is paid from cash (owner, 2026-10-11).
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": 10000})
         r = c.post("/api/v1/portfolio/add", json={"ticker": "SLV", "amount": 1000,
                                                   "asset_class": "Commodities", "market": "NYSE"}).json()
         assert r["ok"] and r["ticker"] == "SLV" and r["asset_class"] == "Commodities"

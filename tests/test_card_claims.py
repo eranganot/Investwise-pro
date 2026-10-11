@@ -121,11 +121,24 @@ def _class_values(book):
     return out
 
 
-def _simulate(before: dict, card: dict) -> dict:
+def _trim_value_ils(book: dict, spec: dict) -> tuple[str | None, float]:
+    """(asset class, ILS value) of the shares a trim spec sells, priced from the book."""
+    from app.services.fx import fx_rate, price_currency
+    tk = str(spec.get("ticker") or "").upper()
+    for p in book["positions"]:
+        if p["ticker"].upper() == tk:
+            rate = fx_rate(price_currency(p["market"], None))
+            return p["asset_class"], float(spec.get("shares") or 0.0) * float(p["spot_price"]) * rate
+    return None, 0.0
+
+
+def _simulate(before: dict, card: dict, book: dict | None = None) -> dict:
     """Apply a card's own funding legs to a class-value map.
 
     Uses ``apply``, not the card's prose: the spec is what Accept executes, so it
-    is the only honest description of what the card does.
+    is the only honest description of what the card does. A trim needs ``book``
+    to price its shares (PR 105: trims are measured, not skipped -- the skip is
+    how the sleeve-drift trim sold 3.7x its card for a month).
     """
     spec = card.get("apply") or {}
     after = dict(before)
@@ -137,7 +150,10 @@ def _simulate(before: dict, card: dict) -> dict:
             if scls:
                 after[scls] = after.get(scls, 0.0) - float(s.get("value_ils") or 0.0)
     elif spec.get("kind") == "trim":
-        pass       # a trim's size lives outside the spec; covered by its own tests
+        assert book is not None, "a trim is priced from the book; pass it"
+        cls, val = _trim_value_ils(book, spec)
+        if cls:
+            after[cls] = after.get(cls, 0.0) - val
     return after
 
 
@@ -512,3 +528,25 @@ def test_a_card_whose_funding_is_taken_is_re_sourced_not_dropped(observed):
         for tk, used in seen.items():
             assert used <= held.get(tk, 0.0) + 1e-9, (
                 f"the card set sells {used:g} {tk} out of {held.get(tk, 0.0):g} held")
+
+
+def test_every_trim_sells_what_its_card_says(book_cards):
+    """PR 105: a trim's shares, priced in shekels, are the amount its card names.
+
+    The sleeve-drift trim divided its shekel amount by a dollar price, so "trim
+    about ₪18,550 of SOXL" sold ₪68,635. Measured here by pricing the `apply`
+    spec's shares from the book, never from the card's text.
+    """
+    name, book, _client, cards = book_cards
+    before = _class_values(book)
+    for card in cards:
+        spec = card.get("apply") or {}
+        if spec.get("kind") != "trim" or not card.get("est_amount"):
+            continue
+        cls, sold = _trim_value_ils(book, spec)
+        assert cls, f"[{name}] {card['title']}: trims a ticker the book doesn't hold"
+        claimed = float(card["est_amount"])
+        assert abs(sold - claimed) <= 0.05 * claimed + 1.0, (
+            f"[{name}] {card['title']}: Accept sells ₪{sold:,.0f}, the card says ₪{claimed:,.0f}")
+        after = _simulate(before, card, book)
+        assert after[cls] >= -1.0, f"[{name}] {card['title']}: sells more than the class holds"

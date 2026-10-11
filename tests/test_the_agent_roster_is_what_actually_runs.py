@@ -299,7 +299,7 @@ def test_the_research_agent_passes_through_whatever_the_provider_gives_it(monkey
 @pytest.mark.parametrize("claim", [
     "app/agents/research_agent.py:15",
     "app/agents/screener_agent.py:22",
-    "app/agents/fee_agent.py:25",
+    "app/agents/fee_agent.py:26",
     "app/agents/allocation_agent.py:22",
     "app/agents/adversary.py:116",
     "app/services/war_room.py:18",

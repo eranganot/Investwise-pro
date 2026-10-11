@@ -36,7 +36,7 @@ from app.services.funding_service import (
 # job without one, and owning a private copy here is exactly how the Today path
 # ended up never computing one at all.
 from app.services.funding_service import buying_class_of as _buying_class
-from app.services.fx import fx_rate, price_currency
+from app.services.fx import fx_rate, price_currency, quote_in_ils
 from app.services.intake_service import (
     buy_into_book, delete_position, ensure_account, ensure_entity, get_cash,
     is_cash_position, list_positions, set_cash, upsert_positions)
@@ -1101,8 +1101,8 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
         if price <= 0:
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
-        ccy = (getattr(q, "currency", None) or "USD")
-        price_ils = price * (fx_rate(ccy) or 1.0)
+        # PR 105: major units first -- a `.TA` quote arrives in agorot.
+        price, _ccy, price_ils = quote_in_ils(price, getattr(q, "currency", None) or "USD")
         if price_ils <= 0:
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
@@ -1193,18 +1193,24 @@ async def _replace_book(session: AsyncSession, user: User, strategy_id: str, s: 
     priced = []
     for ticker, weight in s["basket"]:
         try:
-            price = float((await offload(guarded_quote, ticker)).price)
+            q = await offload(guarded_quote, ticker)
+            # PR 105 (C3+): `budget` is shekels and the quote is in the ticker's
+            # own currency. `weight * budget / price` divided one by the other,
+            # so replacing a ₪37,100 book with a USD basket booked ₪137,641.
+            price, _ccy, price_ils = quote_in_ils(float(q.price), getattr(q, "currency", None) or "USD")
         except Exception:  # noqa: BLE001
-            price = 0.0
-        if price <= 0:
+            q, price, price_ils = None, 0.0, 0.0
+        if price <= 0 or price_ils <= 0:
             continue
-        qty = (weight * budget) / price
+        qty = (weight * budget) / price_ils
+        _mk = getattr(q, "market", None)
+        mk = Market(_mk) if _mk in {m.value for m in Market} else Market.NASDAQ
         positions.append(IntakePosition(
-            ticker=ticker, market=Market.NASDAQ, depth=s.get("preferred_depth") or 2,
+            ticker=ticker, market=mk, depth=s.get("preferred_depth") or 2,
             spot_price=price, listing_price=price, quantity=qty, cost_basis=price,
             asset_class=cat.ticker_asset_class(ticker, s)))
         priced.append({"ticker": ticker, "weight": weight, "price": price,
-                       "value": round(qty * price, 2)})
+                       "value": round(qty * price_ils, 2)})
     if not positions:
         return {"ok": False, "mode": REPLACE, "error": "could not price the basket"}
 

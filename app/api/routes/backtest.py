@@ -6,6 +6,8 @@ from app.api.deps import acting_user
 from app.core.database import get_session
 from app.engines.backtest_engine import BacktestEngine
 from app.models.tables import User
+from app.services.allocation_mix import classify_holding
+from app.services.fx import position_value_ils
 from app.services.intake_service import list_positions
 from app.services.portfolio_analytics import compute_snapshot
 
@@ -13,8 +15,10 @@ router = APIRouter(prefix="/api/v1", tags=["backtest"])
 
 
 def _holdings(rows) -> list[dict]:
-    return [{"ticker": p.ticker, "asset_class": (p.meta or {}).get("asset_class") or "Equities",
-             "value_ils": float(p.quantity) * float(p.current_price or 0)} for p in rows]
+    # PR 105: valued through fx (was qty * native price) and classified, not
+    # read raw off the row.
+    return [{"ticker": p.ticker, "asset_class": classify_holding(p),
+             "value_ils": position_value_ils(p)} for p in rows]
 
 
 @router.post("/backtest")

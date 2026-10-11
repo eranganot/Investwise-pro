@@ -352,50 +352,59 @@ class AddHoldingRequest(BaseModel):
 @router.post("/portfolio/add", dependencies=[Depends(require_role(Role.ANALYST))])
 async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
-    """Add (or top up) a single holding sized by a money amount, priced live."""
-    from app.schemas.intake import IntakePosition
+    """Buy a holding by a money amount, paid out of cash, priced live.
+
+    PR 105. This called `upsert_positions`, an intake writer that REPLACES the
+    row: "add $1,000 of IAU" to 100 held shares left 7.54 shares, and the money
+    came from nowhere -- no cash debit, no ledger row. A purchase is now what
+    every other buy in the app is: `buy_into_book` blends into what you hold,
+    the cost leaves cash (owner, 2026-10-11: "to buy a holding I put money in
+    cash, then buy with it"), and the leg is recorded.
+    """
     from app.schemas.state_machine import Market
+    from app.services import ledger_service
     from app.services.commodities import get as commodity, is_commodity
-    from app.services.intake_service import ensure_account, ensure_entity, upsert_positions
-    from app.services.fx import to_major_units
+    from app.services.fx import quote_in_ils
+    from app.services.intake_service import buy_into_book, get_cash, set_cash
     try:
         _q = await offload(guarded_quote, req.ticker)
-        # THE 100x TRAP, at the one boundary that still had it. `to_major_units`
-        # says "use at every boundary" in its own docstring and exactly one
-        # boundary used it. Yahoo quotes Tel Aviv in AGOROT and says so in the
-        # CURRENCY CODE, not the price: TEVA.TA comes back as 11030.0 with
-        # currency ILA, meaning 110.30 ILS. This threw the currency away and kept
-        # the number.
-        #
-        # What that did was worse than a wrong price, because it cancelled out at
-        # first: a 1,000 ILS purchase booked 0.0907 shares at 11,030 each, so NAV
-        # looked right the moment it was made. `MARKET_CCY["TASE"]` is "ILS", so
-        # nothing downstream disagreed either. Then the next price refresh wrote
-        # the correct major-unit price of 110.30 against those 0.0907 shares and
-        # the position was worth 10 ILS. An error invisible until a job that did
-        # nothing wrong exposes it.
-        price, _ccy = to_major_units(float(_q.price), getattr(_q, "currency", None))
+        # THE 100x TRAP: Yahoo quotes Tel Aviv in AGOROT and says so only in the
+        # currency code (TEVA.TA 11030.0 ILA = 110.30 ILS). `quote_in_ils` takes
+        # the major unit first, then converts.
+        price, _ccy, price_ils = quote_in_ils(float(_q.price), getattr(_q, "currency", None))
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"couldn't price {req.ticker}: {str(e)[:80]}"}
-    if price <= 0:
+    if price <= 0 or price_ils <= 0:
         return {"ok": False, "error": f"no live price for {req.ticker}"}
     qty = req.amount / price
+    cost_ils = round(qty * price_ils, 2)
+    cash = await get_cash(session, user)
+    if cost_ils > cash + 0.005:
+        return {"ok": False, "error": (f"not enough cash: this costs ₪{cost_ils:,.0f} and you have "
+                                       f"₪{cash:,.0f}. Add money to cash first (Holdings › Set liquid cash)."),
+                "cost_ils": cost_ils, "cash_ils": round(cash, 2)}
     # No "Equities" fallback: `classify` reads the tables far better than a
-    # coin flip at the moment of least information does, and a stored default
-    # is exactly what it now declines to trust.
+    # coin flip at the moment of least information does.
     ac = req.asset_class or ("Commodities" if is_commodity(req.ticker) else None)
     mk = req.market if req.market in {m.value for m in Market} else "NYSE"
-    er = (commodity(req.ticker) or {}).get("expense_ratio_pct")
-    ip = IntakePosition(ticker=req.ticker.upper(), market=Market(mk), depth=1,
-                        spot_price=price, listing_price=price, quantity=qty,
-                        cost_basis=price, asset_class=ac, expense_ratio_pct=er)
-    entity = await ensure_entity(session, user, "Personal", "Personal")
-    account = await ensure_account(session, entity, "Main")
-    await upsert_positions(session, account, [ip])
+    tk = req.ticker.upper()
+    await buy_into_book(session, user, ticker=tk, market=mk, price=price, shares=qty,
+                        asset_class=ac)
+    er = (commodity(tk) or {}).get("expense_ratio_pct")
+    if er is not None:
+        from app.services.intake_service import list_positions
+        for p in await list_positions(session, user):
+            if (p.ticker or "").upper() == tk and isinstance(p.meta, dict)                     and p.meta.get("expense_ratio_pct") is None:
+                p.meta = {**p.meta, "expense_ratio_pct": er}
+    await set_cash(session, user, round(cash - cost_ils, 2))
+    await ledger_service.record_leg(session, user, ticker=tk, txn_type=ledger_service.BUY,
+                                    quantity=qty, price=price, value_ils=cost_ils, market=mk,
+                                    source="holdings_add")
     await session.commit()
-    return {"ok": True, "ticker": req.ticker.upper(), "price": round(price, 2),
+    return {"ok": True, "ticker": tk, "price": round(price, 2),
             "quantity": round(qty, 4), "value": round(qty * price, 2),
-            "asset_class": classify(req.ticker, mk, ac)}
+            "cost_ils": cost_ils, "cash_left_ils": round(cash - cost_ils, 2),
+            "asset_class": classify(tk, mk, ac)}
 
 
 @router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])
