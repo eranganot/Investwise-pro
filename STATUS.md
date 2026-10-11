@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave A: PR 105, PR 106). Last product PR: **PR 106**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave A complete: PR 105, 106, 106.1, 120). Last product PR: **PR 120**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. Next: **PR 120** (one goal chance on Today and Plan), then the Wave A report.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Next: **Wave B** (PR 107-109) after the owner's go-ahead.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -52,6 +52,49 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 120 — one goal chance on every screen
+
+**Found by the owner, 2026-10-11:** Today's health card said "35.3% chance of ₪82,692 in 5.2 years". At the same
+moment the Plan tab said 16.3%, and 31% once the drawdown guard was paused.
+
+**Root cause.** Three numbers answered one question, and PR 99's "the same figure everywhere it appears" missed the
+health score:
+- Today's **On track** (`plan_health`), which is half the health score.
+- The Today **"Chance of hitting your goal"** row.
+- The **assistant / digest context**, which called it "the ONLY probability".
+
+All three read `/plan/projection`'s `probability_meets_target`: one lognormal over the whole book, with no protective
+rules and no rebalancing. The Plan tab reads the goal model's path simulation with the rules as they are, and that
+model counts active standing orders. Even with the rules out, the two engines differ by about 5 points (35.3% vs
+30.1%).
+
+**What.**
+- On track, the Today chance row and the assistant/digest context all quote `goal_headline.p_goal_pct`, the Plan
+  number. Live today that is 31%, against 30.1% without the rules.
+- With no fresh goal verdict they fall back to the projection's figure, labelled "rough estimate: protective rules
+  not simulated".
+- The On track info tip now says where the number comes from.
+- The projection chart keeps its own no-rules run, labelled as the chart's (unchanged since PR 99).
+- `sw.js` → `iw-v52`.
+- Also: the sleeve-funding refusal prints drift in points (106.1's "0.05 -> 0.05" hid a rise).
+
+**What the owner sees.** Today's On track goes from 35 to 31 on the live book. The health score moves with it, since On
+track is half of it.
+
+**Tests (fail on HEAD).** `tests/test_one_goal_chance_on_every_screen.py` (3):
+- with a verdict, health, projection and context agree;
+- without one, the fallback is labelled;
+- the Today row reads `goal_headline`.
+
+**Smoke.** `scripts/smoke/smoke-pr120-one-goal-chance.ps1 -Sha <sha>`. Against `19cdfc0` it FAILs, as it should:
+"Today On track 35 (no_deposits) vs Plan 31.0%"; the page row and `sw.js` are not updated.
+
+**QA (Pixel).**
+- Today's health card and the Plan goal card show the same chance.
+- The On track info tip reads correctly.
+
+---
+
 ## PR 106.1 — the drift gate measures the whole book, cash included
 
 **Incident: PR 106's smoke was red on `a303f9e`.** Production "Fund sleeves" (dry run) returned a refusal, "drift 0.02 ->
@@ -74,6 +117,9 @@ target), and adding cash funds it.
 **Tests.** `test_the_gate_measures_the_whole_book_cash_included` reproduces the live book; it fails on `a303f9e`.
 
 **Smoke.** The same script, fixed: a refused plan counts as selling nothing, and the refusal must name the class.
+**Ran against `19cdfc0` (GitHub PR #6 merge): 6 PASS, 0 FAIL, 0 SKIP.** The refusal reads "...It would have to sell
+Fixed Income (12.11% held, 12.14% target)". It printed the drift as "0.05 -> 0.05" (a real rise, 0.0496 -> 0.0504,
+hidden by two decimals). PR 120 prints the drift in points.
 
 ---
 

@@ -661,7 +661,7 @@ const PART_EXPLAIN={
   rules:["Rules","How many holdings have a stop (stop-loss or trailing stop), less 25 for each rule that has fired and is still waiting for you. <b>20% of On plan.</b>"],
   concentration:["Concentration","Your largest holding against your concentration limit. 20 points off for every percentage point over. <b>15% of On plan.</b>"],
   cash:["Cash","Cash between your floor and your redeploy line scores 100. Below the floor, or above the line, scores less. <b>15% of On plan.</b>"],
-  on_track:["On track","The chance of reaching your goal by its date, from the same 10,000-run projection shown under \"Where this could end up\". A standing order counts, because it is money you have committed to add. Half of your score."],
+  on_track:["On track","The chance of reaching your goal by its date, the same number the Plan tab leads with: your goal model, with your protective rules as they are. A standing order counts, because it is money you have committed to add. Before the goal model has been solved it shows a rough estimate from the projection instead, and says so. Half of your score."],
 };
 function explainPart(k){const e=PART_EXPLAIN[k];if(!e)return;const P=(PLANH&&PLANH.plan_parts)||{};
   const now=k==="on_track"?(PLANH&&PLANH.on_track_detail):(P[k]||{}).detail;
@@ -1059,8 +1059,11 @@ async function loadToday(){
   try{const r=await TP.proj;const o=$("outcomes");
     if(r&&!r.message){
       const lossP=Math.round((r.probability_of_loss_real||0)*100);
-      const goalRow=(r.target_amount&&r.probability_meets_target!=null)
-        ?`<div class="oc"><span class="k">Chance of hitting your goal</span><span class="v ${r.probability_meets_target>=.6?'ok':r.probability_meets_target>=.4?'warn':'bad'}">${Math.round(r.probability_meets_target*100)}%</span></div>`:"";
+      // PR 120: the goal's one chance (Plan's number, rules as they are); the
+      // chart's own no-rules run only when there is no goal verdict.
+      const gpc=(r.goal_headline&&r.goal_headline.p_goal_pct!=null)?r.goal_headline.p_goal_pct/100:r.probability_meets_target;
+      const goalRow=(r.target_amount&&gpc!=null)
+        ?`<div class="oc"><span class="k">Chance of hitting your goal</span><span class="v ${gpc>=.6?'ok':gpc>=.4?'warn':'bad'}">${Math.round(gpc*100)}%</span></div>`:"";
       // W3. Every figure above assumes you never add another shekel. That was
       // always true and the card never said it; the caveat is not optional text.
       const wc=r.with_contributions||{};

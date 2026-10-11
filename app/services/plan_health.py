@@ -231,19 +231,34 @@ async def plan_health(session, user) -> dict | None:
     try:
         pj = await goal_projection(contribution_per_year=None, session=session, user=user)
         wc = pj.get("with_contributions") or {}
-        if wc.get("available") and wc.get("source") == "standing_order" \
+        # PR 120: THE GOAL'S ONE CHANCE, the number the Plan tab leads with.
+        # This quoted the projection chart's own run -- one lognormal over the
+        # whole book, no protective rules, no rebalancing -- so on 2026-10-11
+        # Today said 35.3% while Plan said 16.3% (31% once the guard was
+        # paused), for the same goal at the same moment. PR 99 promised one
+        # figure everywhere; this was the screen it missed, and it is half the
+        # health score. The goal model already counts active standing orders.
+        gh = pj.get("goal_headline") or {}
+        tail = f"₪{float(pj.get('target_amount') or 0):,.0f} in {pj.get('years')} years"
+        p = None
+        if gh.get("p_goal_pct") is not None:
+            on_track, track_basis = float(gh["p_goal_pct"]), "goal_model"
+            track_detail = (f"{on_track:g}% chance of {tail}, with your protective rules as they are"
+                            + (f" ({float(gh['without_rules_pct']):g}% without them)"
+                               if gh.get("without_rules_pct") is not None else ""))
+        elif wc.get("available") and wc.get("source") == "standing_order" \
                 and wc.get("probability_meets_target") is not None:
             p, track_basis = float(wc["probability_meets_target"]), "standing_order"
         elif pj.get("probability_meets_target") is not None:
             p, track_basis = float(pj["probability_meets_target"]), "no_deposits"
-        else:
-            p = None
         if p is not None:
+            # No fresh goal verdict: the projection's figure, labelled as what
+            # it is rather than passed off as the goal's chance.
             on_track = 100.0 * p
-            track_detail = (f"{p:.1%} chance of ₪{float(pj.get('target_amount') or 0):,.0f} "
-                            f"in {pj.get('years')} years"
+            track_detail = (f"{p:.1%} chance of {tail}"
                             + (" with your standing order" if track_basis == "standing_order"
-                               else ", with no new deposits"))
+                               else ", with no new deposits")
+                            + " (rough estimate: protective rules not simulated)")
     except Exception:  # noqa: BLE001 -- On plan still stands on its own
         logger.warning("projection unavailable for the health score", exc_info=True)
 

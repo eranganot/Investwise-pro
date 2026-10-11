@@ -131,6 +131,14 @@ async def gather(session: AsyncSession, user: User) -> dict:
             ctx["projection"] = {k: _pj.get(k) for k in
                                  ("years", "target_amount", "probability_meets_target",
                                   "projected_median", "assumption_basis")}
+            # PR 120: the goal's ONE chance, as the Plan tab and Today quote it
+            # (the rules as they are). The chart's no-rules run is the fallback.
+            _gh = _pj.get("goal_headline") or {}
+            if _gh.get("p_goal_pct") is not None:
+                ctx["projection"]["probability_meets_target"] = round(float(_gh["p_goal_pct"]) / 100.0, 3)
+                ctx["projection"]["probability_basis"] = "goal model, protective rules as they are"
+            else:
+                ctx["projection"]["probability_basis"] = "rough projection, protective rules not simulated"
     except Exception:  # noqa: BLE001
         pass
     return ctx
@@ -158,8 +166,9 @@ FIGURE_BASIS = {
     "risk.var_95_1d_pct": "a one-day loss the book exceeds about 1 day in 20",
     "goal.target_ils": "the target amount you set in Plan. Not a forecast",
     "projection.probability_meets_target": (
-        "the ONLY probability of reaching your goal. A fraction between 0 and 1, "
-        "from the same simulation the Plan screen shows"),
+        "the ONLY probability of reaching your goal. A fraction between 0 and 1: "
+        "the Plan tab's chance with the protective rules as they are (see "
+        "projection.probability_basis)"),
     "projection.years": "the horizon that probability is measured over",
     # Nominal: `goal_projection` returns `sim.nominal.p50` (review of PR 76 --
     # this said "real terms" while the figure was nominal).
