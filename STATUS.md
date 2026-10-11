@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112, 113). Last product PR: **PR 113**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112, 113, 114a). Last product PR: **PR 114a**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 114.0** (the migration that drops the legacy tables, shipped alone), then PR 114.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 114b** (migration 0029 drops the legacy tables, alone). The order was inverted for a drop; see PR 114a.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,26 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 114a — the legacy tables are no longer mapped (D76, stage 3 part 1)
+
+**The plan's order is inverted, deliberately.** It said "114.0: a migration drops the tables; 114: remove the model
+classes". But `positions.bucket_id` is mapped on the live `Position` model. Dropping the column while the old code
+serves would fail every positions query until the next deploy, which means NAV, Today and Holdings. D17 ("a migration
+ships alone; nothing reads it until the next PR") describes ADDS. For a DROP the safe order is the mirror image: the
+code stops mapping first, then the schema follows. So:
+- **PR 114a (this, code only):** the models `Bucket`, `TaxProfile`, `DecisionFeed`, `DecisionItem`, `UserAction` and
+  `BrokerConnection` leave the ORM, along with `Position.bucket_id`, `User.decision_feeds` and `Entity.buckets`. The
+  tables stay in the database, unmapped and harmless.
+- **PR 114b:** migration 0029 drops them, shipped alone.
+
+**Tests.** `test_persist_feed_with_items` deleted. The migration-chain, startup-DDL and schema tests pass on SQLite and
+Postgres.
+
+**Smoke.** `scripts/smoke/smoke-pr114a-unmap-legacy.ps1 -Sha <sha>`. Schema still 0028; `/portfolio` NAV equals the sum
+of rows; Today and the health check build.
+
+---
 
 ## PR 113 — legacy removal, stage 2: the decision-feed cluster (D76)
 
@@ -77,7 +97,9 @@ use them), and `services/demo_data.py` (the war room's `demo_signals` path).
   anchor and section are replaced by a "deleted" note.
 - `test_persist_feed_with_items` stays until PR 114 drops the models.
 
-**Smoke.** `scripts/smoke/smoke-pr113-legacy-stage2.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr113-legacy-stage2.ps1 -Sha <sha>`. **Ran against `80c3aed` (GitHub PR #14 merge): 15
+PASS, 0 FAIL.** The 7 deleted routes return 404/405; health-check, risk alerts, scenario, the war room, What-if and
+Today all answer.
 
 **Production rows before stage 3** (read-only, 2026-10-11, `transaction_read_only = on`):
 

@@ -69,9 +69,6 @@ class User(Base, PKMixin, TimestampMixin):
     entities: Mapped[list["Entity"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    decision_feeds: Mapped[list["DecisionFeed"]] = relationship(
-        back_populates="user", cascade="all, delete-orphan"
-    )
 
 
 class Entity(Base, PKMixin, TimestampMixin):
@@ -84,9 +81,6 @@ class Entity(Base, PKMixin, TimestampMixin):
 
     user: Mapped["User"] = relationship(back_populates="entities")
     accounts: Mapped[list["Account"]] = relationship(
-        back_populates="entity", cascade="all, delete-orphan"
-    )
-    buckets: Mapped[list["Bucket"]] = relationship(
         back_populates="entity", cascade="all, delete-orphan"
     )
 
@@ -106,25 +100,11 @@ class Account(Base, PKMixin, TimestampMixin):
     )
 
 
-class Bucket(Base, PKMixin, TimestampMixin):
-    __tablename__ = "buckets"
-    entity_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("entities.id", ondelete="CASCADE"), index=True
-    )
-    name: Mapped[str] = mapped_column(String(255))
-    objective: Mapped[str] = mapped_column(String(50), default="Growth")  # Growth|Bulletproof
-
-    entity: Mapped["Entity"] = relationship(back_populates="buckets")
-
-
 # --- Portfolio --------------------------------------------------------------
 class Position(Base, PKMixin, TimestampMixin):
     __tablename__ = "positions"
     account_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("accounts.id", ondelete="CASCADE"), index=True
-    )
-    bucket_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("buckets.id", ondelete="SET NULL"), nullable=True
     )
     ticker: Mapped[str] = mapped_column(String(32), index=True)
     market: Mapped[str] = mapped_column(String(16))  # TASE|NYSE|SPOT
@@ -192,58 +172,10 @@ class Transaction(Base, PKMixin, TimestampMixin):
     position: Mapped["Position"] = relationship(back_populates="transactions")
 
 
-# --- Tax --------------------------------------------------------------------
-class TaxProfile(Base, PKMixin, TimestampMixin):
-    __tablename__ = "tax_profiles"
-    entity_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("entities.id", ondelete="CASCADE"), index=True
-    )
-    surtax_status: Mapped[bool] = mapped_column(Boolean, default=False)
-    loss_carry_forward: Mapped[Decimal] = mapped_column(MONEY, default=Decimal("0"))
-    trapped_profit_flag: Mapped[bool] = mapped_column(Boolean, default=False)
-    data: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
-
-
-# --- Decisions / feed -------------------------------------------------------
-class DecisionFeed(Base, PKMixin, TimestampMixin):
-    __tablename__ = "decision_feeds"
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    horizon: Mapped[str] = mapped_column(String(16), default="month")  # month|quarter|year
-    status: Mapped[str] = mapped_column(String(16), default="OPEN")
-    generated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-    user: Mapped["User"] = relationship(back_populates="decision_feeds")
-    items: Mapped[list["DecisionItem"]] = relationship(
-        back_populates="feed", cascade="all, delete-orphan"
-    )
-
-
-class DecisionItem(Base, PKMixin, TimestampMixin):
-    __tablename__ = "decision_items"
-    feed_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("decision_feeds.id", ondelete="CASCADE"), index=True
-    )
-    title: Mapped[str] = mapped_column(String(255))
-    action_type: Mapped[str] = mapped_column(String(16))  # Buy|Sell|Rebalance|Tax|Risk
-    trigger: Mapped[str | None] = mapped_column(Text, nullable=True)
-    execution_plan: Mapped[str | None] = mapped_column(Text, nullable=True)
-    impact_score: Mapped[float] = mapped_column(Float, default=0.0)
-    confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    urgency: Mapped[int] = mapped_column(Integer, default=1)
-    complexity: Mapped[int] = mapped_column(Integer, default=1)
-    time_sensitivity: Mapped[str] = mapped_column(String(16), default="Monitor")
-    veto_flag: Mapped[bool] = mapped_column(Boolean, default=False)
-    risk_critique: Mapped[str | None] = mapped_column(Text, nullable=True)
-    payload: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)  # full output contract
-
-    feed: Mapped["DecisionFeed"] = relationship(back_populates="items")
-    actions: Mapped[list["UserAction"]] = relationship(
-        back_populates="decision_item", cascade="all, delete-orphan"
-    )
+# PR 114a (D76): `tax_profiles`, `decision_feeds`, `decision_items`, `user_actions`,
+# `broker_connections`, `buckets` and `positions.bucket_id` are no longer mapped.
+# The tables stay in the database until migration 0029 (PR 114b) drops them --
+# for a DROP, the code stops reading first and the schema follows.
 
 
 class WhsSnapshot(Base, PKMixin, TimestampMixin):
@@ -261,24 +193,6 @@ class WhsSnapshot(Base, PKMixin, TimestampMixin):
         DateTime(timezone=True), server_default=func.now()
     )
     detail: Mapped[dict] = mapped_column(JSONB_OR_JSON, default=dict)
-
-
-# --- Learning loop ----------------------------------------------------------
-class UserAction(Base, PKMixin, TimestampMixin):
-    __tablename__ = "user_actions"
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    decision_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("decision_items.id", ondelete="CASCADE"), index=True
-    )
-    action: Mapped[str] = mapped_column(String(16))  # accepted|ignored
-    acted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    note: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    decision_item: Mapped["DecisionItem"] = relationship(back_populates="actions")
 
 
 # --- Auth (Section AC) ---
@@ -362,24 +276,6 @@ class Plan(Base, PKMixin, TimestampMixin):
     # question, the older wrong by 23 points and still being read by the tax
     # harvester, the signal service and the drift card as a fallback.
     # `plan_sleeves` is the only source now. See migration 0019.
-
-
-# --- Brokerage / aggregation (Phase 3.1 scaffold) ---------------------------
-class BrokerConnection(Base, PKMixin, TimestampMixin):
-    """A user's link to an external brokerage/aggregator. Credentials are never
-    stored here - only an encrypted ``credential_ref`` pointing at a secret."""
-    __tablename__ = "broker_connections"
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    provider: Mapped[str] = mapped_column(String(32))          # mock|plaid|yodlee
-    external_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    institution: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="CONNECTED")  # CONNECTED|ERROR|DISCONNECTED
-    credential_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_synced_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
 
 
 # --- Web Push (notifications) ----------------------------------------------

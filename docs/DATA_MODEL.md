@@ -22,17 +22,14 @@
 
 ```
 users ─┬─ entities ── accounts ── positions ──< transactions (position_id SET NULL)
-       │                └─ buckets (unused)
-       ├─ plans (1:1) ─── thresholds JSON, goal limits, cash rules, Kelly/confidence dials
-       ├─ decision_feeds ── decision_items ──< user_actions        (legacy pipeline)
-       └─ broker_connections                                       (mock only)
+       └─ plans (1:1) ─── thresholds JSON, goal limits, cash rules, Kelly/confidence dials
 
 by subject (email):
   plan_sleeves · plan_applications · solver_verdicts · strategy_signal_state
   trading_rules ──< rule_events · contributions · standing_orders · nav_snapshots
   push_subscriptions · notified_events
 
-global: strategy_backtests · credentials · revoked_tokens · audit_log · kv_settings · whs_snapshots · tax_profiles (unused)
+global: strategy_backtests · credentials · revoked_tokens · audit_log · kv_settings · whs_snapshots
 ```
 
 ## Tables
@@ -92,8 +89,9 @@ global: strategy_backtests · credentials · revoked_tokens · audit_log · kv_s
 
 ### Legacy / unused
 
-`decision_feeds`, `decision_items`, `user_actions` (the spec-era pipeline and learning loop; not used by Today),
-`broker_connections` (mock only), `buckets`, `tax_profiles` (no readers).
+**Removed (D76):** `decision_feeds`, `decision_items`, `user_actions`, `broker_connections`, `buckets`, `tax_profiles` and
+`positions.bucket_id`. They were unmapped from the ORM in PR 114a and dropped by migration 0029 in PR 114b. Production
+held 1 feed and 3 items (from one call to the deleted `/decision-feed/generate`); the rest were empty.
 
 ## Migrations
 
