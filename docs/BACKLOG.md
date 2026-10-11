@@ -14,6 +14,7 @@
 > **Closed in PR 106:** C1, C2 (sleeve funding sold an under-target class; no post-trade drift gate).
 > **Closed in PR 107:** C4, C5, L10, L11 (jobs that reported success when they failed; untested jobs; futures outage cache; boot waiting on Yahoo).
 > **Closed in PR 108:** C10, C11, C16 (one regime acts; futures day change; `_OBJ_RETURN` investigated: labelled and gated, no change).
+> **Closed in PR 109:** C9 (a read of Today deleted watch alerts and could switch off a triggered stop; D-b).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -57,7 +58,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Where | Verdict | Sev | PR |
 |---|---|---|---|---|---|
-| C9 | A GET of Today **deletes** rules on unheld tickers (including fired `buy_dip`/`price_below` watch alerts); I: the orphan heal can retire an unseen stop | `rules_service.py:304-345`, `recommendations.py:3061-3080` | P | Med | 109 (D-b) |
 | C6 | `/broker/connect` + `/broker/sync` inject mock TEVA/GOLD/BOND into the real book (READ_ONLY suffices, no ledger row) | `brokers/registry.py:12-14`, `broker_sync.py:107` | P | Med | 110 / 112 |
 | C7b | `/whatif` (a **UI** route) falls back to demo TEVA/GOLD/HYPE on an empty book, ignoring `demo_signals` | `whatif.py:53` | P | Low | 110 |
 | C7 | `/decision-feed/weekly` same fallback (empty book only; no UI caller) | `workflows.py:162-163` | P | Low | 113 |
