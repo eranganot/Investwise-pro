@@ -571,38 +571,45 @@ async def _for_each_subscriber(coro_name: str) -> dict:
     try:
         async with Session() as session:
             subjects = list((await session.scalars(select(PushSubscription.subject).distinct())).all())
+        # PR 107: one subscriber's failure no longer aborts the fan-out for
+        # everyone after it, and no longer vanishes either -- it is counted,
+        # and the run raises at the end so `_guarded` records it.
+        failed: list[str] = []
         for subj in subjects:
-            async with Session() as session:
-                user = await ensure_user(session, subj)
-                await session.flush()
-                fn = evaluate_and_notify if coro_name == "evaluate" else send_digest
-                res = await fn(session, user)
-                total += res.get("sent", 0)
+            try:
+                async with Session() as session:
+                    user = await ensure_user(session, subj)
+                    await session.flush()
+                    fn = evaluate_and_notify if coro_name == "evaluate" else send_digest
+                    res = await fn(session, user)
+                    total += res.get("sent", 0)
+            except Exception as exc:  # noqa: BLE001 -- counted and re-raised below
+                logger.warning("push %s failed for one subscriber", coro_name, exc_info=True)
+                failed.append(f"{type(exc).__name__}: {exc}"[:120])
         # Persist a heartbeat: a fan-out that ran and sent nothing is a very
         # different diagnosis from one that never ran at all.
         async with Session() as session:
             await _kv_set(session, KV_LAST_PUSH_RUN,
                           f"{coro_name}@{datetime.now(timezone.utc).isoformat()}"
-                          f" subscribers={len(subjects)} sent={total}")
+                          f" subscribers={len(subjects)} sent={total} failed={len(failed)}")
             await session.commit()
     finally:
         await engine.dispose()
+    if failed:
+        raise RuntimeError(f"push {coro_name}: {len(failed)} of {len(subjects)} subscriber(s) "
+                           f"failed (sent {total}); first: {failed[0]}")
     return {"subscribers": len(subjects), "sent": total}
 
 
 def run_evaluations_blocking() -> dict:
-    """Sync entrypoint for APScheduler (runs in its own thread)."""
-    try:
-        return asyncio.run(_for_each_subscriber("evaluate"))
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled push evaluation failed", exc_info=True)
-        return {"sent": 0}
+    """Sync entrypoint for APScheduler (runs in its own thread).
+
+    PR 107 (C4): raises on failure so `_guarded` records it; this returned
+    {"sent": 0}, which is also what a quiet, healthy hour looks like.
+    """
+    return asyncio.run(_for_each_subscriber("evaluate"))
 
 
 def run_digests_blocking() -> dict:
-    """Sync entrypoint for APScheduler (runs in its own thread)."""
-    try:
-        return asyncio.run(_for_each_subscriber("digest"))
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled digest failed", exc_info=True)
-        return {"sent": 0}
+    """Sync entrypoint for APScheduler (runs in its own thread). Raises on failure (PR 107)."""
+    return asyncio.run(_for_each_subscriber("digest"))

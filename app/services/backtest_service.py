@@ -591,14 +591,15 @@ async def _refresh_all_job() -> dict:
 
 
 def run_backtest_refresh_blocking() -> dict:
-    """Sync entrypoint for APScheduler (runs in its own thread)."""
-    try:
-        res = asyncio.run(_refresh_all_job())
-        logger.info("backtest refresh: %s", res)
-        return res
-    except Exception:  # noqa: BLE001
-        logger.warning("scheduled backtest refresh failed", exc_info=True)
-        return {"computed": 0, "abstained": 0}
+    """Sync entrypoint for APScheduler (runs in its own thread).
+
+    PR 107 (C4): a failure RAISES, so `_guarded` records `last_ok: False`. This
+    caught everything and returned the healthy-empty shape, so a missing table
+    and a dead provider both read as "ran fine, nothing to compute".
+    """
+    res = asyncio.run(_refresh_all_job())
+    logger.info("backtest refresh: %s", res)
+    return res
 
 
 # ---------------------------------------------------------------------------

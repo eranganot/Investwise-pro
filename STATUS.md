@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave A complete: PR 105, 106, 106.1, 120). Last product PR: **PR 120**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave B: PR 107). Last product PR: **PR 107**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,50 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 107 — a job that fails says so
+
+**Plan v3, Wave B, first PR.** Re-proven at HEAD (`8056cb8`) with the C4 probe: with a raise injected, or pointed at a
+database with no tables, six jobs recorded `last_ok: True`.
+
+**What was wrong, and the root cause.**
+- **C4.** Six jobs caught every exception and returned their healthy-empty shape, so `JOB_STATE` and `/push/status`
+  read green while nothing ran: `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`,
+  `futures_warm`, `market_refresh`. (`{"sent": 0}` is also what a quiet hour looks like.) All six now raise, and
+  `_guarded` records the failure.
+- **A seventh, found while fixing: `nav_snapshot`.** A per-user snapshot failure was logged and counted, and the job
+  still reported success with `failed: 1` inside a green result. That is a lost day of history that nothing alerts
+  on. It now commits the rows that worked and then raises.
+- **Push fan-out.** One bad subscriber aborted the run for everyone after it, and the wrapper hid that too. Each
+  subscriber now runs in its own `try`; failures are counted, the heartbeat records `failed=N`, and the run raises at
+  the end.
+- **L10.** A futures outage overwrote a good cache with an empty one, so the regime silently read "neutral". The last
+  snapshot is now kept, marked `stale`, and the warm job raises `FuturesUnavailable`.
+- **L11.** Boot called the futures warm and the market refresh directly on the startup thread, so boot waited for the
+  slowest of 8 Yahoo fetches. Both are now primed with `next_run_time=now` through `_guarded`. Separately,
+  `_http_text`'s timeout cap was not a cap: leaving its `with ThreadPoolExecutor` joined the hung worker (10 s against
+  a nominal 6 s). It now uses a shared pool, so a hung worker is abandoned.
+
+**Why it was silent.**
+- The exceptions were caught inside the jobs, so the guard (`_guarded`) never saw them.
+- No test ran these jobs (C5).
+
+**Tests (fail on HEAD: 11 of 27).** `tests/test_every_job_says_when_it_fails.py` captures every `add_job` from
+`start_scheduler()`. For every job it requires:
+- a healthy run that records `last_ok: True`;
+- an injected failure that records `last_ok: False`;
+- a `FAIL_WITH` entry, so a new job without a failure test fails CI.
+
+It also covers one failing push subscriber, the futures outage keeping the last snapshot, the HTTP cap, and boot not
+waiting for the futures.
+
+**Docs.** ARCHITECTURE §7 (the PR 107 rule replaces the known-defect note; job table). BACKLOG: C4, C5, L10, L11 closed.
+
+**Smoke.** `scripts/smoke/smoke-pr107-jobs-fail-loudly.ps1 -Sha <sha>`. Against `8056cb8` it FAILs, as it should:
+`market_refresh` hasn't run since boot, because it was not primed. **Next morning:** confirm the 07:00 digest ran
+green and was delivered (`recent_notifications`).
+
+---
+
 ## PR 120 — one goal chance on every screen
 
 **Found by the owner, 2026-10-11:** Today's health card said "35.3% chance of ₪82,692 in 5.2 years". At the same
@@ -87,7 +131,9 @@ track is half of it.
 - the Today row reads `goal_headline`.
 
 **Smoke.** `scripts/smoke/smoke-pr120-one-goal-chance.ps1 -Sha <sha>`. Against `19cdfc0` it FAILs, as it should:
-"Today On track 35 (no_deposits) vs Plan 31.0%"; the page row and `sw.js` are not updated.
+"Today On track 35 (no_deposits) vs Plan 31.0%"; the page row and `sw.js` are not updated. **Ran against `8056cb8`
+(GitHub PR #7 merge): 6 PASS, 0 FAIL, 0 SKIP.** Today now says "31% chance of ₪82,692 in 5.2 years, with your
+protective rules as they are (30.1% without them)". **Wave A complete.**
 
 **QA (Pixel).**
 - Today's health card and the Plan goal card show the same chance.

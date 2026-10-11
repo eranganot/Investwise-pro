@@ -104,9 +104,12 @@ def start_scheduler() -> None:
         daemon=True,
         job_defaults={"max_instances": 1, "coalesce": True, "misfire_grace_time": 3600},
     )
-    refresh_market_data()  # warm once at startup
+    # PR 107: primed through the guarded path (next_run_time=now), not called on
+    # the startup thread -- a direct call is unrecorded, and now that a failed
+    # refresh raises it would take the scheduler down with it.
     _scheduler.add_job(_guarded("market_refresh", refresh_market_data), "interval",
-                       minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh")
+                       minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh",
+                       next_run_time=datetime.now(timezone.utc))
 
     # Reprice every holding so current_price never goes stale (drives the
     # price-based recommendations and the price-move notifications).
@@ -148,14 +151,14 @@ def start_scheduler() -> None:
     try:
         from app.services.markets_service import futures_snapshot
 
+        # PR 107 (C4, L11): an outage RAISES (the job records it; the previous
+        # snapshot is kept, marked stale), and the prime goes through the
+        # scheduler instead of the startup thread, so boot no longer waits for
+        # the slowest of eight Yahoo fetches (12 s stub -> 12.1 s boot).
         def _warm_futures():
-            try:
-                futures_snapshot(force=True)
-            except Exception:  # noqa: BLE001
-                pass
-        _warm_futures()
+            futures_snapshot(force=True, raise_on_outage=True)
         _scheduler.add_job(_guarded("futures_warm", _warm_futures), "interval",
-                           minutes=5, id="futures_warm")
+                           minutes=5, id="futures_warm", next_run_time=datetime.now(timezone.utc))
     except Exception:  # noqa: BLE001
         logger.warning("Futures warm job not scheduled.", exc_info=False)
 
