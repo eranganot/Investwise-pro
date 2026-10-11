@@ -665,8 +665,13 @@ def funding_drift(rows, snap, fund: dict, buys_ils: dict, objective: str | None,
     Fixed Income (20% held, 32% target) to buy SOXL and called it "the most
     overweight class" -- total drift 0.44 -> 0.64. This is the same simulation
     for a buy spread across classes. `buys_ils` maps asset class -> shekels
-    bought. Drift is measured on invested holdings, as `propose_funded_buy`
-    measures it (cash is spent, not held to a weight here).
+    bought.
+
+    PR 106.1: measured on the WHOLE book, cash included -- the book target has a
+    Cash slice, and `/mix` and `rank_trim_candidates` both weigh against NAV.
+    106 measured invested holdings only against a target that included cash, so
+    on the live book it put Fixed Income at 12.5% instead of 12.11% (target
+    12.14%) and its refusal could not name the class it was protecting.
 
     Returns ``before``, ``after``, ``rises`` and ``sold_at_or_under_target``:
     the classes a sell leg takes from that were not over their target.
@@ -675,9 +680,15 @@ def funding_drift(rows, snap, fund: dict, buys_ils: dict, objective: str | None,
     before: dict[str, float] = {}
     for p in _position_rows(rows, snap):
         before[p["asset_class"]] = before.get(p["asset_class"], 0.0) + p["value_ils"]
+    nav = float((snap or {}).get("nav") or 0.0)
+    cash = max(0.0, nav - sum(before.values()))
+    if cash > 0:
+        before["Cash"] = before.get("Cash", 0.0) + cash
     after = dict(before)
     for cls, amt in (buys_ils or {}).items():
         after[cls] = after.get(cls, 0.0) + float(amt or 0.0)
+    if (fund or {}).get("from_cash_ils"):
+        after["Cash"] = after.get("Cash", 0.0) - float(fund["from_cash_ils"])
     sold_classes = set()
     for s in (fund or {}).get("sells", []) or []:
         cls = s.get("asset_class")
@@ -704,7 +715,9 @@ def funding_drift(rows, snap, fund: dict, buys_ils: dict, objective: str | None,
 
 def drift_refusal(gate: dict) -> str:
     """The sentence that says WHICH class the plan is short of."""
-    parts = [f"{c} ({gate['held'][c]:.0%} held, {gate['targets'][c]:.0%} target)"
+    def pct(x: float) -> str:      # 20% / 12.11% -- as many digits as tell them apart
+        return f"{x * 100:.2f}".rstrip("0").rstrip(".") + "%"
+    parts = [f"{c} ({pct(gate['held'][c])} held, {pct(gate['targets'][c])} target)"
              for c in gate.get("sold_at_or_under_target") or []]
     named = (" It would have to sell " + ", ".join(parts)
              + ", which your plan says you hold too little of.") if parts else ""

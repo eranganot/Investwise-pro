@@ -8,6 +8,9 @@
 #   2  a refusal, if any, names the class it protects
 #   3  non-change: Today builds with nothing degraded; NAV = sum of rows
 #
+# 106.1: a refused plan counts as selling nothing (its `funding` is what it
+# rejected); the refusal must name the class it protects.
+#
 # READ-ONLY: the only POST is ?dry_run=true. ASCII ONLY.
 
 param([string]$Sha, [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
@@ -25,6 +28,10 @@ Sec "1  Fund sleeves (dry run) sells only overweight classes"
 $f = $null
 try { $f = Invoke-RestMethod -Method POST -Uri "$BaseUrl/api/v1/plan/sleeves/fund?dry_run=true" -Headers $script:ApiHeaders -TimeoutSec 300 } catch {}
 if ($null -eq $f) { Bad "/plan/sleeves/fund?dry_run=true failed" }
+elseif ($f.ok -eq $false) {
+    # 106.1: a refused plan sells nothing; its `funding` is only what it rejected.
+    Ok ("refused, nothing would be sold: {0}" -f $f.error)
+}
 else {
     $sells = @($f.funding.sells)
     if ($sells.Count -eq 0) { Ok ("no sell legs (ok={0}; {1})" -f $f.ok, $(if ($f.reason) { $f.reason } else { $f.message })) }
