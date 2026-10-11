@@ -103,7 +103,13 @@ Current state of these items: [BACKLOG.md § Ops](BACKLOG.md#ops-owner-only).
 
 ## 7. Backups and recovery
 
-**Nothing in the repo describes database backups or a restore procedure.** This is an open gap ([BACKLOG.md](BACKLOG.md) O3).
+**Status 2026-10-11 (owner, Railway dashboard › Postgres › Backups):**
+- A manual volume backup exists: `2026-10-11 22:55`, 243 MB. An older "Pre-Security-Patch Backup" (231 MB, about a
+  month earlier) is also there.
+- **No backup schedule is set**, and point-in-time recovery (PITR) is **off**.
+- To finish W0-1, set a schedule under "Edit schedule" (daily is plenty for one user) and note the retention here.
+  PITR is optional (it redeploys Postgres once).
+- No restore has been drilled yet (O3).
 The Railway CLI cannot show backup status. `railway volume list` shows `postgres-volume` (243 MB of 5 GB, 2026-10-08).
 Check Railway dashboard → Postgres → **Backups**, enable a schedule, and record the schedule and retention here.
 Then add `scripts/ops/backup-db.ps1` (`pg_dump` via `DATABASE_PUBLIC_URL`, if exposed) and do **one restore drill into a scratch DB,
@@ -113,7 +119,10 @@ What exists today:
 - `nav_snapshots` and the `transactions` ledger are the durable history. Earlier NAV (before 2026-08-16) is unrecoverable.
 - History repairs are preview-first: `GET/POST /api/v1/portfolio/ledger/repair` (`confirm`), plus the one-shot scripts in
   `scripts/archive/repair/`.
-- A bad deploy is rolled back by reverting the commit and pushing (PR 48 reverted PR 47). Migrations are add-only, so an older build runs on a newer schema.
+- A bad deploy is rolled back by reverting the commit and pushing (PR 48 reverted PR 47). Migrations were add-only until
+  **0029 (PR 114b), which drops tables and `positions.bucket_id`**. A build from before PR 114a (`523bbcf`) still maps that
+  column and would fail on today's schema. Never roll back past `523bbcf` without first downgrading 0029, which recreates
+  the tables empty.
 
 ## 8. Incident checklist
 

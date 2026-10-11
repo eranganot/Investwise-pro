@@ -64,7 +64,22 @@ SEED = 7
 BAND_PCT = (10.0, 90.0)
 # A resize smaller than this (percentage points of NAV) is not a card: it is
 # inside lot granularity and the estimate's own noise.
-MIN_MOVE_PCT = 2.0
+MIN_MOVE_PCT = 2.0                # default; setting `min_resize_pts` (PR 115)
+
+
+def _min_move() -> float:
+    from app.services import thresholds
+    return float(thresholds.get("min_resize_pts", MIN_MOVE_PCT))
+
+
+def _material_gap() -> float:
+    from app.services import thresholds
+    return float(thresholds.get("material_gap_close_pct", MATERIAL_GAP_CLOSE * 100.0)) / 100.0
+
+
+def _material_vol() -> float:
+    from app.services import thresholds
+    return float(thresholds.get("material_vol_drop_pts", MATERIAL_VOL_DROP_PCT))
 # Proposals land on a half-point grid. Finer would print precision the
 # resampling does not have.
 GRID_PCT = 0.5
@@ -247,7 +262,7 @@ def resize_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict
     for j, sid in enumerate(sleeve_ids):
         cur = now_s[j] * 100
         prop = _grid(mean[j] * 100)
-        act = (cur - hi[j] * 100) >= MIN_MOVE_PCT and (cur - prop) >= MIN_MOVE_PCT
+        act = (cur - hi[j] * 100) >= _min_move() and (cur - prop) >= _min_move()
         if act:
             proposed[j] = prop / 100.0
         rows.append({"id": sid, "current_pct": round(cur, 2), "proposed_pct": prop,
@@ -268,7 +283,7 @@ def resize_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict
         gap_a = abs((after["fraction_of_kelly"] or 0.0) - frac)
         closed = (gap_b - gap_a) / gap_b if gap_b > 0 else 0.0
         vol_drop = before["volatility_pct"] - after["volatility_pct"]
-        material = closed >= MATERIAL_GAP_CLOSE or vol_drop >= MATERIAL_VOL_DROP_PCT
+        material = closed >= _material_gap() or vol_drop >= _material_vol()
         materiality = {"gap_closed": round(closed, 3), "vol_drop_pct": round(vol_drop, 2),
                        "material": material}
         if not material:
@@ -496,7 +511,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         cur = now_s[j] * 100
         prop = _grid(mean[j] * 100)
         outside = cur > hi[j] * 100 + 1e-9 or cur < lo[j] * 100 - 1e-9
-        act = outside and abs(cur - prop) >= MIN_MOVE_PCT
+        act = outside and abs(cur - prop) >= _min_move()
         if act:
             proposed[j] = prop / 100.0
         rows.append({"id": sid, "current_pct": round(cur, 2), "proposed_pct": prop,
@@ -524,7 +539,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
     dp = after["goal_probability_pct"] - before["goal_probability_pct"]
     dvol = before["volatility_pct"] - after["volatility_pct"]
     if ok_now:
-        material = acting and ok_after and dvol >= MATERIAL_VOL_DROP_PCT
+        material = acting and ok_after and dvol >= _material_vol()
         outcome = GOAL_LESS_RISK if material else GOAL_ON_TRACK
     elif reach0:
         material = acting and ok_after and dp > 0

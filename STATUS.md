@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave D complete: PR 112, 113, 114a, 114b). Last product PR: **PR 114b** (migration 0029). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave E: PR 115). Last product PR: **PR 115**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Wave D (PR 112-114b) complete. Next: **Wave E** (PR 115, 121, 116, 117; needs D-c, D-d, D-g, D-h, D-i) after the owner's go-ahead.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Wave D (PR 112-114b) complete. Wave E started the same day (D77-D81). Next: **PR 121** (the protection retune searches properly).
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -52,6 +52,45 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 115 — every decision is a setting; one minimum trade (D-c, D-d)
+
+**Plan v3, Wave E, first PR.** Owner decisions at the go-ahead (2026-10-11), recorded as D77–D81:
+- **D-c:** one minimum.
+- **D-d:** all 13 constants editable.
+- **D-g:** core-basket commodities. A "best trend right now" pick is parked, at the owner's request.
+- **D-h:** delete Sentry.
+- **D-i:** screenshots at PR 117.
+
+**What.**
+- **13 more `thresholds.SPEC` keys** (23 in all), each defaulting to the constant beside the code that reads it, read
+  through `thresholds.get` under the request's or job's `use(plan)`:
+  - `concentration_cap_pct`: default = your risk tolerance's row. `effective_caps` honours the override, so every buy
+    cap, trim card and health score follows it.
+  - `sleeve_drift_band_pts`.
+  - `min_resize_pts`, `material_gap_close_pct`, `material_vol_drop_pts` (the goal solver's resize bars).
+  - `ignore_mute_days`, `done_mute_days`, `refire_change_pct`.
+  - `near_rule_pct`, `near_trail_giveback_pct`, `near_cap_pts`.
+  - `ideas_shown`, `max_idea_cards` (whole numbers).
+- **D-c, one minimum.** `thresholds.card_floor_ils(nav)` is the larger of the card's ₪ / %-of-book minimums and the
+  smallest funded trade. `headsup.split` uses it, and below it the commodity card is silent: it used to degrade into an
+  un-actable "Buy ₪180 of X" heads-up. `/plan` reports `thresholds_effective_card_floor_ils`, and the Card-thresholds
+  sheet states it ("Smallest trade card today: ₪…"). `sw.js` → `iw-v54`.
+- **Not made settings, by choice (inventory P4):** `CASH_FLOOR_PCT` and Kelly (already overridden per plan),
+  `OBJ_TARGET` (the core/frontier sets the book target), ranking internals and computational sizes.
+
+**Tests (6, all fail on HEAD).** `tests/test_every_decision_is_a_setting.py`:
+- the 13 defaults equal today's constants;
+- each override reaches its reader, including the cap through `effective_caps`;
+- the floor is never under the funded minimum;
+- a small commodity gap is neither a card nor a heads-up;
+- `/plan` has 23 settings and the floor.
+
+**Smoke.** `scripts/smoke/smoke-pr115-settings.ps1 -Sha <sha>`.
+
+**QA (Pixel).** Plan › Card thresholds shows the 13 new rows and the "Smallest trade card today" line.
+
+---
+
 ## PR 114b — migration 0029 drops the legacy tables (D76, stage 3 part 2, ships alone)
 
 **Plan v3, Wave D, last PR.** It runs after PR 114a is live (nothing maps these any more).
@@ -74,7 +113,9 @@ tables, the column and the FK are gone; only `positions_account_id_fkey` remains
 `tests/test_the_legacy_tables_are_dropped.py` does the same round trip on SQLite in CI.
 
 **Smoke.** `scripts/smoke/smoke-pr114b-drop-legacy.ps1 -Sha <sha>`: schema 0029; `/portfolio`, Today, the health check
-and the rules list all read normally.
+and the rules list all read normally. **Ran against `bf224a7` (GitHub PR #16 merge): 6 PASS, 0 FAIL.** Production schema is
+`0029_drop_legacy_tables`. A read-only query confirmed none of the six tables and no `positions.bucket_id` remain; 8
+positions and 29 rules read normally. **Wave D complete.**
 
 ---
 

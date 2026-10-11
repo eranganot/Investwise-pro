@@ -261,7 +261,10 @@ def _plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
     from app.services import thresholds as _thr
     base["thresholds"] = _thr.effective(plan)
     base["thresholds_overrides"] = _thr.overrides_of(plan)
-    base["thresholds_defaults"] = _thr.defaults()
+    base["thresholds_defaults"] = _thr.defaults(plan)
+    # PR 115 (D-c): the ONE card minimum in force today, in shekels.
+    _thr.use(plan)
+    base["thresholds_effective_card_floor_ils"] = round(_thr.card_floor_ils(float(nav or 0.0)), 2)
     base["thresholds_spec"] = {k: {"label": v[0], "detail": v[1], "min": v[2], "max": v[3]}
                                for k, v in _thr.SPEC.items()}
     return base

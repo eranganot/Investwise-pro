@@ -55,7 +55,14 @@ def effective_caps(plan: Plan | None) -> dict:
         s = get_settings()
         return {"concentration_cap": s.concentration_cap, "volatility_cap": s.volatility_cap,
                 "ruin_probability_cap": s.ruin_probability_cap}
-    return RISK_CAPS.get(plan.risk_tolerance, RISK_CAPS["Medium"])
+    row = dict(RISK_CAPS.get(plan.risk_tolerance, RISK_CAPS["Medium"]))
+    # PR 115 (D-d): the largest single holding is a setting; the risk-tolerance
+    # row is its default.
+    from app.services import thresholds
+    over = thresholds.overrides_of(plan).get("concentration_cap_pct")
+    if over is not None:
+        row["concentration_cap"] = float(over) / 100.0
+    return row
 
 
 def plan_settings(plan):

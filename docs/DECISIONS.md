@@ -177,5 +177,14 @@
 - **D75 · 2026-10-11 · Wave cadence adjusted by the owner:** PR 120 moved into Wave A; PR 105→106 shipped the same day, no night's wait.
 - **D76 · 2026-10-11 · Delete the legacy subsystem in three stages** (D-j): leaf routes + Celery + broker + no-op job (PR 112), the
   decision-feed cluster (PR 113), the six tables (PR 114.0 migration alone, then PR 114). → PR 112–114
+- **D77 · 2026-10-11 · One card minimum** (D-c): the smallest trade card is the larger of the card's ₪ / %-of-book minimums and the
+  smallest funded trade; the Card-thresholds sheet states it; a commodity gap below it is silent (no un-actable heads-up). → PR 115
+- **D78 · 2026-10-11 · All 13 remaining card decisions are settings** (D-d): concentration cap, sleeve drift band, resize minimum and
+  materiality bars, mute/done days and re-fire change, near-rule/trail/cap heads-ups, buy-idea counts. → PR 115
+- **D79 · 2026-10-11 · The two segmented-control looks are built and shown as screenshots; the owner picks** (D-i). → PR 117
+- **D80 · 2026-10-11 · When a core is chosen, commodity buys use the core basket's commodity tickers** (D-g), as a setting that defaults
+  on; a "best trend right now" commodity pick is parked in the backlog as future work. → PR 116
+- **D81 · 2026-10-11 · Delete the Sentry block** (D-h): errors already surface through Railway logs, job status (PR 107) and smokes;
+  Sentry was wired but never installed. → PR 116
 - **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
   unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.
