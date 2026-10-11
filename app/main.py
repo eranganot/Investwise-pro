@@ -195,7 +195,7 @@ async def lifespan(app: FastAPI):
             # about a choice. There is no longer a choice.
             logger.error(
                 "auto_create_tables is ON in production. The schema is owned by "
-                "the pre-deploy 'alembic upgrade head' in railway.json; building "
+                "the pre-deploy 'alembic upgrade head' in .railway/railway.ts; building "
                 "it from the models at boot can hide a migration that did not "
                 "run. Unset AUTO_CREATE_TABLES.")
         # PR 110 (S5): the old "API_KEY is not set - write endpoints are

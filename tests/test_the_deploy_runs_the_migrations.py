@@ -76,7 +76,9 @@ SERVE = "uvicorn app.main:app"
 
 
 def _deploy() -> dict:
-    return json.loads((REPO / "railway.json").read_text(encoding="utf-8"))["deploy"]
+    # PR 119: the deploy is defined in .railway/railway.ts (railway.json retired).
+    from tests._deploy_config import deploy
+    return deploy()
 
 
 def _pre_deploy() -> str:

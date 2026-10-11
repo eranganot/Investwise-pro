@@ -20,6 +20,7 @@
 > **Closed in PR 113:** C7 (`/decision-feed/weekly` deleted with the decision-feed cluster).
 > **Closed in PR 112–114b:** L1 (legacy subsystem deleted in 3 stages, D76; tables dropped by migration 0029).
 > **Closed in PR 115:** P2 (one card minimum, D-c), P4 (13 decisions became settings, D-d).
+> **Closed in PR 119:** R1 (`railway.json` replaced by `.railway/railway.ts`, every setting kept).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -34,7 +35,6 @@
 |---|---|---|---|
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
 | O3 | **Database backups and a restore procedure.** Nothing in the repo describes them; the Railway CLI can't show backup status. | Confirmed gap 10-08. Check the Railway dashboard → Postgres → Backups (plan W0-1) | P1 |
-| R1 | **Railway Config-as-Code (`railway.json`) is deprecated and stops working on 2026-12-01** (CLI warning, observed 10-08). It carries the preDeploy migration and the healthcheck. | Plan PR 119, **before 2026-11-15** | P1 (dated) |
 | R2 | Orphan `redis-volume` (150 MB, attached to nothing) in the Railway project | Plan W0-2 | P3 |
 | O4 | Install the `pre-push` hook on every machine (the branch-protection substitute) | Check with `ops-check.ps1` | P2 |
 | O5 | Rotate the Postgres password | Parked deliberately: only for a reason (D40) | Parked |

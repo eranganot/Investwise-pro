@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave E: PR 115). Last product PR: **PR 115**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3: PR 115, PR 119 Railway IaC). Last product PR: **PR 119**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -28,7 +28,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
   obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Wave D (PR 112-114b) complete. Wave E started the same day (D77-D81). Next: **PR 121** (the protection retune searches properly).
-- **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
+- **Done (PR 119):** the deploy is defined in `.railway/railway.ts`; `railway.json` (retired by Railway on 2026-12-01) is gone.
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
   - Delete the orphan `redis-volume`.
@@ -51,6 +51,56 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 119 — the deploy is infrastructure as code (Railway retires `railway.json` on 2026-12-01)
+
+**Plan v3, dated item (deadline 2026-11-15).** Done on 2026-10-11. The owner applied the Railway change; Claude
+prepared and verified it.
+
+**What we found before touching anything:**
+- **Everything that made the deploy safe lived only in `railway.json`:** the Dockerfile build, migrations before
+  deploy, the `/health/ready` healthcheck and restart-on-failure. The service's own settings were empty, with
+  builder **RAILPACK**.
+- **`railway config migrate`'s generated file was incomplete.** It kept the start command, healthcheck and preDeploy,
+  left the builder as a comment, and dropped the restart policy and the 300 s pre-deploy timeout. Applying it as
+  generated would have built without our Dockerfile (non-root user, no secrets in the image).
+- **The first `railway config plan` was destructive.** It proposed deleting **all 32 service variables**
+  (`JWT_SECRET`, `DATABASE_URL`, the OAuth and VAPID secrets…) and detaching the GitHub source, because an IaC file
+  declares the full desired state. It was caught at plan time and not applied.
+
+**What.** `.railway/railway.ts` declares:
+- the GitHub source (`main`);
+- all 32 variable names as `preserve()` (values never in the file; add a name before adding a variable in Railway);
+- the typed `build` (DOCKERFILE, `Dockerfile`);
+- the typed `deploy`: start command, `alembic upgrade head && alembic current` with a 300 s timeout, `/health/ready`
+  with a 300 s timeout, 3 restart retries.
+
+`restartPolicyType` is left implicit: ON_FAILURE is Railway's default and its API stores it as null, so declaring it
+was a permanent phantom diff. `railway.json` is deleted. The three deploy tests read the TypeScript file
+(`tests/_deploy_config.py`), and `test_the_deploy_is_infrastructure_as_code.py` pins the builder, retries, timeout
+and that `railway.json` never returns.
+
+**Sequence:**
+1. Read-only: `railway config migrate` dry run and `config pull --json`.
+2. `migrate --apply` cleared the Config-as-Code setting. No deploy was triggered.
+3. `config plan`: destructive, so the file was fixed.
+4. `config plan`: `0 to add, 2 to change, 0 to destroy`.
+5. The owner ran `config apply` (Claude's attempt was blocked by the tool's safety check).
+6. The apply triggered deployment `73db81bd` of `fd525ab`: **SUCCESS**. Its manifest reads DOCKERFILE / `Dockerfile` /
+   `/health/ready` 300 / pre-deploy 300 / ON_FAILURE / 3.
+7. Read-only after: 32 + 11 Railway-provided variables intact; source `eranganot/Investwise-pro@main`;
+   `config plan` reports "already up to date".
+
+**Windows note.** The `railway` npm SDK checks the CLI version through `$_`, which Git Bash and npm shims break. Run
+plan/apply from PowerShell with `$env:_` set to the real `railway.exe` (OPERATIONS §5 item 7).
+
+**Gate.** Local SQLite 2333 + Postgres 2335 passed, ruff clean. The SQLite run crossed midnight and two
+`test_standing_orders.py` tests failed once; both pass on re-run on both databases, so they are date-boundary flakes
+(probably "today" read twice). They are not caused by this PR.
+
+**Smoke.** `scripts/smoke/smoke-pr119-railway-iac.ps1 -Sha <sha>`. Verified against production on `fd525ab` before the push: 7 PASS.
+
+---
 
 ## PR 115 — every decision is a setting; one minimum trade (D-c, D-d)
 
@@ -85,7 +135,8 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - a small commodity gap is neither a card nor a heads-up;
 - `/plan` has 23 settings and the floor.
 
-**Smoke.** `scripts/smoke/smoke-pr115-settings.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr115-settings.ps1 -Sha <sha>`. **Ran against `fd525ab` (GitHub PR #17 merge): 8 PASS, 0 FAIL.** 23
+settings live; the concentration-cap default is 40% (risk tolerance High); the smallest trade card is ₪250.
 
 **QA (Pixel).** Plan › Card thresholds shows the 13 new rows and the "Smallest trade card today" line.
 
