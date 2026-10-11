@@ -45,7 +45,7 @@ wearing an agent's name. That is a labelling problem, and it is written up in
 |---|---|---|---|---|
 | Research Agent | `app/agents/research_agent.py:15` | agent | no | ✅ Explore → *What's moving*; war-room line 1 |
 | Opportunity Agent | `app/agents/screener_agent.py:22` | agent | no | ✅ buy ideas + the commodity sleeve card |
-| Fee Agent | `app/agents/fee_agent.py:25` | agent | no | ✅ fee cards on Today |
+| Fee Agent | `app/agents/fee_agent.py:26` | agent | no | ✅ fee cards on Today |
 | Allocation Agent | `app/agents/allocation_agent.py:22` | agent | **yes** | ❌ **unreachable — see below** |
 | Adversary | `app/agents/adversary.py:116` | agent | **yes** | ✅ war-room + card suppression |
 | Alpha | `app/engines/lag_engine.py` | engine | no | speaks in the war room |
@@ -194,7 +194,7 @@ empty section here is often the system being honest.
 
 ## Fee Agent
 
-**Lives at** `app/agents/fee_agent.py:25`.
+**Lives at** `app/agents/fee_agent.py:26`.
 
 **Purpose.** Turn `FeeEngine` findings into `FEE_OPTIMIZATION` cards with a
 complete audit trail.

@@ -9,11 +9,8 @@
 > INFERRED with a reproducing probe ([`plans/evidence-2026-10-08/`](plans/evidence-2026-10-08/)). The **PR** column says
 > which PR closes each row. Plans v2.2 and frontier are complete.
 >
-> **New on 2026-10-08 (critical, latent):**
-> - **C2b:** the sleeve-drift trim card oversells by the USD/ILS rate (`recommendations.py:2556`).
-> - **C3+:** "Replace book" multiplies NAV by the rate (`strategy_service.py:1201`).
->
-> Both go into PR 105.
+> **Closed in PR 105 (2026-10-11):** C2b (sleeve-drift trim oversold by the USD/ILS rate), C3+ ("Replace book"
+> multiplied NAV by the rate), C3, C3r and C15 (`/portfolio/add` replaced the holding). See STATUS.md PR 105.
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -57,11 +54,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Where | Verdict | Sev | PR |
 |---|---|---|---|---|---|
-| **C2b** | **Sleeve-drift trim card divides ₪ by a USD price**: "Trim ₪18,550 back to 25%" sells 185 sh (₪68,635), so the sleeve falls to ~11.5%. A sibling of the bug PR 102 fixed; `test_card_claims` skips trims | `recommendations.py:2555-2558` | P | **Critical** | 105 |
-| **C3+** | **"Replace book" (load basket, mode=replace) multiplies NAV by the USD/ILS rate** (₪37,100 → ₪137,641). The UI blocks it while sleeves exist; the server does not | `strategy_service.py:1183-1207` | P | **Critical** | 105 |
-| C3 | ILS leak: assistant/digest context, risk validation, fee savings value holdings as `qty × price` in native currency | `context_service.py:59,66`, `recommendations.py:2928`, `fee_agent.py:19` (+ I: `:3791`, `routes/backtest.py:17`) | P | Med | 105 |
-| C3r | `_apply_redeploy_cash` lacks `to_major_units` (a `.TA` leg would buy 100× too few shares) | `recommendations.py:6386-6390` | I | Med | 105 |
-| C15 | `POST /portfolio/add` writes no ledger leg / contribution and doesn't debit cash | `routes/intake.py:352-398` | I | Med | 105 (step 0) |
 | C1 | Sleeve funding + solver cost preview ignore `book_target`: they sell an *under*-target class and call it "most overweight" | `strategy_service.py:780, 891, ~995`, `target_solver.py:603` | P | High | 106 |
 | C2 | Sleeve funding has no post-trade drift gate (drift 0.44 → 0.64 observed). `redeploy_cash` was probed and holds (0.50 → 0.23) | `strategy_service` | P | High | 106 |
 | C4 | **Six** jobs record success when they fail: `backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`, `futures_warm`, `market_refresh`. One bad subscriber aborts the whole push fan-out | see plan PR 107 | P | High | 107 |

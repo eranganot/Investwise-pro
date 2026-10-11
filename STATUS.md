@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-08 by Claude (investigation + execution plan v3, docs only; no app behaviour changed). Last product PR: **PR 104d.1** (`96427f5`), smoke green. Production serves `88bb5d4` (docs PR #1 merge)._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave A: PR 105). Last product PR: **PR 105**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -25,17 +25,15 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md`](docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md),
   PR 105–119. **Approved 2026-10-08; execute wave by wave.** Decided: D-e, D-a, D-b (DECISIONS D69–D72). Next: **Wave A (PR 105, 106)**.
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
-- **Critical, latent (PR 105 first):**
-  - The sleeve-drift trim card oversells by the USD/ILS rate.
-  - "Replace book" multiplies NAV by the rate (the UI blocks it while sleeves exist; the server doesn't).
-
-  Both are proven by probes in `docs/plans/evidence-2026-10-08/`. Neither is live on Today right now.
+- **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
+  multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). Next: **PR 106** (sleeve
+  funding obeys the book target), after one quiet nightly cycle (owner, 2026-10-11).
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
   - Delete the orphan `redis-volume`.
-  - Delete the untracked `candidate_search.py` draft.
-  - Commit the untracked v8 / v2.2 plans and the Plan-tab design file.
+  - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
+    Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
 
 ---
@@ -53,6 +51,54 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 105 — every share count is sized in the price's own currency
+
+**Plan v3, Wave A, first PR.** Every fault was re-proven at HEAD (`9541472`) before it was fixed. The probes in
+`docs/plans/evidence-2026-10-08/` hard-code the docs-overhaul worktree path, so they were re-run as copies pointed at
+the main checkout.
+
+**What was wrong, and the root cause.**
+- **C2b, sleeve-drift trim (critical, latent).** "Trim about ₪18,550 of SOXL back to your 25% sleeve" sold 185 of 300
+  shares (₪68,635). The trim was `int(_amount / current_price)`: shekels over a dollar price. Now it sells the share
+  of the position the gap is (`qty × gap / actual`), the PR 102 form. Re-proven: 300 → 115 shares.
+- **C3+, Replace book (critical, latent).** A ₪37,100 USD book became ₪137,641. `_replace_book` sized
+  `weight × budget_ILS / price_USD`. It now sizes on the ILS price of the quote's major unit, and takes the market from
+  the quote. **D-e was already enforced:** the server has refused replace while sleeves exist since C6
+  (`strategy_service.py:1169`). The plan's "the server does not enforce it" was wrong; a test now pins the refusal.
+- **C3, valuations.** The assistant context, the risk validation, the sector-hedge card, the fee scan and `/backtest`
+  valued `qty × native price` as ILS. All five now go through `fx.holding_value_ils` / `position_value_ils`.
+- **C3r + one more site: agorot.** `fx_rate("ILA")` is 1.0, so a `.TA` quote in agorot was read as shekels: 100×
+  too few shares, and an agorot price stored on the row. This hit `_apply_redeploy_cash` (in the plan) **and** the
+  sleeve-fund buy loop (`strategy_service.py:1105`, not in the plan). One helper, `fx.quote_in_ils`, now does both
+  steps (major unit, then FX) for every buy path that quotes.
+- **C15 / L-ledger: proven, and worse than inferred.** `POST /portfolio/add` (Holdings › add commodity by amount)
+  called `upsert_positions`, an intake writer that **replaces** the row. "Add $1,000 of IAU" to 100 held shares left
+  7.54 shares (₪18,550 → ₪3,710). It also took no cash and wrote no ledger row. It now goes through `buy_into_book`
+  (blends), pays from cash, refuses when cash is short ("Add money to cash first"), and records a `holdings_add` Buy
+  leg. **Owner's decision (2026-10-11):** buys come out of cash; money goes into cash first.
+- **Found by the new trim measurement: a "Trim CASH" card.** The concentration trim ranked `exposure_ticker`, which
+  includes the cash row, so a cash-heavy book got "sell about ₪13,225 of CASH (~13225 shares)". Cash is excluded now.
+
+**Why it was silent.**
+- `test_card_claims` skipped trims (`elif kind == "trim": pass`).
+- The C3 sites pass on an all-ILS test book.
+- No test priced a `.TA` buy.
+- Nothing read the holding back after `/portfolio/add`.
+
+**Ruled out.** VAPID / C2c / L6c (closed by the investigation). The live book: 0 actionable cards and no trim on
+Today, so none of these fired on production in the window measured.
+
+**Tests (all fail on HEAD).**
+- `tests/test_every_share_count_is_sized_in_its_own_currency.py` (9 tests).
+- `tests/test_card_claims.py` now prices every trim's shares from the book (`test_every_trim_sells_what_its_card_says`).
+- **Class-closer:** `tests/test_no_native_value_is_called_shekels.py` walks all of `app/`. It fails on any
+  `qty × price` stored under an `*ils*` name or key without an FX step, and it proves itself on a planted line.
+
+**Smoke.** `scripts/smoke/smoke-pr105-own-currency.ps1 -Sha <sha>`. Dry run against `88bb5d4` (no `-Sha`): 5 PASS,
+0 FAIL, 3 SKIP. The post-deploy run is recorded below once merged.
+
+---
 
 ## PR 104d — every card threshold is a setting (Card-thresholds sheet)
 

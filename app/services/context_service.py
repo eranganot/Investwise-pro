@@ -27,6 +27,7 @@ import json
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
+from app.services.fx import holding_value_ils
 from app.services.allocation_mix import classify_holding
 from app.services.intake_service import list_positions
 from app.services.performance_service import performance
@@ -56,14 +57,14 @@ async def gather(session: AsyncSession, user: User) -> dict:
     ctx: dict = {
         "nav_ils": round(snap.get("nav", 0.0), 2),
         "holdings": [{"ticker": d["ticker"], "qty": d["quantity"], "price": d["current_price"],
-                      "value_ils": round(d["quantity"] * d["current_price"], 2),
+                      "value_ils": round(holding_value_ils(d), 2),
                       "asset_class": d["asset_class"]} for d in pdicts],
     }
     # asset-class concentration (so the assistant can reason about diversification)
     from collections import defaultdict
     byc: dict[str, float] = defaultdict(float)
     for d in pdicts:
-        byc[d["asset_class"]] += d["quantity"] * d["current_price"]
+        byc[d["asset_class"]] += holding_value_ils(d)
     _tot = sum(byc.values()) or 1.0
     ctx["asset_class_breakdown"] = {k: round(v / _tot, 3) for k, v in byc.items()}
     # what the user could add / switch to (grounding for "should I..." questions)

@@ -68,6 +68,7 @@ def _positions(c):
 def test_a_tel_aviv_holding_is_booked_in_shekels_not_agorot(a_tel_aviv_quote):
     """The share count is the tell: 9.07 shares, not 0.0907."""
     with TestClient(m.app) as c:
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": 10 * BUDGET_ILS})   # PR 105: paid from cash
         r = c.post("/api/v1/portfolio/add",
                    json={"ticker": "TEVA.TA", "amount": BUDGET_ILS, "market": "TASE"}).json()
         assert r.get("ok") is True, r
@@ -100,6 +101,7 @@ async def _meta_of(own_session, ticker):
 async def test_an_intake_price_says_where_it_came_from(a_tel_aviv_quote, own_session):
     """A stored price with no currency stamp is a number nothing can explain."""
     with TestClient(m.app) as c:
+        c.post("/api/v1/portfolio/cash", json={"amount_ils": 10 * BUDGET_ILS})   # PR 105: paid from cash
         assert c.post("/api/v1/portfolio/add",
                       json={"ticker": "TEVA.TA", "amount": BUDGET_ILS,
                             "market": "TASE"}).json().get("ok") is True

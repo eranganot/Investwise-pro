@@ -101,6 +101,21 @@ def to_major_units(price, currency: str | None) -> tuple[float, str]:
     return (price / per_major if per_major != 1.0 else price), ccy
 
 
+def quote_in_ils(price, currency: str | None, base: str | None = None) -> tuple[float, str, float]:
+    """(price in major units, major currency, price in the base currency) for a quote.
+
+    PR 105. Sizing a buy needs both halves: the major-unit price to store on the
+    row, and the base-currency price to divide a shekel budget by. Two buy paths
+    did `price * fx_rate(currency)` on the raw quote, and `fx_rate("ILA")` is 1.0,
+    so a Tel Aviv quote in agorot was read as shekels: 100x too few shares, and
+    an agorot price stored on the row. Never raises.
+    """
+    major, ccy = to_major_units(price, currency)
+    if major is None:
+        return 0.0, ccy, 0.0
+    return major, ccy, major * fx_rate(ccy, base)
+
+
 def price_currency(market: str | None, meta: dict | None = None) -> str:
     """Best-effort trading currency: an explicit meta stamp wins, else the market.
 
@@ -197,6 +212,20 @@ def position_value_ils(p, base: str | None = None) -> float:
     meta = p.meta if isinstance(p.meta, dict) else None
     return (float(p.quantity) * float(p.current_price or 0.0)
             * fx_rate(price_currency(p.market, meta), base))
+
+
+def holding_value_ils(d: dict, base: str | None = None) -> float:
+    """A position DICT (`quantity`, `current_price`, `market`, optional `meta`) ->
+    value in the base currency. The dict-shaped twin of `position_value_ils`,
+    converting exactly as `compute_snapshot` does.
+
+    PR 105: five consumers multiplied `quantity * current_price` on these dicts
+    and called the result shekels, so a $100 SPY share was worth ₪100 to the
+    assistant, the risk validation, the sector card and the fee scan.
+    """
+    meta = d.get("meta") if isinstance(d.get("meta"), dict) else None
+    return (float(d.get("quantity") or 0.0) * float(d.get("current_price") or 0.0)
+            * fx_rate(price_currency(d.get("market"), meta), base))
 
 
 def book_nav_ils(rows, base: str | None = None) -> float:
