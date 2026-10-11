@@ -64,8 +64,12 @@ JWT inside it stayed valid to anyone holding a copy, and `require_role` never co
 **What.**
 - `/auth/logout` decodes this browser's cookie (and a bearer token, if one is sent) and writes each `jti` to
   `revoked_tokens`.
-- `require_role` refuses a revoked `jti` with 401 "this session was logged out". The check is cached 60 s per jti, a
-  revocation on this instance applies at once, and a DB hiccup never logs anyone out.
+- `require_role` refuses a revoked `jti` with 401 "this session was logged out". **PR 111.1:** the revoked set lives
+  in memory and is reloaded from `revoked_tokens` at boot, so there is no database read in the auth path. The first
+  version read the table per request (cached 60 s). On Postgres that put a pooled connection into every authenticated
+  request, and CI showed asyncpg's `Connection._cancel` left un-awaited across loops in
+  `test_rbac_enforced_when_auth_on` (the CLAUDE.md cross-loop trap). One process (no `--workers`), so in-memory is
+  exact.
 - Other devices and the agent key are unaffected. To end every session at once, rotate `JWT_SECRET`.
 
 **Tests.** `tests/test_logout_ends_this_session.py` (4):

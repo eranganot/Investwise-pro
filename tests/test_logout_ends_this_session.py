@@ -23,7 +23,7 @@ def enforced(monkeypatch):
                                           "agent_api_key": "agent-secret-for-tests"})
     monkeypatch.setattr(A, "get_settings", lambda: s)
     monkeypatch.setattr(deps, "get_settings", lambda: s)
-    getattr(A, "_REVOKED_CACHE", {}).clear()
+    getattr(A, "_REVOKED", set()).clear()
     return s
 
 
@@ -49,13 +49,14 @@ def test_a_logged_out_cookie_cannot_be_replayed(enforced):
         assert c.get("/api/v1/portfolio", headers={"Authorization": f"Bearer {tok}"}).status_code == 401
 
 
-def test_logout_survives_a_cold_cache(enforced):
-    """The revocation is in the database, not just this process's memory."""
+def test_logout_survives_a_restart(enforced):
+    """The revocation is in the database: a restart reloads it at boot."""
     tok = _token()
     cookie = _cookie(enforced, tok)
     with TestClient(m.app) as c:
         c.get("/auth/logout", headers=cookie, follow_redirects=False)
-        getattr(A, "_REVOKED_CACHE", {}).clear()                     # e.g. a restart
+    getattr(A, "_REVOKED", set()).clear()            # the process is gone
+    with TestClient(m.app) as c:                     # boot: lifespan reloads revoked_tokens
         assert c.get("/api/v1/portfolio", headers=cookie).status_code == 401
 
 

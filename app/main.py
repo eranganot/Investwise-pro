@@ -202,6 +202,14 @@ async def lifespan(app: FastAPI):
         # condition that actually means it.
         if not settings.require_auth:
             logger.error("REQUIRE_AUTH is off in production: every API is open to anyone.")
+    # PR 111.1: sessions logged out before this boot stay logged out.
+    try:
+        from app.core.auth import load_revoked
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as _s:
+            logger.info("revoked sessions loaded: %d", await load_revoked(_s))
+    except Exception:  # noqa: BLE001 -- logged; logout still revokes in-process
+        logger.warning("could not load revoked sessions", exc_info=True)
     _warm = None
     if settings.enable_scheduler:
         from app.worker.scheduler import start_scheduler

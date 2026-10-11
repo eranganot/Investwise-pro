@@ -79,8 +79,8 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
   `ALLOWED_EMAILS` and sets an httpOnly `iw_session` cookie holding a 30-day SUPERADMIN JWT.
   JS never touches a token. Any 401 sends the page to `/login`.
 - **Logout ends this browser's session** (PR 111, D73). `/auth/logout` writes the cookie's (and any bearer's) `jti`
-  to `revoked_tokens`, and `require_role` refuses a revoked `jti` (cached 60 s per jti; a revocation made on this
-  instance applies at once). Other devices keep their sessions. To end every session at once, rotate `JWT_SECRET`.
+  to `revoked_tokens`, and `require_role` refuses a revoked `jti`. The revoked set is held in memory and reloaded from
+  the table at boot (PR 111.1), so there is no DB read in the auth path; safe because the app is one process. Other devices keep their sessions. To end every session at once, rotate `JWT_SECRET`.
 - **Scripts:** the `X-Agent-Key` header equal to `AGENT_API_KEY` grants SUPERADMIN. Every smoke script uses this.
   See [OPERATIONS.md §5](OPERATIONS.md#5-secrets-and-rotation).
 - **Signing:** HS256 with `JWT_SECRET` if set, which keeps sessions alive across redeploys. Otherwise
