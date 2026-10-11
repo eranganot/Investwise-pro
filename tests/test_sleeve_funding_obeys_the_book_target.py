@@ -97,3 +97,32 @@ def test_a_funding_that_raises_drift_is_refused_and_names_the_class():
     # The same buy funded from the over-target class is a swap: no refusal.
     swap = {"sells": [{"ticker": "EQ", "asset_class": "Equities", "value_ils": 10_000.0}]}
     assert _drift_gate(rows, snap, swap, legs, "Grow", target) is None
+
+
+def test_the_gate_measures_the_whole_book_cash_included():
+    """PR 106.1, the live book of 2026-10-11 (a303f9e): Equities 75.65%, Cash
+    3.12%, Commodities 9.12%, Fixed Income 12.11% against a book target of
+    77.22 / 0.64 / 10 / 12.14. Funding SOXL from ₪580 of cash plus ₪377 of BND.
+
+    Measured on invested holdings only (PR 106), Fixed Income looked 12.5% --
+    over target -- and the refusal could not say what it was protecting.
+    """
+    from types import SimpleNamespace as NS
+
+    from app.services.strategy_service import _drift_gate
+
+    def row(tk, cls, value):
+        return NS(ticker=tk, market="TASE", quantity=value, current_price=1.0, cost_basis=1.0,
+                  meta={"asset_class": cls, "asset_class_source": "user"})
+
+    nav = 23_417.62
+    rows = [row("EQ", "Equities", 0.7565 * nav), row("CO", "Commodities", 0.0912 * nav),
+            row("BND", "Fixed Income", 0.1211 * nav)]
+    snap = {"nav": nav}          # the rest (3.12%) is cash
+    target = {"Equities": 0.7722, "Fixed Income": 0.1214, "Cash": 0.0064, "Commodities": 0.10}
+    fund = {"from_cash_ils": 580.15,
+            "sells": [{"ticker": "BND", "asset_class": "Fixed Income", "value_ils": 377.28}]}
+    gate = _drift_gate(rows, snap, fund, [{"ticker": "SOXL", "buy_ils": 957.24}], "Grow", target)
+    assert gate is not None, "selling an under-target class into an overshoot must be refused"
+    assert gate["held"]["Fixed Income"] == 0.1211, gate
+    assert "Fixed Income (12.11% held, 12.14% target)" in gate["reason"], gate["reason"]

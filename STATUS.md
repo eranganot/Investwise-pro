@@ -52,6 +52,31 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 106.1 — the drift gate measures the whole book, cash included
+
+**Incident: PR 106's smoke was red on `a303f9e`.** Production "Fund sleeves" (dry run) returned a refusal, "drift 0.02 ->
+0.06", that named no class, and the smoke counted the refused plan's BND leg as a sale.
+
+**Root cause, two bugs.**
+- **Code.** `funding_drift` weighed invested holdings only, against a book target that includes a Cash slice (0.64%).
+  On the live book that put Fixed Income at 12.5% (invested basis) instead of 12.11% of NAV (target 12.14%). So the
+  refusal's "which class is under target" list came out empty. `/mix` and `rank_trim_candidates` both weigh against
+  NAV; the gate now does too (cash is a class, and `from_cash_ils` spends it). Percentages in the refusal print as
+  many digits as tell them apart ("12.11% held, 12.14% target").
+- **Smoke.** Section 1 judged the sell legs of a refused plan, which never execute.
+
+**Why it was silent.** The PR 106 tests used books with no cash, where the two bases agree.
+
+**What the owner sees.** "Fund sleeves" on the live book now refuses instead of selling ₪377 of BND. The SOXL sleeve
+is ₪957 short; ₪580 of cash is spendable. The refusal says it would have to sell Fixed Income (12.11% held, 12.14%
+target), and adding cash funds it.
+
+**Tests.** `test_the_gate_measures_the_whole_book_cash_included` reproduces the live book; it fails on `a303f9e`.
+
+**Smoke.** The same script, fixed: a refused plan counts as selling nothing, and the refusal must name the class.
+
+---
+
 ## PR 106 — sleeve funding obeys the book target
 
 **Plan v3, Wave A, second PR.** The owner chose to go ahead the same day rather than wait a night after PR 105.
@@ -93,8 +118,9 @@ That is the rule working.
 - `tests/test_every_funding_call_passes_the_book_target.py` now walks all of `app/`.
 
 **Smoke.** `scripts/smoke/smoke-pr106-sleeve-funding-target.ps1 -Sha <sha>`. Against `95cbd7e` it FAILs, as it should:
-"sells BND (Fixed Income): 12.11% held vs 12.14% target, while Cash is over". The post-deploy result is recorded with
-the next PR.
+"sells BND (Fixed Income): 12.11% held vs 12.14% target, while Cash is over". **Against `a303f9e` (GitHub PR #5 merge):
+4 PASS, 2 FAIL. That was an incident, fixed forward in PR 106.1** (below). Nothing harmful was live: the new gate
+refused the trade, so nothing would have been sold.
 
 ---
 
