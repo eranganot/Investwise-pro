@@ -1,7 +1,6 @@
 """Allocation Engine + Agent tests (Sections Y, AB)."""
 import pytest
 
-from app.agents.allocation_agent import AllocationAgent, VetoException
 from app.engines.allocation_engine import AllocationEngine
 
 A = pytest.approx
@@ -41,14 +40,3 @@ def test_underweight_triggers_buy_with_no_tax_drag():
     assert eq.action_type == "BUY"
     assert eq.tax_drag_currency == A(0)              # no CGT on a buy
     assert eq.net_trade_value_currency < eq.estimated_trade_value_currency  # costs still deducted
-
-
-def test_agent_vetoes_buy_into_overweight_class():
-    eng = AllocationEngine()
-    report = eng.compute(
-        target_allocation={"Equities": 0.60, "Fixed Income": 0.40},
-        current_allocation={"Equities": 0.70, "Fixed Income": 0.30}, nav=1_000_000)
-    agent = AllocationAgent(eng)
-    with pytest.raises(VetoException):
-        agent.review_buy("Equities", report)        # already overweight
-    agent.review_buy("Fixed Income", report)         # underweight -> no veto

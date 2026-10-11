@@ -17,6 +17,7 @@
 > **Closed in PR 109:** C9 (a read of Today deleted watch alerts and could switch off a triggered stop; D-b).
 > **Closed in PR 110:** C6, C7b, C8, S1, S3, S4, S5, L15 (write routes ANALYST+, public allowlist, broker mock off in production, whatif demo gated, /ask and AI summaries number-checked + disclaimed, push caller-scoped, research 429 classified).
 > **Closed in PR 111:** S2 (logout revokes this browser's token; D73).
+> **Closed in PR 113:** C7 (`/decision-feed/weekly` deleted with the decision-feed cluster).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -60,7 +61,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Where | Verdict | Sev | PR |
 |---|---|---|---|---|---|
-| C7 | `/decision-feed/weekly` same fallback (empty book only; no UI caller) | `workflows.py:162-163` | P | Low | 113 |
 | C12 | `broker_sync.py:33` raw price fallback; `intake_service` whole-dict `meta` assignments | V7 | — | P3 | 112 (broker deleted) |
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
@@ -75,7 +75,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | PR |
 |---|---|---|---|
-| L1 | Delete the legacy subsystem in 3 stages (routes/Celery/broker/no-op job → decision-feed cluster → 6 tables). *Stage 1 done in PR 112.* **Keep** `engines/state_machine.py` and the lag/decision/risk/tax engines (war room, what-if use them) | Analysis | 112–114 (D-j) |
+| L1 | Delete the legacy subsystem in 3 stages (routes/Celery/broker/no-op job → decision-feed cluster → 6 tables). *Stages 1–2 done in PR 112–113.* **Keep** `engines/state_machine.py` and the lag/decision/risk/tax engines (war room, what-if use them) | Analysis | 112–114 (D-j) |
 | L2 | `investwise.db` (Phase-2 snapshot, no `alembic_version`) and `frontend/` are unused; the CORS default is a ghost | P | W0-5 / 116 |
 | L3 | `sentry-sdk` imported, unpinned (SENTRY_DSN does nothing). *(`google-genai` pin removed in PR 112.)* | P | 116 (D-h) |
 | L4 | Naming: `cash_floor_*()` returns the soft target (₪3,000) while the setting `cash_floor_ils` is the hard floor (₪150); the UI says "floor" for the target; two `MIN_TRADE_ILS` | P | 116 |

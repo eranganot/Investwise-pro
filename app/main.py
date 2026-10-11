@@ -13,8 +13,8 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import (
-    adversary as adversary_routes, assistant, auth, commodities, decision_feed, gfinance, google_auth, health,
-    intake, learning, market, push, rules, strategy, observability, plan, recommendations, war_room, whatif,
+    adversary as adversary_routes, assistant, auth, commodities, gfinance, google_auth, health,
+    intake, market, push, rules, strategy, observability, plan, recommendations, war_room, whatif,
     workflows,
 )
 from app.core.config import get_settings
@@ -316,8 +316,6 @@ def create_app() -> FastAPI:
     app.include_router(recommendations.router)
     app.include_router(war_room.router)
     app.include_router(auth.router)
-    app.include_router(decision_feed.router)
-    app.include_router(learning.router)
     app.include_router(intake.router)
     app.include_router(workflows.router)
     app.include_router(market.router)

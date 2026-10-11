@@ -206,17 +206,18 @@ before debugging Today:
 In-process caches: the war-room payload (10 min per book, `WAR_ROOM_CACHE_TTL_SEC`; tests set 0), the
 futures snapshot (5 min), the provider tiers above, and `JOB_STATE`. All of them are lost on restart.
 
-## 9. Legacy subsystems still mounted
+## 9. Legacy subsystems (being removed)
 
-The day-one spec built a typed lifecycle (`Detected → Vetted → Optimized → Ranked → Displayed`, with
-`Vetoed` as terminal) in `app/schemas/state_machine.py`, persisted via `PipelineOrchestrator` into
-`decision_feeds`/`decision_items` and a learning loop (`user_actions`). **None of it drives the Today screen.**
-Deletion runs in three stages (D76): **PR 112** removed the standalone calculators (`/lag/scan`, `/whs`,
-`/safety/check` route, `/tax/preview`, `/risk/preview`, `/simulation`, `/allocation/analyze`, `/backtest`, `/fees`,
-`/screener`, `/entities`, `/market/quote`, `/fx/rate`), Celery `/jobs/*`, the broker scaffold and the no-op
-`market_refresh` job. **PR 113** removes the decision-feed cluster (and `safety_engine`, which its pipeline still
-imports). **PR 114** drops the tables. Keep `engines/state_machine.py` and the lag/decision/risk/tax engines: the
-war room and What-if run on them.
+The day-one spec built a typed lifecycle (`Detected → Vetted → Optimized → Ranked → Displayed`, with `Vetoed` as
+terminal) in `app/schemas/state_machine.py`. It was persisted via a pipeline into `decision_feeds`/`decision_items`,
+with a learning loop on `user_actions`. None of it drove the Today screen. Deletion runs in three stages (D76):
+- **PR 112:** the standalone calculator routes, Celery, the broker scaffold and the no-op `market_refresh` job.
+- **PR 113:** the decision-feed cluster: `pipeline.py`, `AllocationAgent`, the safety, XAI and learning engines, the
+  `/decision-feed/*`, `/actions`, `/learning/profile` and `/tax/review` routes, and the feed/XAI schemas.
+- **PR 114:** the tables.
+
+**Kept on purpose:** `engines/state_machine.py` and the lag, decision, risk and tax engines. The war room and
+What-if run on them.
 
 ## 10. Where to look first
 

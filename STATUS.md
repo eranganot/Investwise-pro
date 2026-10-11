@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112). Last product PR: **PR 112**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112, 113). Last product PR: **PR 113**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 113** (the decision-feed cluster).
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 114.0** (the migration that drops the legacy tables, shipped alone), then PR 114.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,49 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 113 — legacy removal, stage 2: the decision-feed cluster (D76)
+
+**Plan v3, Wave D, second PR.**
+
+**Deleted.**
+- Routes: `routes/decision_feed.py` (`/decision-feed/demo|generate|latest`) and `routes/learning.py` (`/actions`,
+  `/learning/profile`).
+- Functions: `/decision-feed/weekly` and `/tax/review`. `workflows.py` keeps `/health-check`, `/risk/alerts` and
+  `/scenario`.
+- `services/pipeline.py` and `agents/allocation_agent.py`.
+- Engines: `learning_engine`, `xai_engine`, and `safety_engine`, which moved here from stage 1 because only the
+  pipeline imported it.
+- Two schemas left with no importer (`schemas/feed.py`, `schemas/explainability.py`), plus `schemas/output_contract.py`.
+- `feed_service.build_recommendation`, the feed's output mapper, whose only caller was its own test.
+
+**Kept on purpose.** `engines/state_machine.py` and the lag, decision, risk and tax engines (the war room and What-if
+use them), and `services/demo_data.py` (the war room's `demo_signals` path).
+
+**Tests.**
+- Deleted: `test_xai.py`, `test_learning_engine.py`, `test_safety_engine.py`, the AllocationAgent veto tests (3), the
+  feed API tests (3) and the output-mapper test.
+- The roster test and `docs/AGENTS.md` changed in the same commit, as that test requires: the AllocationAgent row,
+  anchor and section are replaced by a "deleted" note.
+- `test_persist_feed_with_items` stays until PR 114 drops the models.
+
+**Smoke.** `scripts/smoke/smoke-pr113-legacy-stage2.ps1 -Sha <sha>`.
+
+**Production rows before stage 3** (read-only, 2026-10-11, `transaction_read_only = on`):
+
+| Table | Rows |
+|---|---|
+| `user_actions` | 0 |
+| `decision_items` | 3 |
+| `decision_feeds` | 1 |
+| `broker_connections` | 0 |
+| `tax_profiles` | 0 |
+| `buckets` | 0 |
+| positions with `bucket_id` set | 0 |
+
+The 1 feed / 3 items came from a single call to the now-deleted `/decision-feed/generate`. PR 114.0 drops them.
+
+---
 
 ## PR 112 — legacy removal, stage 1 (D76)
 
@@ -90,7 +133,8 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   public-route guard then saw in some orders. It now removes the route afterwards.
 
 **Smoke.** `scripts/smoke/smoke-pr112-legacy-stage1.ps1 -Sha <sha>`. Against `cb4c768` it FAILs, as it should: all 17
-routes are still served and the scheduler has 11 jobs.
+routes are still served and the scheduler has 11 jobs. **Ran against `26d2ab0` (GitHub PR #13 merge): 28 PASS, 0 FAIL.**
+All 17 deleted routes return 404, every live neighbour returns 200, and the scheduler has 10 jobs.
 
 ---
 

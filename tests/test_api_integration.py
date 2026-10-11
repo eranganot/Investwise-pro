@@ -10,15 +10,6 @@ from app.main import app
 
 
 # --- open-mode integration over the real app ---
-def test_allocation_veto_via_api():
-    with TestClient(app) as c:
-        g = c.post("/api/v1/decision-feed/generate", json={
-            "allocation": {"nav": 1_000_000,
-                           "target_allocation": {"Equities": 0.6, "Fixed Income": 0.4},
-                           "current_allocation": {"Equities": 0.72, "Fixed Income": 0.28}},
-            "asset_class_map": {"TEVA": "Equities"}}).json()
-        teva = [i for i in g["items"] if i["ticker"] == "TEVA"][0]
-        assert teva["decision"] == "VETOED"
 
 
 def test_scenario_via_api():
