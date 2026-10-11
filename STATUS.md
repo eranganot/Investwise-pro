@@ -23,7 +23,8 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - VAPID: pinned (`vapid_pinned_by_env: true`, `vapid_env_matches_db: true`).
   - Data: live Yahoo + Frankfurter.
 - **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md`](docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md),
-  PR 105–119. **Waiting on owner decisions D-a … D-j** (§3 of the plan).
+  PR 105–119. **Approved 2026-10-08; execute wave by wave.** Decided: D-e, D-a, D-b (DECISIONS D69–D72). Next: **Wave A (PR 105, 106)**.
+  New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent (PR 105 first):**
   - The sleeve-drift trim card oversells by the USD/ILS rate.
   - "Replace book" multiplies NAV by the rate (the UI blocks it while sleeves exist; the server doesn't).

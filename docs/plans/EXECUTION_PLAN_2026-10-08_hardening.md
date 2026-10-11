@@ -1,7 +1,10 @@
-# Execution plan v3: hardening (PR 105–117)
+# Execution plan v3: hardening (PR 105–119)
 
-> **Status:** proposed 2026-10-08. Waiting on the owner's decisions in §3; every PR whose row in §4 says
-> *needs D-x* is blocked until that decision is made. Nothing has been implemented.
+> **Status: APPROVED by the owner on 2026-10-08. Execute wave by wave** (see §2a). Nothing has been implemented yet.
+> Decided: D-e, D-a, D-b. Open: D-c, D-d, D-f, D-g, D-h, D-i, D-j, D-k. Ask each one **at the start of the wave that needs it**
+> (§3), not earlier. Waves A and B are fully decided and can start immediately.
+>
+> **Starting a new session on this plan?** Read [`HANDOFF_2026-10-11.md`](HANDOFF_2026-10-11.md) first.
 >
 > **Basis:** every problem from the 2026-10-07 docs-overhaul review was re-investigated with the `investigate-issue`
 > method: a direct observation (a scratch test reproducing the fault, or a live production read), the candidate causes
@@ -82,9 +85,51 @@ The rest (L2, L3, L4, L5, L6, L7, L9, L12–L15, P4) are proven debt: wording, d
 5. **Every PR closes the *class*, not just the instance.** Each one ships a guard test so the next sibling fails CI. This is the
    lesson of C2b, a sibling of a bug PR 102 had already fixed.
 
-## 3. Decisions needed from the owner
+## 2a. How to execute (owner's choice, 2026-10-08)
 
-Each has a recommendation. Reply with the letter and "yes", or your choice.
+**Wave by wave.**
+1. Ship every PR in a wave back to back. Each PR still gets its own commit, full local gate (SQLite + Postgres + ruff),
+   push, smoke run with `-Sha`, and STATUS entry.
+2. **Stop and report at the end of each wave.** Report what shipped, the smoke results and anything surprising.
+3. Wait for the owner's go-ahead before starting the next wave. That go-ahead is also when the next wave's open decisions get asked.
+
+Stop early, mid-wave, on any of:
+- a red smoke
+- a red CI run
+- a test that won't go green
+- a finding that contradicts this plan's evidence (re-run `investigate-issue`; don't push through)
+
+Order: Wave A (PR 105, 106) → Wave B (107, 108, 109) → Wave C (110, 111.0, 111) → Wave D (112, 113, 114.0, 114) →
+Wave E (115, 116, 117) → Wave F (118a, 118b). PR 119 (Railway config) must land before **2026-11-15**, whichever wave is running;
+raise it with the owner at a wave boundary in early November at the latest.
+
+## 3. Decisions
+
+### 3.1 Taken (owner, 2026-10-08)
+
+| ID | Decision | Applies in |
+|---|---|---|
+| **D-e** | **Yes:** the server refuses "Replace book" (load-basket `mode="replace"`) while any `plan_sleeves` exist, mirroring the UI block. This is in addition to the FX sizing fix | PR 105 |
+| **D-a** | **The strategies' regime** (`engines/regime`: 200-day trend, realized vol, breadth, via the cached `gfinance.regime_proxy`) drives Today's risk-off card. Futures stay on the Markets tab as a labelled cross-check only | PR 108 |
+| **D-b** | **Keep entry alerts:** `buy_dip`, `price_below`, `price_above` on tickers you don't hold are watch alerts and are never purged. `purge_orphan_rules` removes only exit rules (stop-loss, take-profit, trailing stop) of positions you no longer hold | PR 109 |
+| Cadence | **Wave by wave** (§2a) | all |
+
+These are recorded as D69–D72 in [`../DECISIONS.md`](../DECISIONS.md).
+
+### 3.2 Still open (ask at the start of the wave that needs it)
+
+| ID | Ask before | Recommendation |
+|---|---|---|
+| D-f | Wave C (PR 111) | Per-user "sessions valid after" timestamp |
+| D-j | Wave D (PR 112–114) | Yes, delete in 3 stages |
+| D-c | Wave E (PR 115) | One minimum: max(funded minimum, % of book) + commodity card silent below it |
+| D-d | Wave E (PR 115) | All 13 constants become settings |
+| D-g | Wave E (PR 116) | Commodity buys restricted to the core basket, as a setting, default on |
+| D-h | Wave E (PR 116) | Delete the Sentry block |
+| D-i | Wave E (PR 117) | Show screenshots of both `.seg` looks; owner picks |
+| D-k | not blocking | Goal definition review (from v2.2) |
+
+### 3.3 All options considered (reference)
 
 | ID | Question | Options | Recommendation | Blocks |
 |---|---|---|---|---|
