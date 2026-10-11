@@ -162,5 +162,13 @@
   default, visible where it acts and editable in a sheet. *Trigger: "where did I set this limit of 1% maximum chance?"* (Owner rule.)
 - **D65 · 2026-10-06 · Pixel QA lists skip the Hebrew/RTL check unless the PR touches it or the owner asks.** (Owner preference.)
 - **D66 · 2026-08-29 · PR write-ups carry a "STILL BROKEN ON PURPOSE" block** (or "nothing knowingly left broken").
+- **D69 · 2026-10-08 (plan v3, D-e) · The server refuses "Replace book" while sleeves exist,** mirroring the UI block, and the
+  basket is sized in the quote's currency. *Replace mode multiplied NAV by the USD/ILS rate, and only the UI blocked it.* → PR 105
+- **D70 · 2026-10-08 (plan v3, D-a) · One regime: Today's risk-off card is driven by `engines/regime`** (the regime the sleeves act on).
+  Futures are a labelled cross-check on the Markets tab only. *The futures card contradicted the strategies and used a 4-day "day change".* → PR 108
+- **D71 · 2026-10-08 (plan v3, D-b) · Entry/watch rules (`buy_dip`, `price_below`, `price_above`) on unheld tickers are kept;**
+  only exit rules of sold positions are purged. *A GET of Today was deleting fired watch alerts.* → PR 109
+- **D72 · 2026-10-08 · Plan v3 runs wave by wave:** each PR fully gated and smoked; stop and report at each wave's end; the next wave's
+  open decisions are asked then. (Owner preference.)
 - **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
   unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.

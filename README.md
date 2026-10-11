@@ -9,6 +9,15 @@ my goal, and what would change it?"
 > never invents numbers. Accepting a card updates the book InvestWise tracks. **It never places a brokerage order.**
 > Tax rates are config-driven; confirm them with your accountant.
 
+## Project status (2026-10-08)
+
+| | |
+|---|---|
+| **Production** | Live on Railway, single user, live Yahoo + Frankfurter data. Last product PR: **PR 104d.1** (every card threshold is a setting) |
+| **Active plan** | [Execution plan v3: hardening](docs/plans/EXECUTION_PLAN_2026-10-08_hardening.md) (PR 105–119). It starts with two latent currency-sizing bugs, then truthful scheduled jobs, auth hardening, and legacy removal. Evidence and reproducing probes: [`docs/plans/evidence-2026-10-08/`](docs/plans/evidence-2026-10-08/) |
+| **Open work** | [docs/BACKLOG.md](docs/BACKLOG.md) |
+| **Changelog** | [STATUS.md](STATUS.md), one entry per shipped PR |
+
 ## Documentation
 
 **→ [docs/README.md](docs/README.md)** is the entry point. In short:
