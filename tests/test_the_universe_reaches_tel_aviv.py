@@ -145,28 +145,6 @@ def test_the_buy_that_funds_itself_normalises_the_price():
     assert i < j, "the price is normalised after it is used"
 
 
-def test_the_broker_path_normalises_price_and_basis():
-    """Both, because a wrong basis is a wrong CGT estimate on every later card."""
-    from types import SimpleNamespace
-
-    from app.services.broker_sync import _to_intake
-
-    bp = SimpleNamespace(ticker="LUMI.TA", market="TASE", quantity=10.0,
-                         cost_basis=7000.0, current_price=7916.0, currency="ILA",
-                         asset_class="Equities")
-    out = _to_intake(bp)
-    assert abs(float(out.spot_price) - 79.16) < 0.01, out.spot_price
-    assert abs(float(out.cost_basis) - 70.00) < 0.01, out.cost_basis
-
-    # A major-unit currency is passed through untouched.
-    bp2 = SimpleNamespace(ticker="VTI", market="NYSE", quantity=1.0,
-                          cost_basis=250.0, current_price=300.0, currency="USD",
-                          asset_class="Equities")
-    out2 = _to_intake(bp2)
-    assert float(out2.spot_price) == 300.0
-    assert float(out2.cost_basis) == 250.0
-
-
 def test_a_tase_holding_resolves_to_shekels():
     """The market alone is enough once the price is in the major unit."""
     from app.services.fx import price_currency

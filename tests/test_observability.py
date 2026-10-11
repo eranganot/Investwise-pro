@@ -19,7 +19,8 @@ def test_request_id_header_present():
 
 def test_mutations_are_audited_and_viewable():
     with TestClient(app) as c:
-        c.post("/api/v1/safety/check", json={"holdings": {}, "liquidity_ratio": 1.0, "proposals": []})
+        # PR 112: probed through a LIVE write route (the legacy /safety/check is gone).
+        c.post("/api/v1/recommendations/restore")
         audit = c.get("/api/v1/audit").json()
         assert audit["count"] >= 1
-        assert any(e["route"].endswith("/safety/check") for e in audit["entries"])
+        assert any(e["route"].endswith("/recommendations/restore") for e in audit["entries"])

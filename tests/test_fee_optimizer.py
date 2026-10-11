@@ -33,9 +33,8 @@ def test_no_fee_data_is_skipped():
 def test_fees_endpoint_and_feed_integration():
     with TestClient(app) as c:
         c.post("/api/v1/intake/portfolio", json=HIGH_FEE)
-        rep = c.get("/api/v1/fees").json()
-        assert rep["total_annual_saving_ils"] > 0
-        assert any(f["ticker"] == "ACTIVE" for f in rep["findings"])
+        # PR 112: the legacy GET /fees route is gone; the fee agent's card on
+        # Today is the live path.
         recs = c.get("/api/v1/recommendations").json()["recommendations"]
         fee_rec = next((r for r in recs if r["dimension"] == "fees"), None)
         assert fee_rec is not None

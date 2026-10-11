@@ -154,7 +154,6 @@ class Settings(BaseSettings):
     # A failed key is remembered this long, so callers queued behind it inherit
     # the error instead of each sending their own request upstream.
     provider_failure_cooloff_sec: float = 20.0
-    redis_url: str = ""             # if set, Celery uses Redis; else runs eager (synchronous)
     enable_scheduler: bool = True     # start APScheduler cron jobs in-process (hourly market refresh)
     # Google sign-in (Phase A)
     google_oauth_client_id: str = ""
@@ -192,10 +191,6 @@ class Settings(BaseSettings):
 
     # Fee optimizer (Phase 3.2)
     fee_high_threshold_pct: float = 0.50    # flag holdings whose expense ratio exceeds this %
-
-    # Brokerage / aggregation (Phase 3.1) - holdings sync
-    broker_enabled: bool = False            # gate real providers (plaid/yodlee); mock always works
-    aggregator_provider: str = "mock"       # mock | plaid | yodlee
 
     # Adversary agent (Section 6 / Phase 1.3) - per-stage cross-examination
     adversary_enabled: bool = True          # route every stage through the Adversary examiners

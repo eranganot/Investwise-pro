@@ -175,5 +175,7 @@
 - **D74 · 2026-10-11 · The owner (SUPERADMIN) can do everything.** Tightening write routes to ANALYST+ (S1) never narrows what the
   owner's session or the agent key can do; it only stops a READ_ONLY token from writing. → PR 110
 - **D75 · 2026-10-11 · Wave cadence adjusted by the owner:** PR 120 moved into Wave A; PR 105→106 shipped the same day, no night's wait.
+- **D76 · 2026-10-11 · Delete the legacy subsystem in three stages** (D-j): leaf routes + Celery + broker + no-op job (PR 112), the
+  decision-feed cluster (PR 113), the six tables (PR 114.0 migration alone, then PR 114). → PR 112–114
 - **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
   unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.

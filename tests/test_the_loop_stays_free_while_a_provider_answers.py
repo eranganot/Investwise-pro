@@ -63,7 +63,7 @@ def _slow_quote(ticker):
     return _Quote()
 
 
-async def _race(app, slow_url):
+async def _race(app, slow_url, method="GET", json=None):
     """Issue `slow_url` and /health together. Return when each finished."""
     import httpx
 
@@ -73,11 +73,11 @@ async def _race(app, slow_url):
         await c.get("/health")            # pay the startup cost outside the clock
         t0 = time.perf_counter()
 
-        async def hit(name, url):
-            await c.get(url)
+        async def hit(name, url, meth="GET", body=None):
+            await c.request(meth, url, json=body)
             marks[name] = time.perf_counter() - t0
 
-        await asyncio.gather(hit("slow", slow_url), hit("health", "/health"))
+        await asyncio.gather(hit("slow", slow_url, method, json), hit("health", "/health"))
     return marks
 
 
@@ -100,7 +100,13 @@ async def test_the_harness_is_concurrent():
         return {"ok": True}
 
     m.app.include_router(r)
-    marks = await _race(m.app, "/__control/slow_async")
+    try:
+        marks = await _race(m.app, "/__control/slow_async")
+    finally:
+        # A control route left on the shared app is a public route to every
+        # later test (PR 112: test_no_new_route_is_public_by_accident saw it).
+        m.app.router.routes[:] = [x for x in m.app.router.routes
+                                  if getattr(x, "path", "") != "/__control/slow_async"]
 
     assert marks["slow"] >= BLOCK * 0.9, marks
     assert marks["health"] < FREE, (
@@ -113,18 +119,22 @@ async def test_a_slow_quote_does_not_stall_every_other_request():
     """The fault itself, at the endpoint where it is easiest to see.
 
     `guarded_quote` is a plain `def` that makes a synchronous network call. On
-    one uvicorn worker, calling it straight from `async def market_quote` holds
-    the loop for the whole round trip and every other request waits.
+    one uvicorn worker, calling it straight from an `async def` route holds the
+    loop for the whole round trip and every other request waits.
+
+    PR 112: raced through POST /portfolio/add (Holdings > add by amount), the
+    live route that quotes; the legacy GET /market/quote it used is deleted.
     """
-    import app.api.routes.market as market
+    import app.api.routes.intake as intake
     import app.main as m
 
-    original = market.guarded_quote
-    market.guarded_quote = _slow_quote
+    original = intake.guarded_quote
+    intake.guarded_quote = _slow_quote
     try:
-        marks = await _race(m.app, "/api/v1/market/quote?ticker=VTI")
+        marks = await _race(m.app, "/api/v1/portfolio/add", method="POST",
+                            json={"ticker": "VTI", "amount": 100})
     finally:
-        market.guarded_quote = original
+        intake.guarded_quote = original
 
     assert marks["slow"] >= BLOCK * 0.9, (
         f"the provider was supposed to take {BLOCK}s: {marks}")

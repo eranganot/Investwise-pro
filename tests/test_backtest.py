@@ -42,8 +42,8 @@ def test_backtest_endpoint_and_recommendations_validation():
          "volatility_pct": 14}]}
     with TestClient(app) as c:
         c.post("/api/v1/intake/portfolio", json=PORT)
-        bt = c.post("/api/v1/backtest").json()
-        assert bt["events"] and "structural_beta" in bt
+        # PR 112: the legacy POST /backtest route is gone; the engine runs inside
+        # Today's build, which is what this half always checked.
         recs = c.get("/api/v1/recommendations").json()
         assert "risk_validation" in recs and "beta_validated" in recs["risk_validation"]
         c.delete("/api/v1/portfolio/position", params={"ticker": "TEVA", "market": "NYSE"})

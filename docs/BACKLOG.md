@@ -75,9 +75,9 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | PR |
 |---|---|---|---|
-| L1 | Delete the legacy subsystem in 3 stages (routes/Celery/broker/no-op job → decision-feed cluster → 6 tables). **Keep** `engines/state_machine.py` and the lag/decision/risk/tax engines (war room, what-if use them) | Analysis | 112–114 (D-j) |
+| L1 | Delete the legacy subsystem in 3 stages (routes/Celery/broker/no-op job → decision-feed cluster → 6 tables). *Stage 1 done in PR 112.* **Keep** `engines/state_machine.py` and the lag/decision/risk/tax engines (war room, what-if use them) | Analysis | 112–114 (D-j) |
 | L2 | `investwise.db` (Phase-2 snapshot, no `alembic_version`) and `frontend/` are unused; the CORS default is a ghost | P | W0-5 / 116 |
-| L3 | `google-genai` pinned, never imported; `sentry-sdk` imported, unpinned (SENTRY_DSN does nothing) | P | 112 / 116 (D-h) |
+| L3 | `sentry-sdk` imported, unpinned (SENTRY_DSN does nothing). *(`google-genai` pin removed in PR 112.)* | P | 116 (D-h) |
 | L4 | Naming: `cash_floor_*()` returns the soft target (₪3,000) while the setting `cash_floor_ils` is the hard floor (₪150); the UI says "floor" for the target; two `MIN_TRADE_ILS` | P | 116 |
 | L5 | Stale docstrings: 7 in `app/` + 2 in tests + a dead `pyproject.toml` warning filter (suite: 2291 passed, 0 warnings without it) | P | 116 |
 | L6 | Stale copy: "Cash tab" (`index.html:3052` **and** `frontier_service.py:2025` on a Today card), "Goal settings" (`:3252`), "the Rules tab". *"$ amount" is correct: the server sizes in USD* | P | 116 |

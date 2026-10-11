@@ -52,13 +52,6 @@ def test_weight_tilt_changes_ranking():
     assert base != growth or set(base) == set(growth)         # tilt is wired through
 
 
-def test_screener_endpoint():
-    with TestClient(app) as c:
-        r = c.get("/api/v1/screener?n_equities=5&n_commodities=3").json()
-        assert r["ok"] and len(r["equities"]) == 5 and len(r["commodities"]) == 3
-        assert {"value", "growth", "quality", "income"} <= set(r["weights"])
-
-
 def test_expanded_commodity_catalog():
     tickers = {c["ticker"] for c in cat.CATALOG}
     assert {"SLV", "CORN", "DBC", "USO"} <= tickers            # originals preserved

@@ -98,19 +98,11 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("APScheduler not installed; scheduler disabled.")
         return
-    from app.services.market_state import REFRESH_INTERVAL_MINUTES, refresh_market_data
     # A generous default grace: better a late digest than a silently dropped one.
     _scheduler = BackgroundScheduler(
         daemon=True,
         job_defaults={"max_instances": 1, "coalesce": True, "misfire_grace_time": 3600},
     )
-    # PR 107: primed through the guarded path (next_run_time=now), not called on
-    # the startup thread -- a direct call is unrecorded, and now that a failed
-    # refresh raises it would take the scheduler down with it.
-    _scheduler.add_job(_guarded("market_refresh", refresh_market_data), "interval",
-                       minutes=REFRESH_INTERVAL_MINUTES, id="market_refresh",
-                       next_run_time=datetime.now(timezone.utc))
-
     # Reprice every holding so current_price never goes stale (drives the
     # price-based recommendations and the price-move notifications).
     try:
@@ -260,7 +252,9 @@ def start_scheduler() -> None:
         logger.warning("Standing order job not scheduled.", exc_info=False)
 
     _scheduler.start()
-    logger.info("APScheduler started (market data refresh every %d min).", REFRESH_INTERVAL_MINUTES)
+    # PR 112: the hourly `market_refresh` job is gone. It ran ResearchAgent().scan()
+    # and threw the result away, stamping a time nothing read (market_state.py).
+    logger.info("APScheduler started (%d jobs).", len(_scheduler.get_jobs()))
 
 
 def shutdown_scheduler() -> None:

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import Principal, Role, create_token, issue_pair, require_role
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.services.auth_service import (
     ensure_superadmin_credential, rotate_refresh, verify_login,
@@ -51,3 +52,10 @@ async def issue_m2m(req: M2MRequest,
 @router.get("/me")
 async def me(principal: Principal = Depends(require_role(Role.READ_ONLY))) -> dict:
     return principal.model_dump()
+
+
+@router.get("/status")
+async def auth_status() -> dict:
+    """Public: whether sign-in is enforced. Moved here from the deleted
+    entities router (PR 112); same path, /api/v1/auth/status."""
+    return {"auth_enabled": bool(get_settings().require_auth)}
