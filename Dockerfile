@@ -34,7 +34,7 @@ EXPOSE 8000
 
 # Uses the stdlib, because adding curl to a slim image to ask a question the
 # image can already ask is how a container grows. Railway does not read this --
-# it has its own `healthcheckPath` in railway.json (PR 49), which is the check
+# it has its own `healthcheckPath` in .railway/railway.ts (PR 49; railway.json until PR 119), which is the check
 # that actually gates traffic. This one is for `docker run` locally, so that a
 # container which boots but cannot serve says so there too.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
@@ -47,7 +47,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # PR 48 reverted it.
 #
 # PR 52 put the migrations back, in the right place: `preDeployCommand` in
-# railway.json, a separate container that must exit 0 before this one starts.
+# .railway/railway.ts (railway.json until PR 119), a separate container that must exit 0 before this one starts.
 # A migration that fails now fails the DEPLOY instead of the process, and PR 49's
 # healthcheck means the previous deployment keeps serving while it does.
 #

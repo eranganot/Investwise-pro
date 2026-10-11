@@ -101,4 +101,4 @@ def test_the_migration_boot_hack_has_not_come_back():
     assert "alembic" not in joined, (
         f"alembic is back in the container's CMD: {joined!r}. That is PR 47, "
         "which took production down for two hours. It belongs in "
-        "railway.json's preDeployCommand.")
+        ".railway/railway.ts's preDeployCommand.")

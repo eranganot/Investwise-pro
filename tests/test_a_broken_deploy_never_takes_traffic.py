@@ -30,7 +30,6 @@ that is asserted here rather than assumed.
 
 Not financial advice.
 """
-import json
 import os
 import pathlib
 
@@ -40,7 +39,9 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 
 
 def _deploy() -> dict:
-    return json.loads((REPO / "railway.json").read_text(encoding="utf-8"))["deploy"]
+    # PR 119: the deploy is defined in .railway/railway.ts (railway.json retired).
+    from tests._deploy_config import deploy
+    return deploy()
 
 
 def test_the_deploy_declares_a_healthcheck():
