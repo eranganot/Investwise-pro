@@ -37,7 +37,6 @@ ROSTER = {
     "ResearchAgent": "app.agents.research_agent",
     "OpportunityAgent": "app.agents.screener_agent",
     "FeeAgent": "app.agents.fee_agent",
-    "AllocationAgent": "app.agents.allocation_agent",
     "Adversary": "app.agents.adversary",
 }
 
@@ -122,43 +121,6 @@ def test_the_gap_between_what_is_shown_and_what_exists_is_recorded():
 # Veto power. WHO can stop a card is the single most consequential fact in the
 # map, so it is checked rather than described.
 # --------------------------------------------------------------------------
-
-def test_the_allocation_agent_still_holds_the_only_pre_card_veto():
-    from app.agents.allocation_agent import AllocationAgent, VetoException
-    from app.engines.allocation_engine import AllocationEngine
-
-    src = inspect.getsource(AllocationAgent.review_buy)
-    assert "raise VetoException" in src, (
-        "review_buy no longer raises. It is the only veto in the codebase that "
-        "fires BEFORE a card is built rather than annotating one afterwards.")
-    assert issubclass(VetoException, Exception)
-    assert hasattr(AllocationEngine, "overweight_classes")
-
-
-def test_the_allocation_veto_is_still_unreachable_from_the_app():
-    """Recorded as a DEFECT, pinned so the fix is visible when it lands.
-
-    The veto's only caller is PipelineOrchestrator.generate, reached solely by
-    POST /api/v1/decision-feed/generate -- an ANALYST-role endpoint the front
-    end never calls. The cards the user actually sees come from
-    recommendations.py, which does not import AllocationAgent at all.
-
-    When someone wires the veto into the live path, this test fails. That is the
-    point: it is the notification that item 2's biggest hole has been closed.
-    """
-    root = Path(__file__).resolve().parents[1]
-
-    recs = (root / "app" / "services" / "recommendations.py").read_text(encoding="utf-8")
-    assert "AllocationAgent" not in recs, (
-        "recommendations.py now knows about the Allocation Agent -- the live "
-        "card path may finally be honouring the overweight veto. Verify, then "
-        "update docs/AGENTS.md, which currently states it never runs.")
-
-    ui = (root / "app" / "static_app" / "index.html").read_text(encoding="utf-8")
-    assert "decision-feed" not in ui, (
-        "the front end now calls /decision-feed. docs/AGENTS.md says it never "
-        "does, and that claim is load-bearing for the whole Allocation Agent "
-        "entry.")
 
 
 def test_the_adversary_veto_is_wired_into_the_path_that_builds_cards():
@@ -300,7 +262,6 @@ def test_the_research_agent_passes_through_whatever_the_provider_gives_it(monkey
     "app/agents/research_agent.py:15",
     "app/agents/screener_agent.py:22",
     "app/agents/fee_agent.py:26",
-    "app/agents/allocation_agent.py:22",
     "app/agents/adversary.py:116",
     "app/services/war_room.py:18",
 ])

@@ -46,7 +46,6 @@ wearing an agent's name. That is a labelling problem, and it is written up in
 | Research Agent | `app/agents/research_agent.py:15` | agent | no | ✅ Explore → *What's moving*; war-room line 1 |
 | Opportunity Agent | `app/agents/screener_agent.py:22` | agent | no | ✅ buy ideas + the commodity sleeve card |
 | Fee Agent | `app/agents/fee_agent.py:26` | agent | no | ✅ fee cards on Today |
-| Allocation Agent | `app/agents/allocation_agent.py:22` | agent | **yes** | ❌ **unreachable — see below** |
 | Adversary | `app/agents/adversary.py:116` | agent | **yes** | ✅ war-room + card suppression |
 | Alpha | `app/engines/lag_engine.py` | engine | no | speaks in the war room |
 | Risk | `app/engines/risk_engine.py` | engine | **yes** | speaks in the war room |
@@ -218,40 +217,13 @@ nothing filters it by your market access.
 
 ---
 
-## Allocation Agent
+## Allocation Agent (deleted)
 
-**Lives at** `app/agents/allocation_agent.py:22`.
-
-**Purpose.** The only agent class holding a programmatic veto. Its docstring:
-*"a high-scoring action that would push an already-overweight asset class
-further out of policy is blocked with a VetoException before it can reach the
-user's feed."*
-
-**Consumes** an `asset_class` and an `AllocationReport`.
-
-**Emits** nothing on success; raises `VetoException` (`:14`) on a buy into a
-class whose drift exceeds `settings.allocation_drift_threshold`
-(`allocation_engine.py:57-59`).
-
-**Veto** **yes** — the strongest one in the codebase, because it is raised
-before the card is built rather than annotated onto it.
-
-> **⚠ It never runs.**
-> Its one caller is `pipeline.py:86, 102`, inside `PipelineOrchestrator.generate`.
-> That runs from exactly one place: `POST /api/v1/decision-feed/generate`
-> (`decision_feed.py:81-85`), which requires the ANALYST role. **The app never
-> calls it** — `index.html` has zero references to `decision-feed`.
->
-> And even on that endpoint the veto is doubly conditional: `pipeline.py:80`
-> needs `req.allocation` to be non-null, and `pipeline.py:97` needs
-> `req.asset_class_map` to be non-empty. Both default to `None`
-> (`schemas/feed.py:20-21`), so an unparameterised POST does not reach it either.
->
-> The cards you actually see are built by `app/services/recommendations.py`,
-> which never imports `AllocationAgent`. **Nothing stops a recommendation from
-> buying further into an overweight class on the path the app uses.** Policy
-> drift is instead handled by the rebalance cards and the target mix — a
-> different mechanism, with no veto.
+**Deleted in PR 113** (plan v3 stage 2, D76) with the decision-feed pipeline that was its only caller. It held the
+codebase's one pre-card veto (a `VetoException` on a buy into an over-target class), but it was reachable only from
+`POST /api/v1/decision-feed/generate`, which the app never called. The live rule it encoded is enforced on the path
+the app uses: funding may only sell what the plan says is over target, and a buy into an over-target class gets no
+card (`funding_service.propose_funded_buy`, PR 106's drift gate).
 
 ---
 

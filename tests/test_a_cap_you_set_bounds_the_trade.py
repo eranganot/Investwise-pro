@@ -111,25 +111,6 @@ def test_a_within_class_swap_still_needs_the_caller_to_opt_in():
     assert "Does not move your Equities weight" in swap.impact
 
 
-def test_the_agents_veto_is_the_weaker_check_and_still_guards_its_own_path():
-    """Kept, not deleted — `/decision-feed/generate` is a real endpoint.
-
-    Recorded here so the next reader does not re-derive "the veto never runs".
-    It runs; it is simply not the only thing enforcing the rule, and it is the
-    laxer of the two.
-    """
-    import inspect
-
-    from app.agents.allocation_agent import AllocationAgent
-    from app.services import pipeline
-
-    assert "overweight_classes" in inspect.getsource(AllocationAgent.review_buy)
-    assert "review_buy" in inspect.getsource(pipeline)
-
-
-# --------------------------------------------------------------------------- #
-# Claim B — the cap that alerted and never constrained
-# --------------------------------------------------------------------------- #
 def test_a_hand_set_cap_bounds_the_buy():
     """The 4,500 that became 300."""
     rows, snap, plan = _under_target()

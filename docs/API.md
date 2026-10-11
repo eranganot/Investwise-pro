@@ -131,8 +131,8 @@ Scripts authenticate with `X-Agent-Key` (SUPERADMIN).
 
 Mounted, partly tested, **unused by the PWA**. Candidates for deletion ([BACKLOG.md](BACKLOG.md)):
 
-`/api/v1/decision-feed/demo|generate|latest|weekly` (the weekly one silently falls back to demo data), `/actions`,
-`/learning/profile`, `/tax/review` (deleted in PR 113), and `/adversary/diagnostics` (kept, SUPERADMIN since PR 110).
+`/adversary/diagnostics` (kept, SUPERADMIN since PR 110).
+**Deleted in PR 113:** `/decision-feed/demo|generate|latest|weekly`, `/actions`, `/learning/profile`, `/tax/review`.
 **Deleted in PR 112:** `/lag/scan`, `/whs`, `/simulation`, `/safety/check`, `/tax/preview`, `/risk/preview`,
 `/allocation/analyze`, `/backtest`, `/fees`, `/screener`, `/entities` (`/auth/status` moved to `auth.py`, same path),
 `/market/quote`, `/fx/rate`, `/jobs/*`, `/broker/connect|sync`.

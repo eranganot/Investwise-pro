@@ -30,8 +30,6 @@ PUBLIC = {
     "/api/v1/push/public-key", "/api/v1/intake/template.csv", "/api/v1/commodities",
     "/api/v1/strategies", "/api/v1/strategies/backtests", "/api/v1/scenario/supported",
     "/api/v1/data-status", "/api/v1/markets/futures",
-    # LEGACY, deleted with the decision-feed cluster in plan PR 113.
-    "/api/v1/decision-feed/demo",
 }
 ORDER = ["SUPERADMIN", "ADVISOR", "ANALYST", "READ_ONLY"]
 

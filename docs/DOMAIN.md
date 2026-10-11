@@ -286,9 +286,10 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
   | `performance` | Return curves |
   | `return_convention` | Compound → arithmetic drift |
 
-  Legacy, not on Today: `decision_engine`, `lag_engine`, `whs_engine`, `safety_engine`, `xai_engine`, `learning_engine`, `state_machine`.
+  Not on Today: `decision_engine`, `lag_engine`, `whs_engine`, `state_machine` (the war room and What-if use them).
+  `safety_engine`, `xai_engine` and `learning_engine` were deleted in PR 113.
 - **Agents** (`app/agents/`, judgement): Research (no data source: returns nothing, and says so), Opportunity (screener → buy ideas,
-  commodity card, cash research), Fee, Allocation (its veto is **unreachable** from the UI), and Adversary (cross-examines war-room stages,
+  commodity card, cash research), Fee, and Adversary (cross-examines war-room stages,
   can block). The full cited roster is in [AGENTS.md](AGENTS.md).
 - **War room** (`war_room.build_war_room`). This is the **only live use of the typed state machine**:
   1. Lag scan: spot vs the 50-day SMA ("listing price" is a legacy name).
@@ -360,4 +361,4 @@ These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
   band, mute/done TTLs, the near-rule/near-cap constants, card-priority weights, frontier draws/bands, and the Kelly-by-objective table.
 - **Stale comments:** `buyback_hold.py` (says kv_settings; it has been `trading_rules` since PR 83); `PlanSleeve.is_core` (says unread; it is read).
 - **The goal model doesn't simulate stops** on non-sleeve tickers (BND/GOOGL/VTI/UGA/USO). This is disclosed in the UI.
-- **Dead path:** the legacy pipeline (`pipeline.py`, `AllocationAgent` veto, `SafetyEngine`, XAI, learning, decision feed).
+- *Deleted in PR 113:* the legacy pipeline (`pipeline.py`, `AllocationAgent` veto, `SafetyEngine`, XAI, learning, decision feed).

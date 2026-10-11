@@ -7,12 +7,7 @@ from sqlalchemy.pool import StaticPool
 import app.models.tables as tables  # noqa: F401 (register mappers)
 from app.models.base import Base
 from app.models.tables import DecisionFeed, DecisionItem
-from app.schemas.scoring import ConfidenceBreakdown, ImpactScores
-from app.schemas.state_machine import (
-    ActionType, DetectedSignal, DisplayedItem, Market, OptimizedSignal,
-    RankedSignal, VettedSignal,
-)
-from app.services.feed_service import build_recommendation, ensure_superadmin
+from app.services.feed_service import ensure_superadmin
 
 
 @pytest.fixture
@@ -51,29 +46,3 @@ async def test_persist_feed_with_items(session):
     rows = (await session.execute(select(DecisionItem))).scalars().all()
     assert len(rows) == 1
     assert rows[0].payload == {"k": "v"}
-
-
-def test_build_recommendation_maps_output_contract():
-    det = DetectedSignal(
-        ticker="TEVA", market=Market.NYSE, action_type=ActionType.BUY,
-        trigger="Depth 3 backbone divergence", depth=3, divergence_pct=8.2,
-        expected_return_pct=10.0, gross_gain_ils=100_000,
-    )
-    vet = VettedSignal(source=det, probability_of_ruin=0.03, max_drawdown=0.09,
-                       risk_critique="Within risk limits.")
-    opt = OptimizedSignal(source=vet, net_gain_delta=75_000, tax_saved=10_000)
-    ranked = RankedSignal(
-        source=opt, impact_score=32.0, confidence=75.0, urgency=48,
-        complexity_label="Easy", complexity_factor=1.25,
-        scores=ImpactScores(ret=50, tax=75, risk=97, liquidity=50, conviction=100),
-        confidence_breakdown=ConfidenceBreakdown(data_quality=90, model_agreement=80,
-                                                 historical_accuracy=75, market_stability=85),
-    )
-    item = DisplayedItem(source=ranked, path="Growth", title="Buy TEVA (NYSE)")
-
-    rec = build_recommendation(item)
-    assert rec.title == "Buy TEVA (NYSE)"
-    assert rec.action_type == "Buy"
-    assert rec.expected_impact.tax_impact == 10_000
-    assert rec.time_sensitivity == "This Week"  # urgency 48 -> This Week
-    assert rec.risk_critique == "Within risk limits."
