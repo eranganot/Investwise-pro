@@ -114,6 +114,7 @@ held 1 feed and 3 items (from one call to the deleted `/decision-feed/generate`)
 | 0012 | plans.strategy_sleeve_pct (dropped) | | 0026 | plans.kelly_fraction, return_confidence |
 | 0013 | trading_rules.strategy_id | | 0027 | plans.halve_limit_pct, on_track_pct |
 | 0014 | plan_sleeves | | 0028 | plans.thresholds |
+| | | | 0029 | **drop** the 6 legacy tables + positions.bucket_id (D76; code unmapped first, PR 114a) |
 
 Because 0001 runs `create_all` from today's models, the chain is **not a faithful history**: every later migration
 must be *guarded* (inspect before add). `tests/test_the_migration_chain_runs_from_nothing.py` proves the chain

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112, 113, 114a). Last product PR: **PR 114a**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave D complete: PR 112, 113, 114a, 114b). Last product PR: **PR 114b** (migration 0029). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 114b** (migration 0029 drops the legacy tables, alone). The order was inverted for a drop; see PR 114a.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Wave D (PR 112-114b) complete. Next: **Wave E** (PR 115, 121, 116, 117; needs D-c, D-d, D-g, D-h, D-i) after the owner's go-ahead.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -52,6 +52,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 114b — migration 0029 drops the legacy tables (D76, stage 3 part 2, ships alone)
+
+**Plan v3, Wave D, last PR.** It runs after PR 114a is live (nothing maps these any more).
+
+**What.** `alembic/versions/0029_drop_legacy_tables.py` drops:
+- `user_actions`, `decision_items`, `decision_feeds`, `broker_connections`, `tax_profiles`;
+- `positions.bucket_id`, with its FK, via `batch_alter_table`, so SQLite rebuilds and Postgres drops the column and
+  its constraint;
+- then `buckets`.
+
+Children go before parents. Every drop is guarded, because `0001_initial` builds from today's metadata and a fresh
+database never had these tables. The downgrade recreates them empty, `bucket_id` FK included.
+
+**Data dropped.** 1 `decision_feeds` row and 3 `decision_items` rows, from one call to the deleted
+`/decision-feed/generate`. Everything else was empty (read-only counts in PR 113's entry).
+
+**Verified locally on Postgres 16 (mandatory for this stage).** On a scratch database: upgrade head, downgrade -1
+(the tables and the `fk_positions_bucket_id_buckets` constraint come back), insert a feed row, upgrade head. All six
+tables, the column and the FK are gone; only `positions_account_id_fkey` remains; head is 0029.
+`tests/test_the_legacy_tables_are_dropped.py` does the same round trip on SQLite in CI.
+
+**Smoke.** `scripts/smoke/smoke-pr114b-drop-legacy.ps1 -Sha <sha>`: schema 0029; `/portfolio`, Today, the health check
+and the rules list all read normally.
+
+---
+
 ## PR 114a — the legacy tables are no longer mapped (D76, stage 3 part 1)
 
 **The plan's order is inverted, deliberately.** It said "114.0: a migration drops the tables; 114: remove the model
@@ -68,7 +94,8 @@ code stops mapping first, then the schema follows. So:
 Postgres.
 
 **Smoke.** `scripts/smoke/smoke-pr114a-unmap-legacy.ps1 -Sha <sha>`. Schema still 0028; `/portfolio` NAV equals the sum
-of rows; Today and the health check build.
+of rows; Today and the health check build. **Ran against `523bbcf` (GitHub PR #15 merge): 5 PASS, 0 FAIL** (8 positions,
+NAV = sum, health 61/100).
 
 ---
 
