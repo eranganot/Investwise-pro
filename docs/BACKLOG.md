@@ -16,6 +16,7 @@
 > **Closed in PR 108:** C10, C11, C16 (one regime acts; futures day change; `_OBJ_RETURN` investigated: labelled and gated, no change).
 > **Closed in PR 109:** C9 (a read of Today deleted watch alerts and could switch off a triggered stop; D-b).
 > **Closed in PR 110:** C6, C7b, C8, S1, S3, S4, S5, L15 (write routes ANALYST+, public allowlist, broker mock off in production, whatif demo gated, /ask and AI summaries number-checked + disclaimed, push caller-scoped, research 429 classified).
+> **Closed in PR 111:** S2 (logout revokes this browser's token; D73).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -68,7 +69,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | Sev | PR |
 |---|---|---|---|---|
-| S2 | Logout doesn't end the session: bearer and replayed cookie both 200 after `/auth/logout` | P | Med-Low | 111 (D73: this browser only, no migration) + 111 (D-f) |
 | S6 | No inbound rate limiting | P | Low | parked (S4 removes the anonymous LLM spend) |
 
 ## Cleanup and tech debt (verified 2026-10-08)

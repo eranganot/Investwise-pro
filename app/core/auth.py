@@ -34,6 +34,7 @@ class Principal(BaseModel):
     sub: str
     role: Role
     token_type: str = "access"
+    jti: str | None = None
 
 
 @lru_cache
@@ -103,7 +104,45 @@ def _principal_from_token(token: str) -> Principal:
     if payload.get("type") == "refresh":
         raise HTTPException(401, "refresh token cannot access resources")
     return Principal(sub=payload["sub"], role=Role(payload.get("role", "READ_ONLY")),
-                     token_type=payload.get("type", "access"))
+                     token_type=payload.get("type", "access"), jti=payload.get("jti"))
+
+
+# --- logout ends THIS browser's session (PR 111, D73) -------------------------
+#
+# `/auth/logout` used to delete the cookie and nothing else, so the token inside
+# it stayed valid for its full 30 days: a copied cookie or bearer replayed after
+# logout got 200 (S2). Logout now writes the token's `jti` to `revoked_tokens`
+# (the table refresh-token rotation already uses), and every authenticated
+# request checks it. Owner's choice (D-f option 2): only the browser you log out
+# of is signed out; other devices keep their sessions.
+#
+# Cached per jti so the check is not a DB read per request: a revocation made
+# on this instance takes effect at once; "not revoked" is re-checked after
+# REVOKED_CACHE_SEC (the app runs one instance).
+REVOKED_CACHE_SEC = 60
+_REVOKED_CACHE: dict[str, tuple[bool, float]] = {}
+
+
+def mark_revoked(jti: str) -> None:
+    _REVOKED_CACHE[jti] = (True, time.time())
+
+
+async def _is_revoked(jti: str) -> bool:
+    hit = _REVOKED_CACHE.get(jti)
+    if hit and (hit[0] or time.time() - hit[1] < REVOKED_CACHE_SEC):
+        return hit[0]
+    try:
+        from sqlalchemy import select
+
+        from app.core.database import AsyncSessionLocal
+        from app.models.tables import RevokedToken
+        async with AsyncSessionLocal() as session:
+            revoked = (await session.scalar(
+                select(RevokedToken.id).where(RevokedToken.jti == jti))) is not None
+    except Exception:  # noqa: BLE001 -- a DB hiccup must not log everyone out
+        return bool(hit and hit[0])
+    _REVOKED_CACHE[jti] = (revoked, time.time())
+    return revoked
 
 
 def require_role(min_role: Role):
@@ -126,6 +165,8 @@ def require_role(min_role: Role):
         if not token:
             raise HTTPException(401, "not authenticated")
         principal = _principal_from_token(token)
+        if principal.jti and await _is_revoked(principal.jti):
+            raise HTTPException(401, "this session was logged out")
         # Email allowlist: user tokens must be allow-listed (m2m tokens exempt).
         allowed = s.allowed_email_list
         if allowed and "@" in principal.sub and principal.sub.lower() not in allowed:

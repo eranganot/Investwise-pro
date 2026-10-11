@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave C: PR 110). Last product PR: **PR 110**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave C complete: PR 110, 111). Last product PR: **PR 111**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). Next: **PR 111** (logout ends this browser's session).
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Next: **Wave D** (PR 112-114, legacy removal; needs D-j) after the owner's go-ahead.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,35 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 111 — logging out ends this browser's session
+
+**Plan v3, Wave C, second PR (D73, D-f option 2: "only the specific browser currently used").** No migration:
+`revoked_tokens` already existed for refresh-token rotation, so the planned PR 111.0 was dropped.
+
+**What was wrong (S2, reproduced live 2026-10-11).** The PR 111 smoke against the PR 110 build minted a throwaway
+token, logged it out, and replayed it: 200. `/auth/logout` deleted the cookie and nothing else. The 30-day SUPERADMIN
+JWT inside it stayed valid to anyone holding a copy, and `require_role` never consulted `revoked_tokens`.
+
+**What.**
+- `/auth/logout` decodes this browser's cookie (and a bearer token, if one is sent) and writes each `jti` to
+  `revoked_tokens`.
+- `require_role` refuses a revoked `jti` with 401 "this session was logged out". The check is cached 60 s per jti, a
+  revocation on this instance applies at once, and a DB hiccup never logs anyone out.
+- Other devices and the agent key are unaffected. To end every session at once, rotate `JWT_SECRET`.
+
+**Tests.** `tests/test_logout_ends_this_session.py` (4):
+- replaying a logged-out cookie or bearer token gets 401, and it still does after a cold cache;
+- another device's session still works, and so do a fresh login and the agent key;
+- a garbage cookie at logout is harmless.
+
+The two replay tests fail on HEAD.
+
+**Smoke.** `scripts/smoke/smoke-pr111-logout.ps1 -Sha <sha>`. It uses a throwaway m2m token minted by the agent key,
+never the owner's session. Against the PR 110 build it FAILs at "the same token after logout -> 200", which is S2,
+reproduced live.
+
+---
 
 ## PR 110 — authorisation and honesty at the edges
 
@@ -94,7 +123,12 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - a behavioural READ_ONLY-403 / owner-allowed check.
 
 **Smoke.** `scripts/smoke/smoke-pr110-doors.ps1 -Sha <sha>`. The broker check runs only with a proven `-Sha`: on
-the old build it would write.
+the old build it would write. **Ran against `cd673f0` (GitHub PR #11 merge): 13 PASS, 0 FAIL.**
+- Anonymous: 401 on all three gated routes; `/docs` and `/openapi.json` 404.
+- The agent key gets 200 on all three.
+- `/ask` answered (verified); `/whatif` grounded.
+- The broker check passed on "No brokerage connection" (sync without connect), so it proved less than it claimed.
+  It now calls `/broker/connect`, and a manual call confirmed "the mock aggregator is disabled in production".
 
 ---
 
