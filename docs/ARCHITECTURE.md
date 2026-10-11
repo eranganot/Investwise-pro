@@ -151,7 +151,7 @@ exposed at `/api/v1/push/status`. Times are container time (UTC on Railway).
 | Job | Schedule | What it does |
 |---|---|---|
 | `price_refresh` | every 30 min (primed at boot) | Reprice every position (primary → Yahoo fallback, minor-unit/currency repair), then evaluate trading rules |
-| `futures_warm` | every 5 min (primed at boot) | Futures snapshot + regime proxy cache read by Today; an outage keeps the last snapshot, marked stale, and fails the job |
+| `futures_warm` | every 5 min (primed at boot) | Refresh the strategies' regime cache (`regime_service`, hourly) that Today reads, then the futures cross-check snapshot; a futures outage keeps the last snapshot, marked stale, and fails the job |
 | `market_refresh` | every 60 min (primed at boot) | Research scan. **Vestigial**: no economic source, no reader (deleted in plan PR 112) |
 | `push_evaluate` | every 60 min | Per subscriber: push new important cards, risk alerts, price moves |
 | `standing_orders` | every 60 min | Credit due monthly deposits (contribution + cash), idempotent |

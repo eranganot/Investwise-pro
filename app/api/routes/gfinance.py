@@ -9,6 +9,7 @@ from app.core.database import get_session
 from app.models.tables import User
 from app.services import ai_service
 from app.services.markets_service import futures_snapshot
+from app.services.regime_service import refresh_regime_proxy
 
 router = APIRouter(prefix="/api/v1", tags=["markets-ai"])
 
@@ -25,7 +26,9 @@ async def markets_futures() -> dict:
     returned here alongside it so the two can be compared.
     """
     snap = await asyncio.to_thread(futures_snapshot)
-    proxy = await asyncio.to_thread(regime_proxy)
+    # PR 108: the strategies' regime, via the shared cache (refreshed at most
+    # hourly) -- the same object Today's risk card reads.
+    proxy = await asyncio.to_thread(refresh_regime_proxy)
     market = dict(snap.get("market") or {})
     market["role"] = "cross_check"
     market["note"] = ("Display only. Futures have no usable history, so this can "
@@ -42,27 +45,6 @@ async def markets_futures() -> dict:
                 "disagree today. That is worth seeing, not worth acting on: only "
                 "the price-derived one is measurable, and it is what the "
                 "strategies read.")}
-
-
-def regime_proxy() -> dict:
-    """Today's price-derived regime -- the one the strategies actually read.
-
-    Fetched here rather than imported from the signal path so the Markets page
-    can show it without a strategy being applied. It calls the same
-    ``regime.latest`` the backtest gates on.
-    """
-    from app.engines import regime as rg
-    from app.engines.strategy_backtest import align
-    from app.services.backtest_service import _fetch
-    series, missing = _fetch(rg.tickers_needed())
-    if not series:
-        return {"ok": False, "reason": "MISSING_TICKER", "detail": ", ".join(missing)}
-    _dates, px = align(series)
-    out = rg.latest(px)
-    if missing:
-        # Say which index is absent rather than quietly narrowing breadth.
-        out["degraded"] = f"no history for {', '.join(missing)}"
-    return out
 
 
 @router.get("/markets/summary")

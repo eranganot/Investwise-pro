@@ -48,12 +48,19 @@ async def _portfolio_context(session: AsyncSession, user: User) -> dict:
     recs = await build_recommendations(session, user)
     holdings = []
     nav = snap.get("nav") or 0
+    from app.services.fx import holding_value_ils
     for p in positions:
-        val = (p.get("current_price") or 0) * (p.get("quantity") or 0)
+        # PR 108: valued in shekels (PR 105's class). `price x qty` is in the
+        # holding's own currency and `nav` is ILS, so a USD holding read at 27%
+        # of its real weight in the summary the model is handed.
+        val = holding_value_ils(p)
         holdings.append({"ticker": p["ticker"], "value_pct": round(val / nav * 100, 1) if nav else None})
     holdings.sort(key=lambda h: (h["value_pct"] or 0), reverse=True)
-    snap = await asyncio.to_thread(futures_snapshot)
-    mkt = snap.get("market", {})
+    # PR 108 (D-a): Today's summary describes the regime the strategies act on.
+    from app.services.regime_service import cached_regime_proxy, describe
+    _px = cached_regime_proxy()
+    mkt = ({"regime": str(_px["state"]).replace("_", "-"), "rationale": describe(_px)}
+           if _px.get("ok") else {"regime": "not measured yet", "rationale": "the regime cache is cold"})
     return {
         "nav_ils": round(nav) if nav else None,
         "health": {k: health.get(k) for k in (

@@ -689,10 +689,18 @@ async function aiPortfolioSummary(){
 }
 async function loadMarkets(){
   try{const r=await(await fetch("/api/v1/markets/futures")).json();
-    const m=r.market||{}; const tone=m.tone||'warn';
-    $("regimeCard").innerHTML=`<div class="lbl">Market regime</div>
-      <div class="big ${tone}" style="text-transform:capitalize">${m.regime||'—'}</div>
-      <div class="muted">${m.rationale||''}</div>`;
+    // PR 108: the regime your strategies act on leads; futures are a labelled cross-check.
+    const m=r.market||{}; const px=r.regime_proxy||{};
+    const st=px.ok?String(px.state||'').replace('_','-'):null;
+    const ptone=st==='risk-on'?'ok':st==='risk-off'?'bad':'warn';
+    const c=px.components||{};
+    const why=px.ok?[c.trend_up==null?null:(c.trend_up?'SPY above its 200-day trend':'SPY below its 200-day trend'),
+      c.vol_percentile==null?null:`volatility at the ${(n=>n+((n%100>=11&&n%100<=13)?'th':({1:'st',2:'nd',3:'rd'}[n%10]||'th')))(Math.round(c.vol_percentile))} percentile`,
+      c.breadth==null?null:`${Math.round(c.breadth*100)}% of SPY/QQQ/IWM in an uptrend`].filter(Boolean).join(', '):'not measured yet';
+    $("regimeCard").innerHTML=`<div class="lbl">Market regime (what your strategies read)</div>
+      <div class="big ${ptone}" style="text-transform:capitalize">${st||'—'}</div>
+      <div class="muted">${why}</div>
+      <div class="muted" style="margin-top:6px;font-size:12px">Futures cross-check: <b>${m.regime||'—'}</b>${m.rationale?' ('+m.rationale+')':''}${r.stale?' · stale':''}. Display only.${r.regime_agreement===false?' The two disagree today; only the first one is measurable.':''}</div>`;
     const fut=r.futures||[];
     $("futGrid").innerHTML = fut.length ? fut.map(f=>{
       const c=f.change_pct; const cl=(c==null)?'mk':(c>=0?'up':'down');

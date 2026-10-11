@@ -33,7 +33,7 @@ Six destinations: top tabs on desktop, a fixed **bottom nav on phones ≤ 720 px
 | 🏠 **Today** | Triggered-rules banner · health hero (On plan + On track) · goal line · account-history chart (real NAV, TWR vs SPY) · AI summary · "Where this could end up" · **What to do now** (cards, then "N more", **Heads-up** list, **Holding review**) · biggest risk · Ask InvestWise / digest |
 | 💼 **Holdings** | Segmented **Positions** (NAV summary "you put in X, it's worth Y", Cash row first, holdings with chart / AI research / edit / remove, commodities picker, 💵 Liquid cash modal with cash rules + standing orders) / **Rules** (filter, add rule — 11 types, suggested rules, per-ticker groups with distance bars in the rule's own unit, rule history) |
 | 🎯 **Plan** | Sub-tabs **Goal · My mix · Explore** (PR 104a). See §4 |
-| 📊 **Markets** | Futures regime hero + grid, AI summary |
+| 📊 **Markets** | Regime hero (the strategies' regime; futures as a labelled cross-check) + futures grid, AI summary |
 | ⚔️ **Agents** | The war-room transcript per ticker ("How the decisions are made") |
 | 🔭 **Explore** | Projection fan, mix donut, backfilled "if you had held" chart (labelled reconstruction), portfolio risk, what-if scenarios + sliders, "What's moving", glossary |
 
