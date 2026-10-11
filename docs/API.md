@@ -1,7 +1,8 @@
 # API reference
 
 > ~143 endpoints across 32 routers in `app/api/routes/`, plus 4 in `app/main.py`. The live OpenAPI is at
-> **`/docs`** on any running instance. This page groups the endpoints by purpose and marks which ones the PWA
+> **`/docs`** on a development instance (off in production since PR 110). Since PR 110 every write route needs
+> ANALYST+ (SUPERADMIN can do everything), so read the **U** marks on writes below as ANALYST. This page groups the endpoints by purpose and marks which ones the PWA
 > uses. Written 2026-10-07 at PR 104d.1.
 
 **Auth column:**

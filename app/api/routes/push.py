@@ -1,5 +1,5 @@
 """Web Push notification endpoints (PWA)."""
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,28 +42,41 @@ class SubscribeRequest(BaseModel):
     keys: dict
 
 
-@router.post("/subscribe")
+@router.post("/subscribe", dependencies=[Depends(require_role(Role.ANALYST))])
 async def subscribe(req: SubscribeRequest, request: Request,
                     session: AsyncSession = Depends(get_session),
-                    user: User = Depends(acting_user)) -> dict:
+                    user: User = Depends(acting_user),
+                    principal: Principal = Depends(require_role(Role.ANALYST))) -> dict:
     ua = request.headers.get("user-agent", "")[:255]
-    await push_service.save_subscription(session, user.email, req.model_dump(), ua)
+    try:
+        await push_service.save_subscription(session, user.email, req.model_dump(), ua,
+                                             legacy_subjects=_legacy_subjects(principal))
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
     return {"ok": True}
+
+
+def _legacy_subjects(principal: Principal) -> tuple[str, ...]:
+    """The owner may also act on rows saved in open mode under the superadmin NAME."""
+    from app.core.config import get_settings
+    return (get_settings().superadmin_name,) if principal.role == Role.SUPERADMIN else ()
 
 
 class UnsubscribeRequest(BaseModel):
     endpoint: str
 
 
-@router.post("/unsubscribe")
+@router.post("/unsubscribe", dependencies=[Depends(require_role(Role.ANALYST))])
 async def unsubscribe(req: UnsubscribeRequest,
                       session: AsyncSession = Depends(get_session),
-                      user: User = Depends(acting_user)) -> dict:
-    await push_service.delete_subscription(session, req.endpoint)
-    return {"ok": True}
+                      user: User = Depends(acting_user),
+                      principal: Principal = Depends(require_role(Role.ANALYST))) -> dict:
+    n = await push_service.delete_subscription(
+        session, req.endpoint, (user.email, *_legacy_subjects(principal)))
+    return {"ok": True, "removed": n}
 
 
-@router.post("/test")
+@router.post("/test", dependencies=[Depends(require_role(Role.ANALYST))])
 async def test(session: AsyncSession = Depends(get_session),
                user: User = Depends(acting_user)) -> dict:
     sent = await push_service.send_test(session, user.email)
@@ -78,7 +91,7 @@ async def status(session: AsyncSession = Depends(get_session),
     return await push_service.diagnostics(session, user)
 
 
-@router.post("/check")
+@router.post("/check", dependencies=[Depends(require_role(Role.ANALYST))])
 async def check(session: AsyncSession = Depends(get_session),
                 user: User = Depends(acting_user)) -> dict:
     """Evaluate triggers for the current user now (recs, alerts, price moves)."""

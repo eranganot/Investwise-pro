@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave B complete: PR 107, 108, 109). Last product PR: **PR 109**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave C: PR 110). Last product PR: **PR 110**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Next: **Wave C** (PR 110, 111.0, 111; needs D-f) after the owner's go-ahead.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). Next: **PR 111** (logout ends this browser's session).
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,52 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 110 — authorisation and honesty at the edges
+
+**Plan v3, Wave C, first PR.** Owner decisions at the go-ahead (2026-10-11):
+- **D74:** "me as admin can do everything." SUPERADMIN keeps every route.
+- **D73 (D-f option 2):** logout ends only this browser's session. That is PR 111, and it needs no migration, so
+  PR 111.0 is dropped.
+
+**What was wrong, and what changed.** Every item is proven by a test that fails on HEAD.
+- **S1.** 18 write routes accepted a READ_ONLY token: card accept, dismiss and restore; heads-up dismiss; position
+  PUT/DELETE; rules CRUD, toggle and evaluate; push subscribe, unsubscribe, test and check; broker connect and sync.
+  All are ANALYST+ now, and broker is SUPERADMIN. Compute-only POSTs stay READ_ONLY. Nothing changes for the owner:
+  the browser session and the agent key are SUPERADMIN.
+- **S4.**
+  - `/providers/health` (leaked held tickers through `quote:<TICKER>`) and `/adversary/diagnostics` are SUPERADMIN.
+  - `/markets/summary` needs sign-in and is cached 15 min. It was one Gemini call per anonymous hit.
+  - `/docs`, `/redoc` and `/openapi.json` are off in production.
+- **C6.** The mock broker is refused in production. Two bodyless POSTs used to write TEVA/GOLD/BOND into the real
+  book with no ledger row.
+- **C7b.** `/whatif` falls back to demo observations only when `demo_signals` is on, and reports `grounded`. An empty
+  book was shown "Buy TEVA (NYSE)".
+- **C8.** `/ask` runs the digest's `unsupported_numbers` check, with numbers in the question allowed. An answer that
+  quotes a figure the data doesn't contain is withheld (`verified: false`). Every answer ends with "Not financial
+  advice.".
+  - The portfolio, holding and macro summaries get the same check plus the disclaimer.
+  - Web research is labelled `verified: false`, because it quotes outside figures by design, and is always
+    disclaimed.
+  - Found while fixing: research labelled a USD price "₪". It now uses the ticker's own currency.
+- **S3.** Push unsubscribe deletes only the caller's row; the owner also matches legacy rows saved under the
+  superadmin name. Subscribe refuses to move an endpoint to another subject.
+- **S5.** `core/security.py`, `require_api_key` and the `api_key` setting are deleted. The false boot warning
+  "write endpoints are unauthenticated" is replaced by an ERROR when `REQUIRE_AUTH` is off in production.
+- **L15.** Grounded research falls back to ungrounded only on HTTP 400. A 429 is now one call and the billing
+  message, not two calls and "temporarily unavailable".
+
+**Not in this PR:** C7 (`/decision-feed/weekly`, no UI caller) goes with the legacy deletion (plan PR 113).
+
+**Class-closers.** `tests/test_the_doors_are_shut.py` (12, all fail on HEAD):
+- write routes ANALYST+ unless COMPUTE_ONLY;
+- no unauthenticated route outside the PUBLIC allowlist;
+- a behavioural READ_ONLY-403 / owner-allowed check.
+
+**Smoke.** `scripts/smoke/smoke-pr110-doors.ps1 -Sha <sha>`. The broker check runs only with a proven `-Sha`: on
+the old build it would write.
+
+---
 
 ## PR 109 — reading Today never deletes or retires a rule
 
@@ -96,7 +142,11 @@ before and after a read.
 
 **Smoke.** `scripts/smoke/smoke-pr109-reading-never-deletes.ps1 -Sha <sha>`. Against `b7d9234`: the rule set is
 identical across reads (the live book has no orphaned rules left to delete); FAILs only on the missing
-`rule_banner.uncarded`.
+`rule_banner.uncarded`. **Ran against `887113f` (GitHub PR #10 merge): 6 PASS, 0 FAIL, 1 SKIP** (no watch alerts on
+unheld tickers on the live book). **Wave B complete.**
+
+**Pixel QA (owner, 2026-10-11):** PR 120 (Today's chance = Plan's) and PR 108 (Markets regime card) passed. PR 107's
+07:00 digest check is due the morning of 2026-10-12.
 
 ---
 

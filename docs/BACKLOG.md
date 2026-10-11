@@ -15,6 +15,7 @@
 > **Closed in PR 107:** C4, C5, L10, L11 (jobs that reported success when they failed; untested jobs; futures outage cache; boot waiting on Yahoo).
 > **Closed in PR 108:** C10, C11, C16 (one regime acts; futures day change; `_OBJ_RETURN` investigated: labelled and gated, no change).
 > **Closed in PR 109:** C9 (a read of Today deleted watch alerts and could switch off a triggered stop; D-b).
+> **Closed in PR 110:** C6, C7b, C8, S1, S3, S4, S5, L15 (write routes ANALYST+, public allowlist, broker mock off in production, whatif demo gated, /ask and AI summaries number-checked + disclaimed, push caller-scoped, research 429 classified).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -58,10 +59,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Where | Verdict | Sev | PR |
 |---|---|---|---|---|---|
-| C6 | `/broker/connect` + `/broker/sync` inject mock TEVA/GOLD/BOND into the real book (READ_ONLY suffices, no ledger row) | `brokers/registry.py:12-14`, `broker_sync.py:107` | P | Med | 110 / 112 |
-| C7b | `/whatif` (a **UI** route) falls back to demo TEVA/GOLD/HYPE on an empty book, ignoring `demo_signals` | `whatif.py:53` | P | Low | 110 |
 | C7 | `/decision-feed/weekly` same fallback (empty book only; no UI caller) | `workflows.py:162-163` | P | Low | 113 |
-| C8 | `/ask` and the AI summaries return model text unverified; an invented 37.4% / 412 came back verbatim, no disclaimer | `ask_service.py:37-45`, `ai_service.py` | P | Med | 110 |
 | C12 | `broker_sync.py:33` raw price fallback; `intake_service` whole-dict `meta` assignments | V7 | — | P3 | 112 (broker deleted) |
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
@@ -70,11 +68,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | Sev | PR |
 |---|---|---|---|---|
-| S1 | 25 of 67 write routes accept READ_ONLY (card accept, position PUT/DELETE, rules, push, broker). Reachable only via an m2m token today | P | Low (latent Med) | 110 |
-| S2 | Logout doesn't end the session: bearer and replayed cookie both 200 after `/auth/logout` | P | Med-Low | 111.0 + 111 (D-f) |
-| S3 | `/push/unsubscribe` and `/subscribe` aren't caller-scoped | P | Low | 110 |
-| S4 | Anonymous: `/providers/health` leaks held tickers; `/markets/summary` does an uncached Gemini call per hit; `/adversary/diagnostics` too when enabled; `/docs` maps the API. No anonymous route returns holdings or NAV | P | Low-Med | 110 |
-| S5 | `API_KEY` / `require_api_key` dead; the boot warning is false | P | Low | 110 |
+| S2 | Logout doesn't end the session: bearer and replayed cookie both 200 after `/auth/logout` | P | Med-Low | 111 (D73: this browser only, no migration) + 111 (D-f) |
 | S6 | No inbound rate limiting | P | Low | parked (S4 removes the anonymous LLM spend) |
 
 ## Cleanup and tech debt (verified 2026-10-08)
@@ -92,7 +86,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | L9 | Two `money()` helpers (2-dp float display vs 4-dp Decimal DB), same name | P | 116 |
 | L12 | `.seg` defined twice; `--muted` undefined (bright "Ignored" labels); 17 non-focusable click targets; 0 `:focus` rules; no Escape/focus handling | P | 117 (D-i) |
 | L14 | The commodity screen is plan-blind: it buys CANE (sugar) while the goal model prices commodities as IAU/DBC | P | 116 (D-g) |
-| L15 | Gemini errors: done except grounded per-holding research (a 429 shows "temporarily unavailable" and is retried) | P | 110 |
 
 ## Verification debt
 

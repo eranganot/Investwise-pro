@@ -96,6 +96,13 @@ def gemini_generate(prompt: str, *, model: str | None = None, timeout: float = 2
 
 def gemini_generate_grounded(prompt: str, *, model: str | None = None,
                              timeout: float = 40.0) -> dict | None:
+    """`gemini_generate_grounded_ex` without the reason (kept for callers)."""
+    res, _err = gemini_generate_grounded_ex(prompt, model=model, timeout=timeout)
+    return res
+
+
+def gemini_generate_grounded_ex(prompt: str, *, model: str | None = None,
+                                timeout: float = 40.0) -> tuple[dict | None, str | None]:
     """Generate with Google Search grounding (live web). Returns
     {"text": str, "sources": [{"title","url"}]} or None on failure.
 
@@ -104,7 +111,7 @@ def gemini_generate_grounded(prompt: str, *, model: str | None = None,
     """
     key = gemini_key()
     if not key:
-        return None
+        return None, _classify(None, None)
     model = model or getattr(get_settings(), "adversary_llm_model", "gemini-2.0-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
@@ -140,12 +147,18 @@ def gemini_generate_grounded(prompt: str, *, model: str | None = None,
         base = {"contents": [{"parts": [{"text": prompt}]}]}
         try:
             return _extract(_post({**base, "tools": [{"google_search": {}}]}))
-        except urllib.error.HTTPError:
-            return _extract(_post(base))  # grounding unsupported -> plain generation
+        except urllib.error.HTTPError as e:
+            # PR 110 (L15): fall back ONLY when the grounding tool itself is
+            # rejected (HTTP 400). A 429 used to trigger a second, ungrounded
+            # call into the same exhausted quota, and both failures collapsed
+            # into "temporarily unavailable".
+            if getattr(e, "code", None) != 400:
+                raise
+            return _extract(_post(base))
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            res = ex.submit(_call).result(timeout=timeout + 5)
-        return res if (res and res.get("text")) else None
-    except Exception:
-        return None
+        from app.providers.live import _HTTP_POOL
+        res = _HTTP_POOL.submit(_call).result(timeout=timeout + 5)
+        return (res, None) if (res and res.get("text")) else (None, "The AI returned an empty response.")
+    except Exception as exc:  # noqa: BLE001
+        return None, _classify(exc, key)

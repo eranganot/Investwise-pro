@@ -83,9 +83,14 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 - **Signing:** HS256 with `JWT_SECRET` if set, which keeps sessions alive across redeploys. Otherwise
   RS256 with an ephemeral key, and every restart logs everyone out.
 - **`REQUIRE_AUTH` defaults to False** (open demo mode, everyone is SUPERADMIN). Production sets it to true.
-- Roles `SUPERADMIN > ADVISOR > ANALYST > READ_ONLY` exist (`app/core/auth.py:23`). In practice the app is
-  single-user, and many writes require only `acting_user` (READ_ONLY). Known gaps (logout doesn't revoke the
-  JWT, `/push/unsubscribe` isn't caller-scoped, `API_KEY` is dead code) are in [BACKLOG.md](BACKLOG.md).
+- Roles `SUPERADMIN > ADVISOR > ANALYST > READ_ONLY` exist (`app/core/auth.py:23`). **Every write route is ANALYST
+  or above** (PR 110). A READ_ONLY token may call reads and the compute-only POSTs (`/ask`, research, `/backtest`,
+  frontier preview, `/scenario`, `/whatif`). The owner (SUPERADMIN) can do everything (D74). Two tests enforce
+  this: `test_every_write_route_is_analyst_or_above` fails on a new READ_ONLY writer, and
+  `test_no_new_route_is_public_by_accident` fails on a new unauthenticated route (the PUBLIC allowlist is the
+  review). Push subscriptions are scoped to the caller. `/providers/health` and `/adversary/diagnostics` are
+  SUPERADMIN-only. `/docs`, `/redoc` and `/openapi.json` are off in production. The dead `API_KEY` setting was
+  removed; boot logs an ERROR if `REQUIRE_AUTH` is off in production.
 - The static shell `/app` is public. The data endpoints are what's gated.
 
 ## 5. Request flow: opening Today

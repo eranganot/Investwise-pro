@@ -50,7 +50,14 @@ async def run_whatif(session: AsyncSession, user: User, *, risk_tolerance: str =
     s = overridden_settings(risk_tolerance, expected_drawdown_pct)
 
     positions = await list_positions(session, user)
-    obs = [o for p in positions if (o := position_to_observation(p)) is not None] or DEFAULT_OBSERVATIONS
+    obs = [o for p in positions if (o := position_to_observation(p)) is not None]
+    # PR 110 (C7b): demo observations ONLY when the deployment opts into demo
+    # signals (as the war room does). This fell back unconditionally, so an
+    # empty book was shown "Buy TEVA (NYSE)" / "Rebalance GOLD (SPOT)" for
+    # tickers it does not hold -- unlabelled, on a screen the UI renders.
+    grounded = bool(obs)
+    if not obs and get_settings().demo_signals:
+        obs = DEFAULT_OBSERVATIONS
 
     sm = StateMachine(risk=RiskEngine(s, seed=7), tax=TaxEngine(s), decision=DecisionEngine(s), settings=s)
     recommended: list[str] = []
@@ -77,6 +84,7 @@ async def run_whatif(session: AsyncSession, user: User, *, risk_tolerance: str =
     qualifying = [o for o in harvest if o["estimated_annual_tax_savings_currency"] >= tlh_target_ils]
 
     return {
+        "grounded": grounded,
         "inputs": {"risk_tolerance": risk_tolerance, "tlh_target_ils": round(tlh_target_ils, 2),
                    "expected_drawdown_pct": round(drawdown * 100, 1)},
         "risk_profile": {

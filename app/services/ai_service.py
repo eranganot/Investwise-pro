@@ -8,6 +8,7 @@ fallback rather than failing.
 from __future__ import annotations
 
 import asyncio
+import time as _time
 import json
 from datetime import datetime, timezone
 
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tables import User
 from app.services.llm import (
-    gemini_enabled, gemini_generate_ex, gemini_generate_grounded,
+    gemini_enabled, gemini_generate_ex, gemini_generate_grounded_ex,
 )
 from app.services.markets_service import futures_snapshot
 from app.services.plan_service import effective_caps, get_plan
@@ -91,6 +92,7 @@ async def portfolio_summary(session: AsyncSession, user: User) -> dict:
         "note the market backdrop, then the 1-2 most useful actions. Use ₪ for amounts. "
         f"Never invent numbers. End with '{_DISCLAIMER}'\n\n" + json.dumps(ctx, default=str)[:6000])
     out, err = gemini_generate_ex(prompt)
+    out = _verified(out, ctx)       # PR 110 (C8)
     return {"llm": bool(out), "summary": out or err or "Summary unavailable right now.",
             "error": None if out else err, "generated_at": _now(), "context": ctx}
 
@@ -118,12 +120,33 @@ async def holding_summary(session: AsyncSession, user: User, ticker: str) -> dic
         "position right now, using ONLY this JSON (don't invent prices or news). Mention how it's doing "
         f"vs their cost and what role it plays. End with '{_DISCLAIMER}'\n\n" + json.dumps(ctx, default=str))
     out, err = gemini_generate_ex(prompt)
+    out = _verified(out, ctx)       # PR 110 (C8)
     return {"llm": bool(out), "ticker": ticker, "context": ctx,
             "summary": out or err or "Summary unavailable.",
             "error": None if out else err, "generated_at": _now()}
 
 
+_MACRO_CACHE: dict = {"ts": 0.0, "data": None}
+MACRO_TTL_SEC = 900
+
+
+def _verified(out: str | None, ctx) -> str | None:
+    """PR 110 (C8): a summary that quotes a number its data does not contain is
+    dropped (the caller shows its unavailable text), and every one that is kept
+    ends with the disclaimer. Same check as the digest and /ask."""
+    if not out:
+        return out
+    from app.services.digest_service import unsupported_numbers
+    if unsupported_numbers(out, ctx):
+        return None
+    return out if _DISCLAIMER.lower() in out.lower() or "not financial advice" in out.lower() \
+        else f"{out.rstrip()} {_DISCLAIMER}"
+
+
 async def macro_summary() -> dict:
+    # PR 110 (S4): one LLM call per 15 minutes, not one per request.
+    if _MACRO_CACHE["data"] is not None and (_time.time() - _MACRO_CACHE["ts"]) < MACRO_TTL_SEC:
+        return _MACRO_CACHE["data"]
     snap = await asyncio.to_thread(futures_snapshot)
     if not gemini_enabled():
         m = snap.get("market", {})
@@ -135,9 +158,13 @@ async def macro_summary() -> dict:
         f"language (stocks, oil, gold, rates, dollar, volatility) and what regime it implies. End with '{_DISCLAIMER}'\n\n"
         + json.dumps(snap, default=str)[:4000])
     out, err = gemini_generate_ex(prompt)
-    return {"llm": bool(out), "summary": out or err or "Summary unavailable.",
-            "error": None if out else err,
-            "futures": snap.get("futures", []), "market": snap.get("market", {}), "generated_at": _now()}
+    out = _verified(out, snap)      # PR 110 (C8)
+    res = {"llm": bool(out), "summary": out or err or "Summary unavailable.",
+           "error": None if out else err,
+           "futures": snap.get("futures", []), "market": snap.get("market", {}), "generated_at": _now()}
+    if out:
+        _MACRO_CACHE.update(ts=_time.time(), data=res)
+    return res
 
 
 async def deep_research(session: AsyncSession, user: User, ticker: str) -> dict:
@@ -149,8 +176,11 @@ async def deep_research(session: AsyncSession, user: User, ticker: str) -> dict:
     if pos:
         cur, cost = pos.get("current_price") or 0, pos.get("cost_basis") or 0
         pnl = round((cur - cost) / cost * 100, 1) if cost else None
-        pos_ctx = (f" The investor HOLDS it: {pos.get('quantity')} shares, cost ₪{cost}, "
-                   f"now ₪{cur} ({pnl}% vs cost).")
+        # PR 110: in the ticker's OWN currency -- this labelled a USD price "₪".
+        from app.services.fx import price_currency
+        _ccy = price_currency(pos.get("market"), pos.get("meta") if isinstance(pos.get("meta"), dict) else None)
+        pos_ctx = (f" The investor HOLDS it: {pos.get('quantity')} shares, cost {cost} {_ccy}, "
+                   f"now {cur} {_ccy} ({pnl}% vs cost).")
     if not gemini_enabled():
         return {"llm": False, "ticker": ticker, "held": held,
                 "research": "Live research needs a Gemini API key (GOOGLE_API_KEY).",
@@ -163,11 +193,19 @@ async def deep_research(session: AsyncSession, user: User, ticker: str) -> dict:
         "3) Bull case / bear case (2-3 bullets each).\n"
         "4) Verdict for someone considering or holding it." + pos_ctx + "\n"
         f"Be balanced, cite what you found, and end with '{_DISCLAIMER}'")
-    res = gemini_generate_grounded(prompt)
+    res, err = gemini_generate_grounded_ex(prompt)
     if not res:
+        # PR 110 (L15): say WHY (a 429 is "top up billing", not "try again").
         return {"llm": False, "ticker": ticker, "held": held,
-                "research": "Research is temporarily unavailable. Please try again.",
-                "sources": [], "generated_at": _now()}
-    return {"llm": True, "ticker": ticker, "held": held,
-            "research": res.get("text", ""), "sources": res.get("sources", []),
+                "research": err or "Research is temporarily unavailable. Please try again.",
+                "error": err, "sources": [], "generated_at": _now()}
+    # Web research quotes outside figures by design, so it is not number-checked
+    # against the book -- it is labelled as web-sourced and always disclaimed.
+    return {"llm": True, "ticker": ticker, "held": held, "verified": False,
+            "research": _with_disclaimer(res.get("text", "")), "sources": res.get("sources", []),
             "generated_at": _now()}
+
+
+def _with_disclaimer(text: str) -> str:
+    t = (text or "").rstrip()
+    return t if "not financial advice" in t.lower() else f"{t}\n\n{_DISCLAIMER}"

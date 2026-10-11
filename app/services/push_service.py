@@ -140,7 +140,8 @@ async def public_key(session: AsyncSession) -> str:
 # --------------------------------------------------------------------------- #
 # Subscriptions
 # --------------------------------------------------------------------------- #
-async def save_subscription(session: AsyncSession, subject: str, sub: dict, ua: str | None) -> None:
+async def save_subscription(session: AsyncSession, subject: str, sub: dict, ua: str | None,
+                            *, legacy_subjects: tuple[str, ...] = ()) -> None:
     endpoint = sub.get("endpoint")
     keys = sub.get("keys") or {}
     p256dh, auth = keys.get("p256dh"), keys.get("auth")
@@ -148,15 +149,27 @@ async def save_subscription(session: AsyncSession, subject: str, sub: dict, ua: 
         raise ValueError("invalid subscription payload")
     existing = await session.scalar(select(PushSubscription).where(PushSubscription.endpoint == endpoint))
     if existing:
+        # PR 110 (S3): an endpoint is never MOVED between subjects -- posting a
+        # known endpoint re-owned another principal's device.
+        if existing.subject != subject and existing.subject not in legacy_subjects:
+            raise PermissionError("this device is subscribed under another account")
         existing.subject, existing.p256dh, existing.auth, existing.ua = subject, p256dh, auth, ua
     else:
         session.add(PushSubscription(subject=subject, endpoint=endpoint, p256dh=p256dh, auth=auth, ua=ua))
     await session.commit()
 
 
-async def delete_subscription(session: AsyncSession, endpoint: str) -> None:
-    await session.execute(delete(PushSubscription).where(PushSubscription.endpoint == endpoint))
+async def delete_subscription(session: AsyncSession, endpoint: str, subjects: tuple[str, ...]) -> int:
+    """Delete the CALLER's subscription for this endpoint. Returns rows removed.
+
+    PR 110 (S3): this deleted by endpoint alone, so another principal could
+    silence the owner's device (1 -> 0). `subjects` is the caller's own subject
+    plus, for the owner, the legacy name rows saved in open mode carry.
+    """
+    res = await session.execute(delete(PushSubscription).where(
+        PushSubscription.endpoint == endpoint, PushSubscription.subject.in_(subjects)))
     await session.commit()
+    return int(res.rowcount or 0)
 
 
 # --------------------------------------------------------------------------- #
