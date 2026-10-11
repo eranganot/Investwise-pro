@@ -28,11 +28,6 @@ async def _aboom(*a, **k):
     raise RuntimeError(INJECTED)
 
 
-def _fail_research(mp):
-    from app.agents import research_agent
-    mp.setattr(research_agent.ResearchAgent, "scan", _boom)
-
-
 def _fail_prices(mp):
     from app.services import pricing_service
     mp.setattr(pricing_service, "refresh_all_positions", _aboom)
@@ -85,7 +80,6 @@ def _fail_orders(mp):
 
 # job id -> how to make its inner work raise. EVERY job must be here.
 FAIL_WITH = {
-    "market_refresh": _fail_research,
     "price_refresh": _fail_prices,
     "futures_warm": _fail_futures,
     "push_evaluate": _fail_push,

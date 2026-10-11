@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave C complete: PR 110, 111). Last product PR: **PR 111**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave D: PR 112). Last product PR: **PR 112**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Next: **Wave D** (PR 112-114, legacy removal; needs D-j) after the owner's go-ahead.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Next: **PR 113** (the decision-feed cluster).
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,48 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 112 — legacy removal, stage 1 (D76)
+
+**Plan v3, Wave D, first PR.** Owner: "delete in 3 stages" (D-j → D76).
+
+**Re-checked at HEAD:**
+- `index.html` calls none of the routes below (0 hits each).
+- The only scripts naming them are under `scripts/archive/`.
+- No live module imports them.
+
+**Deleted.**
+- Routers (each held only legacy routes): `lag`, `whs`, `simulation`, `safety`, `tax` (`/tax/preview`), `risk`
+  (`/risk/preview`), `allocation`, `backtest`, `fees`, `screener`, `jobs`, `broker`, `entities`.
+  - `/auth/status` moved to `auth.py`, same path.
+- Functions: `/market/quote` and `/fx/rate`. `market.py` keeps `/research/events`, `/data-status` and
+  `/providers/health`.
+- Celery (`worker/celery_app.py`, `worker/tasks.py`) and the `celery`/`redis` pins plus `redis_url`.
+- The broker scaffold (`app/brokers/*`, `services/broker_sync.py`) and its settings.
+- The `market_refresh` job and `services/market_state.py`: it scanned and discarded the result.
+- The unused `google-genai` pin (L3).
+
+**Not deleted, and why.**
+- **`engines/safety_engine.py`.** The plan put it in stage 1, but `services/pipeline.py` (stage 2) still imports
+  it. It goes in PR 113.
+- **The engines behind the deleted routes.** Backtest, fee, screener, whs and simulation are still used by live
+  code; only the HTTP routes were legacy.
+
+**Tests.**
+- Deleted: `test_broker_sync.py`, `test_jobs.py`, the safety-route API test, the screener-endpoint test, the
+  market-refresh test, the broker half of the Tel Aviv test.
+- Rewritten to live routes:
+  - backtest and fees keep their `/recommendations` halves;
+  - the audit probe uses `/recommendations/restore`;
+  - the loop-freedom race uses `POST /portfolio/add` (the live route that quotes).
+- Updated: the PR 107 job guard (10 jobs) and the PR 110 public allowlist.
+- **Found while doing this:** the loop test left a `/__control/slow_async` route on the shared app, which the PR 110
+  public-route guard then saw in some orders. It now removes the route afterwards.
+
+**Smoke.** `scripts/smoke/smoke-pr112-legacy-stage1.ps1 -Sha <sha>`. Against `cb4c768` it FAILs, as it should: all 17
+routes are still served and the scheduler has 11 jobs.
+
+---
 
 ## PR 111 — logging out ends this browser's session
 
@@ -81,7 +123,7 @@ The two replay tests fail on HEAD.
 
 **Smoke.** `scripts/smoke/smoke-pr111-logout.ps1 -Sha <sha>`. It uses a throwaway m2m token minted by the agent key,
 never the owner's session. Against the PR 110 build it FAILs at "the same token after logout -> 200", which is S2,
-reproduced live.
+reproduced live. **Ran against `cb4c768` (GitHub PR #12 merge, 111 + 111.1): 7 PASS, 0 FAIL.** **Wave C complete.**
 
 ---
 

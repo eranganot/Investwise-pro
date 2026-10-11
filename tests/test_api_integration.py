@@ -21,13 +21,6 @@ def test_allocation_veto_via_api():
         assert teva["decision"] == "VETOED"
 
 
-def test_safety_check_via_api():
-    with TestClient(app) as c:
-        r = c.post("/api/v1/safety/check", json={
-            "holdings": {"BIG": 0.40}, "liquidity_ratio": 0.5, "proposals": []}).json()
-        assert r["verdict"] == "warn"
-
-
 def test_scenario_via_api():
     with TestClient(app) as c:
         r = c.post("/api/v1/scenario", json={"scenario": "INFLATION_SHOCK", "nav": 1_000_000}).json()

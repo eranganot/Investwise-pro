@@ -38,8 +38,7 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 - **Postgres in production, SQLite in the default test run.** CI runs the suite on both.
   The difference between them is a recurring source of bugs ([DECISIONS.md](DECISIONS.md) D27).
 - **No real brokerage.** "Accept" on a card rewrites the *tracked book* in Postgres and writes
-  ledger rows. No order is ever placed (`app/brokers/` has only a mock; Plaid and Yodlee
-  are scaffolds).
+  ledger rows. No order is ever placed. (The broker scaffold, `app/brokers/`, was deleted in PR 112.)
 
 ## 2. Layers and directories
 
@@ -55,8 +54,7 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 | `app/engines/` | Deterministic calculators: tax, risk (Monte Carlo), frontier, backtest, simulation, scoring… | Same inputs give the same output. No DB access. |
 | `app/agents/` | Five judgement components: Research, Opportunity (screener), Fee, Allocation, Adversary | See [AGENTS.md](AGENTS.md). |
 | `app/providers/` | Market-data and FX providers behind a resilience tier | `builtin` is synthetic. Never present it as market data. |
-| `app/brokers/` | Aggregator/broker abstraction: mock only | Parked. See [BACKLOG.md](BACKLOG.md). |
-| `app/worker/` | `scheduler.py` (APScheduler, the real one) + Celery (vestigial, eager) | |
+| `app/worker/` | `scheduler.py` (APScheduler). Celery was deleted in PR 112 | |
 | `app/schemas/` | Pydantic models, including the original lifecycle state machine | |
 | `app/static_app/` | The whole UI: one `index.html` (~4,100 lines), `sw.js`, manifest, icons | See [FRONTEND.md](FRONTEND.md). |
 | `tests/` | ~2,290 tests in 254 files | See [DEVELOPMENT.md](DEVELOPMENT.md). |
@@ -87,7 +85,7 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
   RS256 with an ephemeral key, and every restart logs everyone out.
 - **`REQUIRE_AUTH` defaults to False** (open demo mode, everyone is SUPERADMIN). Production sets it to true.
 - Roles `SUPERADMIN > ADVISOR > ANALYST > READ_ONLY` exist (`app/core/auth.py:23`). **Every write route is ANALYST
-  or above** (PR 110). A READ_ONLY token may call reads and the compute-only POSTs (`/ask`, research, `/backtest`,
+  or above** (PR 110). A READ_ONLY token may call reads and the compute-only POSTs (`/ask`, research,
   frontier preview, `/scenario`, `/whatif`). The owner (SUPERADMIN) can do everything (D74). Two tests enforce
   this: `test_every_write_route_is_analyst_or_above` fails on a new READ_ONLY writer, and
   `test_no_new_route_is_public_by_accident` fails on a new unauthenticated route (the PUBLIC allowlist is the
@@ -160,7 +158,6 @@ exposed at `/api/v1/push/status`. Times are container time (UTC on Railway).
 |---|---|---|
 | `price_refresh` | every 30 min (primed at boot) | Reprice every position (primary → Yahoo fallback, minor-unit/currency repair), then evaluate trading rules |
 | `futures_warm` | every 5 min (primed at boot) | Refresh the strategies' regime cache (`regime_service`, hourly) that Today reads, then the futures cross-check snapshot; a futures outage keeps the last snapshot, marked stale, and fails the job |
-| `market_refresh` | every 60 min (primed at boot) | Research scan. **Vestigial**: no economic source, no reader (deleted in plan PR 112) |
 | `push_evaluate` | every 60 min | Per subscriber: push new important cards, risk alerts, price moves |
 | `standing_orders` | every 60 min | Credit due monthly deposits (contribution + cash), idempotent |
 | `push_digest` | 07:00 daily | Daily digest push |
@@ -182,12 +179,12 @@ signals). Both are loop-safe; use NullPool for new jobs.
 `last_ok: false` with the error. A fan-out (push per subscriber, NAV per user) carries on past one bad item, counts it, and
 raises at the end. `tests/test_every_job_says_when_it_fails.py` captures every `add_job` from `start_scheduler()` and
 requires a healthy run and an injected failure for each, so a new job without a failure test fails CI.
-`price_refresh`, `market_refresh`, `futures_warm` and `standing_orders` are primed with `next_run_time=now`, never
+`price_refresh`, `futures_warm` and `standing_orders` are primed with `next_run_time=now`, never
 called on the startup thread, so boot never waits on a provider. A futures outage keeps the last snapshot (marked
 `stale`) instead of caching an empty one.
 
-Celery (`app/worker/celery_app.py`) is wired but runs **eagerly in-process** (no `REDIS_URL`), serving
-only three demo `/api/v1/jobs/*` endpoints the UI never calls.
+There is no Celery: it ran eagerly in-process behind three demo `/jobs/*` routes and was deleted in PR 112,
+with the `celery`/`redis` dependencies. The hourly `market_refresh` job went too (it scanned and discarded).
 
 ## 8. State that is not in an obvious table
 
@@ -213,11 +210,13 @@ futures snapshot (5 min), the provider tiers above, and `JOB_STATE`. All of them
 
 The day-one spec built a typed lifecycle (`Detected → Vetted → Optimized → Ranked → Displayed`, with
 `Vetoed` as terminal) in `app/schemas/state_machine.py`, persisted via `PipelineOrchestrator` into
-`decision_feeds`/`decision_items`, plus a learning loop (`user_actions`), standalone calculators (`/lag/scan`,
-`/whs`, `/safety/check`, `/tax/preview`, `/risk/preview`, `/simulation`, `/allocation/analyze`) and Celery
-jobs. **None of these drive the Today screen.** They are mounted, partly tested, and unused by the PWA.
-`/decision-feed/weekly` even falls back to demo observations. Treat them as legacy. Whether to delete them is
-an open backlog item. Unused tables: `buckets`, `tax_profiles`.
+`decision_feeds`/`decision_items` and a learning loop (`user_actions`). **None of it drives the Today screen.**
+Deletion runs in three stages (D76): **PR 112** removed the standalone calculators (`/lag/scan`, `/whs`,
+`/safety/check` route, `/tax/preview`, `/risk/preview`, `/simulation`, `/allocation/analyze`, `/backtest`, `/fees`,
+`/screener`, `/entities`, `/market/quote`, `/fx/rate`), Celery `/jobs/*`, the broker scaffold and the no-op
+`market_refresh` job. **PR 113** removes the decision-feed cluster (and `safety_engine`, which its pipeline still
+imports). **PR 114** drops the tables. Keep `engines/state_machine.py` and the lag/decision/risk/tax engines: the
+war room and What-if run on them.
 
 ## 10. Where to look first
 

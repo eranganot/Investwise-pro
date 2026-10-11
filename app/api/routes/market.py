@@ -7,7 +7,7 @@ network calls, and this app runs on one uvicorn worker: called straight from an
 upstream is an outage for every other endpoint. Measured in-process with the
 provider held at 2.0s, `/health` came back in 2.01s.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.research_agent import ResearchAgent
@@ -17,28 +17,11 @@ from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.offload import offload
 from app.models.tables import User
-from app.providers.registry import (economic_provider, guarded_fx, guarded_quote,
-                                    provider_health)
-from app.providers.resilience import CircuitOpenError, RateLimitedError
+from app.providers.registry import (economic_provider, provider_health)
 from app.services.intake_service import list_positions
 from app.services.market_impact import annotate
 
 router = APIRouter(prefix="/api/v1", tags=["market"])
-
-
-@router.get("/market/quote")
-async def market_quote(ticker: str = Query(..., min_length=1)) -> dict:
-    try:
-        return (await offload(guarded_quote, ticker)).model_dump()
-    except RateLimitedError as exc:
-        raise HTTPException(429, str(exc))
-    except CircuitOpenError as exc:
-        raise HTTPException(503, str(exc))
-
-
-@router.get("/fx/rate")
-async def fx_rate(base: str = "USD", quote: str = "ILS") -> dict:
-    return (await offload(guarded_fx, base, quote)).model_dump()
 
 
 @router.get("/research/events")

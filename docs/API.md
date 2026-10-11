@@ -132,7 +132,7 @@ Scripts authenticate with `X-Agent-Key` (SUPERADMIN).
 Mounted, partly tested, **unused by the PWA**. Candidates for deletion ([BACKLOG.md](BACKLOG.md)):
 
 `/api/v1/decision-feed/demo|generate|latest|weekly` (the weekly one silently falls back to demo data), `/actions`,
-`/learning/profile`, `/lag/scan`, `/whs`, `/simulation`, `/safety/check`, `/tax/preview`, `/tax/review`, `/risk/preview`,
-`/allocation/analyze`, `/backtest`, `/fees`, `/screener`, `/entities`, `/market/quote`, `/fx/rate`, `/adversary/diagnostics`,
-`/jobs/*` (Celery, eager), `/broker/connect|sync` (**hazard:** with the mock default, sync writes three fake holdings into
-the real book).
+`/learning/profile`, `/tax/review` (deleted in PR 113), and `/adversary/diagnostics` (kept, SUPERADMIN since PR 110).
+**Deleted in PR 112:** `/lag/scan`, `/whs`, `/simulation`, `/safety/check`, `/tax/preview`, `/risk/preview`,
+`/allocation/analyze`, `/backtest`, `/fees`, `/screener`, `/entities` (`/auth/status` moved to `auth.py`, same path),
+`/market/quote`, `/fx/rate`, `/jobs/*`, `/broker/connect|sync`.

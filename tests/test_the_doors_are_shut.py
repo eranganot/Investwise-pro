@@ -14,12 +14,12 @@ from fastapi.testclient import TestClient
 import app.main as m
 from app.core import auth as A
 from app.core.auth import Role, create_token
-from app.core.config import Settings, get_settings
+from app.core.config import get_settings
 
 # POSTs that compute and write nothing: a READ_ONLY token may call them.
 COMPUTE_ONLY = {
     ("POST", "/api/v1/ask"), ("POST", "/api/v1/ai/holding/{ticker}/research"),
-    ("POST", "/api/v1/backtest"), ("POST", "/api/v1/plan/frontier/preview"),
+    ("POST", "/api/v1/plan/frontier/preview"),
     ("POST", "/api/v1/scenario"), ("POST", "/api/v1/whatif"),
 }
 # Unauthenticated on purpose. Every addition is a decision -- this list is the review.
@@ -30,11 +30,8 @@ PUBLIC = {
     "/api/v1/push/public-key", "/api/v1/intake/template.csv", "/api/v1/commodities",
     "/api/v1/strategies", "/api/v1/strategies/backtests", "/api/v1/scenario/supported",
     "/api/v1/data-status", "/api/v1/markets/futures",
-    # LEGACY calculators on demo inputs, no user data: deleted in plan PR 112.
-    "/api/v1/decision-feed/demo", "/api/v1/whs", "/api/v1/simulation", "/api/v1/tax/preview",
-    "/api/v1/risk/preview", "/api/v1/lag/scan", "/api/v1/safety/check", "/api/v1/allocation/analyze",
-    "/api/v1/jobs", "/api/v1/jobs/{task_id}", "/api/v1/jobs/monte-carlo", "/api/v1/jobs/simulation",
-    "/api/v1/market/quote", "/api/v1/fx/rate",
+    # LEGACY, deleted with the decision-feed cluster in plan PR 113.
+    "/api/v1/decision-feed/demo",
 }
 ORDER = ["SUPERADMIN", "ADVISOR", "ANALYST", "READ_ONLY"]
 
@@ -108,15 +105,6 @@ def test_the_api_map_is_not_served_in_production(monkeypatch):
     app = m.create_app()
     paths = {getattr(r, "path", None) for r in app.routes}
     assert not ({"/docs", "/redoc", "/openapi.json"} & paths)
-
-
-# ---- C6 --------------------------------------------------------------------------
-def test_the_mock_broker_never_writes_a_production_book():
-    from app.brokers.base import NotConfiguredError
-    from app.brokers.registry import get_aggregator
-    with pytest.raises(NotConfiguredError):
-        get_aggregator(Settings(environment="production", aggregator_provider="mock"))
-    assert get_aggregator(Settings(environment="development", aggregator_provider="mock"))
 
 
 # ---- C7b -------------------------------------------------------------------------
