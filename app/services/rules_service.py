@@ -72,6 +72,46 @@ _SIGNAL_MODES = ("entry", "exit")
 #   * strategy_signal -- an entry and an exit rule on one ticker are both
 #     wanted, and two sleeves can legitimately subscribe to the same ticker's
 #     signal. Keyed below by (mode, strategy_id) rather than excluded outright.
+# PR 109 (D-b, owner 2026-10-08): entry rules on a ticker you do NOT hold are
+# WATCH ALERTS -- "tell me when AMZN dips to 180" -- and are never purged or
+# retired for not being held. Only exit rules (stop, take-profit, trailing...)
+# of a position you no longer hold are cleared, and only by the evaluator.
+ENTRY_TYPES = frozenset({"buy_dip", "price_below", "price_above"})
+
+
+def _watch_pos(rule) -> dict | None:
+    """A watch alert's stand-in position: the last price the evaluator quoted.
+
+    Read from the rule, never fetched, so Today stays cache-only. A watch alert
+    with no quote yet has no position and cannot fire (`_evaluate` needs a price).
+    """
+    px = (rule.params or {}).get("watch_price") if isinstance(rule.params, dict) else None
+    if not px:
+        return None
+    return {"price": float(px), "cost": 0.0, "qty": 0.0, "weight_pct": 0.0,
+            "value_ils": 0.0, "watch": True}
+
+
+def _quote_watch(ticker: str) -> float | None:
+    """Live price in major units for a watched (unheld) ticker, or None. Blocking."""
+    try:
+        from app.providers.registry import guarded_quote
+        from app.services.fx import to_major_units
+        q = guarded_quote(ticker)
+        px, _ccy = to_major_units(float(q.price), getattr(q, "currency", None))
+        return px if px and px > 0 else None
+    except Exception:  # noqa: BLE001 -- an unpriced watch alert just waits
+        return None
+
+
+def _is_orphan_exit(rule, held: set[str]) -> bool:
+    """An EXIT rule on a ticker the book does not hold (D-b): the evaluator's to clear."""
+    from app.services.advanced_rules import BOOK
+    tk = (rule.ticker or "").upper()
+    return (tk not in held and tk not in (BOOK, "CASH")
+            and rule.rule_type not in ENTRY_TYPES)
+
+
 _ONE_PER_TICKER = {"stop_loss", "take_profit", "trailing_stop", "max_weight", "buy_dip"}
 
 _SEV = {"stop_loss": "CRITICAL", "trailing_stop": "CRITICAL", "max_weight": "HIGH",
@@ -320,9 +360,11 @@ async def purge_orphan_rules(session: AsyncSession, user: User,
     wiping every rule on a transient database hiccup is unrecoverable. With no
     holdings, this does nothing at all.
 
-    Called from both the read path and the evaluator, because a fix that only
-    runs in the 30-minute price job leaves the screen wrong in between -- the
-    mistake made twice before this.
+    PR 109: called ONLY by the evaluator. It also ran from `list_rules`, i.e. on
+    every read of Today and the Rules tab, so opening a screen deleted rules.
+    The read path now HIDES orphaned exit rules instead (`_is_orphan_exit`), so
+    the screen is right in between without a read writing anything. Entry rules
+    on unheld tickers (D-b) are watch alerts and are never deleted here.
     """
     if idx is None:
         idx = await _positions_index(session, user)
@@ -331,8 +373,9 @@ async def purge_orphan_rules(session: AsyncSession, user: User,
     held = set(idx)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email))).all()
-    from app.services.advanced_rules import BOOK
-    gone = [r for r in rules if r.ticker.upper() not in held and r.ticker.upper() != BOOK]
+    # PR 109 (D-b): watch alerts on unheld tickers are kept. Measured on HEAD:
+    # one GET of Today deleted AMZN buy_dip and GOOGL price_below.
+    gone = [r for r in rules if _is_orphan_exit(r, held)]
     if not gone:
         return []
     removed = [{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
@@ -506,6 +549,44 @@ def _signal_side(flip: dict, ticker: str) -> str | None:
     return None
 
 
+async def heal_dismissed_rules(session: AsyncSession, user: User) -> list[str]:
+    """Resolve a triggered rule whose card you dismissed or marked done.
+
+    PR 109: this ran inside `build_recommendations`, so every read of Today --
+    and every warm-up, push evaluation and digest build -- wrote rules. It is
+    the same rule as before: being muted means you dealt with THIS firing, so
+    the latch is cleared; a rule that fired AGAIN after your mark is new
+    information and is left alone (the card un-mutes itself in the build).
+    """
+    from app.services.recommendations import (
+        _at, _dismiss_key, _done_key, _load_map, _parse_dt, load_completed, load_dismissed)
+    muted = (await load_dismissed(session, user)) | (await load_completed(session, user))
+    if not muted:
+        return []
+    marks = {**await _load_map(session, _dismiss_key(user)), **await _load_map(session, _done_key(user))}
+    rules = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.active.is_(True),
+                                  TradingRule.triggered.is_(True)))).all()
+    healed = []
+    for r in rules:
+        cid = f"rule_{str(r.id)[:8]}"
+        if cid not in muted:
+            continue
+        dealt = _at(marks.get(cid))
+        fired = r.last_triggered_at
+        if fired is not None and dealt:
+            fired_aw = fired if fired.tzinfo else fired.replace(tzinfo=timezone.utc)
+            if fired_aw > _parse_dt(dealt):
+                continue
+        try:
+            await resolve_rule(session, user, str(r.id)[:8], "acknowledged")
+            healed.append(cid)
+        except Exception:  # noqa: BLE001 -- one rule must not stop the others
+            logger.warning("could not resolve dismissed rule %s", cid, exc_info=False)
+    return healed
+
+
 async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = False) -> list[dict]:
     try:   # PR 104d: rule firing honours the user's thresholds (take-profit slice, band)
         from app.services import thresholds
@@ -519,6 +600,8 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     # Delete rules for holdings that are gone before evaluating anything, so a
     # sold position can never fire a rule set against a price it no longer has.
     await purge_orphan_rules(session, user, idx)
+    # PR 109: moved here from the Today build, so a read never writes a rule.
+    await heal_dismissed_rules(session, user)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
@@ -559,6 +642,17 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
                               "action": action, "event": event})
             continue
         pos = idx.get(r.ticker.upper())
+        if not pos and r.rule_type in ENTRY_TYPES and r.ticker.upper() != "CASH":
+            # PR 109 (D-b): a WATCH ALERT on a ticker you don't hold. Quote it
+            # and evaluate it like any other rule; store the price on the rule
+            # so Today can read it without a network call. No quote: it stays
+            # armed and waits -- never retired for not being held.
+            _px = await offload(_quote_watch, r.ticker)
+            if not _px:
+                continue
+            r.params = {**(r.params if isinstance(r.params, dict) else {}),
+                        "watch_price": round(float(_px), 4), "watch_at": _now().isoformat()}
+            pos = _watch_pos(r)
         if not pos:
             # The thing this rule watches is no longer a tradeable holding --
             # sold, or (for CASH) never one to begin with. Retire it.
@@ -982,8 +1076,16 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
             logger.warning("cash context unavailable for rule cards", exc_info=True)
     out = []
     _cleared = False
+    # PR 109: an exit rule on a position you no longer hold gets no card (the
+    # evaluator clears it within 30 minutes); the read path used to delete it.
+    if idx:
+        rules = [r for r in rules if not _is_orphan_exit(r, set(idx))]
     for r in rules:
-        pos = idx.get(r.ticker.upper()) or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0}
+        # PR 109: a watch alert (D-b) is priced from what the evaluator stored;
+        # at price 0 a fired `price_above` read as "back under" and was cleared.
+        pos = (idx.get(r.ticker.upper())
+               or (_watch_pos(r) if r.rule_type in ENTRY_TYPES else None)
+               or {"price": 0, "cost": 0, "qty": 0, "weight_pct": 0})
         hit, title, action, _t = _evaluate(r, pos["price"], pos["cost"], pos["weight_pct"],
                                            pos.get("value_ils") or 0.0, pos=pos)
         if r.rule_type in _adv.ADV_TYPES:
@@ -1234,36 +1336,26 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
         select(TradingRule).where(TradingRule.subject == user.email)
         .order_by(TradingRule.created_at.desc()))).all()
     idx, _lnav = (await _positions_index_and_nav(session, user)) if rules else ({}, 0.0)
-    # Remove rules for holdings that are gone, at READ time -- not only inside
-    # evaluate_user, which runs in the 30-minute price job and left the Rules tab
-    # showing them in between. Guarded: a purge never runs against an empty
-    # index. Self-healing on a read follows the existing precedent -- Today's
-    # banner reconciliation already resolves orphaned rules on a GET.
+    # PR 109: A READ NEVER WRITES. This deleted rules for holdings that are gone
+    # at read time, so one GET of Today removed watch alerts and stops before
+    # any card showed. Orphaned EXIT rules are now hidden here and cleared by
+    # the evaluator (30 min); watch alerts (D-b) are listed with their last
+    # quoted price. Guarded as before: with an empty index nothing is hidden.
     if rules and idx:
-        _purged = await purge_orphan_rules(session, user, idx)
-        if _purged:
-            rules = [r for r in rules if str(r.id) not in {x["id"] for x in _purged}]
+        rules = [r for r in rules if not _is_orphan_exit(r, set(idx))]
     from app.services import advanced_rules as _adv
     if rules:
         await _adv.augment(session, user, idx, _lnav, rules)
     out = []
     for r in rules:
         pos = idx.get(r.ticker.upper())
+        if pos is None and r.rule_type in ENTRY_TYPES:
+            pos = _watch_pos(r)
 
-        # Legacy safety net for a rule whose ticker vanished mid-request.
-        #
-        # I fixed this in the evaluator first -- twice -- and both times the
-        # Rules tab still showed "armed" rules on TQQQ, META and AMZN, because
-        # evaluate_user runs in the 30-minute price job and the tab renders from
-        # the DB. Exactly the lesson written down for the max_weight latch, and
-        # not applied here: a screen that must be self-consistent has to
-        # reconcile when it renders.
-        if pos is None and r.active and r.ticker.upper() != "CASH":
-            r.active = False
-            r.triggered = False
-            if not (r.note or "").startswith("retired:"):
-                r.note = f"retired: {r.ticker} is no longer in your portfolio"[:160]
-            pass
+        # PR 109: the "legacy safety net" that RETIRED a rule here (active=False
+        # on a read) is gone. Orphaned exit rules are hidden above; the evaluator
+        # retires or deletes them. A read that writes is how one GET of Today
+        # could switch off a stop.
 
         cur = pos["price"] if pos else None
         hit, _title, _action, target = _evaluate(

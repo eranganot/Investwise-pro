@@ -161,9 +161,14 @@ ContextVar) once per request, and code reads `thresholds.get(key)`. The Plan ›
 
 `GET /api/v1/recommendations` → `build_recommendations(session, user)` (RC:1275-3150).
 
-> **Note:** GET has write side effects. It releases buy-back holds, resolves hidden rule cards as acknowledged,
-> resolves handled strategy signals, and heals orphan triggered rules. The warm-up loop and the assistant's context
-> build therefore mutate rule state too.
+> **Rules are read-only on GET (PR 109).** A read never deletes, retires or acknowledges a rule. Orphaned exit rules
+> (a sold position's stop, take-profit, trailing stop) are hidden from the Rules tab and from rule cards, and the
+> 30-minute evaluator deletes them. Watch alerts (`buy_dip`, `price_below`, `price_above` on a ticker you don't hold;
+> D-b) are kept, and the evaluator quotes them (`params.watch_price`). A rule whose card you dismissed is resolved by
+> the evaluator (`heal_dismissed_rules`). A triggered rule with no served card is reported as `rule_banner.uncarded`,
+> never "healed"; healing switched off one-shot stops. GET still writes two non-rule things: it releases buy-back
+> holds whose price retreated, and it resolves strategy signals whose card was handled. It also clears standing-alert
+> latches (`price_above`/`price_below`/`max_weight` back under their level).
 
 ### 4.1 Setup
 1. Load positions; if there are none, return "Add holdings". `compute_snapshot` gives the ILS NAV.

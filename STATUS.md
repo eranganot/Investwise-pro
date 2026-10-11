@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3 Wave B: PR 107, 108). Last product PR: **PR 108**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-11 by Claude (plan v3 Wave B complete: PR 107, 108, 109). Last product PR: **PR 109**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -27,7 +27,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   New session? Start from [`docs/plans/HANDOFF_2026-10-11.md`](docs/plans/HANDOFF_2026-10-11.md).
 - **Critical, latent: fixed in PR 105 (2026-10-11).** The sleeve-drift trim oversell and the "Replace book" NAV
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
-  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Next: **Wave B** (PR 107-109) after the owner's go-ahead.
+  obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Next: **Wave C** (PR 110, 111.0, 111; needs D-f) after the owner's go-ahead.
 - **Dated:** Railway `railway.json` (Config-as-Code) stops working on **2026-12-01**. Migrate before 2026-11-15 (plan PR 119).
 - **Owner ops (plan Wave 0):**
   - Check Railway Postgres backups.
@@ -51,6 +51,54 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 109 — reading Today never deletes or retires a rule
+
+**Plan v3, Wave B, third PR (D-b).** Re-proven at HEAD with the C9 probe: one GET of Today deleted the AMZN `buy_dip`
+and GOOGL `price_below` watch alerts and the NVDA stop before any card showed.
+
+**What was wrong, and the root cause.**
+- **C9, deletes on read.** `list_rules` called `purge_orphan_rules` on every read: Today's build, the Rules tab, and
+  every warm-up, push and digest build. The purge deleted every rule on an unheld ticker, watch alerts included. A
+  "legacy safety net" in the same function also set `active=False` on read.
+- **The inferred stop-loss retirement is PROVEN.** The banner reconciliation "healed" a triggered rule with no served
+  card by acknowledging it, and `resolve_rule(..., "acknowledged")` on a one-shot rule sets `active=False`. A read of
+  Today could therefore switch off a triggered stop whose card was not served (test: V stop, card withheld,
+  `active` 1 → 0 on HEAD). The banner already counts only carded rules (`renderRuleBanner`), so the heal protected
+  nothing on screen.
+- **The dismissed-card heal ran in the build too.** That meant every background build wrote rules.
+
+**What.**
+- **D-b.** `ENTRY_TYPES` (`buy_dip`, `price_below`, `price_above`) on unheld tickers are watch alerts:
+  - never purged or retired;
+  - quoted by the evaluator (`params.watch_price`, `watch_at`) and evaluated like any rule;
+  - read from the stored price on Today (no network). At price 0, a fired `price_above` would have been cleared as
+    "back under".
+- `purge_orphan_rules` clears only exit rules of positions you no longer hold, and only the evaluator calls it.
+- `list_rules` and `triggered_rule_recs` hide orphaned exit rules instead of deleting them, so the screen is right
+  in between evaluator runs.
+- The build no longer resolves rules:
+  - a dismissed card's latch is cleared by `rules_service.heal_dismissed_rules` inside `evaluate_user`;
+  - an uncarded triggered rule is reported as `rule_banner.uncarded`.
+- **Not done as written:** the plan's `read_only=True` flag on `build_recommendations`. The build no longer writes
+  rules at all, so there is nothing for the flag to switch. Remaining GET writes are documented (DOMAIN §4): buy-back
+  hold release, handled strategy signals, and standing-alert latch clears.
+
+**Why it was silent.** Every write was "self-healing" with a comment justifying it. No test compared the rule table
+before and after a read.
+
+**Tests (all 5 fail on HEAD).** `tests/test_reading_today_never_deletes_anything.py`:
+- two reads of Today and one of the Rules tab leave every (id, active) unchanged;
+- an unserved triggered stop stays armed;
+- the Rules tab lists watch alerts and hides the orphaned stop;
+- the evaluator quotes watch alerts (GOOGL fires at 85 ≤ 90) and deletes only the NVDA stop;
+- the evaluator, not a read, resolves a dismissed rule.
+
+**Smoke.** `scripts/smoke/smoke-pr109-reading-never-deletes.ps1 -Sha <sha>`. Against `b7d9234`: the rule set is
+identical across reads (the live book has no orphaned rules left to delete); FAILs only on the missing
+`rule_banner.uncarded`.
+
+---
 
 ## PR 108 — one regime acts, and the futures cross-check is measured right
 
@@ -96,7 +144,9 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - the Markets route computes the proxy once per hour.
 
 **Smoke.** `scripts/smoke/smoke-pr108-one-regime.ps1 -Sha <sha>`. Against `1661441` it FAILs, as it should: all three
-futures signs are wrong against Yahoo's own previous bar, and the page and `sw.js` are unchanged.
+futures signs are wrong against Yahoo's own previous bar, and the page and `sw.js` are unchanged. **Ran against
+`b7d9234` (GitHub PR #9 merge): 10 PASS, 0 FAIL.** ES +0.56, NQ +0.45 and CL +0.39 all match Yahoo's previous bar;
+the proxy reads risk_on 0.95, with no risk-off message on Today.
 
 **QA (Pixel).** Markets tab: the regime card shows your strategies' regime with its components, and the futures
 cross-check line under it. The tiles' day changes match a broker app.

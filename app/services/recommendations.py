@@ -2810,8 +2810,6 @@ async def build_recommendations(session: AsyncSession, user: User,
         _hidden_rules = {r.get("id") for r in recs
                          if str(r.get("id", "")).startswith("rule_")} & (dismissed | completed)
         if _hidden_rules:
-            from app.services.rules_service import resolve_rule
-
             # ONLY heal a rule that has not fired AGAIN since you dealt with it.
             #
             # The self-heal was unconditional, and `build_recommendations` runs
@@ -2830,12 +2828,12 @@ async def build_recommendations(session: AsyncSession, user: User,
                                    for r in recs if r.get("id") == _hid), None)
                     _dealt = _at(_marks.get(_hid))
                     if _fired and _dealt and _parse_dt(str(_fired)) > _parse_dt(_dealt):
-                        # Fired again since. Do not resolve it, and do not
-                        # suppress its card either -- healing it while still
-                        # hiding it is the deadlock this block exists to break.
+                        # Fired again since. Do not suppress its card -- hiding
+                        # a new firing is the deadlock this block exists to break.
                         _refired.add(_hid)
                         continue
-                    await resolve_rule(session, user, _hid[5:], "acknowledged")
+                    # PR 109: the latch is cleared by the evaluator
+                    # (`rules_service.heal_dismissed_rules`), not by a read.
                 except Exception:  # noqa: BLE001 -- never break Today over cleanup
                     logger.warning("could not self-heal rule %s", _hid, exc_info=False)
         # A signal the user already dealt with must not stay pending, or it
@@ -3044,7 +3042,7 @@ async def build_recommendations(session: AsyncSession, user: User,
     headsups = [h for h in headsups if h["id"] not in _hu_gone]
 
     rule_banner = {"triggered": [], "carded": [], "blocked": [], "healed": [],
-                   "skipped_reason": None}
+                   "uncarded": [], "skipped_reason": None}
     if "trading_rules" in degraded:
         # Say so, rather than leaving a silent no-op. A banner that disagrees
         # with the cards while the rules agent is down looks identical to a
@@ -3055,7 +3053,6 @@ async def build_recommendations(session: AsyncSession, user: User,
             "about the rules and nothing was retired")
     if "trading_rules" not in degraded:
         try:
-            from app.services.rules_service import resolve_rule
             from sqlalchemy import select as _select
 
             from app.models.tables import TradingRule as _TR
@@ -3089,14 +3086,13 @@ async def build_recommendations(session: AsyncSession, user: User,
                 if _short in _blocked:
                     rule_banner["blocked"].append(_short)
                     continue
-                try:
-                    await resolve_rule(session, user, _short, "acknowledged",
-                                       {"reason": "triggered with no visible card"})
-                    rule_banner["healed"].append(_short)
-                    logger.info("healed a rule triggered with no card: %s %s",
-                                _r.ticker, _short)
-                except Exception:  # noqa: BLE001 -- never break Today over cleanup
-                    logger.warning("could not heal orphaned rule %s", _short, exc_info=False)
+                # PR 109: REPORTED, NOT RESOLVED. This acknowledged the rule,
+                # and for a one-shot rule (stop_loss, trailing_stop...)
+                # acknowledging sets active=False -- so a read of Today could
+                # silently switch off a triggered stop whose card was not
+                # served. The banner counts only carded rules (index.html
+                # `renderRuleBanner`), so an uncarded latch cannot deadlock it.
+                rule_banner["uncarded"].append(_short)
         except Exception:  # noqa: BLE001
             logger.warning("rule banner reconciliation failed", exc_info=False)
 
