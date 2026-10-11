@@ -298,6 +298,10 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
 
 - The **health score** (`plan_health`, PR 70) = **On plan** (sleeves 30, mix 20, rules 20, concentration 15, cash 15) + **On track**
   (goal odds). It replaced the generic WHS risk/tax score, which read 3/100 on a deliberately leveraged book.
+  **On track is the goal's one chance** (PR 120): the goal model's headline with the protective rules as they are,
+  the number the Plan tab leads with. The projection's no-rules figure is used only when no fresh goal verdict exists,
+  and it is then labelled "rough estimate". The Today "Chance of hitting your goal" row and the assistant/digest
+  context quote the same number.
 - "Where this could end up": `simulation_engine` median / 5% / 95%. It always states that it assumes no deposits (W3).
 - The account-history chart shows **real NAV snapshots only**, as time-weighted return vs SPY. It never draws a reconstruction.
 

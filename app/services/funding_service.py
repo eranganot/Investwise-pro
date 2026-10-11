@@ -721,8 +721,9 @@ def drift_refusal(gate: dict) -> str:
              for c in gate.get("sold_at_or_under_target") or []]
     named = (" It would have to sell " + ", ".join(parts)
              + ", which your plan says you hold too little of.") if parts else ""
+    # In points: "0.05 -> 0.05" hid a real rise (0.0496 -> 0.0504, 106.1's live book).
     return (f"Funding this would move the book further from your plan "
-            f"(drift {gate['before']:.2f} -> {gate['after']:.2f}).{named}")
+            f"(off target by {gate['before'] * 100:.1f} -> {gate['after'] * 100:.1f} points in total).{named}")
 
 
 def buying_class_of(legs) -> str | None:
