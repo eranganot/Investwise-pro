@@ -253,13 +253,14 @@ def create_app() -> FastAPI:
         redoc_url=None if _prod else "/redoc",
         openapi_url=None if _prod else "/openapi.json",
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[settings.frontend_origin],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    if settings.frontend_origin:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[settings.frontend_origin],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     @app.middleware("http")
     async def _observe(request, call_next):
