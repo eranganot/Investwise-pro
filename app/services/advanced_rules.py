@@ -490,7 +490,7 @@ async def _buy_back_card(session, user, rule, pos, *, nav, cash, objective, plan
             "meta": {"rule_type": "buy_back", "ticker": tk}}
     if amt < fs.MIN_TRADE_ILS:
         return {**head, "action": (f"The hold on {tk} has ended, but there is no cash above your "
-                                   f"floor to buy it back with (plan wants ~₪{want:,.0f})."),
+                                   f"cash target to buy it back with (plan wants ~₪{want:,.0f})."),
                 "apply": {"kind": "none", "rule_id": str(rule.id)}, "est_amount": None}
     cls = classify(tk, pos.get("market") or "", (pos.get("meta") or {}).get("asset_class"))
     return {**head,

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.core.offload import offload
-from app.models.tables import KVSetting, Position, money
+from app.models.tables import KVSetting, Position, db_money
 from app.providers.live import YahooMarketDataProvider
 from app.providers.registry import guarded_quote, market_provider
 from app.services.fx import MARKET_CCY, major_unit, to_major_units
@@ -196,7 +196,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
             _major, _per = major_unit(_stamped)
             if _per != 1.0:
                 _before = float(p.current_price or 0)
-                p.current_price = money(_before / _per)
+                p.current_price = db_money(_before / _per)
                 p.meta = {**_pm, "price_currency": _major,
                           "price_currency_quoted": _stamped,
                           "price_currency_repaired": True}
@@ -313,7 +313,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
         # The module's own comment states the rule -- "Do NOT overwrite the
         # price: a quote nothing has traded against is not a current price".
         # A price of 0 is the same class of thing and it walked straight through
-        # to `p.current_price = money(q_price)` twenty lines below.
+        # to `p.current_price = db_money(q_price)` twenty lines below.
         #
         # What that costs, MEASURED on this book: Eran opened the app on
         # 2026-09-01 and found holdings showing 0 ILS, deleted two of them
@@ -432,7 +432,7 @@ async def refresh_all_positions(session, positions=None) -> dict:
         # cause is one nobody reads.
         meta.pop("price_unpriced", None)
         meta.pop("price_unpriced_quote", None)
-        p.current_price = money(q_price)
+        p.current_price = db_money(q_price)
         p.meta = meta
         by_source[used] = by_source.get(used, 0) + 1
         updated += 1

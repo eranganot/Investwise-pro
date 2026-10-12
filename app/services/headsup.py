@@ -19,7 +19,8 @@ import re
 # Eran (D4): an actionable card must be worth acting on. Tax harvests are
 # measured in tax saved, everything else in shekels traded.
 MIN_TAX_SAVING_ILS = 50.0
-MIN_TRADE_ILS = 100.0
+MIN_CARD_TRADE_ILS = 100.0
+MIN_TRADE_ILS = MIN_CARD_TRADE_ILS          # deprecated alias (PR 116, L4)
 MIN_TRADE_PCT_OF_BOOK = 0.5
 
 # Kinds whose `est_amount` is the size of the trade Accept makes. A card that
@@ -38,7 +39,7 @@ def min_trade_ils(nav: float) -> float:
     (PR 104d: both are settings). The floor actually applied is
     `thresholds.card_floor_ils`, which also never goes under the funded minimum."""
     from app.services import thresholds
-    ils = float(thresholds.get("min_card_trade_ils", MIN_TRADE_ILS))
+    ils = float(thresholds.get("min_card_trade_ils", MIN_CARD_TRADE_ILS))
     pct = float(thresholds.get("min_card_trade_pct", MIN_TRADE_PCT_OF_BOOK))
     return max(ils, pct / 100.0 * max(0.0, float(nav or 0.0)))
 

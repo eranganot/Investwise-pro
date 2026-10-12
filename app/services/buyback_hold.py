@@ -24,7 +24,9 @@ The displayed sleeve target is never touched (`all_sleeve_targets` is the plan;
 `apply_holds` is what the buyers read). A buy the user starts himself (loading
 a sleeve's basket from the Plan screen) is his decision and is not blocked.
 
-Stored in `kv_settings` as JSON, one key per user, so no migration.
+Stored as `trading_rules` rows of type `buy_back` (PR 83; level = buy-back price), so
+Holdings › Rules lists, edits and ends them. The legacy `kv_settings` blob
+(`buyback_holds:<email>`) is migrated into rows on first read.
 """
 from __future__ import annotations
 

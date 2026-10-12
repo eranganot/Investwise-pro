@@ -197,24 +197,24 @@ def test_the_reserve_is_also_the_floor_that_funding_may_not_spend():
     """
     from types import SimpleNamespace as NS
 
-    from app.services.funding_service import (cash_floor_ils, cash_floor_pct,
+    from app.services.funding_service import (cash_target_amount_ils, cash_target_fraction,
                                               spendable_cash)
 
     nav, cash = 21_207.78, 618.65
 
     # Today: the Grow table, and the book is already under it.
-    assert abs(cash_floor_pct("Grow", None) - 0.03) < 1e-9
+    assert abs(cash_target_fraction("Grow", None) - 0.03) < 1e-9
     assert spendable_cash(cash, nav, "Grow", None) == 0.0
 
     plan = NS(objective="Grow", cash_target_pct=7.5)
-    assert abs(cash_floor_pct("Grow", plan) - 0.075) < 1e-9, (
+    assert abs(cash_target_fraction("Grow", plan) - 0.075) < 1e-9, (
         "the column is a PERCENTAGE and this returns a FRACTION; if these are "
         "ever the same number the /100 has been lost")
-    assert abs(cash_floor_ils(nav, "Grow", plan) - 1590.58) < 0.5
+    assert abs(cash_target_amount_ils(nav, "Grow", plan) - 1590.58) < 0.5
 
     # Under target: nothing is spendable, and the gap is what the book must raise.
     assert spendable_cash(cash, nav, "Grow", plan) == 0.0
-    assert abs(cash_floor_ils(nav, "Grow", plan) - cash - 971.93) < 1.0, (
+    assert abs(cash_target_amount_ils(nav, "Grow", plan) - cash - 971.93) < 1.0, (
         "the book is about 972 ILS short of a 7.5% reserve")
 
     # At target: still nothing is spendable by ROUTINE funding. That is the
@@ -223,7 +223,7 @@ def test_the_reserve_is_also_the_floor_that_funding_may_not_spend():
 
     # A deliberate zero is honoured as zero, not fallen back to the objective.
     zero = NS(objective="Grow", cash_target_pct=0.0)
-    assert cash_floor_pct("Grow", zero) == 0.0
+    assert cash_target_fraction("Grow", zero) == 0.0
 
 
 def test_the_dead_plan_override_is_gone():

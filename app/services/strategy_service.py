@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.offload import offload
 from app.engines.allocation_engine import AllocationEngine
-from app.models.tables import User, money
+from app.models.tables import User, db_money
 from app.providers.registry import guarded_quote
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import Market
@@ -840,7 +840,7 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                            f"The most this book can fund right now is {achievable_pct:.0f}% "
                            f"— ₪{fund['shortfall_ils']:,.0f} short, after spending "
                            f"₪{fund['from_cash_ils']:,.0f} of cash above your "
-                           f"{fund['cash_floor_pct']:.0%} {objective} floor and trimming what "
+                           f"{fund['cash_target_pct']:.0%} {objective} cash target and trimming what "
                            f"the plan says is overweight. Lower the sleeve to about "
                            f"{achievable_pct:.0f}%, or add cash."),
                 "chosen_sleeve_pct": round(chosen_pct, 1),
@@ -1129,7 +1129,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
         if remaining <= 0:
             await delete_position(session, user, p.ticker, p.market)
         else:
-            p.quantity = money(remaining)
+            p.quantity = db_money(remaining)
         raised += max(0.0, gross - tax)
         tax_total += tax
         sold.append({"ticker": p.ticker, "shares": round(shares, 6),

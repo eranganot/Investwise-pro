@@ -16,7 +16,7 @@ be unusable:
 Its own comment states the rule: *"Do NOT overwrite the price: a quote nothing
 has traded against is not a current price."* A price of **0** is the same class
 of thing, and it was the one case with no guard at all -- straight through to
-`p.current_price = money(q_price)`.
+`p.current_price = db_money(q_price)`.
 
 Where a zero comes from:
 
@@ -212,7 +212,7 @@ async def test_a_row_already_at_zero_is_named_rather_than_valued_at_zero(own_ses
     """
     from sqlalchemy import select
 
-    from app.models.tables import User, money
+    from app.models.tables import User, db_money
     from app.services.intake_service import list_positions
 
     logging.disable(logging.CRITICAL)
@@ -222,7 +222,7 @@ async def test_a_row_already_at_zero_is_named_rather_than_valued_at_zero(own_ses
             async with own_session() as s:
                 user = (await s.execute(select(User))).scalars().first()
                 row = (await list_positions(s, user))[0]
-                row.current_price = money(0)      # what the old refresh wrote
+                row.current_price = db_money(0)      # what the old refresh wrote
                 await s.commit()
 
             pf = c.get("/api/v1/portfolio").json()

@@ -1,4 +1,4 @@
-"""All 11 persisted tables (Section 4 of the spec).
+"""All persisted tables (see docs/DATA_MODEL.md; no count here, so it cannot rot).
 
 Kept in one module so SQLAlchemy can resolve cross-table relationships
 without import-ordering or forward-reference friction.
@@ -33,7 +33,7 @@ MONEY = Numeric(18, 4)
 _MONEY_QUANT = Decimal(1).scaleb(-(MONEY.scale or 4))
 
 
-def money(value) -> Decimal:
+def db_money(value) -> Decimal:
     """Quantise a value to the precision the MONEY column will actually keep.
 
     `Decimal(str(x))` preserves every digit it is handed; `Numeric(18, 4)` does
@@ -244,8 +244,8 @@ class Plan(Base, PKMixin, TimestampMixin):
     # card should appear if I have more than 1500, not by % of my portfolio."
     # A fixed amount of dry powder does not grow with the book; a percentage
     # does. NULL means "use cash_target_pct". Readers never branch on this
-    # themselves: `funding_service.cash_floor_pct(..., nav=)` and
-    # `cash_floor_ils` are the only places it is interpreted.
+    # themselves: `funding_service.cash_target_fraction(..., nav=)` and
+    # `cash_target_amount_ils` are the only places it is interpreted.
     cash_target_ils: Mapped[Decimal | None] = mapped_column(MONEY, nullable=True)
     # WHEN the put-cash-to-work card appears, separate from how much it keeps.
     # Eran, 2026-09-21: the card appears above 1,500 and invests down to the
@@ -483,9 +483,10 @@ class PlanSleeve(Base, PKMixin, TimestampMixin):
 
     **The core is the implicit remainder, not a row.** Whatever the sleeves do
     not claim stays objective-managed exactly as it is today, so the sleeves sum
-    to <= 100 rather than to exactly 100. ``is_core`` ships unused, reserved for
-    the other model (a static family as an explicit core row summing to 100) so
-    that choice does not cost a second migration if it is taken later.
+    to <= 100 rather than to exactly 100. ``is_core=True`` marks the single core
+    row (C6): it names the static strategy family that manages the remainder;
+    its ``sleeve_pct`` is always 0 because the core's size is the computed
+    remainder.
 
     Keyed by ``subject`` (the user's email) to match ``TradingRule`` and
     ``StrategySignalState``, which is what the per-sleeve rule and signal code
@@ -501,9 +502,8 @@ class PlanSleeve(Base, PKMixin, TimestampMixin):
     # Share of NAV this sleeve governs, in whole-ish percent (20.0 == 20%), the
     # same unit and meaning as the plans.strategy_sleeve_pct it replaces.
     sleeve_pct: Mapped[float] = mapped_column(Float, default=0.0)
-    # RESERVED, always False in C1. See the class docstring: the core is the
-    # implicit remainder today. Nothing reads this yet, and nothing should start
-    # reading it until the explicit-core model is actually chosen.
+    # True on the one core row per subject (sleeve_service.get_core). Sleeve
+    # readers must filter it out.
     is_core: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
@@ -512,10 +512,11 @@ class NavSnapshot(Base, PKMixin, TimestampMixin):
 
     Everything historical before this table was a BACKFILL -- today's holdings
     priced back through their own past, which answers "what would this book have
-    done", not "what did my money do". Past NAV cannot be recovered: the
-    `transactions` table has never been written (grep for `Transaction(` outside
-    the models returns nothing), so there is no trade ledger to reconstruct
-    from. History can only start.
+    done", not "what did my money do". Past NAV before this table cannot be
+    recovered: until the ledger work the `transactions` table was never written,
+    so there is no trade record before that date to reconstruct from. Since then
+    `ledger_service.record_leg` writes every book change, but NAV history still
+    only starts with this table.
 
     ``invested_ils`` is the contributions ledger total AS OF that day, stored
     beside the value on purpose: a NAV that jumped because money arrived is not
@@ -646,3 +647,7 @@ class PlanApplication(Base, PKMixin, TimestampMixin):
     allocated_pct_after: Mapped[float] = mapped_column(Float, default=0.0)
     apply_version: Mapped[str] = mapped_column(String(16), default="")
     note: Mapped[str] = mapped_column(Text, default="")
+
+
+# Deprecated alias (PR 116, L9): two helpers shared one name.
+money = db_money

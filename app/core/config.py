@@ -177,7 +177,6 @@ class Settings(BaseSettings):
     jwt_secret: str = ""               # if set, HS256 with this secret -> stable sessions across redeploys
     jwt_private_key: str = ""          # RS256 PEM; generated ephemerally if blank
     jwt_public_key: str = ""
-    sentry_dsn: str = ""               # if set (and sentry-sdk installed), error tracking is enabled
     access_token_ttl_sec: int = 900
     refresh_token_ttl_sec: int = 1209600
     m2m_token_ttl_sec: int = 31536000

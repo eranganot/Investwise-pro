@@ -172,7 +172,7 @@ def test_the_apply_module_cannot_reach_a_broker():
         ("logging", None),
         ("__future__", "annotations"),
         ("app.services", "sleeve_service"),
-        ("app.services.funding_service", "cash_floor_pct"),
+        ("app.services.funding_service", "cash_target_fraction"),
         ("sqlalchemy", "select"),
         ("app.models.tables", "PlanApplication"),
         ("app.services.plan_service", "get_plan"),
@@ -234,7 +234,7 @@ def test_the_apply_module_calls_its_dependencies_with_the_right_signatures():
     import inspect
 
     from app.services import strategy_catalog
-    from app.services.funding_service import cash_floor_pct
+    from app.services.funding_service import cash_target_fraction
     from app.services.intake_service import is_cash_position
 
     assert hasattr(strategy_catalog, "get"), "the catalog lookup is .get()"
@@ -244,8 +244,8 @@ def test_the_apply_module_calls_its_dependencies_with_the_right_signatures():
     # NOT async, and takes (objective, plan[, nav]). PR 68.1 added `nav` --
     # optional, so every two-argument caller still works -- because a shekel
     # cash target is a share of TODAY's book and cannot be read without it.
-    assert not inspect.iscoroutinefunction(cash_floor_pct)
-    params = inspect.signature(cash_floor_pct).parameters
+    assert not inspect.iscoroutinefunction(cash_target_fraction)
+    params = inspect.signature(cash_target_fraction).parameters
     assert list(params)[:2] == ["objective", "plan"]
     assert len(params) == 3 and params["nav"].default is None
 

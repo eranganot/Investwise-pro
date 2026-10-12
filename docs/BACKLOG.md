@@ -21,6 +21,7 @@
 > **Closed in PR 112–114b:** L1 (legacy subsystem deleted in 3 stages, D76; tables dropped by migration 0029).
 > **Closed in PR 115:** P2 (one card minimum, D-c), P4 (13 decisions became settings, D-d).
 > **Closed in PR 119:** R1 (`railway.json` replaced by `.railway/railway.ts`, every setting kept).
+> **Closed in PR 116:** L3 (Sentry deleted, D81), L4 (cash target naming), L5 (stale docstrings + the dead pytest filter), L6 (copy names real places), L9 (`display_money` / `db_money`), L14 (commodity buys use the core's funds, D80).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -51,6 +52,7 @@
 | P8 | B-margin-A (cash research: any name may replace a top-up), B-sells-trend (sell on trend alone), B-review-ratio (revisit the measured-edge bar). | STATUS backlog | Parked |
 | P9 | V8 P3: per-holding day attribution on the NAV card; intraday "today" point on the chart. | `archive/plans/EXECUTION_PLAN_2026-09-14_v8.md` | ? |
 | P10 | Promote engines to agents ("Tier 4") + a synthesising "Chief" agent (decided 2026-08-30, not started). Or drop it. | [AGENTS.md](AGENTS.md) | ? |
+| P12 | **"Best trend right now" commodity pick** (owner, 2026-10-11, D80): a way to catch the strongest commodity trend when the core basket is the default. Today `commodity_buys_core_only = 0` falls back to the plan-blind screen leader; a real design would size it as a separate, labelled bet. | D80 | Parked |
 | P11 | The objective tilt for the screener (`OBJECTIVE_WEIGHTS` is empty and `OWNER_REVIEWED = False`). | AGENTS.md | ? |
 
 
@@ -76,15 +78,9 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | # | Item | Verdict | PR |
 |---|---|---|---|
 | L2 | `investwise.db` (Phase-2 snapshot, no `alembic_version`) and `frontend/` are unused; the CORS default is a ghost | P | W0-5 / 116 |
-| L3 | `sentry-sdk` imported, unpinned (SENTRY_DSN does nothing). *(`google-genai` pin removed in PR 112.)* | P | 116 (D-h) |
-| L4 | Naming: `cash_floor_*()` returns the soft target (₪3,000) while the setting `cash_floor_ils` is the hard floor (₪150); the UI says "floor" for the target; two `MIN_TRADE_ILS` | P | 116 |
-| L5 | Stale docstrings: 7 in `app/` + 2 in tests + a dead `pyproject.toml` warning filter (suite: 2291 passed, 0 warnings without it) | P | 116 |
-| L6 | Stale copy: "Cash tab" (`index.html:3052` **and** `frontier_service.py:2025` on a Today card), "Goal settings" (`:3252`), "the Rules tab". *"$ amount" is correct: the server sizes in USD* | P | 116 |
 | L7 | Fat routes; **3 services import from `app.api.routes.plan`** (layering inversion) | P | 118a/b |
 | L8 | float vs Decimal: 1,051 vs 45 in `app/`; no bug traced to it | P (count) | parked |
-| L9 | Two `money()` helpers (2-dp float display vs 4-dp Decimal DB), same name | P | 116 |
 | L12 | `.seg` defined twice; `--muted` undefined (bright "Ignored" labels); 17 non-focusable click targets; 0 `:focus` rules; no Escape/focus handling | P | 117 (D-i) |
-| L14 | The commodity screen is plan-blind: it buys CANE (sugar) while the goal model prices commodities as IAU/DBC | P | 116 (D-g) |
 
 ## Verification debt
 

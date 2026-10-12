@@ -8,7 +8,7 @@ moves downstream. Runs and declares state BEFORE the Decision Engine.
 from __future__ import annotations
 
 from app.core.config import Settings, get_settings
-from app.core.money import D, money
+from app.core.money import D, display_money
 from app.schemas.allocation import AllocationReport, RebalanceAction
 
 
@@ -39,11 +39,11 @@ class AllocationEngine:
                 asset_class=c,
                 action_type="SELL" if is_sell else "BUY",
                 target_weight=target_allocation.get(c, 0.0),
-                estimated_trade_value_currency=money(gross),
-                tax_drag_currency=money(tax_drag),
-                transaction_cost_currency=money(txn_cost),
-                slippage_cost_currency=money(slippage),
-                net_trade_value_currency=money(gross - tax_drag - txn_cost - slippage),
+                estimated_trade_value_currency=display_money(gross),
+                tax_drag_currency=display_money(tax_drag),
+                transaction_cost_currency=display_money(txn_cost),
+                slippage_cost_currency=display_money(slippage),
+                net_trade_value_currency=display_money(gross - tax_drag - txn_cost - slippage),
             ))
 
         # largest drift first

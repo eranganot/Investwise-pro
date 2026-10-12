@@ -219,8 +219,8 @@ async def test_a_row_already_stored_in_agorot_is_repaired(own_session):
             async with own_session() as s:
                 user = (await s.execute(select(User))).scalars().first()
                 p = (await list_positions(s, user))[0]
-                from app.models.tables import money
-                p.current_price = money(11030.0)
+                from app.models.tables import db_money
+                p.current_price = db_money(11030.0)
                 p.meta = {**(p.meta or {}), "price_currency": "ILA"}
                 await s.commit()
             assert float(c.get("/api/v1/portfolio").json()["nav_ils"]) > 1_000_000.0, (

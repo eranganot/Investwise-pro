@@ -61,10 +61,10 @@ GOOGLE_API_KEY               (Gemini)
   Browser (cookie) writes are logged with role "open", a known quirk.
 - **Jobs:** `GET /api/v1/push/status` shows the scheduler's `JOB_STATE` (runs, failures, last error per job), push subscriptions and
   the VAPID pin state. `JOB_STATE` is in memory and resets on deploy.
-  Four jobs (`backtest_refresh`, `strategy_signals`, `push_evaluate`, `push_digest`) still swallow exceptions and record success; see BACKLOG.
+  A job that fails raises, and is recorded as failed (PR 107).
 - **Data freshness:** `GET /api/v1/data-status` (live vs illustrative, last price source) and `/api/v1/providers/health` (breakers).
 - **Today timing:** the `/recommendations` payload carries `timings_ms` per stage and a `degraded` list.
-- Sentry is wired but the SDK is not installed.
+- No Sentry (deleted in PR 116, D81): errors surface through Railway logs, job status and the smokes.
 
 ## 5. Secrets and rotation
 

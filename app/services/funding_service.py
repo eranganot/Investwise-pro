@@ -77,7 +77,7 @@ def cash_target_ils_of(plan) -> float | None:
     return v if v >= 0 else None
 
 
-def cash_floor_pct(objective: str | None, plan=None, nav: float | None = None) -> float:
+def cash_target_fraction(objective: str | None, plan=None, nav: float | None = None) -> float:
     """The book's cash TARGET, as a share of NAV. A FRACTION.
 
     THE NAME IS OLDER THAN THE MEANING, and the meaning changed on 2026-09-06.
@@ -106,9 +106,10 @@ def cash_floor_pct(objective: str | None, plan=None, nav: float | None = None) -
     refuses ``allow_reserve`` without a ``reserve_reason``, so "explain why" is
     a precondition in the code rather than a habit in the prose.
 
-    The name stays for now because ``cash_floor_ils`` / ``cash_floor_pct`` are
-    payload keys the UI reads. Renaming the concept end to end is a separate
-    change and is noted in STATUS as debt.
+    PR 116 renamed it (it was ``cash_floor_pct``): it is the soft TARGET. The
+    funding payload still carries ``cash_floor_ils`` / ``cash_floor_pct`` for
+    the UI, beside ``cash_target_ils`` / ``cash_target_pct``; the old function
+    names stay as deprecated aliases below.
 
     UNITS. `plans.cash_target_pct` is a PERCENTAGE (7.5), like every other
     `_pct` column on that table. This returns a FRACTION, like `CASH_FLOOR_PCT`
@@ -133,11 +134,17 @@ def cash_floor_pct(objective: str | None, plan=None, nav: float | None = None) -
     return CASH_FLOOR_PCT.get(objective or "Balanced", _DEFAULT_FLOOR)
 
 
-def cash_floor_ils(nav: float, objective: str | None, plan=None) -> float:
+def cash_target_amount_ils(nav: float, objective: str | None, plan=None) -> float:
+    """The book's cash TARGET in shekels: the plan's shekel target, else the fraction x NAV."""
     ils = cash_target_ils_of(plan)
     if ils is not None:
         return ils
-    return max(0.0, float(nav or 0.0)) * cash_floor_pct(objective, plan)
+    return max(0.0, float(nav or 0.0)) * cash_target_fraction(objective, plan)
+
+
+# Deprecated aliases (PR 116): the soft target was called a floor for months.
+cash_floor_pct = cash_target_fraction
+cash_floor_ils = cash_target_amount_ils
 
 
 def cash_soft_floor_ils(nav: float, objective: str | None, plan=None) -> float:
@@ -147,7 +154,7 @@ def cash_soft_floor_ils(nav: float, objective: str | None, plan=None) -> float:
     be less than 150, and a target that dips under the hard minimum would let the
     ordinary path spend into it without anyone opting in.
     """
-    return max(cash_floor_ils(nav, objective, plan), cash_hard_floor_ils())
+    return max(cash_target_amount_ils(nav, objective, plan), cash_hard_floor_ils())
 
 
 def spendable_cash(cash_ils: float, nav: float, objective: str | None, plan=None,
@@ -638,8 +645,12 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
         "tax_ils": round(tax_total, 2),
         "funded_ils": max(0.0, funded),
         "shortfall_ils": round(max(0.0, amount_ils - max(0.0, funded)), 2),
-        "cash_floor_ils": round(cash_floor_ils(nav, objective, plan), 2),
-        "cash_floor_pct": cash_floor_pct(objective, plan, nav),
+        # PR 116: the soft TARGET. `cash_floor_*` stay as deprecated aliases
+        # for one release (the UI and older verdicts read them).
+        "cash_target_ils": round(cash_target_amount_ils(nav, objective, plan), 2),
+        "cash_target_pct": cash_target_fraction(objective, plan, nav),
+        "cash_floor_ils": round(cash_target_amount_ils(nav, objective, plan), 2),
+        "cash_floor_pct": cash_target_fraction(objective, plan, nav),
         # THE SOFT/HARD SPLIT, on the payload, because a card that spends into
         # the reserve has to be able to show the reader where it landed.
         "cash_hard_floor_ils": cash_hard_floor_ils(),
@@ -761,7 +772,7 @@ def describe_funding(fund: dict, buying_class: str | None) -> str:
     for s in fund.get("sells", []):
         bits.append(f"₪{s['value_ils']:,.0f} by selling {s['shares']} {s['ticker']}")
     if not bits:
-        return "You don't have spendable cash above your floor, and nothing is overweight enough to trim."
+        return "You don't have spendable cash above your cash target, and nothing is overweight enough to trim."
     line = "Fund it with " + " and ".join(bits) + "."
     if fund.get("tax_ils"):
         line += f" Estimated tax on the sale: ₪{fund['tax_ils']:,.0f}."
@@ -780,7 +791,7 @@ def describe_funding(fund: dict, buying_class: str | None) -> str:
         _pct = float(fund.get("cash_after_pct") or 0.0)
         _floor = float(fund.get("cash_hard_floor_ils") or 0.0)
         line += (f" This spends ₪{_res:,.0f} of your cash reserve, taking cash to "
-                 f"{_pct:.1%} against your {float(fund.get('cash_floor_pct') or 0.0):.1%} "
+                 f"{_pct:.1%} against your {float(fund.get('cash_target_pct', fund.get('cash_floor_pct')) or 0.0):.1%} "
                  f"target (₪{float(fund.get('cash_after_ils') or 0.0):,.0f} left, "
                  f"hard floor ₪{_floor:,.0f} untouched).")
         if _why:

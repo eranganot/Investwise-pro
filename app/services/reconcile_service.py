@@ -293,8 +293,8 @@ async def apply(session, user, *, scale: float, note: str = "",
                     "error": f"scale {scale} would zero {p.ticker} -- refusing"}
         rate = fx_rate(price_currency(p.market, meta))
         removed_ils = (before - after) * float(p.current_price or 0) * rate
-        from app.models.tables import money
-        p.quantity = money(after)
+        from app.models.tables import db_money
+        p.quantity = db_money(after)
         changed.append({"ticker": p.ticker, "market": p.market,
                         "before": before, "after": after,
                         "removed_ils": round(removed_ils, 2)})

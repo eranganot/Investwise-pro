@@ -53,8 +53,8 @@ def _cards(cash):
 
 
 def test_the_target_in_shekels_is_the_same_number_to_every_reader():
-    assert fund.cash_floor_ils(23057.9, "Grow", PLAN) == 150.0
-    assert fund.cash_floor_pct("Grow", PLAN, 23057.9) == pytest.approx(150.0 / 23057.9)
+    assert fund.cash_target_amount_ils(23057.9, "Grow", PLAN) == 150.0
+    assert fund.cash_target_fraction("Grow", PLAN, 23057.9) == pytest.approx(150.0 / 23057.9)
     assert fund.cash_soft_floor_ils(23057.9, "Grow", PLAN) == 150.0
 
 

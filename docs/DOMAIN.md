@@ -159,6 +159,7 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 | `guard_levels` | (15, 17.5, 20, 25) | Drawdown-guard levels the retune tries (PR 121 widened it) |
 | `guard_sell_fraction_pct` / `guard_rearm_gap_pts` | 25 / 2.5 | What the live guard sells; how far under its level it re-arms (PR 121) |
 | `guard_fractions_tried` / `guard_rearm_gaps_tried` | (25, 50) / (2.5, 5) | The sell sizes and re-arm gaps the retune tries (PR 121) |
+| `commodity_buys_core_only` | 1 | With a core holding commodities, commodity cards buy only its funds (PR 116, D80) |
 
 Overrides live sparsely in `plans.thresholds`. `acting_user` and `build_recommendations` call `thresholds.use(plan)` (a
 ContextVar) once per request, and code reads `thresholds.get(key)`. The Plan › Goal › **Card thresholds** sheet edits them.
