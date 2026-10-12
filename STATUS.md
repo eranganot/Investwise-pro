@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1, 116). Last product PR: **PR 116**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1, 116, 117). Last product PR: **PR 117**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,44 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 117 — keyboard and focus (L12, D84)
+
+**Plan v3, Wave E, last PR.** D-i: both looks were built and shown, plus today's accidental hybrid. The owner, 2026-10-12:
+"I liked option A but I do want the blue highlight" → **D84**.
+
+**What (`index.html` only).**
+- **One `.seg`:** look A (full-width rounded track, 14px, 9px padding) with the selected segment in solid blue. The second
+  block is deleted, and so are the inline patches it needed (`#planSeg` display/flex, `#h_mode`/`#h_rng` width).
+- **Theme:** `:root` gains `--warn` (#e5b857, the colour every fallback already used). The undefined `--muted` → `--mut`,
+  which fixes the bright "Ignored" / "Marked done" labels. `--fg` → `--ink`.
+- **Focus:** a global `:focus-visible` ring. `.lvl` inputs lose `outline:0` and their row gets a `:focus-within` ring.
+- **17 click targets** (4 modal ✕, 8 links, the health chips, the rules banner, the rating, the agent line) get
+  `role="button" tabindex="0"`; the ✕ also gets `aria-label="Close"`. The 4 modals get `role="dialog" aria-modal="true"`.
+- **One key handler:**
+  - Enter/Space press a button-role element;
+  - Escape closes the sheet, else the open modal;
+  - Tab wraps inside an open sheet.
+
+  The sheet saves the element that opened it, focuses its first control, and gives focus back when it closes.
+- `sw.js` → `iw-v57`.
+
+**Tests (4).** `tests/test_the_app_works_from_a_keyboard.py`:
+- every `var(--x)` is defined or has a fallback;
+- every clickable span/div is a button (backdrops allow-listed);
+- `.seg{` appears once, with the blue selection;
+- there is a focus ring, the key handler covers Enter/Space/Escape, and the sheet returns focus.
+
+**Smoke.** `scripts/smoke/smoke-pr117-keyboard-focus.ps1 -Sha <sha>`.
+
+**QA (Pixel + desktop).**
+1. The Pixel: Holdings › Positions/Rules, Plan › Goal/My mix/Explore and a holding's chart range all show the blue look-A
+   control.
+2. Desktop: Tab shows a blue ring; Enter on "what's this?" opens the explainer; Escape closes it.
+3. Desktop: open Plan › Card thresholds, Tab cycles inside the sheet, Escape closes it and focus returns to the button.
+4. Today › history: "Ignored" reads grey, not bright.
+
+---
+
 ## PR 116 — say the true thing (L3, L4, L5, L6, L9, L14; D80, D81)
 
 **Plan v3, Wave E.**
@@ -95,7 +133,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 **Gate.** Local SQLite 2357 and Postgres 2357 passed; ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr116-say-the-true-thing.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr116-say-the-true-thing.ps1 -Sha <sha>`. **Ran against `83af09f` (GitHub PR #21 merge): 7 PASS, 0 FAIL.** The plan-health cash line reads "between your ₪150 cash target and ₪1,500 redeploy line".
 
 **QA (Pixel).**
 1. Plan › Health: the cash line says "cash target".

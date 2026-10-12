@@ -19,7 +19,7 @@
 <style>
   *{box-sizing:border-box}
   :root{--bg:#0b0f17;--card:#111824;--card2:#0f1622;--ink:#e8eef6;--mut:#8b97a8;--line:#1f2a3a;
-        --blue:#3b82f6;--green:#34d399;--amber:#fbbf24;--red:#f87171;--soft:#16202e;}
+        --blue:#3b82f6;--green:#34d399;--amber:#fbbf24;--red:#f87171;--soft:#16202e;--warn:#e5b857;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
   a{color:#6ea8fe}
   .head{position:sticky;top:0;z-index:20;background:rgba(11,15,23,.94);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
@@ -66,7 +66,8 @@
   .del:hover{border-color:var(--red);color:var(--red)}
   .seg{display:flex;gap:4px;background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:4px;margin:0 0 14px}
   .seg button{flex:1;background:none;border:0;color:var(--mut);font-size:14px;font-weight:700;padding:9px;border-radius:9px;cursor:pointer}
-  .seg button.on{background:var(--card);color:var(--ink)}
+  .seg button.on{background:var(--blue);color:#fff}
+  .seg button.on .segbadge{background:rgba(255,255,255,.2);color:#fff}
   .segbadge{display:inline-block;min-width:16px;font-size:11px;font-weight:700;color:var(--mut);background:var(--bg);border-radius:999px;padding:1px 6px;margin-left:5px}
   .rulesbar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap}
   .chips{display:flex;gap:6px;flex-wrap:wrap}
@@ -110,6 +111,9 @@
   .muted{color:var(--mut);font-size:13px}.ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.center{text-align:center}.hide{display:none}
   .empty{padding:30px 18px;text-align:center}.empty .ico{font-size:34px}
   .link{color:#6ea8fe;cursor:pointer;font-size:12px}
+  /* PR 117 (L12): keyboard users see where they are. */
+  :focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:6px}
+  [role="button"]{cursor:pointer}
   /* war room */
   #war{display:grid;grid-template-columns:1fr;gap:14px}
   .wrap.wide #war{grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
@@ -125,9 +129,6 @@
   .ev{padding:9px 0;border-top:1px dashed #20303f}.ev:first-child{border-top:0}
   .gl{padding:9px 0;border-top:1px dashed #20303f}.gl:first-child{border-top:0}.gl b{color:var(--ink)}
   .newsact{margin-top:7px;background:var(--soft);border-radius:8px;padding:8px 11px;color:#aebacb;font-size:13px}.newsact ol{margin:3px 0;padding-left:18px}.newsact li{margin:2px 0}
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;margin-bottom:12px}
-  .seg button{background:var(--card2);color:var(--mut);border:0;padding:6px 15px;font-size:12px;font-weight:600;cursor:pointer}
-  .seg button.on{background:var(--blue);color:#fff}
   .rchips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .rchips span{font-size:11px;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:#c9d3df}
   .oc{display:flex;justify-content:space-between;padding:7px 0;border-top:1px dashed #20303f}.oc:first-of-type{border-top:0}
@@ -165,7 +166,8 @@
   .dopt.rec .dgo button{background:var(--green);color:#05261a;border-color:var(--green)}
   .dopt.rec .dgo button:hover{filter:brightness(1.08)}
   .lvl{display:flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:9px;background:var(--bg);padding:0 10px}
-  .lvl input{width:84px;background:transparent;border:0;outline:0;color:var(--ink);padding:8px 0;font-size:13px;font-weight:600}
+  .lvl:focus-within{outline:2px solid var(--blue);outline-offset:2px}
+  .lvl input{width:84px;background:transparent;border:0;outline:none;color:var(--ink);padding:8px 0;font-size:13px;font-weight:600}
   .lvl span{color:var(--mut);font-size:12px}
   /* Phase 2.1 - Source Code & Data accordion */
   details.audit{margin-top:10px;border:1px solid var(--line);border-radius:10px;background:var(--card2)}
@@ -318,11 +320,11 @@
 
   <!-- TODAY -->
   <section id="view-today" class="hide">
-    <div id="rulesAlert" class="databanner illustrative hide" style="cursor:pointer" onclick="show('hold');holdSeg('rules')"></div>
+    <div role="button" tabindex="0" id="rulesAlert" class="databanner illustrative hide" style="cursor:pointer" onclick="show('hold');holdSeg('rules')"></div>
     <div class="card hero">
       <div class="lbl">Your wealth is</div>
-      <div class="big" id="rating" onclick="explain('health')">…</div>
-      <div class="muted"><span id="score">–</span>/100 health · <span class="link" onclick="explain('health')">what's this?</span></div>
+      <div role="button" tabindex="0" class="big" id="rating" onclick="explain('health')">…</div>
+      <div class="muted"><span id="score">–</span>/100 health · <span role="button" tabindex="0" class="link" onclick="explain('health')">what's this?</span></div>
       <div class="bar2"><i id="barfill" style="width:0%"></i></div>
       <div class="dims" id="dims"></div>
       <div class="goal" id="goal"></div>
@@ -443,10 +445,10 @@
     <!-- PR 104 (Execution plan v2.2, D6): A's three sub-tabs, built the C way,
          with the protective rules in My mix. Step (a): today's blocks moved in. -->
     <h2 style="margin-bottom:6px">Plan</h2>
-    <div class="seg" id="planSeg" role="tablist" style="display:flex;margin:0 0 10px">
-      <button data-p="goal" role="tab" onclick="planTab('goal')" style="flex:1">Goal</button>
-      <button data-p="mix" role="tab" onclick="planTab('mix')" style="flex:1">My mix</button>
-      <button data-p="explore" role="tab" onclick="planTab('explore')" style="flex:1">Explore</button>
+    <div class="seg" id="planSeg" role="tablist" style="margin:0 0 10px">
+      <button data-p="goal" role="tab" onclick="planTab('goal')">Goal</button>
+      <button data-p="mix" role="tab" onclick="planTab('mix')">My mix</button>
+      <button data-p="explore" role="tab" onclick="planTab('explore')">Explore</button>
     </div>
     <div class="card hide" id="stratOut" style="margin-bottom:8px"></div>
     <div id="plan-goal">
@@ -520,14 +522,14 @@
     <div class="card hero" id="regimeCard"><div class="muted">Loading market regime…</div></div>
     <h2>Futures &amp; key markets</h2>
     <div class="hold" id="futGrid"><div class="card muted">Loading futures…</div></div>
-    <h2>What's moving <span class="link" onclick="loadMacroSummary()">· AI summary</span></h2>
+    <h2>What's moving <span role="button" tabindex="0" class="link" onclick="loadMacroSummary()">· AI summary</span></h2>
     <div class="card" id="macroOut"><div class="muted">Tap "AI summary" for a plain-language read on the markets.</div></div>
     <p class="muted" style="font-size:12px;margin-top:10px">Prices via Yahoo, ~15-min delayed. AI by Google Gemini. Not financial advice.</p>
   </section>
 </div>
 
 <div class="ov" id="cashov" onclick="if(event.target.id==='cashov')closeCash()">
-  <div class="modal"><span class="x" onclick="closeCash()">&times;</span><h3>&#128181; Liquid cash</h3>
+  <div class="modal" role="dialog" aria-modal="true"><span role="button" tabindex="0" aria-label="Close" class="x" onclick="closeCash()">&times;</span><h3>&#128181; Liquid cash</h3>
     <div class="muted" style="margin-bottom:10px">Money sitting uninvested in your account. It counts toward
       your portfolio value, your allocation mix and your liquidity score.</div>
     <label>Cash balance (&#8362;)</label><input id="c_amt" type="number" step="0.01" min="0" placeholder="0.00"/>
@@ -550,11 +552,11 @@
   </div>
 </div>
 <div class="ov" id="histov" onclick="if(event.target.id==='histov')closeHist()">
-  <div class="modal"><span class="x" onclick="closeHist()">&times;</span><h3 id="h_title">Holding</h3>
-    <div class="seg" id="h_mode" style="width:100%;box-sizing:border-box">
+  <div class="modal" role="dialog" aria-modal="true"><span role="button" tabindex="0" aria-label="Close" class="x" onclick="closeHist()">&times;</span><h3 id="h_title">Holding</h3>
+    <div class="seg" id="h_mode">
       <button class="on" data-m="value" onclick="setHistMode('value')">Your position</button>
       <button data-m="price" onclick="setHistMode('price')">Ticker price</button></div>
-    <div class="seg" id="h_rng" style="margin-bottom:10px;width:100%;box-sizing:border-box">
+    <div class="seg" id="h_rng" style="margin-bottom:10px">
       <button data-r="1D" onclick="setHistRange('1D')">1D</button><button data-r="1W" onclick="setHistRange('1W')">1W</button><button data-r="1M" onclick="setHistRange('1M')">1M</button><button data-r="3M" onclick="setHistRange('3M')">3M</button><button data-r="1Y" onclick="setHistRange('1Y')">1Y</button><button data-r="ALL" onclick="setHistRange('ALL')">All</button></div>
     <div id="h_head" style="margin-bottom:6px"></div>
     <div class="hchart"><canvas id="ch_hist"></canvas></div>
@@ -563,7 +565,7 @@
   </div>
 </div>
 <div class="ov" id="editov" onclick="if(event.target.id==='editov')closeEdit()">
-  <div class="modal"><span class="x" onclick="closeEdit()">×</span><h3>Edit holding</h3>
+  <div class="modal" role="dialog" aria-modal="true"><span role="button" tabindex="0" aria-label="Close" class="x" onclick="closeEdit()">×</span><h3>Edit holding</h3>
     <input type="hidden" id="e_id"/>
     <div class="grid2"><div><label>Name / ticker</label><input id="e_t"/></div>
       <div><label>Market</label><select id="e_m">
@@ -586,7 +588,7 @@
   </div>
 </div>
 <div class="ov" id="ov" onclick="if(event.target.id==='ov')closeModal()">
-  <div class="modal"><span class="x" onclick="closeModal()">×</span><h3 id="m_t"></h3><p id="m_b"></p></div>
+  <div class="modal" role="dialog" aria-modal="true"><span role="button" tabindex="0" aria-label="Close" class="x" onclick="closeModal()">×</span><h3 id="m_t"></h3><p id="m_b"></p></div>
 </div>
 
 <!-- Mobile bottom navigation -->
@@ -1018,7 +1020,7 @@ async function loadToday(){
     PLANH=h;
     if(h.score_basis==="on_plan_on_track"){
       const P=h.plan_parts||{};
-      const chip=(k,v,key)=>`<span class="chip" onclick="explainPart('${key}')">${k} ${v==null?"—":v} <span class="q">ⓘ</span></span>`;
+      const chip=(k,v,key)=>`<span role="button" tabindex="0" class="chip" onclick="explainPart('${key}')">${k} ${v==null?"—":v} <span class="q">ⓘ</span></span>`;
       $("dims").innerHTML=`<div class="mk" style="margin-bottom:6px;width:100%"><b>On plan ${h.on_plan}</b>${h.on_track!=null?` · <b>On track ${h.on_track}</b>`:""}</div>`
         +[["Sleeves","sleeves"],["Mix","mix"],["Rules","rules"],["Concentration","concentration"],["Cash","cash"]]
           .map(([k,key])=>chip(k,(P[key]||{}).score,key)).join("")
@@ -1026,7 +1028,7 @@ async function loadToday(){
         +`<div class="mk" style="margin-top:6px;width:100%">${h.on_track_detail||""}</div>`;
     }else{
       $("dims").innerHTML=[["Risk",h.risk_score,"risk"],["Tax",h.tax_efficiency_score,"tax"],["Spread",h.diversification_score,"spread"],["Cash",h.liquidity_score,"cash"]]
-        .map(([k,v,key])=>`<span class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
+        .map(([k,v,key])=>`<span role="button" tabindex="0" class="chip" onclick="explain('${key}')">${k} ${v} <span class="q">ⓘ</span></span>`).join("");
       // Legacy fallback only (plan health unavailable): say which volatility
       // the Risk chip was scored on, as PR 16 required.
       const vb=h.volatility_basis||"static", vs=h.avg_volatility_pct_static;
@@ -1087,12 +1089,12 @@ async function loadToday(){
         <div class="oc"><span class="k">Chance of losing money (after inflation)</span><span class="v ${lossP<=20?'ok':lossP<=40?'warn':'bad'}">${lossP}%</span></div>
         ${goalRow}${contribRow}
         <div class="mk" style="margin-top:8px">${caveat}</div>
-        <div class="mk" style="margin-top:4px">See the full picture in <span class="link" onclick="show('explore')">Explore →</span></div>`;
+        <div class="mk" style="margin-top:4px">See the full picture in <span role="button" tabindex="0" class="link" onclick="show('explore')">Explore →</span></div>`;
       o.classList.remove("hide");
     }else o.classList.add("hide");
   }catch(e){$("outcomes").classList.add("hide");}
   try{const r=await TP.alerts;const a=(r.alerts||[])[0];
-    $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
+    $("risk").innerHTML=a?`<div class="ico">⚠️</div><div><b>${plainRisk(a)}</b><div class="muted" style="margin-top:4px">Curious? <span role="button" tabindex="0" class="link" onclick="show('explore')">see what a crash would do →</span></div></div>`
       :`<div class="ico">🛡️</div><div><b>No major risks flagged.</b><div class="muted">Well balanced.</div></div>`;
   }catch(e){$("risk").innerHTML=`<div class="muted">—</div>`;}
 }
@@ -1100,7 +1102,7 @@ async function loadToday(){
 function moreNote(more){
   return `<div class="card center muted" style="font-size:13px" id="moreRecs">
     ${more.length} more lower-priority ${more.length>1?"suggestions":"suggestion"} ·
-    <span class="link" onclick="document.getElementById('moreRecs').outerHTML=MORE_HTML">show ${more.length>1?"them":"it"}</span></div>`;
+    <span role="button" tabindex="0" class="link" onclick="document.getElementById('moreRecs').outerHTML=MORE_HTML">show ${more.length>1?"them":"it"}</span></div>`;
 }
 let MORE_HTML="";
 function emptyRecs(hidden,done,cards){
@@ -1159,7 +1161,7 @@ function historyNote(cards,hidden,done){
   const nb=cards.filter(c=>c.how==="blocked").length;
   const parts=[]; if(done)parts.push(`${done} done`); if(hidden)parts.push(`${hidden} ignored`); if(nb)parts.push(`${nb} blocked`);
   return `<div class="card muted" style="font-size:13px" id="histNote">🗂 Earlier suggestions: ${parts.join(" · ")} ·
-    <span class="link" onclick="showHistory()">view the list</span></div>`;
+    <span role="button" tabindex="0" class="link" onclick="showHistory()">view the list</span></div>`;
 }
 function _histWhen(iso){
   if(!iso) return "";
@@ -1176,12 +1178,12 @@ function showHistory(){
     const btn=c.how==="blocked"?"":`<button class="ghost" style="font-size:11px;padding:2px 8px" onclick="restoreOne('${c.id}','${c.how}')">↩︎ Restore</button>`;
     return `<div class="hist-row" style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;padding:7px 0;border-top:1px solid rgba(148,163,184,.15)">
       <div style="min-width:0"><span style="color:${col};font-size:11px;font-weight:600;white-space:nowrap">${lab}</span>
-        <span style="color:var(--fg,#e5e7eb)"> ${c.title||c.id}</span>
+        <span style="color:var(--ink)"> ${c.title||c.id}</span>
         <div class="mk">${when?(c.how==="done"?"accepted ":"hidden ")+when:""}${amt}</div>${why}</div>${btn}</div>`;
   }).join("");
   e.outerHTML=`<div class="card" id="histList" style="font-size:13px"><b>Earlier suggestions</b>
     <div class="mk" style="margin:2px 0 4px">Read-only. Restoring a card only lets it show again if it still applies — it never undoes a trade.</div>
-    ${rows}<div style="margin-top:6px"><span class="link" onclick="loadToday()">hide the list</span></div></div>`;
+    ${rows}<div style="margin-top:6px"><span role="button" tabindex="0" class="link" onclick="loadToday()">hide the list</span></div></div>`;
 }
 async function restoreOne(id,how){
   const msg=how==="done"
@@ -1558,8 +1560,8 @@ async function loadRules(){
 // fired" was visible but "and then?" was unanswerable.
 const _OUTCOME={
   executed:{t:"✅ Executed",c:"var(--green)"},
-  dismissed:{t:"🚫 Ignored",c:"var(--muted)"},
-  acknowledged:{t:"👍 Marked done",c:"var(--muted)"},
+  dismissed:{t:"🚫 Ignored",c:"var(--mut)"},
+  acknowledged:{t:"👍 Marked done",c:"var(--mut)"},
   triggered:{t:"⏳ Awaiting your call",c:"var(--amber)"}
 };
 async function loadRuleEvents(){
@@ -2772,7 +2774,7 @@ function targetBody(){
          &mdash; beat ${_acc.excess_pct}% without exceeding ${_acc.ceiling_pct}%. Not a measurement.
          ${(_mea&&_mea.ceiling!=null)
             ? `Your book measures <b>${_mea.drawdown}%</b> today.
-               <span class="link" onclick="tgtReseed()">use what the book measures now</span>`
+               <span role="button" tabindex="0" class="link" onclick="tgtReseed()">use what the book measures now</span>`
             : ""}</div>`
     : (_mea
         ? `<div class="mk" style="margin-top:4px">These start from what your book
@@ -3005,9 +3007,39 @@ async function resolveGoalNow(btn){
 }
 // ----------------------------------------------------------------- PR 104b
 let PLX={p:{},f:{},rules:[],orders:{orders:[]},protect:null};
-function openSheet(html){$("sheet").innerHTML=`<div style="width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 10px"></div>`+html;
-  $("sheetBg").style.display="flex";}
-function closeSheet(){$("sheetBg").style.display="none";$("sheet").innerHTML="";clearTimeout(_pvT);}
+// PR 117: the sheet takes focus when it opens and gives it back when it closes.
+let _sheetReturn=null;
+function openSheet(html){
+  if($("sheetBg").style.display!=="flex") _sheetReturn=document.activeElement;
+  $("sheet").innerHTML=`<div style="width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 10px"></div>`+html;
+  $("sheetBg").style.display="flex";
+  const f=_focusables($("sheet"))[0]; if(f) f.focus({preventScroll:true});}
+function closeSheet(){$("sheetBg").style.display="none";$("sheet").innerHTML="";clearTimeout(_pvT);
+  if(_sheetReturn&&document.contains(_sheetReturn)) _sheetReturn.focus({preventScroll:true}); _sheetReturn=null;}
+function _focusables(root){return [...root.querySelectorAll('button,a[href],input,select,textarea,[tabindex="0"]')]
+  .filter(el=>!el.disabled&&el.offsetParent!==null);}
+// One key handler for the whole app: Enter/Space press a button-role element;
+// Escape closes the top layer (the sheet, else an open modal); Tab stays inside
+// an open sheet.
+document.addEventListener("keydown",e=>{
+  const sheetOpen=$("sheetBg").style.display==="flex";
+  if(e.key==="Escape"){
+    if(sheetOpen){closeSheet();e.preventDefault();return;}
+    const shut={cashov:closeCash,histov:closeHist,editov:closeEdit,ov:closeModal};
+    const open=[...document.querySelectorAll(".ov.show")].pop();
+    if(open&&shut[open.id]){shut[open.id]();e.preventDefault();}
+    return;
+  }
+  if((e.key==="Enter"||e.key===" ")&&e.target.getAttribute&&e.target.getAttribute("role")==="button"){
+    e.preventDefault();e.target.click();return;
+  }
+  if(e.key==="Tab"&&sheetOpen){
+    const f=_focusables($("sheet")); if(!f.length) return;
+    const first=f[0], last=f[f.length-1];
+    if(e.shiftKey&&document.activeElement===first){last.focus();e.preventDefault();}
+    else if(!e.shiftKey&&document.activeElement===last){first.focus();e.preventDefault();}
+  }
+});
 function _sheetHead(t){return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
   <b style="font-size:18px">${t}</b><button class="ghost" onclick="closeSheet()" style="background:none;border:0;color:var(--mut);padding:8px">Close</button></div>`;}
 let _pvT=null,_pvN=0;
@@ -3828,7 +3860,7 @@ function sessCard(s){
     const d=l.detail||{};
     const risk=(l.agent==="Risk"&&d.probability_of_ruin!=null)
       ?`<div class="rchips"><span>P(deep loss) ${(d.probability_of_ruin*100).toFixed(0)}%</span><span>worst dip ${(d.median_max_drawdown*100).toFixed(0)}%</span>${d.volatility!=null?`<span>volatility ${(d.volatility*100).toFixed(0)}%</span>`:''}</div>`:'';
-    return `<div class="line" onclick="${hd?`tgl('${id}')`:''}"><div class="av">${AV[l.agent]||"•"}</div>
+    return `<div role="button" tabindex="0" class="line" onclick="${hd?`tgl('${id}')`:''}"><div class="av">${AV[l.agent]||"•"}</div>
       <div style="flex:1"><div class="who">${l.agent} <span class="ro">· ${l.role}</span></div><div class="sy">${l.says}</div>${risk}
       ${hd?`<div class="dt" id="dt_${id}">${JSON.stringify(l.detail,null,1)}</div>`:''}</div></div>`;}).join("");
   return `<div class="card sess"><div class="top"><span class="tk">${s.ticker}</span><span class="badge ${cls}">${s.outcome_label}</span></div>${s.decided_at?`<div class="mk" style="margin:-2px 0 6px">🕒 ${fmtDT(s.decided_at)}</div>`:""}${lines}</div>`;
