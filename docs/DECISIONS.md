@@ -186,6 +186,9 @@
   on; a "best trend right now" commodity pick is parked in the backlog as future work. → PR 116
 - **D81 · 2026-10-11 · Delete the Sentry block** (D-h): errors already surface through Railway logs, job status (PR 107) and smokes;
   Sentry was wired but never installed. → PR 116
+- **D83 · 2026-10-12 · The halving limit is a hard limit.** When today's rules leave the chance of halving above the
+  limit, the retune card offers the best setup inside it even if that costs goal odds. The card states the risk and the
+  cost, and the owner decides. Inside the limit, a change is still offered only when it gains odds. → PR 121.1
 - **D82 · 2026-10-12 · The protection retune searches every dial it can change, and says how many setups it tried.**
   The guard's sell size and re-arm gap become settings that the live guard reads, so the retune may move them. Take-profits
   can be paused by the card. The default guard levels tried widen to 15/17.5/20/25. → PR 121

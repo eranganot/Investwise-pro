@@ -192,3 +192,73 @@ async def test_moved_guard_dials_are_refused_untouched(own_session):
         assert not (await _plan_thresholds(own_session, read=True)).get("guard_sell_fraction_pct")
     finally:
         await _delete(own_session, tp)
+
+
+# ---- D83 (owner, 2026-10-12): the halving limit is a hard limit -----------
+
+def test_over_the_limit_the_best_setup_inside_it_is_offered_even_at_a_cost():
+    """Production on 2026-10-12: no guard, 68.3% chance of halving against a 2.6%
+    limit; guard 20% brings it to 2.2% at 18.9% goal odds (30.9% today)."""
+    def run(sl=None, gd=None, **kw):
+        if gd is None:
+            return _stats(30.9, 68.3)
+        return _stats(18.9, 2.2) if abs(gd["level"] - 0.20) < 1e-9 else _stats(25.0, 9.0)
+    t = fs._tune_protection(run, [{"col": 0, "trail": None, "tp_ratio": 1.06}], None,
+                            {"sleeves": {"qqq": {"tp_rule_ids": ["tp1"], "rules": ["take_profit QQQ (+6%)"]}},
+                             "guard": None},
+                            ["qqq"], np.ones((10, 1)), 1, _stats(30.9, 68.3), floor=2.6)
+    assert t["breach"] and t["material"]
+    assert t["best"]["guard_pct"] == 20.0 and t["best"]["stats"]["p_goal_pct"] == 18.9
+    assert t["changes"]["guard"] == {"rule_id": None, "from_pct": None, "to_pct": 20.0}
+
+
+def test_inside_the_limit_a_costlier_setup_is_still_not_offered():
+    def run(sl=None, gd=None, **kw):
+        return _stats(10.0 if gd and abs(gd["level"] - 0.20) < 1e-9 else 20.0, 0.5)
+    t = _tune(run, [{"col": 0, "trail": None}], {"sleeves": {}, "guard": {"rule_id": "g1"}})
+    assert not t["breach"] and not t["material"]
+
+
+def test_the_breach_card_says_the_risk_and_the_cost():
+    cur, best = _stats(30.9, 68.3), _stats(18.9, 2.2)
+    line = fs._breach_line({"breach": True, "halve_floor_pct": 2.6}, cur, best)
+    assert "68.3% chance the book halves, above your 2.6% limit" in line and "costs 12 points" in line
+    assert fs._breach_line({"breach": False, "halve_floor_pct": 2.6}, cur, best) == ""
+
+
+async def test_the_breach_card_reaches_today_and_accept_arms_the_guard(own_session):
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+    from app.services.feed_service import ensure_superadmin
+    try:
+        with TestClient(app) as c:
+            cur = _seed(c, 10)
+            st0, st1 = _stats(30.9, 68.3, 40000, 9000), _stats(18.9, 0.8, 33000, 20000)
+            await _store_verdict(own_session, _goal_verdict(cur, rules={
+                "on": {**st0, "exits_per_year": [0.0], "pct_time_out": [0.0]},
+                "off": {**st0, "exits_per_year": [0.0], "pct_time_out": [0.0]},
+                "rebound": {**st0, "exits_per_year": [0.0], "pct_time_out": [0.0]},
+                "effect_pts": 0.0, "fix_effect_pts": 0.0, "sleeves": {"btm_qqq_hold": {}},
+                "tuning": {"material": True, "breach": True, "halve_floor_pct": 1.0, "tried": 20,
+                           "take_profits_measured": True, "current": {"guard_pct": None, "stats": st0},
+                           "best": {"retire_sleeve_exits": False, "pause_take_profits": [], "guard_pct": 20.0,
+                                    "guard_fraction_pct": 25.0, "guard_rearm_gap_pts": 2.5, "stats": st1},
+                           "changes": {"pause_rule_ids": [], "pause_rules": [], "guard_settings": None,
+                                       "guard": {"rule_id": None, "from_pct": None, "to_pct": 20.0}}}}))
+            card = next((x for x in _cards(c) if x["id"].startswith("rec_goal_protect_")), None)
+            assert card is not None, [x["title"] for x in _cards(c)]
+            assert card["title"] == "Bring your crash risk inside your limit: halving 68.3% -> 0.8%"  # the plan's limit: 1%
+            assert "above your 1% limit" in card["why"] and "costs 12 points of goal odds" in card["why"]
+            assert "30.9% -> 18.9%" in card["impact"]                   # the cost is on the card, not hidden
+            r = c.post(f"/api/v1/recommendations/{card['id']}/accept").json()
+            assert r.get("applied") == fs.RULES_CARD_KIND, r
+        async with own_session() as s:
+            user = await ensure_superadmin(s)
+            g = (await s.scalars(select(TradingRule).where(TradingRule.subject == user.email,
+                                                           TradingRule.rule_type == "drawdown_guard"))).all()
+            assert [(bool(x.active), float(x.level)) for x in g] == [(True, 20.0)]
+            gid = str(g[0].id)
+        await _delete(own_session, gid)
+    finally:
+        await _reset_plan(own_session)
