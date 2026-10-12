@@ -829,7 +829,7 @@ def _reconcile(recs: list[dict], market: dict | None = None) -> list[dict]:
         macro["impact"] = "Spreads entry risk without leaving you off-plan."
         macro["how"] = ["Split the rebalance into 2-4 tranches over a few weeks",
                         "Start with the broadest, least volatile leg",
-                        "Keep your cash floor intact while you phase in"]
+                        "Keep your cash target intact while you phase in"]
 
     return [r for r in recs if r.get("id") not in drop]
 
@@ -1239,8 +1239,8 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
             "how": ([f"{verb} {_ils(buy.amount_ils)} of {tk}"]
                     + [f"Sell {x['shares']} {x['ticker']} (~{_ils(x['value_ils'])}) — {x['reason']}"
                        for x in fund.get("sells", [])]
-                    + ([f"Use {_ils(fund['from_cash_ils'])} of cash (floor of "
-                        f"{_ils(fund['cash_floor_ils'])} stays untouched)"]
+                    + ([f"Use {_ils(fund['from_cash_ils'])} of cash (your "
+                        f"{_ils(fund['cash_target_ils'])} cash target stays untouched)"]
                        if fund.get("from_cash_ils") else [])
                     + (["This is a swap inside one asset class, not a rebalance"]
                        if buy.is_swap else [])
@@ -2146,9 +2146,10 @@ async def build_recommendations(session: AsyncSession, user: User,
                 ((_rv.get(_tk.upper()) or {}).get("metrics") or {}).get("vol_20d_pct"))
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"], _name_caps,
-                               _sleeve_share, _holds_active, _reserve, _ideas)
+                               _sleeve_share, _holds_active, _reserve, _ideas,
+                               core_id=btgt.get("core_strategy_id"))
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
-                           _sleeve_names, _ledger, btgt["target"], _name_caps)
+                           _sleeve_names, _ledger, btgt["target"], _name_caps, btgt.get("core_strategy_id"))
 
     # THE SCREENER GETS A SURFACE. Ranked names become fundable cards here, and
     # deliberately LAST among the buying cards: the shared `_ledger` has already
@@ -2206,7 +2207,7 @@ async def build_recommendations(session: AsyncSession, user: User,
     # Liquidity floor: name what to sell and how much, rather than "hold more cash".
     try:
         from app.services import funding_service as _fs2
-        _floor = _fs2.cash_floor_ils(nav, objective, plan)
+        _floor = _fs2.cash_target_amount_ils(nav, objective, plan)
         if nav and _cash_ils < _floor:
             _need = round(_floor - _cash_ils, 2)
             _cands = _fs2.rank_trim_candidates(rows, snap, objective, cap,
@@ -2220,12 +2221,12 @@ async def build_recommendations(session: AsyncSession, user: User,
                         "dimension": "liquidity", "severity": "MEDIUM",
                         "title": f"Raise {_ils(_need)} of cash",
                         "why": (f"You hold {_ils(_cash_ils)} liquid against a "
-                                f"{_fs2.cash_floor_pct(objective, plan, nav):.0%} floor for a {objective} "
+                                f"{_fs2.cash_target_fraction(objective, plan, nav):.0%} cash target for a {objective} "
                                 f"plan ({_ils(_floor)}). Too little dry powder means a forced sale "
                                 f"at a bad moment."),
-                        "action": (f"Sell {_sh} {_c['ticker']} (~{_ils(_need)}) to rebuild your cash "
-                                   f"floor. {_c['reason']}."),
-                        "impact": f"Restores your liquidity floor to {_ils(_floor)}.",
+                        "action": (f"Sell {_sh} {_c['ticker']} (~{_ils(_need)}) to bring your cash "
+                                   f"back to its target. {_c['reason']}."),
+                        "impact": f"Restores your cash to its {_ils(_floor)} target.",
                         "how": [f"Sell {_sh} {_c['ticker']} (~{_ils(_need)})",
                                 _c["reason"].capitalize(),
                                 "Proceeds land in cash, visible on Holdings"],
@@ -2498,7 +2499,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                                     f"the leverage — not a new position."),
                             "action": (f"Sell {_ils(_moves)} of {_from} and buy {_tk} with the "
                                        f"proceeds"
-                                       + (f", plus {_ils(_cash_leg)} of cash above your floor"
+                                       + (f", plus {_ils(_cash_leg)} of cash above your cash target"
                                           if _cash_leg >= _MIN_TR else "") + "."),
                             "impact": (f"Takes the {_tk} sleeve from nothing to about "
                                        f"{_target_pct:.0f}%. Every funding leg and its estimated "
@@ -2680,7 +2681,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                         "not discipline. Unarmed, none of them does anything."),
                 "action": (f"Arm {len(_flat)} suggested rule(s) across "
                            f"{', '.join(_names)}. Accept arms all of them at once; "
-                           f"the Rules tab lets you fine-tune or add them one by one."),
+                           f"Holdings › Rules lets you fine-tune or add them one by one."),
                 "impact": ("Each rule then watches its holding on every price refresh and "
                            "raises an alert plus a Today card when it fires."),
                 "how": _lines + ["Accept arms all of these as real trading rules",
@@ -4353,7 +4354,7 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
         "title": f"{_ils(reserved_ils)} of your cash is waiting for {names}",
         "why": (f"You hold {_ils(cash_ils)} in cash, above your {_ils(trigger_ils)} trigger. "
                 f"{_ils(reserved_ils)} of it is reserved: when you sold, the app agreed not to "
-                f"buy back {waits}. The Rules tab shows this as a buy-back rule you can edit."),
+                f"buy back {waits}. Holdings › Rules shows this as a buy-back rule you can edit."),
         "action": ("Keep waiting, buy it back now (ends the hold), or invest part of it "
                    "elsewhere and keep the rest reserved."),
         "impact": split_why + honesty,
@@ -4384,7 +4385,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         holds: dict | None = None,
                         reserved_ils: float = 0.0,
                         ideas: list | None = None,
-                        _inner: bool = False) -> list[dict]:
+                        _inner: bool = False, core_id: str | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     PR 75 -- `holds` are tickers under a take-profit buy-back hold and
@@ -4452,7 +4453,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             # with the reserve ignored (the held tickers stay excluded), plus
             # the screener's top ideas.
             under = _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils, book_mix,
-                                        name_caps, sleeve_targets, holds, 0.0, None, True)
+                                        name_caps, sleeve_targets, holds, 0.0, None, True, core_id=core_id)
             return [_held_cash_card(holds, _reserved, cash_ils, float(_trigger or 0.0),
                                     nav=nav, mix=current_mix(rows)[0], target=book_mix or {},
                                     under_legs=((under[0].get("apply") or {}).get("legs") or [])
@@ -4669,7 +4670,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             _research = _rr.research(
                 legs, unplaced, sleeve_tickers=_sleeve_set,
                 held_tickers={t.upper() for t in weights},
-                scores=_rr.live_scores(objective, _ccy), trend=_rr.live_trend,
+                scores=_core_commodities_only(_rr.live_scores(objective, _ccy), core_id),
+                trend=_rr.live_trend,
                 room_for=lambda tk: _fund.name_room_ils(
                     nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps)),
                 min_trade=_fund.MIN_TRADE_ILS)
@@ -4691,7 +4693,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                                    "concentration caps"})
     # Money the passes or the research could not (or would not) place.
     _leftover = round(_reserved + sum(u["amount_ils"] for u in unplaced), 2) >= 1
-    floor_pct = _fund.cash_floor_pct(objective, plan, nav)
+    floor_pct = _fund.cash_target_fraction(objective, plan, nav)
     new_names = [x["ticker"] for x in legs if x.get("new_position")]
 
     # The soft target is 7.5, not "8%": `:.0%` rounded the user's own number.
@@ -5064,10 +5066,42 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
     return out
 
 
+COMMODITY_BUYS_CORE_ONLY = 1        # D80: a setting (`commodity_buys_core_only`)
+
+
+def core_commodity_tickers(core_id: str | None) -> list[str]:
+    """D80 (PR 116): the core basket's commodity tickers, heaviest first.
+
+    Empty without a core, when the core holds no commodity, or when the setting
+    is off. The goal model prices the Commodities slice as the core's funds
+    (frontier_inputs: IAU/DBC), so a card buying sugar to fill that gap claimed
+    an exposure the model never measured.
+    """
+    if not core_id or not int(_thr.get("commodity_buys_core_only", COMMODITY_BUYS_CORE_ONLY)):
+        return []
+    from app.services.strategies import core_weights
+    w = core_weights(core_id) or {}
+    return [t.upper() for t, _ in sorted(w.items(), key=lambda kv: -kv[1])
+            if classify(t, None) == "Commodities"]
+
+
+def _core_commodities_only(scores: dict, core_id: str | None) -> dict:
+    """D80: with a core holding commodities, research may only swap a commodity
+    top-up for another of the core's commodity funds."""
+    keep = set(core_commodity_tickers(core_id))
+    if not keep:
+        return scores
+    return {t: v for t, v in scores.items() if v.get("screen") != "Commodities" or t.upper() in keep}
+
+
 def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
                     sleeve_names=None, ledger=None, book_mix: dict | None = None,
-                    name_caps: dict | None = None) -> list[dict]:
-    """Recommend a specific commodity, sized to the plan gap and funded explicitly."""
+                    name_caps: dict | None = None, core_id: str | None = None) -> list[dict]:
+    """Recommend a specific commodity, sized to the plan gap and funded explicitly.
+
+    With a core that holds commodities (and `commodity_buys_core_only` on), only
+    the core's commodity funds are candidates, ranked by the same screen.
+    """
     out: list[dict] = []
     sleeve_names = sleeve_names or set()
     try:
@@ -5089,11 +5123,14 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
     if com_w >= max(0.03, target * 0.5):
         return out  # already holds a meaningful sleeve
     picks = []
+    core_com = core_commodity_tickers(core_id)
     try:
         from app.agents.screener_agent import OpportunityAgent
-        picks = OpportunityAgent().screen_commodities(top_n=3)
+        picks = OpportunityAgent().screen_commodities(top_n=1000 if core_com else 3)
     except Exception:  # noqa: BLE001
         picks = []
+    if core_com:
+        picks = [p for p in picks if p.ticker.upper() in core_com][:3]
     # NO SCREEN, NO CARD. This fell back to a hardcoded "DBC" whenever the
     # screener returned nothing -- so a card headed "Add a commodities sleeve"
     # could name a ticker that had been chosen by no process at all, while
@@ -6555,7 +6592,7 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     """
     from app.services import core_realign
     from app.services.allocation_mix import classify_holding as _ch
-    from app.services.funding_service import cash_floor_ils
+    from app.services.funding_service import cash_target_amount_ils
     from app.services.fx import fx_rate, price_currency
     from app.services.sleeve_service import sleeve_occupancy, sleeve_tickers
     from app.services.strategies import core_weights
@@ -6687,7 +6724,7 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         _no_buy = set()
     out = core_realign.plan_realign(
         basket=basket, core_pct=core_pct, nav=nav, held=held,
-        cash_ils=cash_ils, cash_floor_ils=cash_floor_ils(nav, objective, plan_row),
+        cash_ils=cash_ils, cash_floor_ils=cash_target_amount_ils(nav, objective, plan_row),
         sleeve_over_ils=over, cgt_rate=float(get_settings().cgt_rate),
         gain_frac=gain, deferred=deferred, no_buy=_no_buy)
     out["core_strategy_id"] = core_id

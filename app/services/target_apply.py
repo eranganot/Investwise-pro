@@ -178,7 +178,7 @@ async def apply_target(session, user, *, resizes: list[dict],
     so an uncommitted session is an unchanged book.
     """
     from app.services import sleeve_service as sv
-    from app.services.funding_service import cash_floor_pct
+    from app.services.funding_service import cash_target_fraction
 
     if not confirm:
         # An explicit confirm, required at the API boundary. A write endpoint
@@ -200,8 +200,8 @@ async def apply_target(session, user, *, resizes: list[dict],
                            "Re-solve, then accept. Nothing was written."),
                 "stale": stale, "before": before}
 
-    # `cash_floor_pct(objective, plan)` -- NOT async, and NOT (session, user).
-    # The first version called it as `await cash_floor_pct(session, user)` inside
+    # `cash_target_fraction(objective, plan)` -- NOT async, and NOT (session, user).
+    # The first version called it as `await cash_target_fraction(session, user)` inside
     # a bare `except: floor = 0.0`. It therefore raised on EVERY call and
     # silently fell back to a ZERO cash floor, so this endpoint would have
     # permitted sleeves up to 100% of the book while the user's floor said
@@ -213,7 +213,7 @@ async def apply_target(session, user, *, resizes: list[dict],
         plan = await get_plan(session, user)
         from app.services.fx import book_nav_ils
         from app.services.intake_service import list_positions as _lp
-        floor = float(cash_floor_pct(getattr(plan, "objective", None), plan,
+        floor = float(cash_target_fraction(getattr(plan, "objective", None), plan,
                                      book_nav_ils(await _lp(session, user)))) * 100.0
     except Exception:  # noqa: BLE001
         logger.warning("cash floor unavailable; refusing rather than assuming 0%%",

@@ -159,13 +159,13 @@ def test_money_writes_are_quantised_to_the_stored_scale():
     """What is computed is what is stored, on both databases."""
     from decimal import Decimal
 
-    from app.models.tables import MONEY, money
+    from app.models.tables import MONEY, db_money
 
     assert MONEY.scale == 4, "the quantiser reads the column; update it together"
     # The exact value _rebalance_to used to write, and what Postgres kept of it.
-    assert money(4.7122764) == Decimal("4.7123")
-    assert money(20.1041) == Decimal("20.1041")
+    assert db_money(4.7122764) == Decimal("4.7123")
+    assert db_money(20.1041) == Decimal("20.1041")
     # No exponent notation, no silent widening: the result is always the scale
     # the column declares, so the ORM object and the row agree digit for digit.
-    assert str(money(1)) == "1.0000"
-    assert money(Decimal("0.00004")) == Decimal("0.0000")
+    assert str(db_money(1)) == "1.0000"
+    assert db_money(Decimal("0.00004")) == Decimal("0.0000")

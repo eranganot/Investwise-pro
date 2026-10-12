@@ -76,7 +76,7 @@ def test_surplus_cash_produces_one_sized_executable_card():
         assert leg["reason"], "every leg explains itself"
         assert leg["ticker"] != "CASH", "never 'buys' cash with cash"
     # Never proposes spending the objective's floor.
-    floor = fund.cash_floor_ils(NAV, "Grow", None)
+    floor = fund.cash_target_amount_ils(NAV, "Grow", None)
     assert card["meta"]["cash_after_ils"] >= floor - 1.0
     assert sum(x["amount_ils"] for x in legs) <= 6473.0
 
@@ -118,7 +118,7 @@ def test_unfillable_class_budget_is_reallocated_not_left_idle():
     out = _redeploy_cash_recs(_book(), _snap(NAV, WEIGHTS), None, "Grow", 0.40, 6473.0)
     assert out, "expected a card"
     card = out[0]
-    floor = fund.cash_floor_ils(NAV, "Grow", None)
+    floor = fund.cash_target_amount_ils(NAV, "Grow", None)
     leftover = float(card["meta"]["cash_after_ils"]) - floor
     # Anything still parked above the floor must be under one trade's worth --
     # otherwise the budget was dropped rather than reallocated.

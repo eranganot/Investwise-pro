@@ -930,7 +930,7 @@ def core_solve(prep: dict, *, sleeves_pct: dict[str, float], current_core_id: st
 # re-measured on the full set, and the pick is the best goal odds among setups
 # whose chance of HALVING stays <= HALVE_FLOOR -- protection from drops is a
 # constraint the user set, not something to trade away. Retiring a rule PAUSES
-# it; one tap on the Rules tab brings it back.
+# it; one tap on Holdings › Rules brings it back.
 
 GUARD_LEVELS = (15.0, 17.5, 20.0, 25.0)
 GUARD_FRACTIONS = (25.0, 50.0)
@@ -2173,7 +2173,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                            if lv.get("deposit_goal_after") else
                            f"Raises the chance of reaching {g['target']:,.0f} by {deadline} to about {star}%."),
                 "how": [f"Monthly deposits: {float(g.get('monthly') or 0):,.0f} -> {new_total:,.0f}",
-                        "Change or pause it any time on the Cash tab"],
+                        "Change or pause it any time under Holdings › Set liquid cash"],
                 "apply": {"kind": "set_standing_order", "monthly_total_ils": new_total,
                           "add_ils": float(lv["extra_monthly_ils"])},
                 "meta": {"lever": "deposit", "goal": g, "levers": lv},
@@ -2408,7 +2408,7 @@ async def apply_rules_tuning(session, user, spec: dict) -> dict:
     Refuses UNTOUCHED when the rule set moved since the solve: a rule to pause
     is gone or already paused, the guard is no longer at the level the card
     measured, or its sell size / re-arm gap is no longer what was measured.
-    Pausing is reversible (one tap on the Rules tab); nothing is bought or sold.
+    Pausing is reversible (one tap on Holdings › Rules); nothing is bought or sold.
     """
     import uuid
 
@@ -2483,4 +2483,4 @@ async def apply_rules_tuning(session, user, spec: dict) -> dict:
                      f" -> {guard_out['to_pct']:g}%")
     return {"rules_paused": paused, "guard": guard_out, "guard_settings": settings_out,
             "note": "Protection retuned for your goal: " + "; ".join(steps)
-                    + ". Paused rules stay on the Rules tab. Nothing was bought or sold."}
+                    + ". Paused rules stay on Holdings › Rules. Nothing was bought or sold."}

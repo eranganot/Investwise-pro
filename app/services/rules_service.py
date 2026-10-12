@@ -1062,14 +1062,14 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
     _cash_ils, _cash_target = 0.0, 0.0
     if rules:
         try:
-            from app.services.funding_service import cash_floor_pct
+            from app.services.funding_service import cash_target_fraction
             from app.services.intake_service import get_cash
             from app.services.plan_service import get_plan
             _plan = await get_plan(session, user)
             _cash_ils = float(await get_cash(session, user) or 0.0)
             from app.services.fx import book_nav_ils
             from app.services.intake_service import list_positions as _lp
-            _cash_target = float(cash_floor_pct(
+            _cash_target = float(cash_target_fraction(
                 getattr(_plan, "objective", None), _plan,
                 book_nav_ils(await _lp(session, user))) or 0.0)
         except Exception:  # noqa: BLE001 - the trade is the card; the sentence is not

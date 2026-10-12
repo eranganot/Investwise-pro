@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1). Last product PR: **PR 121.1**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1, 116). Last product PR: **PR 116**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,58 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 116 — say the true thing (L3, L4, L5, L6, L9, L14; D80, D81)
+
+**Plan v3, Wave E.**
+
+**What.**
+- **L4, the cash target is not a floor.**
+  - Renamed `funding_service.cash_floor_pct()` → `cash_target_fraction()` and `cash_floor_ils()` → `cash_target_amount_ils()`.
+    These are not `cash_target_pct/ils`: those names belong to the plan columns, and the column is a percentage while the
+    function returns a fraction, which is the exact confusion L4 is about. The old names stay as deprecated aliases.
+  - The funding payload adds `cash_target_ils` / `cash_target_pct` beside the old keys.
+  - `headsup.MIN_TRADE_ILS` → `MIN_CARD_TRADE_ILS` (alias kept).
+  - "floor" → "cash target" wherever the value shown is the soft target: the raise-cash card, the plan-health cash line,
+    the sleeve-funding refusal, the funded-buy how-line, the buy-back card, the phase-in tip, two Plan-tab lines and the
+    on-plan help text. "Hard floor" stays where it is the ₪150 minimum.
+- **L6, the copy names real places.** "Cash tab" → "Holdings › Set liquid cash" (the Edit-goal sheet now links to it, and
+  the goal-deposit card's how-line changes). "Goal settings" → "Tap Edit next to Target". "the Rules tab" →
+  "Holdings › Rules".
+- **L5.**
+  - Fixed the stale docstrings: the `tables.py` table count, NavSnapshot/nav_history "never written", buyback_hold storage,
+    `is_core`, and the frontier pipeline map. `market_state.py` was already gone.
+  - Deleted the dead `pyproject.toml` warning filter.
+- **L9.** `core.money.money` → `display_money`, `tables.money` → `db_money`, with aliases. A guard forbids importing the
+  ambiguous name.
+- **L14 / D80.** With a core whose basket holds commodities (All-Weather: IAU, DBC), the commodity card and the redeploy
+  research's commodity swaps use only those funds, ranked by the same screen with the same trend-dead filter. New setting
+  `commodity_buys_core_only` (1 = on, default; 28 settings). Production's core (`bal_6040`) holds none, so nothing changes
+  there today. The "best trend right now" idea is parked as BACKLOG P12.
+- **L3 / D81.** Sentry is deleted (the `main.py` block and `settings.sentry_dsn`).
+- **Not done: W0-5** (deleting `investwise.db` and `frontend/`). It needs the owner's permission; asked in the PR 116 report.
+- `sw.js` → `iw-v56`.
+
+**Tests (8).** `tests/test_say_the_true_thing.py`:
+- no copy names a tab that does not exist;
+- the soft target is not called a floor;
+- the payload names the target and keeps the old keys;
+- the commodity card buys the core basket when a core is chosen;
+- without a core, or with the setting off, it buys the screen leader;
+- redeploy research swaps only within the core's commodities;
+- there is no Sentry;
+- the two money helpers have their own names.
+
+**Gate.** Local SQLite 2357 and Postgres 2357 passed; ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr116-say-the-true-thing.ps1 -Sha <sha>`.
+
+**QA (Pixel).**
+1. Plan › Health: the cash line says "cash target".
+2. Plan › Edit goal with 2+ standing orders: the "change them in Holdings › Set liquid cash" link opens Liquid cash.
+3. Plan with no goal: "Tap Edit next to Target".
+
+---
+
 ## PR 121.1 — the halving limit is a hard limit (D83)
 
 **Owner decision, 2026-10-12.** "I want to treat the limit as a hard limit."
@@ -73,7 +125,10 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 **Gate.** Local SQLite 2349 and Postgres 2349 passed; ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr121-1-hard-limit.ps1 -Sha <sha>` (after one re-solve).
+**Smoke.** `scripts/smoke/smoke-pr121-1-hard-limit.ps1 -Sha <sha>` (after one re-solve). **Ran against `b153a73` (GitHub PR #20 merge): 5 PASS, 0 FAIL.**
+By the time of the run, the breach card had already appeared and been accepted. Production now has a drawdown guard at
+20% (note "armed by the goal's protection card"). The re-solve measures today at 2.2% halving, inside the 2.6% limit, and
+18.9% goal odds, so no protect card shows. An older, inactive 30% guard row remains on Holdings › Rules.
 
 **QA (Pixel).** Today shows "Bring your crash risk inside your limit…" with both chips. Accept it only if you want the
 guard armed: it arms the guard at the level on the card, and one tap on Holdings › Rules pauses it again.

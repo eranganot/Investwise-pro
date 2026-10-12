@@ -39,7 +39,7 @@ from app.services import sleeve_service as sv
 from app.services import strategy_catalog
 from app.services.backtest_service import _fetch
 from app.services.plan_service import effective_caps, get_plan
-from app.services.funding_service import cash_floor_pct
+from app.services.funding_service import cash_target_fraction
 
 logger = logging.getLogger(__name__)
 
@@ -1084,7 +1084,7 @@ async def _book_for_solve(session: AsyncSession, user: User):
         strategy_catalog.spec_for(...)      does not exist -- it is .get()
         is_cash_position                    lives in intake_service, not
                                             strategy_service
-        cash_floor_pct(session, user)       is not async and takes
+        cash_target_fraction(session, user)       is not async and takes
                                             (objective, plan)
 
     The endpoint 500'd in 0.1s, before a single simulation. `investigate-issue`
@@ -1121,7 +1121,7 @@ async def _book_for_solve(session: AsyncSession, user: User):
     from app.services.intake_service import is_cash_position, list_positions
     from app.services.strategy_service import _snapshot
     positions = await list_positions(session, user)
-    floor = float(cash_floor_pct(getattr(plan, "objective", None), plan,
+    floor = float(cash_target_fraction(getattr(plan, "objective", None), plan,
                                  book_nav_ils(positions)))
 
     # NAV comes from the app's OWN snapshot, not from a sum computed here. Two

@@ -1,16 +1,16 @@
 """Decimal money tests (review C1)."""
 import pytest
 
-from app.core.money import D, money
+from app.core.money import D, display_money
 from app.engines.tax_engine import TaxEngine
 
 A = pytest.approx
 
 
 def test_money_rounds_half_up_2dp():
-    assert money(0.1 + 0.2) == 0.30          # float drift eliminated
-    assert money(D("2.005")) == 2.01         # ROUND_HALF_UP
-    assert money(16950) == 16950.0
+    assert display_money(0.1 + 0.2) == 0.30          # float drift eliminated
+    assert display_money(D("2.005")) == 2.01         # ROUND_HALF_UP
+    assert display_money(16950) == 16950.0
 
 
 def test_tax_uses_decimal_no_drift():

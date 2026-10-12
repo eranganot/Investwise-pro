@@ -76,6 +76,11 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
     "near_cap_pts": ("\"Nearly at your cap\" within (points)",
                      "How close a holding must be to its max-weight cap for a heads-up.", 0.1, 20.0),
     "ideas_shown": ("Buy ideas listed", "How many screener ideas the cash card lists.", 1.0, 20.0),
+    # PR 116 (D80): 1 = when a core is chosen, commodity buys use its commodity
+    # tickers (All-Weather: IAU, DBC); 0 = the best-ranked commodity of all.
+    "commodity_buys_core_only": ("Commodity buys from your core only (1 = yes, 0 = any)",
+                                 "With a core chosen, commodity cards buy only the core's commodity funds "
+                                 "(e.g. IAU, DBC), the ones your goal is modelled on.", 0.0, 1.0),
     "max_idea_cards": ("Buy ideas that become cards", "How many screener names may become cards on Today.",
                        0.0, 10.0),
 }
@@ -84,7 +89,7 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
 LISTS = {"guard_levels", "guard_fractions_tried", "guard_rearm_gaps_tried"}
 
 # Whole-number settings: stored and returned as int.
-_INTEGER = {"ideas_shown", "max_idea_cards", "ignore_mute_days", "done_mute_days"}
+_INTEGER = {"ideas_shown", "max_idea_cards", "ignore_mute_days", "done_mute_days", "commodity_buys_core_only"}
 
 
 def defaults(plan=None) -> dict:
@@ -114,8 +119,9 @@ def defaults(plan=None) -> dict:
             "near_cap_pts": rec._NEAR_CAP_PCT_POINTS,
             "ideas_shown": rec.IDEAS_SHOWN,
             "max_idea_cards": rec._MAX_BUY_IDEA_CARDS,
+            "commodity_buys_core_only": rec.COMMODITY_BUYS_CORE_ONLY,
             "min_card_tax_ils": headsup.MIN_TAX_SAVING_ILS,
-            "min_card_trade_ils": headsup.MIN_TRADE_ILS,
+            "min_card_trade_ils": headsup.MIN_CARD_TRADE_ILS,
             "min_card_trade_pct": headsup.MIN_TRADE_PCT_OF_BOOK,
             "min_funded_trade_ils": fund.MIN_TRADE_DEFAULT_ILS,
             "cash_floor_ils": fund.CASH_HARD_FLOOR_DEFAULT_ILS,

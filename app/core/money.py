@@ -15,6 +15,10 @@ def D(x) -> Decimal:
     return x if isinstance(x, Decimal) else Decimal(str(x))
 
 
-def money(x) -> float:
+def display_money(x) -> float:
     """Quantize to 2dp and return a float for serialization."""
     return float(D(x).quantize(_CENTS, rounding=ROUND_HALF_UP))
+
+
+# Deprecated alias (PR 116, L9): two helpers shared one name.
+money = display_money

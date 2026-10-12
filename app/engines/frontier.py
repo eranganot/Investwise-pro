@@ -1,15 +1,16 @@
 """PR 88 - THE EFFICIENT FRONTIER, as pure math.
 
-Until this module the plan's targets were constants: `OBJ_TARGET` and each
+Before PR 88 the plan's targets were constants: `OBJ_TARGET` and each
 catalog strategy's hand-written `target_allocation`. `portfolio_risk.analyze`
 measured a full covariance matrix and nothing that decides a weight ever read
 it. This is the engine the frontier pipeline is built on (PR 88-92):
 
-    inputs      ILS returns, shrunk covariance, Black-Litterman mu     (PR 89)
-    propose     THIS: the core optimised around the sleeves            (PR 88)
-    stabilise   resampled weights, a no-trade band                     (PR 90)
-    validate    whole-book mean-CVaR on real history                   (PR 91)
-    apply       book_target, behind Accept                             (PR 92)
+    inputs      frontier_inputs: ILS returns, shrunk cov, Black-Litterman (PR 89)
+    propose     THIS: the core optimised around the sleeves              (PR 88)
+    stabilise   frontier_service: block-bootstrap resample + 10-90% band (PR 90/91)
+    steer       goal_probability vs the plan's ROI target (PR 92); fat-tail
+                check on filtered history (PR 93)
+    apply       frontier_resize card, Accept resizes sleeves             (PR 91)
 
 Pure numpy, no I/O, no scipy. Nothing here reads a plan or writes a weight.
 

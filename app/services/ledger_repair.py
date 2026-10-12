@@ -347,12 +347,12 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
         t = await session.get(Transaction, uuid.UUID(r["id"]))
         if t is None or abs(float(t.quantity or 0)) > 1e-9:
             continue
-        from app.models.tables import money
-        t.quantity = money(r["shares"])
+        from app.models.tables import db_money
+        t.quantity = db_money(r["shares"])
         if r.get("price"):
-            t.price = money(r["price"])
+            t.price = db_money(r["price"])
         if r.get("value_ils"):
-            t.value_ils = money(r["value_ils"])
+            t.value_ils = db_money(r["value_ils"])
         t.note = (f"{t.note or ''} | {REPAIR_TAG}: {r['confidence']} via {r['method']}; "
                   f"was 0 shares")[:255]
         written.append({"id": r["id"], "ticker": r["ticker"], "shares": r["shares"],
@@ -363,11 +363,11 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
         # position chart replays the change where it happened. value_ils stays 0:
         # an Adjust with a value is read as external money by `net_flows_ils`,
         # and a rebalance moved no money in or out.
-        from app.models.tables import money
+        from app.models.tables import db_money
         for a in (plan.get("unrecorded_rebalances") or {}).get("adjusts", []):
             row = Transaction(
                 subject=user.email, ticker=a["ticker"], txn_type="Adjust",
-                quantity=money(a["shares"]), source="rebalance_repair",
+                quantity=db_money(a["shares"]), source="rebalance_repair",
                 executed_at=datetime.fromisoformat(a["at"]),
                 note=(f"{REBAL_TAG}: x{a['factor']} ({a['confidence']}; factor from "
                       f"{', '.join(a['factor_from'])}) {'; '.join(a['cards'])}")[:255])
@@ -742,14 +742,14 @@ async def held_cash_apply(session: AsyncSession, user: User, *, card: str, legs:
     plan = await _held_cash_plan(session, user, card=card, legs=legs, at=at)
     if not plan.get("ok"):
         return plan
-    from app.models.tables import money
+    from app.models.tables import db_money
     written = []
     for x in plan["legs"]:
         if x["status"] != "to write":
             continue
         session.add(Transaction(
             subject=user.email, ticker=x["ticker"], market=x.get("market"), txn_type="Buy",
-            quantity=money(x["shares"]), price=money(x["price"]), value_ils=money(x["amount_ils"]),
+            quantity=db_money(x["shares"]), price=db_money(x["price"]), value_ils=db_money(x["amount_ils"]),
             source="held_cash_redeploy", executed_at=datetime.fromisoformat(x["at"]),
             note=(f"{HELD_CASH_TAG}: card {card}; {x['amount_ils']} ILS / "
                   f"({x['price']} x FX {x['fx']}, {x['price_source']})")[:255]))

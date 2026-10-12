@@ -26,14 +26,8 @@ from app.core.request_context import set_request_id
 configure_logging()
 logger = logging.getLogger("investwise")
 settings = get_settings()
-
-if settings.sentry_dsn:
-    try:
-        import sentry_sdk
-        sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)
-        logger.info("Sentry initialized")
-    except Exception:  # noqa: BLE001
-        logger.warning("SENTRY_DSN set but sentry-sdk not installed")
+# PR 116 (D81): no Sentry. It was wired but never installed; errors surface
+# through Railway logs, job status (PR 107) and the smokes.
 
 
 @asynccontextmanager

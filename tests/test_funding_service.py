@@ -22,9 +22,9 @@ class _Pos:
 
 
 def test_cash_floor_scales_with_objective():
-    assert f.cash_floor_pct("Preserve") > f.cash_floor_pct("Grow")
-    assert f.cash_floor_ils(100000, "Grow") == 3000.0        # 3% of NAV
-    assert f.cash_floor_ils(100000, "Preserve") == 10000.0   # 10%
+    assert f.cash_target_fraction("Preserve") > f.cash_target_fraction("Grow")
+    assert f.cash_target_amount_ils(100000, "Grow") == 3000.0        # 3% of NAV
+    assert f.cash_target_amount_ils(100000, "Preserve") == 10000.0   # 10%
 
 
 def test_cash_floor_override_is_respected():
@@ -41,7 +41,7 @@ def test_cash_floor_override_is_respected():
     PERCENTAGE where this function returns a FRACTION -- 20.0 in, 0.2 out.
     """
     plan = SimpleNamespace(cash_target_pct=20.0)
-    assert f.cash_floor_pct("Grow", plan) == 0.2
+    assert f.cash_target_fraction("Grow", plan) == 0.2
 
     from app.models.tables import Plan
     assert "cash_target_pct" in Plan.__table__.columns, (

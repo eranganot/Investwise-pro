@@ -7,7 +7,7 @@ delta is used. Outputs carry an explicit model_assumptions block (review C2).
 from __future__ import annotations
 
 from app.core.config import Settings, get_settings
-from app.core.money import D, money
+from app.core.money import D, display_money
 
 SCENARIOS: dict[str, dict] = {
     "MARKET_CRASH": {"delta": -0.30, "drawdown": 0.65, "recovery": 540},
@@ -71,7 +71,7 @@ class ScenarioEngine:
             "scenario": scenario,
             "expected_portfolio_value_delta_pct": round(params["delta"] * 100.0, 2),
             "drawdown_probability": params["drawdown"],
-            "projected_tax_impact_currency": money(tax_impact),
+            "projected_tax_impact_currency": display_money(tax_impact),
             "estimated_recovery_timeline_days": int(params["recovery"]),
             "asset_class_aware": asset_class_aware,
             "model_assumptions": [

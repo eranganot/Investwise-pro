@@ -62,7 +62,7 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 
 ## 3. Boot sequence (`app/main.py:38-218`)
 
-1. Configure JSON logging, load settings, and initialise Sentry only if `SENTRY_DSN` is set and the SDK is installed (it is not pinned).
+1. Configure JSON logging and load settings. (No Sentry: deleted in PR 116, D81.)
 2. **Lifespan:**
    1. If `AUTO_CREATE_TABLES` (default **False**; tests and docker-compose turn it on): `create_all`, plus a hand-kept list of idempotent `ALTER TABLE … IF NOT EXISTS` statements on Postgres. In production the schema comes only from Alembic.
    2. In production, boot logs an ERROR if `AUTO_CREATE_TABLES` is on.

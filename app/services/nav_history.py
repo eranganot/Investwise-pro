@@ -4,11 +4,11 @@ Everything historical this app showed before now was a BACKFILL: today's
 holdings priced back through their own past. That answers "what would this book
 have done", which is a real question, but not "what did my money do".
 
-**Past NAV cannot be recovered, only started.** `grep` for `Transaction(` across
-`app/` outside the models returns zero hits -- the trade ledger has never been
-written -- and `whs_snapshots` stores health scores, not value, and is never
-written either. So there is no record of what the book was worth on any past
-day, and no way to reconstruct one. Every day without a snapshot is a day of
+**Past NAV cannot be recovered, only started.** Until the ledger work the
+`transactions` ledger was never written, so there is no trade record before that
+date (`ledger_service.record_leg` writes every book change since), and
+`whs_snapshots` stores health scores, not value. So there is no record of what the
+book was worth on any past day, and no way to reconstruct one. Every day without a snapshot is a day of
 real history that will never exist.
 
 **The correctness issue that dominates this module: deposits are not

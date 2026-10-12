@@ -129,7 +129,7 @@ async def plan_health(session, user) -> dict | None:
     from app.core.config import get_settings
     from app.services.allocation_mix import classify_holding
     from app.services.fx import fx_rate, price_currency
-    from app.services.funding_service import cash_floor_ils
+    from app.services.funding_service import cash_target_amount_ils
     from app.services.intake_service import list_positions
     from app.services.plan_service import effective_caps, get_plan
     from app.services.rules_service import list_rules
@@ -213,16 +213,16 @@ async def plan_health(session, user) -> dict | None:
                                   "detail": f"{top[0]} {top_pct:.1f}% vs your {limit:g}% limit"}
 
     # ---- cash ------------------------------------------------------------
-    floor = float(cash_floor_ils(nav, objective, plan))
+    floor = float(cash_target_amount_ils(nav, objective, plan))
     redeploy = getattr(plan, "cash_redeploy_at_ils", None)
     redeploy = float(redeploy) if redeploy is not None else None
     s_cash = score_cash(cash, floor, redeploy)
     if cash < floor:
-        _where = f"below your ₪{floor:,.0f} floor"
+        _where = f"below your ₪{floor:,.0f} cash target"
     elif redeploy and cash > redeploy:
         _where = f"above your ₪{redeploy:,.0f} redeploy line"
     else:
-        _where = (f"between your ₪{floor:,.0f} floor"
+        _where = (f"between your ₪{floor:,.0f} cash target"
                   + (f" and ₪{redeploy:,.0f} redeploy line" if redeploy else " and no redeploy line"))
     out_parts["cash"] = {"score": round(s_cash), "detail": f"₪{cash:,.0f}, {_where}"}
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.core.config import Settings, get_settings
-from app.core.money import D, money
+from app.core.money import D, display_money
 from app.schemas.state_machine import ActionType, OptimizedSignal, VettedSignal
 from app.schemas.tax import TaxBreakdown
 
@@ -41,8 +41,8 @@ class TaxEngine:
         gross = D(gross_gain)
         if gross <= 0:
             return TaxBreakdown(
-                gross_gain=money(gross), losses_applied=0.0, taxable_gain=0.0,
-                cgt=0.0, surtax=0.0, total_tax=0.0, net_gain=money(gross),
+                gross_gain=display_money(gross), losses_applied=0.0, taxable_gain=0.0,
+                cgt=0.0, surtax=0.0, total_tax=0.0, net_gain=display_money(gross),
                 tax_saved=0.0, effective_rate=0.0, surtax_applies=False,
                 notes="Realized loss - no CGT; adds to loss carry-forward.",
                 assumptions=_TAX_ASSUMPTIONS)
@@ -56,9 +56,9 @@ class TaxEngine:
         net = gross - total
         eff = float(total / gross) if gross > 0 else 0.0
         return TaxBreakdown(
-            gross_gain=money(gross), losses_applied=money(losses_applied),
-            taxable_gain=money(taxable), cgt=money(cgt), surtax=money(surtax),
-            total_tax=money(total), net_gain=money(net), tax_saved=money(tax_saved),
+            gross_gain=display_money(gross), losses_applied=display_money(losses_applied),
+            taxable_gain=display_money(taxable), cgt=display_money(cgt), surtax=display_money(surtax),
+            total_tax=display_money(total), net_gain=display_money(net), tax_saved=display_money(tax_saved),
             effective_rate=round(eff, 6), surtax_applies=surtax > 0, notes="",
             assumptions=_TAX_ASSUMPTIONS)
 

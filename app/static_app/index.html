@@ -660,7 +660,7 @@ const PART_EXPLAIN={
   mix:["Mix","Your largest asset-class drift from your plan's target mix. Inside the 3-point band scores 100; 12 points off scores 0. <b>20% of On plan.</b>"],
   rules:["Rules","How many holdings have a stop (stop-loss or trailing stop), less 25 for each rule that has fired and is still waiting for you. <b>20% of On plan.</b>"],
   concentration:["Concentration","Your largest holding against your concentration limit. 20 points off for every percentage point over. <b>15% of On plan.</b>"],
-  cash:["Cash","Cash between your floor and your redeploy line scores 100. Below the floor, or above the line, scores less. <b>15% of On plan.</b>"],
+  cash:["Cash","Cash between your cash target and your redeploy line scores 100. Below the target, or above the line, scores less. <b>15% of On plan.</b>"],
   on_track:["On track","The chance of reaching your goal by its date, the same number the Plan tab leads with: your goal model, with your protective rules as they are. A standing order counts, because it is money you have committed to add. Before the goal model has been solved it shows a rough estimate from the projection instead, and says so. Half of your score."],
 };
 function explainPart(k){const e=PART_EXPLAIN[k];if(!e)return;const P=(PLANH&&PLANH.plan_parts)||{};
@@ -2255,7 +2255,7 @@ function coreRow(pct){
     <div class="mk" id="core_note" style="opacity:.7"></div>
     <div class="mk" style="opacity:.7;margin-top:4px">${c
       ? `Your core is managed to that strategy's mix. The objective and risk tolerance above still
-         set the concentration cap and the cash floor for the <b>whole</b> book, sleeves included.`
+         set the concentration cap and the cash target for the <b>whole</b> book, sleeves included.`
       : `No core strategy chosen — your core is managed to your objective alone
          (${(MYPLAN&&MYPLAN.objective)||"—"}).`}
       The core is whatever the sleeves have not claimed, so it has no card size of its own. These
@@ -3060,7 +3060,7 @@ function openGoalSheet(){
           <input id="eg_dl" type="number" min="2026" max="2100" value="${p.target_date||""}" oninput="goalPreview()" style="width:100%"></div>
         <div style="flex:1"><label class="mk" for="eg_dep">Monthly deposit (₪)</label>
           <input id="eg_dep" type="number" min="0" step="50" value="${Math.round(o.monthly_total_ils||0)}" ${many?"disabled":""} oninput="goalPreview()" style="width:100%">
-          ${many?`<div class="mk">${act.length} standing orders: change them on the Cash tab.</div>`:""}</div></div>`
+          ${many?`<div class="mk">${act.length} standing orders: <a href="#" onclick="closeSheet();openCash();return false">change them in Holdings › Set liquid cash</a>.</div>`:""}</div></div>`
     +_pvBox("A deposit or a later deadline also raises the goal: it is a return on every shekel you put in.")
     +`<div class="acts"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
        <button class="acc" style="flex:2" id="eg_save" onclick="saveGoalSheet(this)">Save goal</button></div>`);
@@ -3262,7 +3262,7 @@ async function saveRulesSheet(btn){
 
 function goalSummary(p,f,rules){
   const g=p.goal||{};
-  if(!p.target_amount) return `<div class="muted">No goal yet. Set a target return and a deadline under Goal settings below.</div>`;
+  if(!p.target_amount) return `<div class="muted">No goal yet. Tap <b>Edit</b> next to Target below to set a target return and a deadline.</div>`;
   const hl=(p.expectation&&p.expectation.headline)||null;
   const prog=Math.max(0,Math.min(100,Math.round((p.goal_progress||0)*100)));
   const bar=Math.round(((p.frontier||{}).goal_confidence??0.7)*100);   // PR 104c: the plan's on-track bar
@@ -3515,7 +3515,7 @@ async function fundAllSleeves(){
     o.innerHTML=`<b>Fund every sleeve — ₪${Math.round(r.amount_ils||0).toLocaleString()}</b>`
       + `<div style="margin:6px 0"><ul>${rows}</ul></div>`
       + (sells||f.from_cash_ils?`<div style="margin:6px 0">How it's funded:<ul>`
-          + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_floor_ils).toLocaleString()} floor intact)</li>`:"")
+          + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_target_ils??f.cash_floor_ils).toLocaleString()} cash target intact)</li>`:"")
           + sells + `</ul>${f.tax_ils?`Estimated tax on the sales: <b>₪${Math.round(f.tax_ils).toLocaleString()}</b>.`:""}</div>`:"")
       + (r.fully_funded
           ? `<div class="ok" style="font-size:12px">Every sleeve lands at the size you chose.</div>`
@@ -3778,7 +3778,7 @@ async function fundStratSleeve(id,name){
     o.innerHTML=`<b>Fund the "${name}" sleeve — ₪${Math.round(r.amount_ils).toLocaleString()}</b>`
       + `<div style="margin:6px 0">${buys?`<ul>${buys}</ul>`:""}</div>`
       + `<div style="margin:6px 0">How it's funded:<ul>`
-      + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_floor_ils).toLocaleString()} floor intact)</li>`:"")
+      + (f.from_cash_ils?`<li>₪${Math.round(f.from_cash_ils).toLocaleString()} from cash (keeping your ₪${Math.round(f.cash_target_ils??f.cash_floor_ils).toLocaleString()} cash target intact)</li>`:"")
       + (sells||"")
       + `</ul>${f.tax_ils?`Estimated tax on the sales: <b>₪${Math.round(f.tax_ils).toLocaleString()}</b>.`:""}</div>`
       + `<div class="ok" style="font-size:12px">Every other holding is left untouched.</div>`
