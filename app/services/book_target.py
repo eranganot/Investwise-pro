@@ -322,3 +322,35 @@ def explain(bt: dict, cls: str) -> str:
         core = bt.get("core_strategy_name")
         return f"{t:.0%} (your core{f', {core}' if core else ''}, which is {bt['core_pct']:.0%} of the book)"
     return f"{t:.0%}"
+
+
+async def mix_report(session, user) -> dict:
+    """GET /mix: the book against its target (PR 118a: moved from routes/plan.py)."""
+    from app.engines.allocation_engine import AllocationEngine
+    from app.services.allocation_mix import current_mix
+    from app.services.plan_service import get_plan
+    from app.services.plan_view import positions
+    rows = await positions(session, user)
+    current, nav = current_mix(rows)
+    if not nav:
+        return {"message": "Add holdings to check your mix."}
+    plan = await get_plan(session, user)
+    # The BOOK's target -- sleeves plus core -- from the one helper Today uses.
+    # Sharing a helper was already the rule here; what it shared was a target
+    # for 36% of the book, measured by both against all of it. Agreeing on a
+    # wrong number is not the property this comment was claiming.
+    bt = await book_target(session, user, plan.objective if plan else "Balanced")
+    report = AllocationEngine().compute(target_allocation=bt["target"],
+                                        current_allocation=current, nav=nav)
+    out = report.model_dump()
+    # Always surface Cash, even at 0%: a missing slice read as "fully invested"
+    # when the truth was "cash isn't being tracked".
+    if isinstance(out.get("current_allocation"), dict):
+        out["current_allocation"].setdefault("Cash", 0.0)
+    return {"note": "Holdings are classified roughly by ticker/venue.",
+            "objective": plan.objective if plan else "Balanced",
+            # The provenance, so a reader can see a 77% Equities target is 64
+            # points of sleeve chosen one at a time plus 13 of core.
+            "target_from_sleeves": bt["sleeves"], "target_from_core": bt["core"],
+            "core_pct_of_book": bt["core_pct"], "target_source": bt["source"],
+            "cash_ils": round(current.get("Cash", 0.0) * nav, 2), **out}

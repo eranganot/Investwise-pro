@@ -125,7 +125,8 @@ def combine(parts: dict[str, float], on_track: float | None) -> dict:
 
 async def plan_health(session, user) -> dict | None:
     """The score, its two halves and the five parts, each with what it measured."""
-    from app.api.routes.plan import goal_projection, mix_check
+    from app.services.book_target import mix_report as mix_check
+    from app.services.projection_service import project as goal_projection
     from app.core.config import get_settings
     from app.services.allocation_mix import classify_holding
     from app.services.fx import fx_rate, price_currency

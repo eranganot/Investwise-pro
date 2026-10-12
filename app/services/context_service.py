@@ -125,7 +125,7 @@ async def gather(session: AsyncSession, user: User) -> dict:
     # screen reads. Without it the model has a target and no probability, which
     # is the vacuum the invented 89.2% filled.
     try:
-        from app.api.routes.plan import goal_projection
+        from app.services.projection_service import project as goal_projection
         _pj = await goal_projection(session=session, user=user)
         if isinstance(_pj, dict) and not _pj.get("message"):
             ctx["projection"] = {k: _pj.get(k) for k in

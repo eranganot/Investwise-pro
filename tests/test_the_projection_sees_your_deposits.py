@@ -365,9 +365,9 @@ def test_a_zero_contribution_override_is_not_a_projection_with_deposits():
 def test_the_route_states_its_excess_before_it_sees_the_numbers():
     """Same rule W1's bar follows: a comparison threshold chosen after the
     result is not a comparison."""
-    from app.api.routes import plan as plan_routes
-    assert plan_routes.EXCESS_PP == 1.0
-    src = open(plan_routes.__file__, encoding="utf-8").read()
+    from app.services import projection_service
+    assert projection_service.EXCESS_PP == 1.0
+    src = open(projection_service.__file__, encoding="utf-8").read()
     assert "EXCESS_PP = 1.0" in src
 
 

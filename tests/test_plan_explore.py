@@ -57,8 +57,8 @@ def test_war_room_tags_holding_vs_market_signals(monkeypatch):
                            listing_price=112, action_type=ActionType.BUY,
                            expected_return_pct=12, volatility_pct=40),         # not held
         ]
-    monkeypatch.setattr("app.api.routes.war_room.signal_service.build_observations", fake_build)
-    monkeypatch.setattr("app.api.routes.war_room.signal_service.candidate_set",
+    monkeypatch.setattr("app.services.signal_service.build_observations", fake_build)
+    monkeypatch.setattr("app.services.signal_service.candidate_set",
                         lambda positions, **kw: [{"ticker": "TEVA", "market": "NYSE"},
                                                  {"ticker": "NEWIDEA", "market": "NYSE"}])
     with TestClient(app) as c:

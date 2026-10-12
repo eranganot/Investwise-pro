@@ -1082,7 +1082,7 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
     """
     out: list[dict] = []
     try:
-        from app.api.routes.war_room import _war_room_payload
+        from app.services.war_room import war_room_payload as _war_room_payload
         # narrate=False: the Gemini prose is a war-room-view flourish and is
         # never rendered on a Today card, but it cost 5.4-6.7s of the ~5s
         # endpoint -- one live LLM call per signal, on the event loop, on a
@@ -1921,7 +1921,8 @@ async def build_recommendations(session: AsyncSession, user: User,
     _pstats: dict = {}
     _levers = None
     try:
-        from app.api.routes.plan import _measured, _portfolio_stats
+        from app.services.plan_view import book_measured as _measured
+        from app.services.plan_view import portfolio_stats as _portfolio_stats
         from app.services.goal_service import compute_goal
         _pstats = _portfolio_stats(rows, await _measured(session, user))
         _goal = await compute_goal(session, user, plan, _pstats.get("nav"))

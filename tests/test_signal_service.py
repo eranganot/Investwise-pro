@@ -116,7 +116,7 @@ async def test_ungrounded_signals_never_become_today_cards(monkeypatch):
             {"ticker": "TEVA", "outcome": "DISPLAYED", "outcome_label": "Growth",
              "title": "Buy TEVA (NYSE)", "transcript": []}]}
 
-    monkeypatch.setattr("app.api.routes.war_room._war_room_payload", fake_payload)
+    monkeypatch.setattr("app.services.war_room.war_room_payload", fake_payload)
     # grounded=False -> returns before any DB access, so a None session is fine.
     out = await rr._war_room_recs(None, None, [])
     assert out == []
@@ -133,7 +133,7 @@ def test_grounded_approved_signals_do_become_today_cards(monkeypatch):
     os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
     from fastapi.testclient import TestClient
     import app.main as m
-    from app.api.routes import war_room as wr
+    from app.services import war_room as wr
 
     # **_kw absorbs narrate= (and anything added later). The recommendations path
     # passes narrate=False to skip the per-signal Gemini call that owned ~6.7s of
@@ -149,7 +149,7 @@ def test_grounded_approved_signals_do_become_today_cards(monkeypatch):
             {"ticker": "NOISE", "outcome": "NO_ACTION", "outcome_label": "none",
              "action_type": "BUY", "transcript": []}]}
 
-    monkeypatch.setattr(wr, "_war_room_payload", fake_payload)
+    monkeypatch.setattr(wr, "war_room_payload", fake_payload)
     with TestClient(m.app) as c:
         # A Grow plan holding only equities: MSFT (an equity) has target room.
         c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
