@@ -186,5 +186,8 @@
   on; a "best trend right now" commodity pick is parked in the backlog as future work. → PR 116
 - **D81 · 2026-10-11 · Delete the Sentry block** (D-h): errors already surface through Railway logs, job status (PR 107) and smokes;
   Sentry was wired but never installed. → PR 116
+- **D82 · 2026-10-12 · The protection retune searches every dial it can change, and says how many setups it tried.**
+  The guard's sell size and re-arm gap become settings that the live guard reads, so the retune may move them. Take-profits
+  can be paused by the card. The default guard levels tried widen to 15/17.5/20/25. → PR 121
 - **D68 · 2026-10-07 · Documentation lives in `docs/`.** Superseded plans and history move to `docs/archive/` with their file names
   unchanged (code comments cite them by name). The open list is `docs/BACKLOG.md`; `STATUS.md` holds PR 88 onward.

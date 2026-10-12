@@ -121,7 +121,8 @@ def goal_stats(sim: dict, *, nav: float, target: float, monthly: float = 0.0,
 #                      low.
 #   drawdown guard     book >= `level` below its peak -> sell 25% of the most
 #                      volatile sleeve, held out until the drawdown is back under
-#                      max(level/2, level - 2.5) (`advanced_rules`).
+#                      max(level/2, level - gap), gap 2.5 points by default
+#                      (`advanced_rules.guard_rearm_pct`; PR 121: a setting).
 #
 # Assumptions, stated: every rule card is accepted the day it fires; sleeve
 # rules act on the sleeve's own return stream (the rule's ticker is what the

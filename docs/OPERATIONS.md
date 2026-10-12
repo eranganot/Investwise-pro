@@ -111,15 +111,16 @@ Current state of these items: [BACKLOG.md § Ops](BACKLOG.md#ops-owner-only).
 
 ## 7. Backups and recovery
 
-**Status 2026-10-11 (owner, Railway dashboard › Postgres › Backups):**
-- A manual volume backup exists: `2026-10-11 22:55`, 243 MB. An older "Pre-Security-Patch Backup" (231 MB, about a
-  month earlier) is also there.
-- **No backup schedule is set**, and point-in-time recovery (PITR) is **off**.
-- To finish W0-1, set a schedule under "Edit schedule" (daily is plenty for one user) and note the retention here.
-  PITR is optional (it redeploys Postgres once).
-- No restore has been drilled yet (O3).
+**Status 2026-10-12 (owner, Railway dashboard › Postgres › Backups):**
+- **A daily volume-backup schedule is set** (owner, 2026-10-12). The first scheduled run was due about 12 hours after it
+  was set.
+- Manual backups: `2026-10-11 22:55`, 243 MB (locked), and an older "Pre-Security-Patch Backup" (231 MB).
+- Point-in-time recovery (PITR) is still **off**.
+- The orphan `redis-volume` is deleted (owner, 2026-10-12). The project canvas shows only Investwise-pro and Postgres
+  (`postgres-volume`).
+
 The Railway CLI cannot show backup status. `railway volume list` shows `postgres-volume` (243 MB of 5 GB, 2026-10-08).
-Check Railway dashboard → Postgres → **Backups**, enable a schedule, and record the schedule and retention here.
+Check Railway dashboard → Postgres → **Backups** for the schedule; record its retention here when known.
 Then add `scripts/ops/backup-db.ps1` (`pg_dump` via `DATABASE_PUBLIC_URL`, if exposed) and do **one restore drill into a scratch DB,
 never into production**. At stake: `nav_snapshots`, the `transactions` ledger and `kv_settings`. The VAPID pair also lives in the
 Railway env.

@@ -39,6 +39,16 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
                           "A goal change that moves the odds less than this is not offered.", 0.5, 50.0),
     "guard_levels": ("Drawdown-guard levels the retune tries (%)",
                      "The guard levels compared when the app looks for better protection.", 1.0, 90.0),
+    # PR 121: the guard's other two dials, and the values the retune tries for each.
+    "guard_sell_fraction_pct": ("Drawdown guard sells (% of the most volatile holding)",
+                                "What the guard sells when the book falls past its level.", 5.0, 100.0),
+    "guard_rearm_gap_pts": ("Drawdown guard re-arms (points under its level)",
+                            "The guard re-arms once the drawdown is this far back under its level "
+                            "(never more than half way).", 0.5, 50.0),
+    "guard_fractions_tried": ("Guard sell sizes the retune tries (%)",
+                              "The guard sell sizes compared when the app looks for better protection.", 5.0, 100.0),
+    "guard_rearm_gaps_tried": ("Guard re-arm gaps the retune tries (points)",
+                               "The re-arm gaps compared when the app looks for better protection.", 0.5, 50.0),
     # PR 115 (D-d, owner 2026-10-11: "all of them become editable"). Each default
     # still lives beside the code that uses it.
     "concentration_cap_pct": ("Largest single holding (% of the book)",
@@ -70,6 +80,9 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
                        0.0, 10.0),
 }
 
+# List settings: one to four values, each inside the bounds.
+LISTS = {"guard_levels", "guard_fractions_tried", "guard_rearm_gaps_tried"}
+
 # Whole-number settings: stored and returned as int.
 _INTEGER = {"ideas_shown", "max_idea_cards", "ignore_mute_days", "done_mute_days"}
 
@@ -85,6 +98,7 @@ def defaults(plan=None) -> dict:
     from app.services import headsup
     from app.services import recommendations as rec
     from app.services.advanced_rules import DEFAULTS as ADV
+    from app.services.advanced_rules import DERISK_FRACTION, REARM_GAP_PTS
     from app.services.plan_service import RISK_CAPS
     _row = RISK_CAPS.get(getattr(plan, "risk_tolerance", None) or "Medium", RISK_CAPS["Medium"])
     return {"concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
@@ -109,7 +123,11 @@ def defaults(plan=None) -> dict:
             "take_profit_fraction_pct": 25.0,
             "gain_line_pct": rec._GAIN_CARD_PCT,
             "material_odds_pts": fs.MATERIAL_PROB_PTS,
-            "guard_levels": list(fs.GUARD_LEVELS)}
+            "guard_levels": list(fs.GUARD_LEVELS),
+            "guard_sell_fraction_pct": DERISK_FRACTION * 100.0,
+            "guard_rearm_gap_pts": REARM_GAP_PTS,
+            "guard_fractions_tried": list(fs.GUARD_FRACTIONS),
+            "guard_rearm_gaps_tried": list(fs.GUARD_REARM_GAPS)}
 
 
 def clean(raw: dict | None) -> dict:
@@ -121,7 +139,7 @@ def clean(raw: dict | None) -> dict:
         if v is None:
             continue
         lo, hi = SPEC[k][2], SPEC[k][3]
-        if k == "guard_levels":
+        if k in LISTS:
             vals = sorted({round(float(x), 2) for x in (v or [])})
             if not 1 <= len(vals) <= 4 or any(not lo <= x <= hi for x in vals):
                 raise ValueError(f"{k}: one to four levels between {lo:g} and {hi:g}")

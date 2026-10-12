@@ -75,7 +75,7 @@ def test_the_real_rule_list_maps_to_trail_rung_and_guard():
     assert spec["sleeves"]["soxl"]["tp_ratio"] == pytest.approx(183.17 / 161.47)
     assert spec["sleeves"]["soxl"]["tp_fraction"] == pytest.approx(0.25)
     assert spec["sleeves"]["qqq"]["trail"] == pytest.approx(0.10)
-    assert spec["guard"] == {"level": 0.10, "rearm": 0.075, "fraction": 0.25}
+    assert spec["guard"] == {"level": 0.10, "rearm": 0.075, "fraction": 0.25, "rearm_gap_pts": 2.5}
     assert "stop_loss on VTI" in spec["not_simulated"]
 
 

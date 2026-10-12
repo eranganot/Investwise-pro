@@ -51,6 +51,25 @@ DEFAULTS = {"rebalance_band": 3.0, "profit_protect": 15.0, "trend_break": 200.0,
 # What a de-risk sells of the most volatile holding: the house slice
 # (rules_service.TAKE_PROFIT_FRACTION is the same 25%).
 DERISK_FRACTION = 0.25
+# The guard re-arms once the drawdown is back under max(level / 2, level - this).
+REARM_GAP_PTS = 2.5
+
+
+def derisk_fraction() -> float:
+    """PR 121: what the guard sells is a setting (default 25%) the retune can move."""
+    from app.services import thresholds
+    return float(thresholds.get("guard_sell_fraction_pct", DERISK_FRACTION * 100.0)) / 100.0
+
+
+def rearm_gap_pts() -> float:
+    """PR 121: how far under its level the guard re-arms (default 2.5 points)."""
+    from app.services import thresholds
+    return float(thresholds.get("guard_rearm_gap_pts", REARM_GAP_PTS))
+
+
+def guard_rearm_pct(level: float) -> float:
+    """The drawdown (%) a fired guard must be back under to re-arm."""
+    return max(level / 2.0, level - rearm_gap_pts())
 
 
 def _band_default() -> float:
@@ -185,7 +204,7 @@ def clears(rule, pos: dict) -> bool:
         return m.get(signal_of(rule)) == "up"
     if rt == "drawdown_guard":
         dd = (pos.get("book") or {}).get("dd_pct")
-        return dd is not None and dd <= max(L / 2.0, L - 2.5)
+        return dd is not None and dd <= guard_rearm_pct(L)
     return False
 
 
@@ -505,7 +524,8 @@ def _drawdown_card(rule, pos, idx, nav) -> dict | None:
                 "apply": {"kind": "none", "rule_id": str(rule.id)}, "est_amount": None}
     tk, vol = pick
     p = idx[tk]
-    shares = round(float(p["qty"]) * DERISK_FRACTION, 6)
+    frac = derisk_fraction()
+    shares = round(float(p["qty"]) * frac, 6)
     from app.services.recommendations import _plan_sale
     pl = _plan_sale(p["lots"], shares)
     gross, tax = pl["gross"], pl["tax"]
@@ -514,13 +534,13 @@ def _drawdown_card(rule, pos, idx, nav) -> dict | None:
             "why": (f"Your drawdown guard is {rule.level:g}%; the book is {dd:.1f}% below its "
                     f"flow-adjusted peak (peak on {b.get('peak_on')}). {tk} is the most volatile "
                     f"thing you hold ({vol_txt})."),
-            "action": (f"Sell {shares:g} {tk} ({DERISK_FRACTION:.0%}, ~{_ils(gross)}, est. tax "
+            "action": (f"Sell {shares:g} {tk} ({frac:.0%}, ~{_ils(gross)}, est. tax "
                        f"{_ils(tax)}) into cash. Not bought back until the book recovers."),
             "impact": (f"{tk} goes from {p['weight_pct']:.1f}% to about "
-                       f"{p['weight_pct'] * (1 - DERISK_FRACTION):.1f}% of the book; about "
+                       f"{p['weight_pct'] * (1 - frac):.1f}% of the book; about "
                        f"{_ils(gross - tax)} lands in cash. Your plan targets are not changed, and "
                        f"re-buys of {tk} resume when the guard re-arms (drawdown back under "
-                       f"{max(rule.level / 2.0, rule.level - 2.5):g}%)."),
+                       f"{guard_rearm_pct(float(rule.level)):g}%)."),
             "how": [f"Accept sells {shares:g} {tk} in your InvestWise book and credits the net "
                     f"proceeds to cash",
                     f"A buy-back hold keeps the realign, funder and cash cards off {tk} until the "

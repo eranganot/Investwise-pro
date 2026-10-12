@@ -3137,7 +3137,7 @@ function dialsPreview(){
   const cands=(tu.candidates||[]).filter(c=>c.stats&&c.stats.p_halve_pct<=lim);
   if(tu.candidates&&tu.candidates.length){
     const best=cands.sort((a,b)=>b.stats.p_goal_pct-a.stats.p_goal_pct)[0];
-    out+=best?_pvRow(`Best protection within ${lim}%`,`${best.retire_sleeve_exits?"sleeve stops paused, ":""}guard ${best.guard_pct??"off"}${best.guard_pct!=null?"%":""}: ${best.stats.p_goal_pct}% chance, ${best.stats.p_halve_pct}% halving`)
+    out+=best?_pvRow(`Best protection within ${lim}%`,`${best.retire_sleeve_exits?"sleeve stops paused, ":""}${(best.pause_take_profits||[]).length?"take-profits paused, ":""}guard ${best.guard_pct??"off"}${best.guard_pct!=null?`% selling ${best.guard_fraction_pct}%`:""}: ${best.stats.p_goal_pct}% chance, ${best.stats.p_halve_pct}% halving`)
       :_pvRow(`Best protection within ${lim}%`,"none of the measured setups — the app would suggest no change","warn");
   } else if(rb.off) {
     out+=_pvRow("With no protective rules",`${rb.off.p_goal_pct}% chance, ${rb.off.p_halve_pct}% halving`)
@@ -3173,7 +3173,7 @@ function openThresholdsSheet(){
   const fmt=v=>Array.isArray(v)?v.join(", "):v;
   openSheet(_sheetHead("Card thresholds")
     +`<div class="mk">What decides which cards you get and how big they are. Change a value and Save; Reset puts one back to its default.</div>`
-    +Object.keys(spec).map(k=>{const s=spec[k], isList=k==="guard_levels";
+    +Object.keys(spec).map(k=>{const s=spec[k], isList=Array.isArray(def[k]);
       return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <label class="mk" for="th_${k}" style="display:block;font-weight:700;color:var(--ink)">${esc(s.label)}${mine[k]!==undefined?' <span class="ok">· set by you</span>':""}</label>
         <div class="mk">${esc(s.detail)} Default ${fmt(def[k])}.</div>
@@ -3189,7 +3189,7 @@ async function saveThresholdsSheet(btn){
   const p=PLX.p||{}, spec=p.thresholds_spec||{}, eff=p.thresholds||{}, def=p.thresholds_defaults||{}, out={};
   for(const k of Object.keys(spec)){
     const el=$("th_"+k); if(!el) continue;
-    const raw=el.value.trim(), isList=k==="guard_levels";
+    const raw=el.value.trim(), isList=Array.isArray(def[k]);
     const v=isList?raw.split(/[ ,]+/).filter(Boolean).map(Number):parseFloat(raw);
     const same=(a,b)=>JSON.stringify(Array.isArray(a)?[...a].sort((x,y)=>x-y):a)===JSON.stringify(Array.isArray(b)?[...b].sort((x,y)=>x-y):b);
     if(el.dataset.reset==="1"||same(v,def[k])){ if((p.thresholds_overrides||{})[k]!==undefined) out[k]=null; continue; }
@@ -3199,8 +3199,8 @@ async function saveThresholdsSheet(btn){
   btn.disabled=true; btn.textContent="Saving…";
   try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({thresholds:out})});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||("Save failed ("+r.status+")"));}
-    // the goal-odds gain and the guard levels change what the retune offers
-    if("material_odds_pts" in out||"guard_levels" in out){btn.textContent="Re-solving your goal… (~20 s)";await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
+    // the goal-odds gain and the guard's dials change what the retune offers (PR 121)
+    if(["material_odds_pts","guard_levels","guard_fractions_tried","guard_rearm_gaps_tried","guard_sell_fraction_pct","guard_rearm_gap_pts"].some(k=>k in out)){btn.textContent="Re-solving your goal… (~1 min)";await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save thresholds";}
 }
@@ -3292,7 +3292,7 @@ function goalSummary(p,f,rules){
           p.assumption_basis&&p.assumption_basis!=="static"?"":"warn"):""}</div>
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
       ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${
-          rb.tuning&&!rb.tuning.material?` This is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
+          rb.tuning&&!rb.tuning.material?` Of the ${rb.tuning.tried||(rb.tuning.candidates||[]).length} protection setups measured, this is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
           :" After a stop fires, the holding sits out until its price falls back below the sale price."}${_stillArmed(rules)}</div>`:""}`;
 }
 

@@ -23,7 +23,7 @@ def test_the_defaults_are_the_constants_that_own_them():
     assert d["min_funded_trade_ils"] == fund.MIN_TRADE_DEFAULT_ILS == 250.0
     assert d["cash_floor_ils"] == 150.0 and d["rebalance_band_pts"] == 3.0
     assert d["take_profit_fraction_pct"] == 25.0 and d["gain_line_pct"] == 25.0
-    assert d["material_odds_pts"] == fs.MATERIAL_PROB_PTS and d["guard_levels"] == [15.0, 20.0]
+    assert d["material_odds_pts"] == fs.MATERIAL_PROB_PTS and d["guard_levels"] == [15.0, 17.5, 20.0, 25.0]  # PR 121 widened
     assert set(d) == set(thresholds.SPEC)
 
 
