@@ -1042,8 +1042,12 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
     screened[cur_key] = cur_c
     ok = [c for c in screened.values() if c["paths"] is None and c["stats"]["p_halve_pct"] <= floor]
     best = max(ok, key=rank) if ok else None
+    # D83 (owner, 2026-10-12): the halving limit is a HARD limit. When today's
+    # rules break it, the best setup inside it is offered even if it costs goal
+    # odds -- the card states the cost; the owner decides.
+    breach = r_on["p_halve_pct"] > floor
     material = bool(best and not best["current"]
-                    and best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= _material())
+                    and (breach or best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= _material()))
     changes = {"pause_rule_ids": [], "pause_rules": [], "guard": None, "guard_settings": None}
     if material:
         for sid in sleeve_ids:
@@ -1063,7 +1067,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
                                          "to": {"fraction_pct": best["guard_fraction_pct"],
                                                 "rearm_gap_pts": best["guard_rearm_gap_pts"]}}
     cands = list(screened.values())
-    return {"halve_floor_pct": floor, "material": material, "guard_col": guard_col,
+    return {"halve_floor_pct": floor, "material": material, "guard_col": guard_col, "breach": breach,
             "current": {"guard_pct": cur_guard, "guard_fraction_pct": cur_frac, "guard_rearm_gap_pts": cur_gap,
                         "stats": r_on},
             "best": best, "changes": changes if material else None,
@@ -1883,6 +1887,16 @@ def _setups_replayed(tu: dict) -> str:
     return f"{n} setups of your protective rules were replayed on the same paths"
 
 
+def _breach_line(tu: dict, cur_s: dict, best_s: dict) -> str:
+    """D83: when today's rules break the halving limit, say so -- and what fixing it costs."""
+    if not tu.get("breach"):
+        return ""
+    cost = round(cur_s["p_goal_pct"] - best_s["p_goal_pct"], 1)
+    return (f" Your rules today leave a {cur_s['p_halve_pct']:g}% chance the book halves, above your "
+            f"{tu['halve_floor_pct']:g}% limit."
+            + (f" Staying inside it costs {cost:g} points of goal odds." if cost > 0 else ""))
+
+
 def _take_profit_line(tu: dict, ch: dict) -> str:
     """PR 121: claim a take-profit result only when the search measured one."""
     if not tu.get("take_profits_measured"):
@@ -2040,9 +2054,11 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         steps += _guard_settings_steps(ch.get("guard_settings"))
         cards.append({
             "id": f"rec_goal_protect_{row.id}", "dimension": "goal", "severity": "HIGH",
-            "title": (f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
+            "title": (f"Bring your crash risk inside your limit: halving {cur_s['p_halve_pct']:g}% -> "
+                      f"{best_s['p_halve_pct']:g}%" if tu.get("breach") else
+                      f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
                       f"{best_s['p_goal_pct']:g}%"),
-            "why": (goal_line + f" {_setups_replayed(tu)}; this is the "
+            "why": (goal_line + _breach_line(tu, cur_s, best_s) + f" {_setups_replayed(tu)}; this is the "
                     f"one with the best goal odds that keeps the chance of halving at or under "
                     f"{tu['halve_floor_pct']:g}%." + _take_profit_line(tu, ch)),
             "action": ("Accept will " + " and ".join(steps) + ". Nothing is bought or sold; one tap re-arms them."),

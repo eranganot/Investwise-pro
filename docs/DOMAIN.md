@@ -111,6 +111,8 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
     PR 121: the retune crosses the sleeve exits, each sleeve's take-profits, and the guard's level × sell size × re-arm
     gap. It screens on 250 paths in two passes, capped at 120 setups, and re-measures the best 3 on every path. The card
     and the Plan sentence say how many setups were measured, and mention take-profits only when they were.
+    PR 121.1 (D83): the halving limit is hard. Over it, the card ("Bring your crash risk inside your limit") offers the
+    best setup inside it even at a cost in goal odds, and says the cost.
 - Verdicts: `ON_TRACK`, `LESS_RISK`, `REBALANCE`, `IMPROVE`, `OUT_OF_REACH`, `NO_TARGET`, `TAIL_DISAGREES`, `TAIL_SHORT`.
   They are stored in `solver_verdicts`; Today only *reads* them.
 - **A stale measurement silences the goal** (PR 99.1). Goal cards compute the goal *after* Accept, and only promise what Accept delivers (PR 99).

@@ -26,7 +26,8 @@ $missing = @($new | Where-Object { $names -notcontains $_ })
 if ($names.Count -eq 27 -and $missing.Count -eq 0) { Ok "27 settings, the 4 new ones present" } else { Bad ("{0} settings; missing: {1}" -f $names.Count, ($missing -join ",")) }
 $d = $p.thresholds_defaults
 if ([double]$d.guard_sell_fraction_pct -eq 25 -and [double]$d.guard_rearm_gap_pts -eq 2.5) { Ok "live guard defaults unchanged: sells 25%, re-arms 2.5 pts under" } else { Bad "guard defaults moved" }
-if ((@($d.guard_levels) -join ",") -eq "15,17.5,20,25" -and (@($d.guard_fractions_tried) -join ",") -eq "25,50" -and (@($d.guard_rearm_gaps_tried) -join ",") -eq "2.5,5") {
+function NumList($xs) { (@($xs) | ForEach-Object { [double]$_ }) -join "," }   # 15.0 and 15 are the same number
+if ((NumList $d.guard_levels) -eq "15,17.5,20,25" -and (NumList $d.guard_fractions_tried) -eq "25,50" -and (NumList $d.guard_rearm_gaps_tried) -eq "2.5,5") {
     Ok "retune grid defaults: levels 15/17.5/20/25, sizes 25/50, gaps 2.5/5"
 } else { Bad ("grid defaults: levels {0}; sizes {1}; gaps {2}" -f (@($d.guard_levels) -join ","), (@($d.guard_fractions_tried) -join ","), (@($d.guard_rearm_gaps_tried) -join ",")) }
 

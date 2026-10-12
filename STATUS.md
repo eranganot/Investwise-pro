@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121). Last product PR: **PR 121**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1). Last product PR: **PR 121.1**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -29,7 +29,7 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   multiplication; plus `/portfolio/add` replacing a held position (now pays from cash). PR 106 (sleeve funding
   obeys the book target) followed the same day. PR 120 (one goal chance on Today and Plan) closed Wave A. Wave B (PR 107-109) shipped the same day. Wave C started the same day (D73, D74). PR 111 closed Wave C. Wave D started the same day (D76). Wave D (PR 112-114b) complete. Wave E started the same day (D77-D81). Next: **PR 121** (the protection retune searches properly).
 - **Done (PR 119):** the deploy is defined in `.railway/railway.ts`; `railway.json` (retired by Railway on 2026-12-01) is gone.
-- **Owner ops (plan Wave 0):**
+- **Owner ops (plan Wave 0)** — first flagged 2026-10-08, age 4 days on 2026-10-12; the Postgres backup schedule is already set and `redis-volume` deleted (see PR 119 Ops note), so only the token rotation is genuinely open:
   - Check Railway Postgres backups.
   - Delete the orphan `redis-volume`.
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
@@ -51,6 +51,34 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Repointed `tests/test_sleeves_mean_what_they_say.py` to `scripts/archive/deploy/_common.ps1`, and updated the "See ROTATION.md" messages.
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
+
+## PR 121.1 — the halving limit is a hard limit (D83)
+
+**Owner decision, 2026-10-12.** "I want to treat the limit as a hard limit."
+
+**What.**
+- `_tune_protection` adds `breach` (today's chance of halving is over the limit). A breach makes the best setup inside
+  the limit material even when it lowers the goal odds.
+- The card reads "Bring your crash risk inside your limit: halving X% -> Y%". Its why says the risk, the limit and the
+  cost ("Staying inside it costs N points of goal odds"), and the impact line keeps the goal odds before -> after.
+- Accept is unchanged: it arms or re-levels the guard and pauses what the setup pauses.
+- Inside the limit nothing changes: a costlier setup is still never offered. Since the card exists, the money/time
+  suggestions are sized on the retuned book (D1 b).
+
+**Tests (4)** in `tests/test_the_retune_searches_properly.py`:
+- production's shape (no guard, 68.3% vs 2.6%) → arm guard 20%;
+- inside the limit a costlier setup is not offered;
+- the breach sentence;
+- the card reaches Today and Accept arms the guard.
+
+**Gate.** Local SQLite 2349 and Postgres 2349 passed; ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr121-1-hard-limit.ps1 -Sha <sha>` (after one re-solve).
+
+**QA (Pixel).** Today shows "Bring your crash risk inside your limit…" with both chips. Accept it only if you want the
+guard armed: it arms the guard at the level on the card, and one tap on Holdings › Rules pauses it again.
+
+---
 
 ## PR 121 — the protection retune searches properly (D82)
 
@@ -107,7 +135,14 @@ the update on both databases. ruff is clean.
 - **PR 119 merge smoke:** `b0a8e87`, 7 PASS, 0 FAIL. Merge deploy `69e6bd79` built from the DOCKERFILE.
 - **Ops:** the daily Postgres backup schedule is set; `redis-volume` is deleted (OPERATIONS §7).
 
-**Smoke.** `scripts/smoke/smoke-pr121-protection-retune.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr121-protection-retune.ps1 -Sha <sha>`. **Ran against `65e6a13` (GitHub PR #19 merge): 8 PASS, 0 FAIL**
+- The first run reported a false FAIL: the script compared `15.0` with `15` as text. It is fixed in PR 116.
+- One on-demand re-solve took 22 s and measured 20 setups, take-profits included.
+
+**Finding → D83 (owner, 2026-10-12: "treat the limit as a hard limit").** Production has no guard armed, and today's
+rules have a 68.3% chance of halving against a limit of 2.6%. Fourteen setups are within the limit; the best is guard
+20% at 18.9% goal odds against 30.9% today. The card offered only gains, so it said nothing. Meanwhile the Dials sheet
+said "re-arming protection is what the app would suggest", which the card never did. Fixed in PR 121.1.
 
 **QA (Pixel).**
 1. The Plan goal card's protection sentence names a count of setups.
