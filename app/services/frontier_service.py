@@ -1655,7 +1655,7 @@ async def card(session, user, rows) -> list[dict]:
     band_txt = "; ".join(f"{s['id']}: today {s['current_pct']:g}%, band {s['band_pct'][0]:g}-{s['band_pct'][1]:g}%"
                          for s in v["sleeves"] if s.get("act"))
     return [{
-        "id": f"rec_frontier_{row.id}",
+        "id": "rec_frontier_book",
         "dimension": "frontier", "severity": "HIGH",
         "title": title,
         "why": (f"Your {v['objective']} plan targets {v['kelly_target']:.2f}x Kelly. As planned today the "
@@ -2012,7 +2012,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
     if cc.get("outcome") == CORE_SWITCH and await _sv2.core_strategy_id(session, user) == cc["current"]["id"]:
         cur_c, best_c = cc["current"], cc["best"]
         cards.append({
-            "id": f"rec_goal_core_{row.id}", "dimension": "goal", "severity": "HIGH",
+            "id": "rec_goal_core_book", "dimension": "goal", "severity": "HIGH",
             "title": (f"Switch your core to {best_c['name']}: goal odds {cur_c['score_pct']:g}% -> "
                       f"{best_c['score_pct']:g}%"),
             "why": (goal_line + f" Each catalog core was priced from its own tickers' history with your sleeves "
@@ -2053,7 +2053,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
                          else f"move the drawdown guard {gd['from_pct']:g}% -> {gd['to_pct']:g}%")
         steps += _guard_settings_steps(ch.get("guard_settings"))
         cards.append({
-            "id": f"rec_goal_protect_{row.id}", "dimension": "goal", "severity": "HIGH",
+            "id": "rec_goal_protect_book", "dimension": "goal", "severity": "HIGH",
             "title": (f"Bring your crash risk inside your limit: halving {cur_s['p_halve_pct']:g}% -> "
                       f"{best_s['p_halve_pct']:g}%" if tu.get("breach") else
                       f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
@@ -2099,7 +2099,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
             vcap_txt = (f" Volatility after is {a['volatility_pct']:.1f}%, above your plan's "
                         f"{vcap:g}% limit." if vcap and a["volatility_pct"] > vcap else "")
             cards.append({
-                "id": f"rec_goal_mix_{row.id}", "dimension": "goal", "severity": "HIGH",
+                "id": "rec_goal_mix_book", "dimension": "goal", "severity": "HIGH",
                 "title": title,
                 "why": (goal_line + f" Resampled {v['draws']} times; a sleeve only moves when today's size "
                         f"sits outside its whole stability band. Estimates, not forecasts.{vcap_txt}"),
@@ -2163,7 +2163,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         if lv.get("extra_monthly_ils"):
             new_total = round(float(g.get("monthly") or 0) + float(lv["extra_monthly_ils"]), 2)
             cards.append({
-                "id": f"rec_goal_deposit_{row.id}", "dimension": "goal", "severity": "HIGH",
+                "id": "rec_goal_deposit_book", "dimension": "goal", "severity": "HIGH",
                 "title": f"Add {lv['extra_monthly_ils']:,}/month for a {star}% chance of your goal",
                 "why": common_why,
                 "action": (f"Accept sets your standing orders to {new_total:,.0f}/month in total. "
@@ -2186,7 +2186,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         roi_now = float(g.get("roi_pct") or 0)
         if reachable_roi and lv["roi_at_confidence_pct"] < roi_now:
             cards.append({
-                "id": f"rec_goal_target_{row.id}", "dimension": "goal", "severity": "MEDIUM",
+                "id": "rec_goal_target_book", "dimension": "goal", "severity": "MEDIUM",
                 "title": f"Set a target this book can reach: {lv['roi_at_confidence_pct']:g}%/yr ({star}% chance)",
                 "why": common_why,
                 "action": (f"Accept changes your ROI target from {roi_now:g}% to {lv['roi_at_confidence_pct']:g}%/yr, "
@@ -2205,7 +2205,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         if extra and extra <= 15 and g.get("deadline"):
             new_year = int(str(g["deadline"])[:4]) + math.ceil(extra)
             cards.append({
-                "id": f"rec_goal_deadline_{row.id}", "dimension": "goal", "severity": "MEDIUM",
+                "id": "rec_goal_deadline_book", "dimension": "goal", "severity": "MEDIUM",
                 "title": f"Move your deadline to {new_year} for a {star}% chance",
                 "why": common_why,
                 "action": f"Accept moves your goal deadline from {str(g['deadline'])[:4]} to {new_year}.",
