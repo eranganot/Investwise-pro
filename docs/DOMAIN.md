@@ -107,7 +107,10 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 - The goal solve (`frontier_service`, nightly 04:10 and on demand) also does three things:
   - picks risk, capped at 1.0× Kelly (the Kelly dial is an optional ceiling)
   - proposes the core (PR 94)
-  - **replays the protective rules on the goal's paths** (PR 95), tuning them if they cost too many odds points (PR 96)
+  - **replays the protective rules on the goal's paths** (PR 95), tuning them if they cost too many odds points (PR 96).
+    PR 121: the retune crosses the sleeve exits, each sleeve's take-profits, and the guard's level × sell size × re-arm
+    gap. It screens on 250 paths in two passes, capped at 120 setups, and re-measures the best 3 on every path. The card
+    and the Plan sentence say how many setups were measured, and mention take-profits only when they were.
 - Verdicts: `ON_TRACK`, `LESS_RISK`, `REBALANCE`, `IMPROVE`, `OUT_OF_REACH`, `NO_TARGET`, `TAIL_DISAGREES`, `TAIL_SHORT`.
   They are stored in `solver_verdicts`; Today only *reads* them.
 - **A stale measurement silences the goal** (PR 99.1). Goal cards compute the goal *after* Accept, and only promise what Accept delivers (PR 99).
@@ -130,7 +133,7 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 | Group | Types |
 |---|---|
 | Classic | stop_loss, take_profit (a ladder that re-arms, house fraction 25%), trailing_stop, price_above/below, buy_dip, max_weight (per-name cap, bounds every buy, PR 65), strategy_signal |
-| Advanced (PR 81) | **rebalance_band** (±3 pts), **profit_protect** (activates at +20%, gives back 15%), **trend_break** (200-day), **drawdown_guard** (whole book, 10%; the goal solve may tune it to 15/20) |
+| Advanced (PR 81) | **rebalance_band** (±3 pts), **profit_protect** (activates at +20%, gives back 15%), **trend_break** (200-day), **drawdown_guard** (whole book, 10%, sells 25% of the most volatile holding, re-arms 2.5 pts under; the goal solve may tune all three, PR 121) |
 | Holds | buy_back (PR 83) |
 
 - **A firing never trades.** `evaluate_user` latches `triggered`, writes a `rule_event`, and `triggered_rule_recs` turns it into
@@ -151,7 +154,9 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 | `take_profit_fraction_pct` | 25 | House take-profit fraction |
 | `gain_line_pct` | 25 | "Ran up" card line |
 | `material_odds_pts` | 5 | Odds gain that justifies a goal card |
-| `guard_levels` | (15, 20) | Drawdown-guard candidates the goal solve tries |
+| `guard_levels` | (15, 17.5, 20, 25) | Drawdown-guard levels the retune tries (PR 121 widened it) |
+| `guard_sell_fraction_pct` / `guard_rearm_gap_pts` | 25 / 2.5 | What the live guard sells; how far under its level it re-arms (PR 121) |
+| `guard_fractions_tried` / `guard_rearm_gaps_tried` | (25, 50) / (2.5, 5) | The sell sizes and re-arm gaps the retune tries (PR 121) |
 
 Overrides live sparsely in `plans.thresholds`. `acting_user` and `build_recommendations` call `thresholds.use(plan)` (a
 ContextVar) once per request, and code reads `thresholds.get(key)`. The Plan › Goal › **Card thresholds** sheet edits them.

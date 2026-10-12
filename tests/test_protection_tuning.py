@@ -23,7 +23,7 @@ def test_the_best_goal_odds_under_the_halving_floor_wins():
     def run(sl=None, gd="same", **kw):
         retire = sl is not None and sl[0].get("trail") is None
         lvl = round(gd["level"] * 100, 2) if gd and gd != "same" else 10.0
-        return table[(retire, lvl)]
+        return table.get((retire, lvl), _stats(0.0, 0.0))     # PR 121: levels it has no row for lose
     rules = {"sleeves": {"soxl": {"exit_rule_ids": ["r1", "r2"], "rules": ["trailing_stop SOXL (20%)",
                                                                        "take_profit SOXL (+13%)"]}},
              "guard": {"rule_id": "g1"}}
@@ -55,7 +55,7 @@ def test_goal_solve_carries_a_tuning_that_respects_the_floor():
                       cash_pct=4.0, objective="Grow", est_kw=EST_KW, nav=10_000, target=30_000, years=5.0,
                       draws=0, rules=rules)
     tu = v["rules"]["tuning"]
-    assert tu and len(tu["candidates"]) == 6
+    assert tu and len(tu["candidates"]) == tu["tried"] >= 23       # PR 121: the wider grid
     if tu["best"]:
         assert tu["best"]["stats"]["p_halve_pct"] <= fs.HALVE_FLOOR_PCT
 

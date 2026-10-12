@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-11 by Claude (plan v3: PR 115, PR 119 Railway IaC). Last product PR: **PR 119**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121). Last product PR: **PR 121**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,70 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 121 — the protection retune searches properly (D82)
+
+**Plan v3, Wave E.** Owner's question, 2026-10-11: why the goal card said "already the best". Live, that rested on two
+setups (guard 15% vs 20%, sleeve stops already paused), and "take-profits measured neutral" was never re-measured.
+
+**What.**
+- **The search.** `_tune_protection` now crosses:
+  - the sleeve exits, kept or paused;
+  - each sleeve's take-profits, kept or paused (all, none, or one at a time);
+  - the guard's level × sell size × re-arm gap.
+
+  It runs in two passes: every structure at today's guard plus every guard at today's structure, then every guard at the
+  best structure. Each setup is screened on 250 paths, capped at 120 setups, and the best 3 are re-measured on all 1,000.
+  The pick is still the best goal odds with halving at or under the limit. On the test book the solve takes about 2×
+  as long without resampling (6 → 13 s); the Card-thresholds sheet now says "~1 min" when it re-solves.
+- **Four new settings (27 in all):**
+  - `guard_sell_fraction_pct` (default 25) and `guard_rearm_gap_pts` (default 2.5): the live guard's sell size and re-arm
+    gap. `advanced_rules.derisk_fraction()` / `guard_rearm_pct()` read them in the de-risk card, the re-arm test and the
+    replay's `rules_spec`.
+  - `guard_fractions_tried` (25, 50) and `guard_rearm_gaps_tried` (2.5, 5): what the retune tries.
+
+  `guard_levels` widens from (15, 20) to (15, 17.5, 20, 25). The live defaults are unchanged.
+- **The card can propose:**
+  - pausing a take-profit (`rules_spec` now carries `tp_rule_ids`; Accept pauses by id, like the stops);
+  - moving the guard's sell size / re-arm gap. Accept writes these plan settings and refuses untouched if they moved
+    since the solve.
+
+  The suggestions are sized on the retuned book through the same `_setup_specs`.
+- **The sentences.**
+  - The card: "N setups of your protective rules were replayed…". It says "Pausing the take-profits was measured too and
+    did not do better" only when it was measured.
+  - The Plan goal card: "Of the N protection setups measured, this is already the best…".
+  - "Every setup" and "measured neutral" are gone from the code.
+- `sw.js` → `iw-v55`.
+
+**Tests (9).** `tests/test_the_retune_searches_properly.py`:
+- a take-profit that costs the goal is paused;
+- guard 17.5% beats 15% under the limit and is proposed;
+- the sell size and gap are searched;
+- the grid is wide and capped, and the finalists are re-measured in full;
+- the sentences claim only what was measured;
+- the new settings default to today's behaviour and the live guard reads them;
+- `tp_rule_ids` are carried;
+- Accept pauses a take-profit and writes the guard settings;
+- moved settings are refused untouched.
+
+Updated: the old pins on 6 candidates, 23 settings, `guard_levels` (15, 20) and the guard spec's keys.
+
+**Gate.** Local SQLite and Postgres each ran 2345 tests. The only failures were those two old pins, which pass after
+the update on both databases. ruff is clean.
+
+**Also recorded (owner, 2026-10-12).**
+- **PR 119 merge smoke:** `b0a8e87`, 7 PASS, 0 FAIL. Merge deploy `69e6bd79` built from the DOCKERFILE.
+- **Ops:** the daily Postgres backup schedule is set; `redis-volume` is deleted (OPERATIONS §7).
+
+**Smoke.** `scripts/smoke/smoke-pr121-protection-retune.ps1 -Sha <sha>`.
+
+**QA (Pixel).**
+1. The Plan goal card's protection sentence names a count of setups.
+2. The Card-thresholds sheet shows the 4 new rows, and the list rows accept "25, 50".
+3. If a "Retune your protection" card appears, its action lists exactly what Accept changes.
+
+---
+
 ## PR 119 — the deploy is infrastructure as code (Railway retires `railway.json` on 2026-12-01)
 
 **Plan v3, dated item (deadline 2026-11-15).** Done on 2026-10-11. The owner applied the Railway change; Claude
@@ -92,13 +156,13 @@ and that `railway.json` never returns.
    `config plan` reports "already up to date".
 
 **Windows note.** The `railway` npm SDK checks the CLI version through `$_`, which Git Bash and npm shims break. Run
-plan/apply from PowerShell with `$env:_` set to the real `railway.exe` (OPERATIONS §5 item 7).
+plan/apply from PowerShell with `$env:_` set to the real `railway.exe` (OPERATIONS §6 item 7).
 
 **Gate.** Local SQLite 2333 + Postgres 2335 passed, ruff clean. The SQLite run crossed midnight and two
 `test_standing_orders.py` tests failed once; both pass on re-run on both databases, so they are date-boundary flakes
 (probably "today" read twice). They are not caused by this PR.
 
-**Smoke.** `scripts/smoke/smoke-pr119-railway-iac.ps1 -Sha <sha>`. Verified against production on `fd525ab` before the push: 7 PASS.
+**Smoke.** `scripts/smoke/smoke-pr119-railway-iac.ps1 -Sha <sha>`. Verified against production on `fd525ab` before the push: 7 PASS. **Ran against `b0a8e87` (GitHub PR #18 merge): 7 PASS, 0 FAIL.**
 
 ---
 

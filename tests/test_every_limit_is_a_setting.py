@@ -36,7 +36,7 @@ def test_the_retune_honours_the_limit_it_is_given():
 
     def run(sl=None, gd="same", **kw):
         retire = sl is not None and sl[0].get("trail") is None
-        return table[(retire, round(gd["level"] * 100, 2) if gd and gd != "same" else 10.0)]
+        return table.get((retire, round(gd["level"] * 100, 2) if gd and gd != "same" else 10.0), _stats(0.0, 0.0))
     args = (run, [{"col": 0, "trail": 0.2}], {"level": 0.10, "rearm": 0.075, "fraction": 0.25, "col": 0},
             {"sleeves": {"soxl": {"exit_rule_ids": ["r1"], "rules": ["trailing_stop SOXL (20%)"]}},
              "guard": {"rule_id": "g1"}}, ["soxl"], np.zeros((10, 1)), 1, table[(False, 10.0)])
