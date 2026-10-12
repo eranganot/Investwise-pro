@@ -24,8 +24,14 @@ class RuleIn(BaseModel):
 @router.get("")
 async def list_rules(session: AsyncSession = Depends(get_session),
                      user: User = Depends(acting_user)) -> dict:
-    return {"rules": await rules_service.list_rules(session, user),
-            "types": sorted(rules_service.RULE_TYPES)}
+    rules = await rules_service.list_rules(session, user)
+    # PR 123 (D85): each rule's effect on the goal's chance, from the latest solve.
+    from app.services.frontier_service import rule_impacts
+    imp = await rule_impacts(session, user)
+    for r in rules:
+        r["goal_impact"] = (imp.get("rules") or {}).get(str(r.get("id")))
+    return {"rules": rules, "types": sorted(rules_service.RULE_TYPES),
+            "goal_impact": {k: imp.get(k) for k in ("computed_at", "fresh", "base_goal_pct")} if imp else None}
 
 
 @router.get("/suggestions")

@@ -591,10 +591,34 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         e[cash_idx] = 1.0
         a_rows.append(e)
         unit_daily = daily @ np.array(a_rows).T
+        # PR 123 (D85): a held ticker with a rule is its own column, carved out of
+        # the core's share, so its stop acts on its own path. Its history keeps its
+        # own shape and volatility (scaled like every other column) and is
+        # re-centred on the core's drift: the replay asks what the RULE does, not
+        # whether this stock beats the market.
+        held = [(tk, h) for tk, h in (rules.get("holding_returns") or {}).items()
+                if h is not None and len(h) == unit_daily.shape[0] and (rules.get("holdings") or {}).get(tk)]
+        w_book = book(now_s)
+        core_room = float(w_book[k])
+        held_w = []
+        for tk, _h in held:
+            w = min(max(0.0, float((rules.get("holding_weights") or {}).get(tk) or 0.0)), core_room)
+            held_w.append(w)
+            core_room -= w
+        if held:
+            core_col = unit_daily[:, k]
+            vs_h = float(est_kw.get("vol_scale") or 1.0)
+            cols = [(np.asarray(h) - np.mean(h)) * vs_h + core_col.mean() for _tk, h in held]
+            unit_daily = np.column_stack([unit_daily[:, :k], *cols, unit_daily[:, k:]])
+            w_book = np.concatenate([w_book[:k], held_w, [core_room], w_book[k + 1:]])
         sl_specs = []
         for j, sid in enumerate(sleeve_ids):
             sp = (rules.get("sleeves") or {}).get(sid) or {}
-            sl_specs.append({"col": j, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
+            sl_specs.append({"col": j, "id": sid, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
+                             "tp_fraction": sp.get("tp_fraction")})
+        for i, (tk, _h) in enumerate(held):
+            sp = rules["holdings"][tk]
+            sl_specs.append({"col": k + i, "id": tk, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
                              "tp_fraction": sp.get("tp_fraction")})
         g_spec = None
         if rules.get("guard") and k:
@@ -602,7 +626,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             g_spec = {**rules["guard"], "col": int(np.argmax(vols))}
 
         def run(sl=None, gd="same", years_=None, monthly_=None, target_=None, **kw):
-            sim = paths.simulate_rules(unit_daily, book(now_s), years=years if years_ is None else years_,
+            sim = paths.simulate_rules(unit_daily, w_book, years=years if years_ is None else years_,
                                        sleeves=sl_specs if sl is None else sl,
                                        guard=g_spec if gd == "same" else gd,
                                        monthly=monthly if monthly_ is None else monthly_,
@@ -612,6 +636,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         # PR 104b: a preview (light) asks "what if these rules", not "which rules".
         tuning = None if light else _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on,
                                                      floor=halve_floor_pct)
+        per_rule = None if light else _per_rule_impact(run, rules, sl_specs, g_spec, sleeve_ids)
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
@@ -623,11 +648,14 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                        "guard": rules.get("guard"),
                        "guard_target": sleeve_ids[g_spec["col"]] if g_spec else None,
                        "not_simulated": rules.get("not_simulated") or [],
+                       "holdings_modelled": [tk for tk, _h in held],
+                       "per_rule": per_rule,
                        "tuning": tuning,
                        "assumptions": ["every rule card is accepted the day it fires",
                                        "sleeve rules act on the sleeve's own return stream",
-                                       "the book is topped back to target monthly from cash",
-                                       "rules on core tickers are not simulated (the core is one basket)"]}
+                                       "a held stock with a rule acts on its own price path, re-centred on "
+                                       "the core's drift",
+                                       "the book is topped back to target monthly from cash"]}
 
     # ---- PR 95: the stress case (shrunk estimate) on every goal verdict ---
     stress = None
@@ -955,11 +983,16 @@ def _guard_spec(lvl, g_spec, guard_col, fraction_pct=None, gap_pts=None) -> dict
     return {"level": lvl / 100.0, "rearm": max(lvl / 2.0, lvl - gap) / 100.0, "fraction": frac, "col": guard_col}
 
 
+def _spec_id(s: dict, sleeve_ids) -> str:
+    """A replay column's id: its sleeve, or (PR 123) the held ticker it models."""
+    return s.get("id") or sleeve_ids[s["col"]]
+
+
 def _setup_specs(c: dict, sl_specs, sleeve_ids, g_spec, guard_col):
     """One retune candidate -> the (sleeves, guard) `simulate_rules` takes."""
     off = set(c.get("pause_take_profits") or [])
     sl = [dict(s, **({"trail": None} if c["retire_sleeve_exits"] else {}),
-               **({"tp_ratio": None} if sleeve_ids[s["col"]] in off else {})) for s in sl_specs]
+               **({"tp_ratio": None} if _spec_id(s, sleeve_ids) in off else {})) for s in sl_specs]
     return sl, _guard_spec(c["guard_pct"], g_spec, guard_col, c.get("guard_fraction_pct"),
                            c.get("guard_rearm_gap_pts"))
 
@@ -972,12 +1005,66 @@ def _fv_monthly(monthly: float, roi: float, years: float) -> float:
     return sum(monthly * (1.0 + roi) ** ((n - k) / 12.0) for k in range(1, n + 1))
 
 
+PER_RULE_PATHS = 500
+
+
+def _per_rule_impact(run, rules: dict, sl_specs, g_spec, sleeve_ids) -> dict | None:
+    """PR 123 (D85): each rule's own effect on the goal -- the replay with that
+    one rule switched off, on the same paths as every rule on.
+
+    ``goal_pts`` = chance with the rule minus chance without it (negative: the
+    rule costs the goal); the halving chance with and without beside it. A rule
+    another rule on the same holding already covers (a looser stop beside a
+    tighter one) changes nothing in the replay and says so. Rules the model does
+    not replay carry their reason from `_rules_context`.
+    """
+    rows = rules.get("_rule_rows")
+    if not rows:
+        return None
+    base = run(n_paths=PER_RULE_PATHS)
+    out: dict = {}
+    ids = [_spec_id(s, sleeve_ids) for s in sl_specs]
+    for r in rows:
+        rid = str(r.get("id") or "")
+        why = (rules.get("unmodelled") or {}).get(rid)
+        if not rid or why:
+            if rid:
+                out[rid] = {"modelled": False, "reason": why}
+            continue
+        if r.get("rule_type") == "drawdown_guard":
+            if g_spec is None:
+                out[rid] = {"modelled": False, "reason": "the guard needs a strategy sleeve to sell"}
+                continue
+            sl, gd = None, None
+        else:
+            spec = rules_spec([x for x in rows if x is not r], prices=rules.get("_prices") or {},
+                              sleeve_tickers=rules.get("_sleeve_tickers") or {},
+                              holding_tickers=set(rules.get("holdings") or {}))
+            by_id = {**spec["sleeves"], **spec.get("holdings", {})}
+            sl = []
+            for s, sid in zip(sl_specs, ids):
+                sp = by_id.get(sid) or {}
+                sl.append(dict(s, trail=sp.get("trail"), tp_ratio=sp.get("tp_ratio"),
+                               tp_fraction=sp.get("tp_fraction")))
+            if all(a.get("trail") == b.get("trail") and a.get("tp_ratio") == b.get("tp_ratio")
+                   for a, b in zip(sl, sl_specs)):
+                out[rid] = {"modelled": True, "covered": True, "goal_pts": 0.0,
+                            "halve_with_pct": base["p_halve_pct"], "halve_without_pct": base["p_halve_pct"]}
+                continue
+            gd = "same"
+        without = run(sl=sl, gd=gd, n_paths=PER_RULE_PATHS)
+        out[rid] = {"modelled": True, "covered": False,
+                    "goal_pts": round(base["p_goal_pct"] - without["p_goal_pct"], 1),
+                    "halve_with_pct": base["p_halve_pct"], "halve_without_pct": without["p_halve_pct"]}
+    return {"paths": PER_RULE_PATHS, "base_goal_pct": base["p_goal_pct"], "rules": out}
+
+
 def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on,
                      floor: float = HALVE_FLOOR_PCT) -> dict | None:
     from app.services import thresholds
     from app.services.advanced_rules import derisk_fraction, rearm_gap_pts
     has_exits = any(s.get("trail") for s in sl_specs)
-    tp_sids = [sleeve_ids[s["col"]] for s in sl_specs if s.get("tp_ratio")]
+    tp_sids = [_spec_id(s, sleeve_ids) for s in sl_specs if s.get("tp_ratio")]
     if not has_exits and not g_spec and not tp_sids:
         return None
     cur_guard = round(g_spec["level"] * 100, 2) if g_spec else None
@@ -1050,8 +1137,9 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
                     and (breach or best["stats"]["p_goal_pct"] - r_on["p_goal_pct"] >= _material()))
     changes = {"pause_rule_ids": [], "pause_rules": [], "guard": None, "guard_settings": None}
     if material:
-        for sid in sleeve_ids:
-            sp = (rules.get("sleeves") or {}).get(sid) or {}
+        by_id = {**(rules.get("sleeves") or {}), **(rules.get("holdings") or {})}
+        for sid in [_spec_id(s, sleeve_ids) for s in sl_specs]:
+            sp = by_id.get(sid) or {}
             if best["retire_sleeve_exits"]:
                 changes["pause_rule_ids"] += sp.get("exit_rule_ids") or []
                 changes["pause_rules"] += [d for d in sp.get("rules") or [] if not d.startswith("take_profit")]
@@ -1250,9 +1338,16 @@ async def compute_for(session, user, *, source: str = "on_demand",
     except Exception:  # noqa: BLE001 -- the goal verdict stands without the rules replay
         logger.warning("rules context failed", exc_info=True)
         rules_ctx = None
+    try:
+        _hseries = {**ctx["series"], **await _holding_series(rules_ctx, ctx["series"])}
+    except Exception:  # noqa: BLE001 -- held tickers then go unmodelled, said so
+        logger.warning("held-ticker history unavailable", exc_info=False)
+        _hseries = ctx["series"]
 
     def work():
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
+        if prep["ok"]:
+            _attach_holding_returns(rules_ctx, prep, _hseries)
         if not prep["ok"]:
             unavailable = prep.get("reason") == "NO_ASSETS" and bool(ctx.get("unavailable"))
             return {"ok": True, "outcome": UNAVAILABLE if unavailable else NOT_MEASURABLE,
@@ -1316,7 +1411,7 @@ async def compute_for(session, user, *, source: str = "on_demand",
 
 
 def rules_spec(rules: list[dict], *, prices: dict[str, float],
-               sleeve_tickers: dict[str, set[str]]) -> dict:
+               sleeve_tickers: dict[str, set[str]], holding_tickers: set[str] | None = None) -> dict:
     """The user's ARMED rules -> what `paths.simulate_rules` takes. Pure.
 
     ``rules`` are rows as dicts {ticker, rule_type, mode, level, params,
@@ -1328,9 +1423,13 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
     from app.services.advanced_rules import derisk_fraction, guard_rearm_pct, rearm_gap_pts
     from app.services.rules_service import TAKE_PROFIT_FRACTION
 
-    out = {sid: {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": [],
-                 "exit_rule_ids": [], "tp_rule_ids": []}
-           for sid in sleeve_tickers}
+    def _blank():
+        return {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": [],
+                "exit_rule_ids": [], "tp_rule_ids": []}
+    out = {sid: _blank() for sid in sleeve_tickers}
+    # PR 123: a held ticker outside every sleeve, modelled as its own column.
+    held = {t.upper() for t in (holding_tickers or set())}
+    out_h: dict = {}
     guard, not_sim = None, []
     for r in rules:
         tk, rt = (r.get("ticker") or "").upper(), r.get("rule_type")
@@ -1342,11 +1441,14 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
                 guard["rule_id"] = str(r["id"])
             continue
         sid = next((s for s, ts in sleeve_tickers.items() if tk in ts), None)
-        if sid is None:
+        if sid is None and tk in held:
+            spec = out_h.setdefault(tk, _blank())
+        elif sid is None:
             if rt in ("stop_loss", "trailing_stop", "profit_protect", "take_profit", "drawdown_guard"):
                 not_sim.append(f"{rt} on {tk}")
             continue
-        spec = out[sid]
+        else:
+            spec = out[sid]
         px = float(prices.get(tk) or 0.0)
         trail = None
         if rt == "trailing_stop" and r.get("mode", "pct") == "pct":
@@ -1369,7 +1471,7 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
                 spec["rules"].append(f"take_profit {tk} (+{ratio - 1:.0%}, sells {spec['tp_fraction']:.0%})")
                 if r.get("id"):
                     spec["tp_rule_ids"].append(str(r["id"]))
-    return {"sleeves": out, "guard": guard, "not_simulated": sorted(set(not_sim))}
+    return {"sleeves": out, "holdings": out_h, "guard": guard, "not_simulated": sorted(set(not_sim))}
 
 
 async def preview(session, user, *, roi_pct: float | None = None, target_date: str | None = None,
@@ -1396,6 +1498,10 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
         return {"ok": False, "reason": "NO_GOAL"}
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
     rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct)
+    try:
+        _hseries = {**ctx["series"], **await _holding_series(rules_ctx, ctx["series"])}
+    except Exception:  # noqa: BLE001
+        _hseries = ctx["series"]
     from app.services import thresholds as _thr
     from app.services.plan_service import get_plan as _gp
     _plan_now = await _gp(session, user)
@@ -1406,6 +1512,7 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
         prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
         if not prep["ok"]:
             return {"ok": False, "reason": prep.get("reason")}
+        _attach_holding_returns(rules_ctx, prep, _hseries)
         vs = fi.vol_scale(prep, (ctx.get("market") or {}).get("state"))
         return goal_solve(prep, sleeves_pct=sleeves_pct, core_basket=basket, cash_pct=cash_pct,
                           objective=ctx["objective"], est_kw={**ctx["est_kw"], "vol_scale": vs["scale"]},
@@ -1446,16 +1553,84 @@ async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | No
     rows = [r for r in every if (armed or {}).get(str(r.id), bool(r.active))]
     if not rows:
         return None
-    prices = {}
-    for p in await list_positions(session, user):
+    from app.services.allocation_mix import current_mix
+    from app.services.fx import position_value_ils, price_currency
+    from app.services.intake_service import is_cash_position
+    positions = await list_positions(session, user)
+    _mix, nav = current_mix(positions)
+    prices, values, ccys = {}, {}, {}
+    for p in positions:
+        tk = (p.ticker or "").upper()
+        meta = p.meta if isinstance(p.meta, dict) else None
         if p.current_price:
-            prices[(p.ticker or "").upper()] = float(p.current_price)
+            prices[tk] = float(p.current_price)
+        if not is_cash_position(tk, meta) and float(p.quantity or 0) > 0:
+            values[tk] = values.get(tk, 0.0) + position_value_ils(p)
+            ccys[tk] = price_currency(p.market, meta)
     tickers = {s["id"]: {t.upper() for t in blend.claimable_tickers(s["spec"])} for s in sleeves}
-    return rules_spec([{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode,
-                        "level": (float(guard_pct) if guard_pct is not None and r.rule_type == "drawdown_guard"
-                                  else r.level),
-                        "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows],
-                      prices=prices, sleeve_tickers=tickers)
+    in_sleeve = set().union(*tickers.values()) if tickers else set()
+    dicts = [{"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "mode": r.mode,
+              "level": (float(guard_pct) if guard_pct is not None and r.rule_type == "drawdown_guard"
+                        else r.level),
+              "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows]
+    # PR 123 (D85): every HELD ticker outside the sleeves that carries a sale rule
+    # becomes its own column in the replay; every other rule says why it is not
+    # in the goal model.
+    held = {(d["ticker"] or "").upper() for d in dicts
+            if d["rule_type"] in REPLAYED_RULE_TYPES and (d["ticker"] or "").upper() in values
+            and (d["ticker"] or "").upper() not in in_sleeve}
+    unmodelled = {}
+    for d in dicts:
+        tk, rt = (d["ticker"] or "").upper(), d["rule_type"]
+        if rt == "drawdown_guard":
+            continue
+        if rt not in REPLAYED_RULE_TYPES:
+            unmodelled[d["id"]] = "an alert or a weight rule, not a sale the goal model replays"
+        elif tk not in values and tk not in in_sleeve:
+            unmodelled[d["id"]] = f"you don't hold {tk}"
+        elif rt == "profit_protect" and not (d.get("params") or {}).get("activated"):
+            unmodelled[d["id"]] = "not active yet: it starts protecting once the gain reaches its trigger"
+    out = rules_spec(dicts, prices=prices, sleeve_tickers=tickers, holding_tickers=held)
+    out.update({"_rule_rows": dicts, "_prices": prices, "_sleeve_tickers": tickers,
+                "unmodelled": unmodelled,
+                "holding_weights": {tk: values[tk] / nav for tk in held if nav},
+                "holding_currency": {tk: ccys.get(tk) for tk in held}})
+    return out
+
+
+#: PR 123: the rule types the goal replay acts on (sales); the guard is the book's.
+REPLAYED_RULE_TYPES = ("stop_loss", "trailing_stop", "profit_protect", "take_profit")
+
+
+async def _holding_series(rules_ctx: dict | None, series: dict) -> dict:
+    """PR 123: price history for the held tickers with rules that the solve's own
+    fetch (sleeves + class proxies) did not bring."""
+    from app.core.offload import offload
+    want = [tk for tk in (rules_ctx or {}).get("holding_weights") or {} if tk not in series]
+    if not want:
+        return {}
+    got, _no, _unavail = await offload(fi._fetch_blocking, want)
+    return got
+
+
+def _attach_holding_returns(rules_ctx: dict | None, prep: dict, series: dict) -> None:
+    """PR 123: each held ticker's ILS returns on the solve's calendar; a ticker
+    that cannot be priced on it is reported, not guessed."""
+    if not rules_ctx or not rules_ctx.get("holding_weights"):
+        return
+    rets, short = {}, []
+    for tk in rules_ctx["holding_weights"]:
+        r = fi.ticker_ils(prep, series.get(tk), (rules_ctx.get("holding_currency") or {}).get(tk))
+        if r is None:
+            short.append(tk)
+        else:
+            rets[tk] = r
+    rules_ctx["holding_returns"] = rets
+    for d in rules_ctx.get("_rule_rows") or []:
+        if (d["ticker"] or "").upper() in short:
+            rules_ctx.setdefault("unmodelled", {})[d["id"]] = "too little price history to replay it"
+    for tk in short:
+        (rules_ctx.get("holdings") or {}).pop(tk, None)
 
 
 async def _goal_context(session, user, rows, *, roi_pct: float | None = None,
@@ -1727,7 +1902,29 @@ def settings_of(plan) -> dict:
 # protection" paused five stops and moved the guard, and the Plan tab went on
 # showing the verdict solved before it -- 0.7%, "cost your goal 28 pts", the same
 # card -- so Eran saw "nothing happened". A verdict is about the rules it measured.
-FP_RULE_TYPES = ("profit_protect", "trailing_stop", "stop_loss", "drawdown_guard")
+async def rule_impacts(session, user) -> dict:
+    """PR 123 (D85): the latest goal verdict's per-rule effects, for the Rules tab.
+
+    ``fresh`` is False when the rules changed since that solve (the numbers are
+    then about the old set and the screen says so).
+    """
+    try:
+        row = await latest(session, user)
+        v = (row.detail if row is not None and isinstance(row.detail, dict) else {})
+    except Exception:  # noqa: BLE001 -- the Rules tab renders without impacts
+        return {}
+    pr = ((v.get("rules") or {}).get("per_rule") or {})
+    if not pr.get("rules"):
+        return {}
+    try:
+        fp_now = await rules_fingerprint(session, user)
+    except Exception:  # noqa: BLE001
+        fp_now = None
+    return {"rules": pr["rules"], "computed_at": v.get("computed_at"), "base_goal_pct": pr.get("base_goal_pct"),
+            "fresh": not rules_changed_since(v, fp_now)}
+
+
+FP_RULE_TYPES = ("profit_protect", "trailing_stop", "stop_loss", "drawdown_guard", "take_profit")
 
 
 async def rules_fingerprint(session, user) -> str:

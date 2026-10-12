@@ -111,6 +111,7 @@
   .muted{color:var(--mut);font-size:13px}.ok{color:var(--green)}.warn{color:var(--amber)}.bad{color:var(--red)}.center{text-align:center}.hide{display:none}
   .empty{padding:30px 18px;text-align:center}.empty .ico{font-size:34px}
   .link{color:#6ea8fe;cursor:pointer;font-size:12px}
+  .rimpact{font-size:12px;margin-top:4px}
   /* PR 117 (L12): keyboard users see where they are. */
   :focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:6px}
   [role="button"]{cursor:pointer}
@@ -1549,7 +1550,7 @@ async function loadRules(){
   }catch(e){}
   ruleModeHint();
   try{const r=await(await fetch("/api/v1/rules")).json();
-    RULES=r.rules||[];
+    RULES=r.rules||[]; RULE_IMPACT=r.goal_impact||null;
     renderRules();
   }catch(e){$("rulesList").innerHTML=`<div class="card bad">${e}</div>`;}
   loadRuleSuggestions();
@@ -1639,6 +1640,18 @@ function ruleFilter(f){
   RULE_FILTER=f;
   document.querySelectorAll('#ruleFilters .chip').forEach(b=>b.classList.toggle('on',b.dataset.f===f));
   renderRules();
+}
+// PR 123 (D85): what this rule does to the chance of reaching your goal.
+let RULE_IMPACT=null;
+function _ruleImpact(x){
+  const g=x.goal_impact; if(!g||!x.active) return "";
+  const stale=RULE_IMPACT&&RULE_IMPACT.fresh===false?' <span class="muted">(rules changed since; updates tonight)</span>':"";
+  if(g.modelled===false) return `<div class="rimpact muted">Goal impact: not in the goal model (${esc(g.reason||"")})</div>`;
+  if(g.covered) return `<div class="rimpact muted">Goal impact: none, another rule on this holding acts first${stale}</div>`;
+  const pts=Number(g.goal_pts||0), hw=g.halve_with_pct, ho=g.halve_without_pct;
+  const sign=pts>0?"+":"", cls=pts<=-1?"warn":pts>=1?"ok":"muted";
+  const halv=(hw!=null&&ho!=null&&Math.abs(ho-hw)>=0.1)?` · chance the book halves ${ho}% without it, ${hw}% with it`:"";
+  return `<div class="rimpact"><span class="${cls}">Goal chance ${Math.abs(pts)<0.1?"no measurable effect":`${sign}${pts} pts`}</span><span class="muted">${halv}</span>${stale}</div>`;
 }
 function renderRules(){
   const box=$("rulesList"); if(!box) return;
@@ -1730,7 +1743,7 @@ function renderRules(){
       const acts=x._dupe
         ? `<span class="racts"><button class="del" title="Delete duplicate" onclick="deleteRule('${x.id}')">✕</button></span>`
         : `<span class="racts">${x.unit!=="signal"?`<button class="del" title="Edit rule" onclick="editRule('${x.id}')">✏️</button>`:""}<button class="del" title="${x.active?'Pause':'Resume'}" onclick="toggleRule('${x.id}')">${x.active?'⏸':'▶'}</button><button class="del" title="Delete rule" onclick="deleteRule('${x.id}')">✕</button></span>`;
-      return `<div class="rrow${x.triggered?' trig':''}"><div class="rtop">${badge}${lvl}</div><div class="rbot">${mid}${acts}</div></div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
+      return `<div class="rrow${x.triggered?' trig':''}"><div class="rtop">${badge}${lvl}</div><div class="rbot">${mid}${acts}</div>${_ruleImpact(x)}</div><div class="redit" id="redit_${x.id}" style="display:none"></div>`;
     }).join("");
     return `<div class="gcard${gHasTrig(tk)?' hastrig':''}"><div class="ghead"><span class="gtk">${tk==="__BOOK__"?"Whole book":tk}</span><span class="gsub">${nowTxt} · ${rs.length} rule${rs.length>1?'s':''}</span></div>${rows}</div>`;
   }).join("");
@@ -2992,6 +3005,15 @@ async function loadPlanExtras(){
 
 // What the goal model still simulates: the stops and take-profits on the
 // sleeves' tickers, and the guard. Named, so "I paused everything" can be checked.
+// PR 123 (D85): which rules the growth cost comes from, measured one at a time.
+function _costliest(rb,rules){
+  const pr=((rb||{}).per_rule||{}).rules||{}, byId={}; (rules||[]).forEach(x=>byId[String(x.id)]=x);
+  const top=Object.entries(pr).filter(([id,g])=>g&&g.modelled!==false&&!g.covered&&Number(g.goal_pts)<=-0.5&&byId[id])
+    .sort((a,b)=>a[1].goal_pts-b[1].goal_pts).slice(0,3);
+  if(!top.length) return "";
+  const name=x=>x.rule_type==="drawdown_guard"?`the drawdown guard (${x.level}%)`:`${x.ticker} ${(_STOP_TYPES[x.rule_type]||x.rule_type).toLowerCase()}`;
+  return ` Most of it comes from ${top.map(([id,g])=>`${name(byId[id])} (${g.goal_pts} pts)`).join(", ")}; every rule's effect is on <a href="#" onclick="show('hold');holdSeg('rules');return false">Holdings › Rules</a>.`;
+}
 function _stillArmed(rules){
   const tick={}; ((MYSLEEVES&&MYSLEEVES.sleeves)||[]).forEach(x=>(x.tickers||[]).forEach(t=>tick[t.toUpperCase()]=1));
   const on=(rules||[]).filter(x=>x.active&&((_STOP_TYPES[x.rule_type]&&tick[String(x.ticker).toUpperCase()])||x.rule_type==="drawdown_guard"));
@@ -3323,7 +3345,7 @@ function goalSummary(p,f,rules){
           :`expected ~${Math.round(p.portfolio_expected_roi_pct)}%/yr — not measured: the instrument table prices a leveraged fund as if held buy-and-hold`,
           p.assumption_basis&&p.assumption_basis!=="static"?"":"warn"):""}</div>
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
-      ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${
+      ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${_costliest(rb,rules)}${
           rb.tuning&&!rb.tuning.material?` Of the ${rb.tuning.tried||(rb.tuning.candidates||[]).length} protection setups measured, this is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
           :" After a stop fires, the holding sits out until its price falls back below the sale price."}${_stillArmed(rules)}</div>`:""}`;
 }

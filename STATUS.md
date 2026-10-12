@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (PR 122 hotfix; PR 118a parked locally). Last product PR: **PR 122**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (PR 122 hotfix, PR 123 rule impacts; PR 118a parked locally). Last product PR: **PR 123**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,58 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 123 — every rule shows its effect on your goal (D85, closes P3)
+
+**Owner, 2026-10-12:**
+- "it says to me that the rules are harming my chances but I have 30 rules... I need to know which one of them need my
+  attention";
+- "why does it not run on all the rules?";
+- "you need to add to the rules cards the impact on the chances of meeting the goals".
+
+**What was true.** The goal replay modelled the book as sleeves + one core basket + cash. A stop on CVX, JPM, GOOGL,
+UGA, USO, VTI, VXUS or BND had no column to act on, so 22 of the 30 rules were "not simulated", and the card could only
+say "your rules cost growth".
+
+**What.**
+- **Held tickers are modelled.** `_rules_context` finds every held ticker outside the sleeves that carries a sale rule
+  (stop, trailing stop, activated profit-protect, take-profit). `rules_spec(holding_tickers=)` builds its spec,
+  `fi.ticker_ils` prices it on the solve's calendar (carried forward, ≥90% coverage, ILS/USD only), and `goal_solve`
+  gives it a column. The column is carved out of the core's share and re-centred on the core's drift, so it asks what
+  the rule does, not whether the stock beats the market. The Edit-rules preview models them too.
+- **Per-rule effect.** `_per_rule_impact`: each rule is switched off alone, on 500 paths, against the same paths with
+  every rule on. It records:
+  - `goal_pts` (negative = the rule costs the goal);
+  - the halving chance with and without the rule;
+  - `covered` when another rule on the same holding acts first;
+  - for rules not replayed, `modelled: false` and a reason (an alert or weight rule, not held, profit-protect not active
+    yet, too little history).
+- **Retune (D82):** it now also searches the held tickers' take-profits and exits.
+- **Rules tab:** `GET /rules` adds `goal_impact` per rule, plus whether the solve predates a rule change. Each rule card
+  reads "Goal chance −3.4 pts · chance the book halves 6% without it, 1% with it", or why it is not modelled.
+- **Plan goal card:** "Most of it comes from the drawdown guard (−10.2 pts), …; every rule's effect is on Holdings ›
+  Rules."
+- **Rules fingerprint:** it now counts take-profits too, so toggling one marks the verdict stale.
+- `sw.js` → `iw-v58`.
+
+**Tests (7).** `tests/test_every_rule_shows_its_goal_impact.py`:
+- `ticker_ils` alignment, FX and coverage;
+- `rules_spec` models a held ticker;
+- every rule gets an effect or a reason (covered, alert, guard);
+- the light preview models holdings but skips the per-rule pass;
+- the fingerprint counts take-profits;
+- GET /rules carries `goal_impact`;
+- the retune can pause a held ticker's take-profit.
+
+**Gate.** Local SQLite 2373 and Postgres 2373 passed; ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr123-rule-goal-impact.ps1 -Sha <sha>` (after one re-solve).
+
+**QA (Pixel).**
+1. Holdings › Rules: each rule card has a "Goal chance …" line or a "not in the goal model (reason)" line.
+2. The Plan goal card names the rules the cost comes from.
+
+---
+
 ## PR 122 — an ignored goal card stays ignored (hotfix)
 
 **Owner, 2026-10-12:** "this recommendation card keep coming back to me after I click on the ignore button (it should
@@ -79,7 +131,7 @@ hidden for 7 days.
 
 **Gate.** Local SQLite 2366 and Postgres 2366 passed; ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr122-goal-cards-stay-ignored.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr122-goal-cards-stay-ignored.ps1 -Sha <sha>`. **Ran against `35b7452` (GitHub PR #24 merge): 5 PASS, 0 FAIL** (Today's target card is `rec_goal_target_book`).
 
 ---
 
