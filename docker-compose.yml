@@ -19,7 +19,6 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql+asyncpg://investwise:investwise@db:5432/investwise
-      FRONTEND_ORIGIN: http://localhost:5173
       AUTO_CREATE_TABLES: "true"
     ports:
       - "8000:8000"

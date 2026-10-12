@@ -15,7 +15,7 @@
   and `sw.js`. Before this, installed clients stayed on old JS across several deploys.
 - `/dashboard` is a **redirect to `/app`**. The old "Advanced" dashboard was consolidated in Phase G and no longer exists.
 - `/` returns service JSON. `/login` is a small server-rendered page (`app/api/routes/google_auth.py`).
-- `frontend/` at the repo root holds only a stale `package-lock.json` from an abandoned React/Vite scaffold. It is not the frontend.
+- There is no `frontend/` directory: a stale `package-lock.json` from an abandoned React/Vite scaffold was removed (W0-5, 2026-10-12).
 
 ## 2. Auth from the browser
 

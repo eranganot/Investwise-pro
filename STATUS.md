@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (plan v3 Wave E: PR 121, 121.1, 116, 117). Last product PR: **PR 117**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (plan v3: Wave E complete; W0-5). Last product PR: **PR 117**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,33 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## W0-5 — remove what nothing uses (L2)
+
+**Owner, 2026-10-12:** "yes, you can delete them".
+
+**What.**
+- `git rm investwise.db` (a Phase-2 SQLite snapshot with no `alembic_version`) and `frontend/package-lock.json` (an abandoned
+  React/Vite scaffold).
+- The CORS default changes from `http://localhost:5173` to empty, and the middleware is added only when `FRONTEND_ORIGIN` is
+  set. The app is same-origin (`/app`).
+- `docker-compose.yml` drops the ghost origin; `.env.example` documents the empty default.
+
+**Not changed in production yet.** Railway still sets `FRONTEND_ORIGIN=http://localhost:5173`, so production keeps allowing
+that origin until the variable goes. Removing it is one owner step after this merges: delete the `FRONTEND_ORIGIN` line from
+`.railway/railway.ts` (Claude can do it), then `railway config plan` shows "1 to change" (the variable deleted) and
+`railway config apply` removes it.
+
+**Tests (3).** `tests/test_no_ghost_files_or_origins.py`:
+- the files are not tracked;
+- the default is empty;
+- a ghost origin gets no CORS headers when none is configured.
+
+**Gate.** Local SQLite 2364 and Postgres 2364 passed; ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-w0-5-remove-unused.ps1 -Sha <sha>`.
+
+---
+
 ## PR 117 — keyboard and focus (L12, D84)
 
 **Plan v3, Wave E, last PR.** D-i: both looks were built and shown, plus today's accidental hybrid. The owner, 2026-10-12:
@@ -79,7 +106,9 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `.seg{` appears once, with the blue selection;
 - there is a focus ring, the key handler covers Enter/Space/Escape, and the sheet returns focus.
 
-**Smoke.** `scripts/smoke/smoke-pr117-keyboard-focus.ps1 -Sha <sha>`.
+**Gate.** Local SQLite 2361 passed. The local Postgres run was stopped by the host for low memory; the owner accepted CI's test-postgres for this PR (green).
+
+**Smoke.** `scripts/smoke/smoke-pr117-keyboard-focus.ps1 -Sha <sha>`. **Ran against `acc625f` (GitHub PR #22 merge): 7 PASS, 0 FAIL. Wave E complete.**
 
 **QA (Pixel + desktop).**
 1. The Pixel: Holdings › Positions/Rules, Plan › Goal/My mix/Explore and a holding's chart range all show the blue look-A

@@ -58,7 +58,9 @@ class Settings(BaseSettings):
     )
 
     # Frontend / CORS
-    frontend_origin: str = "http://localhost:5173"
+    # W0-5: empty = no cross-origin access. The app is served from its own
+    # origin (/app); set this only for a separately hosted frontend.
+    frontend_origin: str = ""
 
     # SuperAdmin
     superadmin_name: str = "Eran Ganot"
