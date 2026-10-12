@@ -474,6 +474,41 @@ def basket_ils(prep: dict, weights: dict[str, float]) -> np.ndarray | None:
     return (1.0 + _basket_returns(px, w)) * (1.0 + prep["fx_r"]) - 1.0
 
 
+def ticker_ils(prep: dict, rows: list[tuple[str, float]] | None, currency: str | None,
+               min_coverage: float = 0.9) -> np.ndarray | None:
+    """PR 123: ONE held ticker's daily ILS returns on `prep`'s calendar, or None.
+
+    For the rules replay only: a holding with a rule gets its own column so its
+    stop can act on its own path. Prices are carried forward over a missing
+    session; a ticker priced on fewer than `min_coverage` of the calendar's
+    days, or in a currency other than ILS/USD, is not modelled (said so, never
+    guessed).
+    """
+    ccy = (currency or "USD").upper()
+    if ccy == "ILA":
+        ccy = "ILS"
+    if not rows or ccy not in ("ILS", "USD"):
+        return None
+    by_day = {str(d)[:10]: float(px) for d, px in rows if px}
+    dates = [str(d)[:10] for d in prep["dates"]]
+    hits = sum(1 for d in dates if d in by_day)
+    if not dates or hits / len(dates) < min_coverage:
+        return None
+    px, last = [], None
+    for d in dates:
+        last = by_day.get(d, last)
+        px.append(last)
+    first = next((i for i, v in enumerate(px) if v is not None), None)
+    if first is None:
+        return None
+    px = [px[first] if v is None else v for v in px]
+    a = np.asarray(px, dtype=float)
+    r = a[1:] / a[:-1] - 1.0
+    if ccy == "USD":
+        r = (1.0 + r) * (1.0 + prep["fx_r"]) - 1.0
+    return r
+
+
 def as_arrays(payload: dict) -> tuple[list[str], np.ndarray, np.ndarray]:
     """(asset ids, mu, cov) from a payload -- what `frontier.optimize` takes."""
     return ([a["id"] for a in payload["assets"]],

@@ -24,6 +24,7 @@
 > **Closed in PR 116:** L3 (Sentry deleted, D81), L4 (cash target naming), L5 (stale docstrings + the dead pytest filter), L6 (copy names real places), L9 (`display_money` / `db_money`), L14 (commodity buys use the core's funds, D80).
 > **Closed in PR 117:** L12 (one `.seg`, D84; theme variables defined; focus ring; 17 click targets keyboard-reachable; Escape, Enter/Space and the sheet's focus handling).
 > **Closed in W0-5:** L2 (`investwise.db` and `frontend/` removed; CORS is off unless `FRONTEND_ORIGIN` is set). Owner follow-up: production still sets `FRONTEND_ORIGIN=http://localhost:5173`; delete its line from `.railway/railway.ts`, then `railway config apply` removes it.
+> **Closed in PR 123:** P3 (held stocks with sale rules are simulated as their own columns; every rule shows its goal impact, D85).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -47,7 +48,6 @@
 | # | Item | Source | Pri |
 |---|---|---|---|
 | P1 | **Review the goal definition.** Should deposits or extra years raise the "30% on every shekel" target? Plan v2.2 promised this backlog entry but it never reached STATUS. | plan v2.2, PR 99 "Decided 2026-10-05" | ? |
-| P3 | The goal model doesn't simulate stops on BND/GOOGL/VTI/UGA/USO (only sleeve tickers + the guard). It is disclosed in the UI but not modelled. | STATUS PR 104b/104c.1 | P2 |
 | P5 | Broker integration (real orders). | `archive/plans/BROKER_INTEGRATION_PLAN.md` | Parked (D41) |
 | P6 | Israeli index funds on TASE. | Provider can't price numeric symbols | Parked |
 | P7 | B1: what `/plan` shows for volatility (store in-market vol nightly; match windows). | STATUS backlog B1 | Parked |

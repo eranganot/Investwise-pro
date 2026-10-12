@@ -186,6 +186,10 @@
   on; a "best trend right now" commodity pick is parked in the backlog as future work. → PR 116
 - **D81 · 2026-10-11 · Delete the Sentry block** (D-h): errors already surface through Railway logs, job status (PR 107) and smokes;
   Sentry was wired but never installed. → PR 116
+- **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
+  add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
+  column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model
+  cannot replay says why. Closes BACKLOG P3. → PR 123
 - **D84 · 2026-10-12 · Segmented controls use look A with a blue selection** (D-i, after the screenshots): a full-width
   rounded track, big tap targets, and the selected segment in solid blue. Screenshots: `docs/design/seg-looks-2026-10-12.png`
   and `seg-look-chosen-2026-10-12.png`. → PR 117
