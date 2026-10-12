@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (plan v3: Wave E complete; W0-5). Last product PR: **PR 117**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-12 by Claude (PR 122 hotfix; PR 118a parked locally). Last product PR: **PR 122**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 122 — an ignored goal card stays ignored (hotfix)
+
+**Owner, 2026-10-12:** "this recommendation card keep coming back to me after I click on the ignore button (it should
+disappear for one week)". The card was "Set a target this book can reach: 4.1%/yr".
+
+**Cause.** The seven goal/frontier cards built their id from the stored solve's row id (`rec_goal_target_{row.id}`).
+Every re-solve writes a new row:
+- the nightly solve;
+- a thresholds save;
+- a refresh (several today: deploys and the PR 121 checks).
+
+So the same card returned under a new id, and Ignore (keyed by id) no longer matched it.
+
+**Fix.** Stable ids per card kind: `rec_frontier_book`, `rec_goal_{core,protect,mix,deposit,target,deadline}_book`. A
+mute now lasts its window (Ignore 7 days by default). A severity rise still un-mutes it (`moved_on`). The
+`rec_goal_protect_` prefix the Plan tab reads is unchanged.
+
+**Tests.** `tests/test_an_ignored_goal_card_stays_ignored.py`:
+- dismiss, re-solve (a new row), and the card stays hidden. This fails on `main`, where it came back as
+  `rec_goal_target_<new row id>`;
+- no card id carries `{row.id}`.
+
+**After deploy.** Cards ignored before this fix used the old ids, so Ignore the target card once more; it then stays
+hidden for 7 days.
+
+**Gate.** Local SQLite 2366 and Postgres 2366 passed; ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr122-goal-cards-stay-ignored.ps1 -Sha <sha>`.
+
+---
+
 ## W0-5 — remove what nothing uses (L2)
 
 **Owner, 2026-10-12:** "yes, you can delete them".
@@ -75,7 +106,7 @@ that origin until the variable goes. Removing it is one owner step after this me
 
 **Gate.** Local SQLite 2364 and Postgres 2364 passed; ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-w0-5-remove-unused.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-w0-5-remove-unused.ps1 -Sha <sha>`. **Ran against `64128a8` (GitHub PR #23 merge): 4 PASS, 0 FAIL, 1 SKIP** (CORS: Railway still sets `FRONTEND_ORIGIN`).
 
 ---
 
