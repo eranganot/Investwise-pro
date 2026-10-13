@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (PR 118a, PR 124). Last product PR: **PR 124**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (plan v3 complete: PR 118b). Last product PR: **PR 118b**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,27 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 118b — thin intake routes (L7; Wave F, pure moves; plan v3 complete)
+
+**What.** The business logic leaves `routes/intake.py` (953 → 635 lines) unchanged, by the same AST-driven move as 118a:
+- `get_portfolio` → `services/portfolio_view.holdings`;
+- `add_holding` → `intake_service.add_by_amount`;
+- `_row_to_position` / `_persist` → `intake_service.row_to_position` / `persist`;
+- `_last_buy` → `ledger_service.last_buy`;
+- `_orders_payload` → `standing_order_service.orders_payload`.
+
+`guarded_quote` is now a module name in `intake_service`, so the two tests that stand in for the quote target it there.
+`PERF_RANGES` stays in the route.
+
+**Gate.** Chunked local SQLite + Postgres:
+- 2 real failures: `test_the_conversion_and_the_axis` read the NAV code's source in the route. It now reads `portfolio_view.py`.
+- the known environment-dependent dismissed-cards test.
+
+**Smoke.** `scripts/smoke/smoke-pr118b-thin-intake-routes.ps1 -Sha <sha>`. `/portfolio`, its rows and
+`/portfolio/standing-orders` return exactly the keys recorded from production before the move (`8e19cdd`).
+
+---
+
 ## PR 124 — a rule card says what it would do to your goal (D86)
 
 **Owner, 2026-10-13:** "I would expect that the information on the goals chances would be also written in the
@@ -82,7 +103,11 @@ Trend-Filtered Semiconductors".
 - one real failure: the new read-only POST had to join the COMPUTE_ONLY list in `test_the_doors_are_shut`. Fixed.
 - the environment-dependent `test_dismissed_recommendations_are_counted_and_restorable`, which also fails on `main` locally.
 
-**Smoke.** `scripts/smoke/smoke-pr124-rule-card-goal-impact.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr124-rule-card-goal-impact.ps1 -Sha <sha>`. **Ran against `8e19cdd` (GitHub PR #28 merge): 6 PASS, 0 FAIL.**
+- Today has 3 rule-proposing cards: QQQ uptrend, UGA uptrend, and the SOXL discipline card.
+- UGA's proposed 17% trailing stop measures 0.0 pts. UGA's existing 15% trailing stop and stop-loss fire first, so the
+  card says the new rule adds nothing.
+- The SOXL entry signal is named as not modelled.
 
 **QA (Pixel).** Today: "UGA is in an uptrend" and the SOXL discipline card each show a "Goal impact" line within a few
 seconds.

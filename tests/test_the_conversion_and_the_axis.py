@@ -61,8 +61,9 @@ def test_the_portfolio_route_reads_the_status_not_just_the_rate():
     alternative is standing up a provider outage against a live route, and this
     is the fact that actually matters.
     """
-    src = (APP / "api" / "routes" / "intake.py").read_text(encoding="utf-8")
-    body = src[src.index("async def get_portfolio"):src.index("class AddHoldingRequest")]
+    # PR 118b: the NAV builder moved from routes/intake.get_portfolio, unchanged.
+    src = (APP / "services" / "portfolio_view.py").read_text(encoding="utf-8")
+    body = src[src.index("async def holdings"):]
 
     assert "fx_rate_with_status(" in body, (
         "the NAV route is reading the bare rate again; an unresolved conversion "
@@ -79,7 +80,7 @@ def test_nav_reports_which_part_rests_on_a_conversion_that_failed():
     purpose: a stale rate is real and a few hours old; an unresolved one is not
     a rate at all, and the two need different responses.
     """
-    src = (APP / "api" / "routes" / "intake.py").read_text(encoding="utf-8")
+    src = (APP / "services" / "portfolio_view.py").read_text(encoding="utf-8")
     for key in ("fx_unresolved_positions", "fx_unresolved_value_ils",
                 "fx_stale_positions", '"fx_status": fx_status'):
         assert key in src, f"the portfolio payload no longer carries {key}"

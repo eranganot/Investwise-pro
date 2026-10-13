@@ -173,3 +173,21 @@ async def recent(session, user, limit: int = 50) -> list[dict]:
         "value_ils": float(r.value_ils or 0), "tax_ils": float(r.tax_ils or 0),
         "source": r.source, "note": r.note,
     } for r in rows]
+
+
+def last_buy(buys, p, price, _td) -> dict | None:
+    """The last priced buy of `p` since the position was (re)opened (PR 118b: from routes/intake)."""
+    tk = (p.ticker or "").upper()
+    opened = p.created_at
+    for t, px, when in buys:
+        if (t or "").upper() != tk or when is None:
+            continue
+        if opened is not None:
+            o = opened if opened.tzinfo or not when.tzinfo else opened.replace(tzinfo=when.tzinfo)
+            w = when if when.tzinfo or not o.tzinfo else when.replace(tzinfo=o.tzinfo)
+            if w < o - _td(seconds=60):
+                return None
+        px = float(px)
+        return {"price": round(px, 4), "at": when.isoformat(),
+                "change_pct": (round((price / px - 1) * 100, 2) if price and px else None)}
+    return None

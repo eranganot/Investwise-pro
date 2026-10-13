@@ -125,7 +125,7 @@ async def test_a_slow_quote_does_not_stall_every_other_request():
     PR 112: raced through POST /portfolio/add (Holdings > add by amount), the
     live route that quotes; the legacy GET /market/quote it used is deleted.
     """
-    import app.api.routes.intake as intake
+    import app.services.intake_service as intake
     import app.main as m
 
     original = intake.guarded_quote

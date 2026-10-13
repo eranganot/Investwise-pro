@@ -252,3 +252,13 @@ def run_standing_orders_blocking() -> dict:
         return {"users": users, "credited": credited, "pushes": sent}
 
     return asyncio.run(_run())
+
+
+# PR 118b: the standing-orders view (was routes/intake._orders_payload).
+async def orders_payload(session: AsyncSession, user: User) -> dict:
+    orders = await list_orders(session, user)
+    return {"orders": [to_dict(o) for o in orders],
+            "monthly_total_ils": await monthly_total(session, user),
+            "today": local_today().isoformat(),
+            "note": ("On the day, the amount is added to your cash and recorded as a "
+                     "deposit. No money is moved: this records the transfer your bank makes.")}
