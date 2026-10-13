@@ -159,6 +159,91 @@ def _fetch(tickers: list[str],
     return series, sorted(no_data + unavailable)
 
 
+# --- PR 128: the long-history test --------------------------------------------
+#
+# Gate (plan section 3): a strategy designed with hindsight, or with many free
+# choices, must not lose to its base over years nobody designed against. The
+# ten-year window starts in late 2016; 2000-2016 holds the dot-com crash and
+# 2008. Leveraged funds that did not exist yet are rebuilt from their index
+# (`strategy_backtest.SYNTHETIC`, calibrated on the overlap), cash from the
+# T-bill yield.
+LONG_START = "2000-01-01"
+LONG_END = "2016-10-01"
+
+
+def _fetch_long(tickers: list[str]) -> tuple[dict, list[str]]:
+    from app.providers.registry import guarded_long_history
+
+    out, missing = {}, []
+    for tk in tickers:
+        rows: list = []
+        for attempt in range(FETCH_RETRIES):
+            try:
+                rows = guarded_long_history(tk, LONG_START, adjusted=(tk != bt.RATE_TICKER))
+                break
+            except (RateLimitedError, CircuitOpenError):
+                if attempt < FETCH_RETRIES - 1:
+                    _sleep(FETCH_BACKOFF_SEC * (attempt + 1))
+            except Exception:  # noqa: BLE001
+                break
+        if len(rows) >= 3:
+            out[tk] = rows
+        else:
+            missing.append(tk)
+    return out, missing
+
+
+def long_history(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
+    """The spec over 2000-2016, with leveraged funds and cash rebuilt."""
+    bench_tk = benchmark_ticker or get_settings().benchmark_ticker
+    need = set(bt.tickers_needed(spec)) | set(bt.tickers_needed(bt.own_hold_spec(spec)))
+    real = {bench_tk, bt.RATE_TICKER}
+    for tk in need:
+        if tk in bt.SYNTHETIC:
+            real.add(bt.SYNTHETIC[tk][0])
+        elif tk not in bt.CASH_LIKE:
+            real.add(tk)
+    got, missing = _fetch_long(sorted(real))
+    if bt.RATE_TICKER in missing or bench_tk in missing:
+        return {"ok": False, "reason": bt.MISSING_TICKER,
+                "detail": f"no long history for {', '.join(sorted(missing))}"}
+    rate = got[bt.RATE_TICKER]
+    series, rebuilt = {}, []
+    for tk in need:
+        if tk in bt.SYNTHETIC:
+            under = got.get(bt.SYNTHETIC[tk][0])
+            if under:
+                series[tk] = bt.synthetic_leveraged(under, bt.SYNTHETIC[tk][1], rate)
+                rebuilt.append(f"{tk}={bt.SYNTHETIC[tk][1]}x{bt.SYNTHETIC[tk][0]}")
+        elif tk in bt.CASH_LIKE:
+            series[tk] = bt.synthetic_cash(rate)
+            rebuilt.append(f"{tk}=T-bill")
+        elif tk in got:
+            series[tk] = got[tk]
+    series = {tk: [r for r in rows if r[0] < LONG_END] for tk, rows in series.items()}
+    bench = [r for r in got[bench_tk] if r[0] < LONG_END]
+    r = bt.run(series, spec, benchmark=bench)
+    if not r.get("ok"):
+        return r
+    own = bt.run(series, bt.own_hold_spec(spec), benchmark=bench)
+    against = r.get("base_cagr_pct")
+    label = "its base"
+    if against is None and own.get("ok"):
+        against, label = own["cagr_pct"], "holding its own instruments"
+    return {"ok": True, "start": r["start"], "end": r["end"], "years": r["years"],
+            "cagr_pct": r["cagr_pct"], "max_drawdown_pct": r["max_drawdown_pct"],
+            "base_cagr_pct": r.get("base_cagr_pct"),
+            "own_hold_cagr_pct": own.get("cagr_pct") if own.get("ok") else None,
+            "benchmark_cagr_pct": r.get("benchmark_cagr_pct"),
+            "selection_edge_pct": r.get("selection_edge_pct"),
+            "compared_with": label,
+            "passes": (against is not None and r["cagr_pct"] >= against),
+            "rebuilt": sorted(rebuilt),
+            "assumptions": (f"leveraged funds rebuilt as L x the daily index move, less "
+                            f"{bt.SYNTH_FEE * 100:.2f}%/yr fee and (L-1) x (T-bill + "
+                            f"{bt.SYNTH_SPREAD * 100:.2f}%) borrowing")}
+
+
 def return_basis_of(basis: dict) -> dict:
     """`return_basis` for a measurement: total return only if every ticker in it
     was dividend-adjusted. One price-only ticker makes the whole run price-only,
@@ -210,6 +295,13 @@ def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
             series, spec, split_date=OOS_SPLIT, benchmark=bench)
     except Exception:  # noqa: BLE001
         logger.warning("backtest: out-of-sample failed for %s", spec.get("id"), exc_info=False)
+    if spec.get("long_history"):
+        try:
+            robustness["long_history"] = long_history(spec, benchmark_ticker=bench_tk)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("backtest: long history failed for %s", spec.get("id"), exc_info=False)
+            robustness["long_history"] = {"ok": False, "reason": "ENGINE_ERROR",
+                                          "detail": str(e)[:200]}
     sweep_param = (spec.get("overlay") or {}).get("sweep_param")
     sweep_values = (spec.get("overlay") or {}).get("sweep_values")
     if sweep_param and sweep_values:

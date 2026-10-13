@@ -99,6 +99,36 @@ class YahooMarketDataProvider(MarketDataProvider):
         plain closes and say so rather than open the circuit."""
         return self._daily(ticker, days, adjusted=True)
 
+    def get_long_history(self, ticker: str, start: str = "2000-01-01", *,
+                         adjusted: bool = True) -> list[tuple[str, float]]:
+        """Daily bars from ``start``, asked for by DATE RANGE.
+
+        `_daily` stops at range=10y because range=max silently returns MONTHLY
+        bars. A period1/period2 request does not: measured 2026-10-13, SPY came
+        back as 6,734 daily sessions from 2000-01-03. PR 128's long-history test
+        needs 2000-2016 -- the dot-com crash and 2008 -- which no strategy here
+        was designed against.
+        """
+        sym = self.to_symbol(ticker)
+        p1 = int(datetime.fromisoformat(start).replace(tzinfo=timezone.utc).timestamp())
+        p2 = int(datetime.now(timezone.utc).timestamp())
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}"
+               f"?interval=1d&period1={p1}&period2={p2}")
+        data = json.loads(_http_text(url, timeout=20.0))
+        result = ((data.get("chart") or {}).get("result") or [])
+        if not result:
+            raise ValueError(f"no history for '{ticker}'")
+        ts = result[0].get("timestamp") or []
+        ind = result[0].get("indicators") or {}
+        closes = (((ind.get("adjclose") or [{}])[0].get("adjclose") or []) if adjusted
+                  else ((ind.get("quote") or [{}])[0].get("close") or []))
+        out = [(datetime.fromtimestamp(t, timezone.utc).date().isoformat(), float(c))
+               for t, c in zip(ts, closes) if c is not None]
+        # A monthly answer would pass as a long history; refuse it outright.
+        if len(out) >= 3 and len(out) / max(1.0, (ts[-1] - ts[0]) / 31_557_600) < 150:
+            raise ValueError(f"'{ticker}' came back at less than daily granularity")
+        return out
+
     def _daily(self, ticker: str, days: int, *, adjusted: bool) -> list[tuple[str, float]]:
         sym = self.to_symbol(ticker)
         # The ladder used to stop at "5y", so any caller asking for a decade got

@@ -205,6 +205,10 @@
 - **D91 · 2026-10-13 · A selection strategy is judged on its selection edge** (return minus an equal-weight hold of the
   same universe, on the same cadence), because its universe is today's list of survivors; a fundamentals rule is
   measured on a proxy fund and says `measured_by_proxy`; a backtest starts on the strategy's first live day. → PR 126
+- **D92 · 2026-10-13 · Leveraged strategies are also measured over 2000–2016, and the card shows that worst drop** (plan
+  gate, long-history test). Funds that did not exist are rebuilt as L × the daily index move less a 0.95%/yr fee and
+  (L−1) × (T-bill + 0.75%) borrowing, calibrated on 2011–2026. Trend Nasdaq's worst drop over that span is −85.5%
+  against the −62% its ten-year card showed: its "off" state is QQQ, which fell ~83% in 2000–2002. → PR 128
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

@@ -29,6 +29,8 @@ _QQQ_CORE = {"QQQ": 1.0}
 CATALOG: list[dict] = [
     {
         "id": "btm_trend_tqqq",
+        # PR 128 (D92): also measured over 2000-2016 with leveraged funds rebuilt.
+        "long_history": True,
         "name": "Trend-Filtered Leveraged Nasdaq",
         "risk": "Very high",
         "sleeve_pct": 20,
@@ -45,6 +47,8 @@ CATALOG: list[dict] = [
     },
     {
         "id": "btm_trend_soxl",
+        # PR 128 (D92): also measured over 2000-2016 with leveraged funds rebuilt.
+        "long_history": True,
         "name": "Trend-Filtered Semiconductors",
         "risk": "Very high",
         "sleeve_pct": 10,
@@ -59,6 +63,8 @@ CATALOG: list[dict] = [
     },
     {
         "id": "btm_vol_target_tqqq",
+        # PR 128 (D92): also measured over 2000-2016 with leveraged funds rebuilt.
+        "long_history": True,
         "name": "Volatility-Targeted Leverage",
         "risk": "High",
         "sleeve_pct": 25,
@@ -180,6 +186,8 @@ CATALOG: list[dict] = [
         # already falls through to `kind = "buy_hold"` and returns constant
         # weights, so this is measured by the same code path as everything else.
         "id": "btm_qqq_hold",
+        # PR 128 (D92): also measured over 2000-2016 with leveraged funds rebuilt.
+        "long_history": True,
         "name": "Hold the Nasdaq index",
         "risk": "Medium",
         "sleeve_pct": 30,
@@ -246,7 +254,7 @@ def risk_label(entry: dict, backtest: dict | None) -> str:
 
 def _spec(entry: dict) -> dict:
     """The engine only wants the mechanical parts; the prose stays behind."""
-    keys = ("id", "weights", "base", "risk_off", "overlay", "drift_band", "proxy")
+    keys = ("id", "weights", "base", "risk_off", "overlay", "drift_band", "proxy", "long_history")
     return {k: entry[k] for k in keys if k in entry}
 
 
