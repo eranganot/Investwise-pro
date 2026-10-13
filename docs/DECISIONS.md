@@ -209,6 +209,11 @@
   gate, long-history test). Funds that did not exist are rebuilt as L × the daily index move less a 0.95%/yr fee and
   (L−1) × (T-bill + 0.75%) borrowing, calibrated on 2011–2026. Trend Nasdaq's worst drop over that span is −85.5%
   against the −62% its ten-year card showed: its "off" state is QQQ, which fell ~83% in 2000–2002. → PR 128
+- **D93 · 2026-10-13 · Every Beat the Market candidate is also measured for what it does to the owner's whole book**
+  (owner: "add to the test also the 'make the whole book better' parameter", with option A). Recorded and shown beside
+  the gate, not a way to pass. Rule fixed before measuring: adding it at its suggested size, the core making room, must
+  raise return per unit of volatility by >= 0.02 and deepen the worst drop by <= 2 points over the ten-year window. The
+  ten failed candidates are kept as specs (`strategy_candidates`) so it can be measured for them too. → PR 129
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

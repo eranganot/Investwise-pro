@@ -1,5 +1,5 @@
 /* InvestWise PWA service worker */
-const VERSION = 'iw-v62';
+const VERSION = 'iw-v63';
 const SHELL_CACHE = `${VERSION}-shell`;
 const RUNTIME_CACHE = `${VERSION}-runtime`;
 

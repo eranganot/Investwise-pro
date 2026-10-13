@@ -3499,6 +3499,7 @@ async function loadStrategies(){
       <div style="display:flex;justify-content:space-between"><span class="nm">${mine?`<span class="stmine">✓ ${isSleeve?"A SLEEVE OF YOURS":"YOUR CORE"}</span> `:""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
       ${isSleeve?measuredProfile(s):stratProfile(s.profile)}
+      ${isSleeve?`<div class="ds bookfx" id="bfx-${s.id}" style="font-size:12px;opacity:.85">Measuring what it does to your whole book…</div>`:""}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
       ${isSleeve?sleeveControl(s):coreMixLine(s)}
       <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
@@ -3525,6 +3526,32 @@ async function loadStrategies(){
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
     + list + retiredFold(gone);
   $("wwitBody").innerHTML=targetCard();
+  fillBookEffects(all.filter(s=>s.measured&&!s.retired).map(s=>s.id));
+}
+
+// PR 129 (owner, 2026-10-13): what each strategy does to the WHOLE book, added
+// at its suggested size with the core making room. Measured on demand after the
+// tab renders -- one blended simulation each, one at a time -- so the catalog
+// is never slower to open. The rule is fixed and shown, not a score.
+let BFX_RUN=0;
+async function fillBookEffects(ids){
+  const run=++BFX_RUN;
+  for(const id of ids){
+    if(run!==BFX_RUN) return;                 // the tab re-rendered; a newer pass owns the cards
+    const el=$("bfx-"+id); if(!el) continue;
+    try{
+      const resp=await fetch(`/api/v1/strategies/${id}/book-effect`);
+      if(resp.status===401){el.remove();continue;}
+      const r=await resp.json(); const e=$("bfx-"+id); if(!e) continue;
+      if(!r.ok){e.textContent=`Your book: not measurable (${r.detail||r.reason||"unknown"})`;continue;}
+      const a=r.without,b=r.with;
+      const verdict=r.improves?`<b class="ok">improves your book</b>`:`<b>does not improve your book</b>`;
+      e.innerHTML=`${r.already_held?`At the ${r.sleeve_pct}% you run`:`Added at ${r.sleeve_pct}% of your book`}: return per unit of risk `
+        +`${a.return_per_risk} → ${b.return_per_risk}, worst drop -${a.max_drawdown_pct}% → -${b.max_drawdown_pct}%, `
+        +`${a.cagr_pct}% → ${b.cagr_pct}%/yr — ${verdict}`
+        +` <span class="muted" title="${r.rule}">ⓘ</span>`;
+    }catch(err){const e=$("bfx-"+id); if(e) e.textContent="Your book: not measured ("+err+")";}
+  }
 }
 
 // Clearing the core sells nothing either, and there are no caps behind it -- a

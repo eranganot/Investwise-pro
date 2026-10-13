@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 127). Last product PR: **PR 127**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 129). Last product PR: **PR 129**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,54 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 129 — what a strategy does to your whole book (D93)
+
+**Owner, 2026-10-13:** "You can proceed with option A (with the relevant fixes) but I want to add to the test also the
+'make the whole book better' parameter." Option A: the gate stays as approved (only MH3 passed; D3 replacements to be
+designed). The book effect is recorded and shown beside it.
+
+**What.**
+- `services/book_effect.py`: the book `target_solver._book_for_solve` loads (core + sleeves at today's sizes), measured
+  by `blend.measure_blend` without and with the strategy at its suggested size (or the size you run, for one you hold),
+  the core making room and never more than the core has. `improves` = return per unit of volatility up >= 0.02 and
+  worst drop <= 2 points deeper. A proxy-measured rule enters the blend as its proxy fund.
+- `services/strategy_candidates.py`: the ten pre-registered candidates that failed, kept as specs (not offered, funded
+  or signalled) so they can be measured against the book and re-measured exactly as registered.
+- `GET /api/v1/strategies/{id}/book-effect` and `GET /api/v1/strategies/candidates/book-effect`, both behind
+  `acting_user` (401 without a login, like `/preview`). The literal route is declared first.
+- `blend.measure_blend` now aligns with `late_tickers`, so a selection sleeve's universe joins the book's calendar.
+- Explore: each strategy card fills in "Added at N% of your book: return per unit of risk a → b, worst drop … —
+  improves / does not improve your book" after the tab renders, one at a time. `sw.js` iw-v63.
+- `docs/plans/...` build order: PR 129 was "MH2 live picks", dropped because MH2 failed the gate.
+
+**Recorded 2026-10-13 on the live book** (read with the owner's key: core = CVX, VTI, BND, VXUS, UGA, USO, JPM, GOOGL
+at held weights; sleeves Trend Semis 40%, Hold the Nasdaq 19%; cash floor 0.66%), by running this PR's
+`compare_blocking` offline on the production data window because the endpoint was not yet deployed (CI blocked by
+GitHub billing). Book without the candidate: 30.61%/yr, worst drop -45.2%, return per unit of volatility 0.761.
+
+| Candidate | Size | Return / risk | /yr | Worst drop | Improves the book |
+| --- | --- | --- | --- | --- | --- |
+| M1 Low-Volatility Quality | 25% | 0.773 (+0.012) | 30.11% | -43.3% (-1.9) | no (gain under 0.02) |
+| H3 Top-Down Sector Leaders | 10% | 0.769 (+0.008) | 31.45% | -45.9% (+0.7) | no |
+| MH1 Large-Cap Momentum 10 | 25% | 0.754 (-0.007) | 31.96% | -48.4% (+3.2) | no |
+| H1 Quality Momentum 5 | 15% | 0.754 (-0.007) | 31.20% | -46.0% (+0.8) | no |
+| M3 Sector Rotation | 25% | 0.749 (-0.012) | 30.61% | -45.7% (+0.5) | no |
+| MH3 2x Nasdaq Trend (in catalogue) | 20% | 0.748 (-0.013) | 33.42% | -49.6% (+4.4) | no |
+| H2 52-Week-High Leaders | 15% | 0.741 (-0.020) | 30.16% | -46.3% (+1.1) | no |
+| MH2 Magic Formula (QVAL) | 25% | 0.738 (-0.023) | 30.39% | -45.5% (+0.3) | no |
+| VH1 Leveraged Risk Parity | 15% | 0.737 (-0.024) | 29.68% | -46.4% (+1.2) | no |
+| M2 Accelerating Dual Momentum | 30% | 0.701 (-0.060) | 28.22% | -49.3% (+4.1) | no |
+| VH2 Leveraged Sector Momentum | 10% | 0.683 (-0.078) | 31.13% | -49.3% (+4.1) | no |
+
+The book's 30.6%/yr is the backtest of its target (a 40% Trend Semis sleeve that currently holds nothing), not of
+today's holdings.
+
+**Tests.** `tests/test_pr129_book_effect.py` (11).
+
+**Smoke.** `scripts/smoke/smoke-pr129-book-effect.ps1 -Sha <sha>`.
+
+---
+
 ## PR 127 — the eight rotation candidates measured; Trend-Filtered 2x Nasdaq joins the catalogue
 
 **Plan.** PR 127 of [`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md).
@@ -56,7 +104,8 @@ Rotation and Factor Stack stay: their replacements did not pass.
 **Open.** Owner question sent 2026-10-13: keep the gate as approved and design replacements (D3), or add a
 "makes the whole book better" way to pass.
 
-**Smoke.** `scripts/smoke/smoke-pr127-catalogue-results.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr127-catalogue-results.ps1 -Sha <sha>`. **Ran against `47259c7` (GitHub PR #33 merge):
+8 PASS, 0 FAIL, 1 SKIP** (the new entry is first measured at the 03:30 refresh).
 
 ---
 

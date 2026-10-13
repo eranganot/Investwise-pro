@@ -30,6 +30,7 @@ import numpy as np
 
 from app.engines.performance import cagr, max_drawdown
 from app.engines.strategy_backtest import (
+    late_tickers,
     CGT_RATE,
     DEFAULT_COST_BPS,
     _MIN_OBSERVATIONS,
@@ -229,7 +230,12 @@ def measure_blend(series: dict[str, list[tuple[str, float]]],
     feed = dict(series)
     if benchmark:
         feed["__bench__"] = benchmark
-    dates, px = align(feed)
+    # PR 129: a selection sleeve's universe joins the calendar instead of cutting
+    # it (see `align`), exactly as it does when the sleeve is measured alone.
+    late: set[str] = set()
+    for c in components:
+        late |= late_tickers(c["spec"])
+    dates, px = align(feed, late=late)
     if not dates:
         return _abstain(NO_OVERLAP, "the components share no common trading dates")
     if len(dates) < _MIN_OBSERVATIONS:
