@@ -657,6 +657,81 @@ def late_tickers(spec: dict) -> set[str]:
     return names
 
 
+# --------------------------------------------------------------------------
+# PR 128 -- leverage over a longer history, and risk parity
+# --------------------------------------------------------------------------
+#
+# SYNTHETIC LEVERAGED FUNDS. The 3x funds start 2008-2015, so the ten-year
+# window is all a backtest has ever seen -- and every strategy here was designed
+# by someone who had seen that decade. The long-history test (gate, plan
+# section 3) rebuilds each fund from its index back to 2000: L x the daily index
+# move, less the fund fee and the cost of borrowing the extra (L-1) at the
+# 13-week T-bill plus a spread. Calibrated on the overlap 2011-2026 (measured
+# 2026-10-13, synthetic minus real CAGR at a 0.75% spread): TQQQ -0.6, UPRO -0.3,
+# TMF -0.9, SOXL (from SOXX) +0.1, TECL +1.4, QLD -0.4, CURE +0.3, ERX +2.1,
+# FAS -5.0. Daily return correlation 0.98-0.999.
+SYNTH_FEE = 0.0095
+SYNTH_SPREAD = 0.0075
+SYNTHETIC = {
+    "TQQQ": ("QQQ", 3), "QLD": ("QQQ", 2), "UPRO": ("SPY", 3), "TMF": ("TLT", 3),
+    "SOXL": ("SOXX", 3), "TECL": ("XLK", 3), "FAS": ("XLF", 3), "CURE": ("XLV", 3),
+    "ERX": ("XLE", 3), "LABU": ("XBI", 3), "DRN": ("XLRE", 3),
+}
+RATE_TICKER = "^IRX"        # 13-week T-bill yield, percent
+CASH_LIKE = {"BIL"}         # rebuilt from the T-bill yield before it listed
+
+
+def synthetic_leveraged(under: list[tuple[str, float]], lev: float,
+                        rate: list[tuple[str, float]], *, fee: float = SYNTH_FEE,
+                        spread: float = SYNTH_SPREAD) -> list[tuple[str, float]]:
+    r = dict(rate)
+    last = next(iter(r.values()), 0.0)
+    out = [(under[0][0], 100.0)]
+    v = 100.0
+    for (_, a), (d, b) in zip(under, under[1:]):
+        last = r.get(d, last)
+        v *= 1 + lev * (b / a - 1) - (fee + (lev - 1) * (last / 100.0 + spread)) / TRADING_DAYS
+        out.append((d, max(v, 1e-6)))
+    return out
+
+
+def synthetic_cash(rate: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    out, v = [], 100.0
+    for d, y in rate:
+        v *= 1 + (y / 100.0) / TRADING_DAYS
+        out.append((d, v))
+    return out
+
+
+def _risk_parity(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
+    """VH1: legs sized inverse to their own recent volatility, each held only
+    while ITS market is above its long average; an off leg's share sits in cash."""
+    o = spec["overlay"]
+    legs: dict = o["legs"]                         # fund -> the index that gates it
+    cash = o.get("cash", "BIL")
+    vol_days, trend = int(o.get("vol_days", 60)), int(o.get("trend_days", 200))
+    cad = int(o.get("cadence_days", 21))
+    on = {f: _confirm(np.nan_to_num(px[g] - sma(px[g], trend), nan=-1.0) > 0,
+                      int(o.get("confirm_days", 1))) for f, g in legs.items()}
+    n = len(next(iter(px.values())))
+    out, w, last = [], {}, -10 ** 9
+    for i in range(n):
+        if i - last >= cad:
+            inv = {f: 1.0 / v for f in legs if (v := _vol(px[f], i, vol_days))}
+            if len(inv) == len(legs):
+                tot = sum(inv.values())
+                w, last = {f: x / tot for f, x in inv.items()}, i
+        if not w:
+            out.append({})
+            continue
+        t = {}
+        for f, x in w.items():
+            key = f if on[f][i] else cash
+            t[key] = t.get(key, 0.0) + x
+        out.append(t)
+    return out
+
+
 def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
     """Target weights per day, or an abstention dict when the spec is unusable."""
     kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
@@ -667,6 +742,8 @@ def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
         return [dict(weights)] * len(next(iter(px.values())))
     if kind == "rank_select":
         return _rank_select(px, spec)
+    if kind == "risk_parity":
+        return _risk_parity(px, spec)
     if kind == "equal_hold":
         o = spec["overlay"]
         return equal_hold_targets(px, list(o.get("universe") or []), int(o.get("cadence_days", 21)))
@@ -921,6 +998,10 @@ def tickers_needed(spec: dict, *, regime_gate: bool = False) -> list[str]:
             names.add(o[key])
     names.update(o.get("universe") or [])
     names.update(o.get("fallback") or [])
+    for fund, idx in (o.get("legs") or {}).items():
+        names.update((fund, idx))
+    if o.get("cash"):
+        names.add(o["cash"])
     names.update((o.get("hold_map") or {}).values())
     if (o.get("market_gate") or {}).get("ticker"):
         names.add(o["market_gate"]["ticker"])

@@ -30,6 +30,12 @@ class MarketDataProvider(ABC):
         falls back to plain closes and labels the result price-only."""
         return []
 
+    def get_long_history(self, ticker: str, start: str = "2000-01-01", *,
+                         adjusted: bool = True) -> list[tuple[str, float]]:
+        """Daily closes from ``start`` to today, beyond the 10-year window.
+        Default: none -- the long-history test then abstains (PR 128)."""
+        return []
+
     def get_intraday(self, ticker: str, span: str = "1d") -> list[tuple[str, float]]:
         """(ISO timestamp, price) bars within the last session ("1d") or five
         sessions ("5d"). Optional: a provider without intraday data raises, and

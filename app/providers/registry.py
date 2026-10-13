@@ -179,6 +179,15 @@ def guarded_total_return_history(ticker: str, days: int = 252) -> tuple[list, st
     return guarded_history(ticker, days), PRICE_ONLY
 
 
+def guarded_long_history(ticker: str, start: str = "2000-01-01", *,
+                         adjusted: bool = True) -> list[tuple[str, float]]:
+    """Daily history from ``start`` through the history tier (PR 128)."""
+    tier = _tiers()["history"]
+    key = f"histlong:{ticker}:{start}:{int(adjusted)}"
+    return tier.call(key, lambda: market_provider().get_long_history(ticker, start,
+                                                                     adjusted=adjusted)) or []
+
+
 def guarded_intraday(ticker: str, span: str = "1d"):
     """Intraday bars through the MARKET tier: quote cadence, no stale stock.
     The history tier keeps bars for hours, which is right for daily closes and

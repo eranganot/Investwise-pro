@@ -3707,6 +3707,10 @@ function measuredProfile(s){
   const vtone=m.volatility_pct>=40?'bad':m.volatility_pct>=22?'warn':'';
   const ex=m.excess_cagr_pct, extone=ex>0?'':'warn';
   const oos=(bt.robustness||{}).out_of_sample||{};
+  // PR 128: the same rule over 2000-2016 (D92). The ten-year window has no
+  // real crash in it; a trend sleeve that steps back into QQQ still fell with
+  // QQQ in 2000-2002, and that is the number to see before sizing it.
+  const lh=(bt.robustness||{}).long_history||{};
   // THE REGIME COMPARISON HAS BEEN COMPUTED NIGHTLY AND RENDERED NOWHERE.
   // `backtest_service` runs the strategy gated and ungated on every refresh and
   // stores both; grepping this file before W2, the only reader of `robustness`
@@ -3720,6 +3724,7 @@ function measuredProfile(s){
     ${chip("Backtested","~"+m.cagr_pct+"%/yr")}
     ${chip("Volatility","~"+m.volatility_pct+"%",vtone)}
     ${chip("Worst drawdown","-"+m.max_drawdown_pct+"%",dtone)}
+    ${lh.ok?`<span class="stchip ${lh.max_drawdown_pct>=60?'bad':'warn'}" title="Re-run over ${lh.start}→${lh.end}, years no strategy here was designed against: ${lh.cagr_pct}%/yr against ${lh.compared_with==="its base"?`${lh.base_cagr_pct}%/yr for its base`:`${lh.own_hold_cagr_pct}%/yr for holding its own funds`}. ${(lh.rebuilt||[]).length?`Rebuilt: ${lh.rebuilt.join(", ")}; ${lh.assumptions}.`:""}">Worst drop incl. 2000–2016 <b>-${lh.max_drawdown_pct}%</b></span>`:""}
     ${ex!=null?chip("vs S&P",(ex>0?"+":"")+ex+"%/yr",extone):""}
     ${m.trades_per_year!=null?chip("Trades","~"+m.trades_per_year+"/yr"):""}
     ${m.tax_drag_pct?chip("Tax drag","-"+m.tax_drag_pct+"%/yr",'warn'):""}

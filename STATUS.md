@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 126). Last product PR: **PR 126**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 128). Last product PR: **PR 128**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,46 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 128 — leverage over 2000–2016, risk parity, and the two Very-high candidates (D92)
+
+**Plan.** PR 128 of [`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md).
+Shipped before PR 127, whose scope waits on an owner question (whether a strategy can also pass by improving the whole
+book).
+
+**What.**
+- `YahooMarketDataProvider.get_long_history`: daily bars by date range (`period1/period2`) from 2000. `range=max` returns
+  monthly bars, which is why `_daily` stops at 10y; this path refuses an answer under 150 bars a year.
+  `registry.guarded_long_history` puts it behind the history tier.
+- `strategy_backtest.SYNTHETIC`, `synthetic_leveraged`, `synthetic_cash`: rebuilt leveraged funds and T-bill cash.
+  Calibration, synthetic minus real CAGR on 2011–2026 at a 0.75% spread: TQQQ −0.6, UPRO −0.3, TMF −0.9, SOXL (from
+  SOXX) +0.1, TECL +1.4, QLD −0.4, CURE +0.3, ERX +2.1, FAS −5.0; daily correlation 0.98–0.999. SOXL is rebuilt from
+  SOXX because from SMH it ran 11.6 points a year too high.
+- `backtest_service.long_history(spec)`: the spec over 2000-01-01 → 2016-10-01 against its base (or its own funds),
+  stored as `robustness.long_history` for specs flagged `long_history`. Flagged: Trend Nasdaq, Trend Semis,
+  Volatility-Targeted Leverage, Hold the Nasdaq index.
+- `risk_parity` overlay (VH1): legs inverse to their own 60-day volatility, each held only while its index is above its
+  200-day average, an off leg's share in cash.
+- The card shows "Worst drop incl. 2000–2016" with the comparison in its tooltip. `sw.js` iw-v62.
+
+**Measured (pre-registered settings, production data window, engine a7).**
+
+| | 2016–2026 /yr | Worst drop | vs base or own funds | 2000–2016 /yr | 2000–2016 worst drop | Gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| VH1 Leveraged Risk Parity | 4.1% | −48.4% | −7.1 (own funds) | 8.9% vs own funds 11.1% | −43.0% | fails tests 1 and long history |
+| VH2 Leveraged Sector Momentum | 8.4% | −87.3% | −12.8 | −7.7% vs QQQ 2.0% | −93.1% | fails tests 1, 4 (sweep spread 22.4 pts), long history |
+| Trend Nasdaq (kept) | 36.7% | −62.4% | +15.4 | 2.1% vs QQQ 2.0% | **−85.5%** | information only |
+| Trend Semis (kept) | 48.7% | −79.4% | +13.4 | 3.4% vs SMH 3.3% | −85.5% | information only |
+| Vol-Targeted Leverage (kept) | 32.3% | −63.1% | +11.0 | −0.1% vs QQQ 2.0% | −96.2% | information only: loses to QQQ |
+
+Neither Very-high candidate enters the catalogue (plan D3: the tier is left short and replacements designed). The
+`risk_parity` kind stays, tested, for a replacement to use.
+
+**Tests.** `tests/test_pr128_long_history.py` (9).
+
+**Smoke.** `scripts/smoke/smoke-pr128-long-history.ps1 -Sha <sha>`.
+
+---
+
 ## PR 126 — the selection engine: rank a universe, hold the winners (D90, D91; engine a7)
 
 **Plan.** PR 126 of [`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md).
@@ -67,7 +107,9 @@ costs.
 
 **Tests.** `tests/test_pr126_selection_engine.py` (20). `ENGINE_VERSION` pins in two older tests moved to a7.
 
-**Smoke.** `scripts/smoke/smoke-pr126-selection-engine.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr126-selection-engine.ps1 -Sha <sha>`. **Ran against `0b18880` (GitHub PR #31 merge):
+5 PASS, 0 FAIL, 1 SKIP** (the 8 rows are stale until the 03:30 refresh re-measures them on a7). Stack gate before the
+push (PRs 126-129 together): SQLite and Postgres 2,451 passed, 1 Python-3.13-only failure.
 
 ---
 
