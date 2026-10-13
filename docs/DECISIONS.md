@@ -186,6 +186,10 @@
   on; a "best trend right now" commodity pick is parked in the backlog as future work. → PR 116
 - **D81 · 2026-10-11 · Delete the Sentry block** (D-h): errors already surface through Railway logs, job status (PR 107) and smokes;
   Sentry was wired but never installed. → PR 116
+- **D86 · 2026-10-13 · A card that proposes rules shows what they would do to the goal** (owner: "I would expect
+  that the information on the goals chances would be also written in the recommendation cards"). The goal replay runs
+  with the proposed rules added and without them, on the same paths. A proposed rule the model does not replay (an
+  entry signal, an alert) is named. Measured on demand after Today renders, so Today is not slower. → PR 124
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

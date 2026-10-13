@@ -640,6 +640,15 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         tuning = None if light else _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_on,
                                                      floor=halve_floor_pct)
         per_rule = None if light else _per_rule_impact(run, rules, sl_specs, g_spec, sleeve_ids)
+        compare = None
+        drop = {str(x) for x in rules.get("_compare_drop") or []}
+        if drop:
+            w_ = run(n_paths=PER_RULE_PATHS)
+            wo = _replay_without(run, rules, sl_specs, g_spec, sleeve_ids, drop, PER_RULE_PATHS)
+            compare = {"paths": PER_RULE_PATHS,
+                       "with": {"p_goal_pct": w_["p_goal_pct"], "p_halve_pct": w_["p_halve_pct"]},
+                       "without": {"p_goal_pct": wo["p_goal_pct"], "p_halve_pct": wo["p_halve_pct"]},
+                       "goal_pts": round(w_["p_goal_pct"] - wo["p_goal_pct"], 1)}
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
@@ -653,6 +662,7 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                        "not_simulated": rules.get("not_simulated") or [],
                        "holdings_modelled": [tk for tk, _h in held],
                        "per_rule": per_rule,
+                       "compare": compare,
                        "tuning": tuning,
                        "assumptions": ["every rule card is accepted the day it fires",
                                        "sleeve rules act on the sleeve's own return stream",
@@ -1009,6 +1019,21 @@ def _fv_monthly(monthly: float, roi: float, years: float) -> float:
 
 
 PER_RULE_PATHS = 500
+
+
+def _replay_without(run, rules: dict, sl_specs, g_spec, sleeve_ids, drop: set, n_paths: int) -> dict:
+    """PR 124: the same replay with the rules in `drop` removed (ids). The guard
+    goes too when no remaining rule arms one."""
+    rows = [x for x in rules.get("_rule_rows") or [] if str(x.get("id")) not in drop]
+    spec = rules_spec(rows, prices=rules.get("_prices") or {}, sleeve_tickers=rules.get("_sleeve_tickers") or {},
+                      holding_tickers=set(rules.get("holdings") or {}))
+    by_id = {**spec["sleeves"], **spec.get("holdings", {})}
+    sl = []
+    for s in sl_specs:
+        sp = by_id.get(_spec_id(s, sleeve_ids)) or {}
+        sl.append(dict(s, trail=sp.get("trail"), tp_ratio=sp.get("tp_ratio"), tp_fraction=sp.get("tp_fraction")))
+    gd = None if (g_spec is None or spec["guard"] is None) else {**spec["guard"], "col": g_spec["col"]}
+    return run(sl=sl, gd=gd, n_paths=n_paths)
 
 
 def _per_rule_impact(run, rules: dict, sl_specs, g_spec, sleeve_ids) -> dict | None:
@@ -1479,7 +1504,7 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
 
 async def preview(session, user, *, roi_pct: float | None = None, target_date: str | None = None,
                   monthly: float | None = None, armed: dict | None = None,
-                  guard_pct: float | None = None) -> dict:
+                  guard_pct: float | None = None, extra_rules: list[dict] | None = None) -> dict:
     """PR 104b: the goal's odds as they WOULD be -- another target, deadline or
     deposit (Edit goal), or other rules armed (Edit rules). The same model and
     rules replay as the nightly solve, light: no resampling, no retune search,
@@ -1500,7 +1525,10 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
     if not goal:
         return {"ok": False, "reason": "NO_GOAL"}
     sleeves_pct = {s["id"]: float(s["current_pct"]) for s in ctx["sleeves"]}
-    rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct)
+    rules_ctx = await _rules_context(session, user, ctx["sleeves"], armed=armed, guard_pct=guard_pct,
+                                     extra=extra_rules)
+    if extra_rules and rules_ctx:
+        rules_ctx["_compare_drop"] = [f"new:{i}" for i in range(len(extra_rules))]
     try:
         _hseries = {**ctx["series"], **await _holding_series(rules_ctx, ctx["series"])}
     except Exception:  # noqa: BLE001
@@ -1536,11 +1564,18 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
             "headline": v.get("headline"),
             "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
             "p_halve_without_rules_pct": off.get("p_halve_pct"),
-            "median": on.get("median"), "worst5_mean": on.get("worst5_mean")}
+            "median": on.get("median"), "worst5_mean": on.get("worst5_mean"),
+            # PR 124: what the proposed rules change, and which of them the model replays.
+            "compare": rb.get("compare"),
+            "proposed": [{"ticker": (x.get("ticker") or "").upper(), "rule_type": x.get("rule_type"),
+                          "level": x.get("level"),
+                          "modelled": f"new:{i}" not in ((rules_ctx or {}).get("unmodelled") or {}),
+                          "reason": ((rules_ctx or {}).get("unmodelled") or {}).get(f"new:{i}")}
+                         for i, x in enumerate(extra_rules or [])]}
 
 
 async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | None = None,
-                         guard_pct: float | None = None) -> dict | None:
+                         guard_pct: float | None = None, extra: list[dict] | None = None) -> dict | None:
     """The user's active rules and today's prices, mapped onto his sleeves.
 
     PR 104b: `armed` ({rule id: bool}) and `guard_pct` describe the rules as they
@@ -1554,7 +1589,7 @@ async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | No
 
     every = (await session.scalars(select(TradingRule).where(TradingRule.subject == user.email))).all()
     rows = [r for r in every if (armed or {}).get(str(r.id), bool(r.active))]
-    if not rows:
+    if not rows and not extra:
         return None
     from app.services.allocation_mix import current_mix
     from app.services.fx import position_value_ils, price_currency
@@ -1576,6 +1611,11 @@ async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | No
               "level": (float(guard_pct) if guard_pct is not None and r.rule_type == "drawdown_guard"
                         else r.level),
               "params": r.params, "trim_fraction": getattr(r, "trim_fraction", None)} for r in rows]
+    # PR 124: rules a card PROPOSES, as if armed (ids "new:<n>"); nothing is saved.
+    for i, x in enumerate(extra or []):
+        dicts.append({"id": f"new:{i}", "ticker": (x.get("ticker") or "").upper(), "rule_type": x.get("rule_type"),
+                      "mode": x.get("mode") or "pct", "level": float(x.get("level") or 0.0),
+                      "params": x.get("params"), "trim_fraction": x.get("trim_fraction")})
     # PR 123 (D85): every HELD ticker outside the sleeves that carries a sale rule
     # becomes its own column in the replay; every other rule says why it is not
     # in the goal model.
@@ -1588,7 +1628,9 @@ async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | No
         if rt == "drawdown_guard":
             continue
         if rt not in REPLAYED_RULE_TYPES:
-            unmodelled[d["id"]] = "an alert or a weight rule, not a sale the goal model replays"
+            unmodelled[d["id"]] = ("an entry, alert or weight rule, not a sale the goal model replays"
+                                   if rt in ("strategy_signal", "buy_dip", "price_above", "price_below", "buy_back")
+                                   else "an alert or a weight rule, not a sale the goal model replays")
         elif tk not in values and tk not in in_sleeve:
             unmodelled[d["id"]] = f"you don't hold {tk}"
         elif rt == "profit_protect" and not (d.get("params") or {}).get("activated"):

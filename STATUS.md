@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (PR 122, 123, 123.1 shipped; Wave F resumed: PR 118a). Last product PR: **PR 118a**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (PR 118a, PR 124). Last product PR: **PR 124**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,43 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 124 — a rule card says what it would do to your goal (D86)
+
+**Owner, 2026-10-13:** "I would expect that the information on the goals chances would be also written in the
+recommendation cards". The examples were "UGA is in an uptrend" (arm a 17% trailing stop) and "Arm the discipline for
+Trend-Filtered Semiconductors".
+
+**What.**
+- **`POST /api/v1/plan/frontier/rule-impact {rules}`** (read-only) calls `preview(extra_rules=)`:
+  - `_rules_context(extra=)` adds the proposed rules as if armed (ids `new:<n>`). A proposed stop on a holding with no
+    rule yet gets its own column, the PR 123 way.
+  - `goal_solve` (light) replays with and without them on the same 500 paths (`_replay_without`) →
+    `rules.compare = {with, without, goal_pts}`.
+  - The response lists each proposed rule as modelled, or not with the reason ("an entry, alert or weight rule, not a
+    sale the goal model replays").
+- **Today:** every card whose Accept creates rules (`apply.kind` create_rule/create_rules) gets a line under "Accept
+  will". It reads "Goal impact: measuring…" and is filled in one card at a time after Today renders, cached for the
+  session: "Goal impact: goal chance +0.4 pts (27.1% → 27.5%); chance the book halves 71.8% → 71.0%. SOXL strategy
+  signal: not in the goal model (…)."
+- `sw.js` → `iw-v59`.
+
+**Tests (4).** `tests/test_a_rule_card_shows_its_goal_impact.py`:
+- a proposed stop is compared with and without on the same paths;
+- with no proposed rules there is no comparison;
+- the endpoint passes the card's rules and rejects an empty list;
+- Today renders the line on every rule-proposing card.
+
+**Gate.** Chunked local SQLite + Postgres:
+- one real failure: the new read-only POST had to join the COMPUTE_ONLY list in `test_the_doors_are_shut`. Fixed.
+- the environment-dependent `test_dismissed_recommendations_are_counted_and_restorable`, which also fails on `main` locally.
+
+**Smoke.** `scripts/smoke/smoke-pr124-rule-card-goal-impact.ps1 -Sha <sha>`.
+
+**QA (Pixel).** Today: "UGA is in an uptrend" and the SOXL discipline card each show a "Goal impact" line within a few
+seconds.
+
+---
+
 ## PR 118a — thin plan routes (L7; Wave F, pure moves)
 
 **Plan v3, Wave F (structure, no behaviour change).** Owner go-ahead 2026-10-12.
@@ -87,7 +124,7 @@ Both are fixed. On the re-run, Postgres passed all 6 chunks. SQLite failed one t
 `test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable`, which also fails on `main` on this
 machine: it depends on live screener data that the provider rate-limited. CI is the check for it.
 
-**Smoke.** `scripts/smoke/smoke-pr118a-thin-plan-routes.ps1 -Sha <sha>`. The 6 moved endpoints return exactly the keys
+**Smoke.** `scripts/smoke/smoke-pr118a-thin-plan-routes.ps1 -Sha <sha>`. **Ran against `b973837` (GitHub PR #27 merge): 11 PASS, 0 FAIL.** All 6 moved endpoints return the keys they returned before the move. The 6 moved endpoints return exactly the keys
 recorded from production before the move; `/plan` current value = NAV; plan health and Today build.
 
 ---
