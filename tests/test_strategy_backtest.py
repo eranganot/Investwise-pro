@@ -385,8 +385,12 @@ def test_the_overfitting_verdict_is_measured_against_the_benchmark_not_zero():
     spec = {"weights": {"A": 1.0}}
     with_bench = bt.out_of_sample(S, spec, split_date="2018-01-01", benchmark=_series(path))
     assert with_bench["benchmark_decay_pct"] is not None
-    assert "relative to the benchmark" in with_bench["verdict_basis"]
+    # PR 126 (D90): the verdict is now judged against holding the strategy's own
+    # instruments; the benchmark reading is kept beside it, still not raw decay.
+    assert "own instruments" in with_bench["verdict_basis"]
+    assert with_bench["verdict_vs_benchmark"] == "holds up"
     # A strategy compared against itself decays identically -> nothing to explain.
     assert with_bench["verdict"] == "holds up"
     without = bt.out_of_sample(S, spec, split_date="2018-01-01")
-    assert without["verdict_basis"].startswith("raw decay")
+    assert "own instruments" in without["verdict_basis"]
+    assert without["verdict"] == "holds up"

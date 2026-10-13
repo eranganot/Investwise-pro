@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 125). Last product PR: **PR 125**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 126). Last product PR: **PR 126**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,39 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 126 — the selection engine: rank a universe, hold the winners (D90, D91; engine a7)
+
+**Plan.** PR 126 of [`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md).
+Engine only: nothing in the catalogue uses it until PR 127.
+
+**What.**
+- `rank_select`: score a universe (12-1 momentum, risk-adjusted momentum, blended 1/3/6-month, return over N, low
+  volatility, nearness to the 52-week high), hold the top N with a rank buffer, on a cadence; optional market gate,
+  per-name trend veto, positivity veto with a fallback pair, two-stage sector-then-stock selection, a rank-on-the-index /
+  hold-the-fund map with a switching margin, equal or inverse-volatility weights. Unfilled slots ride in the base.
+- `align(late=...)`: a universe's late listings JOIN the calendar (NaN before their first price) instead of cutting it.
+  Before this, MNDY (2021) would have cut a 44-stock backtest to five years.
+- `clean_spikes`: drops a one-day print of 2x or more whose neighbours agree within 10% (Phase 0: TSEM.TA 2017-05-04).
+  TECL's real March 2020 swings survive it (tested). Counted in `bad_prints_dropped`.
+- Warm-up: a backtest starts on the first day the strategy holds anything. A strategy with no base used to sit in cash
+  for a year of warm-up and be scored for it (0.3 points on Accelerating Dual Momentum, about 1 on Low-Volatility).
+- **D91** `selection_edge_pct` = return minus `equal_hold_cagr_pct` (every candidate, equal weight, same cadence), plus
+  a `survivorship` label. `proxy` specs are measured on the proxy fund and carry `measured_by_proxy`.
+- **D90** `out_of_sample.verdict` is now judged against holding the strategy's own instruments (`own_hold_decay_pct`);
+  `verdict_vs_benchmark` keeps the SPY reading. `ENGINE_VERSION` a6 → a7: every stored row is stale until the 03:30
+  refresh recomputes it (or `POST /strategies/backtests/refresh`).
+
+**Checked against outside numbers before believing the engine.** On the production data window: a 12-1 top-10 on the
+44 names measured 17.4%/yr against the MTUM fund's 16.2%; a low-volatility top-12 9.6%/yr against USMV's 10.1%; an
+independent day-by-day replay of the dual-momentum targets gave 5.55%/yr gross against the engine's 4.54% net of tax and
+costs.
+
+**Tests.** `tests/test_pr126_selection_engine.py` (20). `ENGINE_VERSION` pins in two older tests moved to a7.
+
+**Smoke.** `scripts/smoke/smoke-pr126-selection-engine.ps1 -Sha <sha>`.
 
 ---
 
@@ -76,7 +109,8 @@ and `test_the_sleeve_holds_what_the_rule_wants` added `btm_swing_dip` as a fresh
 identically on `main` under the sandbox's Python 3.13 (docstring dedent) and not on CI's 3.12.
 
 **Smoke.** `scripts/smoke/smoke-pr125-catalogue-cleanup.ps1 -Sha <sha>`. Public endpoints only. Run against the old build
-before the push: 4 PASS, 14 FAIL (every new field), as expected.
+before the push: 4 PASS, 14 FAIL (every new field), as expected. **Ran against `d0a2508` (GitHub PR #30 merge):
+12 PASS, 0 FAIL, 1 SKIP** (volatility targeting is re-measured at the 03:30 refresh).
 
 ---
 

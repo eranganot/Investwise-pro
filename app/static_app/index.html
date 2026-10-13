@@ -3726,7 +3726,7 @@ function measuredProfile(s){
     ${s.style?chip("Style",s.style):""}
     ${s.horizon?`<span class="stchip" title="${s.horizon}">Horizon <b>${String(s.horizon).split(";")[0]}</b></span>`:""}
     ${s.uses_leverage?`<span class="stchip bad">⚠ Uses leverage</span>`:""}
-    ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split">⚠ Likely overfitted</span>`:""}
+    ${oos.verdict==='likely overfitted'?`<span class="stchip bad" title="${oos.own_hold_decay_pct!=null?`Decayed ${oos.cagr_decay_pct} points across the 2022 split, against ${oos.own_hold_decay_pct} for simply holding its own funds`:`Decayed ${oos.cagr_decay_pct} points against the benchmark's ${oos.benchmark_decay_pct} across the 2022 split`}">⚠ Likely overfitted</span>`:""}
     ${oos.verdict==='holds up'?`<span class="stchip">Held up out of sample</span>`:""}
     ${rg.headline_is_gated?`<span class="stchip" title="These numbers ARE the gated run. The ungated pair is ${rg.ungated?rg.ungated.cagr_pct+"%/yr at -"+rg.ungated.max_drawdown_pct+"%":"not recorded"}.">Regime gate ON</span>`:""}
     ${(rv.comparable&&rv.improves&&!rg.enabled)?`<span class="stchip warn" title="${rv.why}. Not switched on: the gate ships off until you turn it on.">Gate would improve this</span>`:""}

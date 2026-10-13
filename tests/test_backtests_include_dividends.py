@@ -89,6 +89,6 @@ def test_a_bond_fund_that_pays_its_return_as_dividends_is_not_a_loser():
 
 
 def test_old_measurements_are_out_of_date():
-    assert bs.ENGINE_VERSION == "a6"
+    assert bs.ENGINE_VERSION == "a7"  # PR 126: verdict vs own instruments
     ok, why = hr.fresh({"engine_version": "a5", "measured_at": "2026-10-05T00:00:00+00:00"})
     assert ok is False and "older engine" in why

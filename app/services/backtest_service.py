@@ -70,7 +70,12 @@ logger = logging.getLogger(__name__)
 #             fund no longer measures as losing money. `return_basis` on every
 #             result says which it was; a ticker with no adjusted series is
 #             measured on plain closes and labelled `price_only`.
-ENGINE_VERSION = "a6"
+#   a6 -> a7: PR 126. The out-of-sample `verdict` is judged against holding
+#             the strategy's own instruments over the same split, not against
+#             SPY (`verdict_vs_benchmark` keeps the old reading). Selection
+#             strategies carry `selection_edge_pct`; a proxy-measured one says
+#             `measured_by_proxy`; one-day bad prints are dropped and counted.
+ENGINE_VERSION = "a7"
 
 HISTORY_DAYS = 2600          # ~10y, the longest span served at daily granularity
 STALE_AFTER_DAYS = 7
@@ -165,6 +170,16 @@ def return_basis_of(basis: dict) -> dict:
 
 def measure(spec: dict, *, benchmark_ticker: str | None = None) -> dict:
     """Run one strategy end to end: fetch, backtest, and probe its fragility."""
+    proxy = (spec.get("proxy") or {}).get("ticker")
+    if proxy:
+        # A fundamentals rule cannot be replayed: the screener only knows today's
+        # numbers. Its headline is the backtest of a fund that runs a similar
+        # rule, and the row says so in a field no caller can miss (plan D1/MH2).
+        r = measure({"id": spec.get("id"), "weights": {proxy: 1.0},
+                     "overlay": {"kind": "buy_hold"}}, benchmark_ticker=benchmark_ticker)
+        if isinstance(r, dict):
+            r["measured_by_proxy"] = proxy
+        return r
     bench_tk = benchmark_ticker or get_settings().benchmark_ticker
     # Fetch the regime indexes too, and hand the SAME series to both runs, so the
     # gated and ungated numbers share one date window and the comparison is
