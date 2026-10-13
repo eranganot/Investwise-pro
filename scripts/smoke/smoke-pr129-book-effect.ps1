@@ -35,7 +35,8 @@ else {
             if ($c.ok) { $n++; Note ("{0,-4} {1,-40} gain {2,7}  drop {3,6} pts  improves={4}" -f $c.candidate_code, $c.name, $c.return_per_risk_gain, $c.worst_drop_change_pts, $c.improves) }
             else { Note ("{0} not measured: {1}" -f $c.strategy_id, $c.detail) }
         }
-        if ($n -eq 11) { Ok "all 11 candidates measured against your book" } else { Bad "$n of 11 candidates measured" }
+        $tot = @($all.candidates).Count
+        if ($n -eq $tot -and $tot -ge 11) { Ok "all $tot candidates measured against your book" } else { Bad "$n of $tot candidates measured" }
     } else { Bad "candidates/book-effect did not answer" }
 }
 
@@ -43,7 +44,7 @@ Sec "3  nothing else changed"
 $bt = Api GET "/api/v1/strategies/backtests"
 if ($bt) {
     $ids = @($bt.strategies | ForEach-Object { $_.id })
-    if ($ids.Count -eq 9 -and -not ($ids -contains "btm_sector_leaders")) { Ok "9 catalogue entries, no failed candidate among them" } else { Bad "catalogue: $($ids -join ',')" }
+    if ($ids.Count -ge 9 -and -not ($ids -contains "btm_sector_leaders")) { Ok "$($ids.Count) catalogue entries, no failed candidate among them" } else { Bad "catalogue: $($ids -join ',')" }
 } else { Bad "/strategies/backtests did not answer" }
 
 Stop-Smoke

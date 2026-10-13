@@ -1,4 +1,4 @@
-"""The plan's pre-registered candidates that did not join the catalogue (PR 129).
+"""The plan's pre-registered candidates that did not join the catalogue (PR 129, round 2 PR 130).
 
 docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md, section 2, holds their settings and section 6 their
 results: each failed the gate. They are kept HERE, as specs, so that what they would do to the owner's
@@ -38,6 +38,16 @@ CANDIDATES: list[dict] = [
      **{"weights": {"UPRO": 0.4, "TMF": 0.6}, "base": {}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "risk_parity", "legs": {"UPRO": "SPY", "TMF": "TLT"}, "cash": "BIL", "vol_days": 60, "trend_days": 200, "cadence_days": 21, "sweep_param": "vol_days", "sweep_values": [20, 40, 60, 90, 120]}}},
     {"id": "btm_lev_sector_momentum", "code": "VH2", "name": "Leveraged Sector Momentum", "risk": "Very high", "sleeve_pct": 10, "result": "failed the gate",
      **{"weights": {}, "base": {"QQQ": 1.0}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "rank_select", "universe": ["SMH", "XLK", "XLF", "XLV", "XLE", "XBI", "XLRE", "QQQ", "SPY"], "score": "blend", "trend_veto_days": 200, "top_n": 1, "buffer": 1, "cadence_days": 21, "switch_margin": 0.02, "hold_map": {"SMH": "SOXL", "XLK": "TECL", "XLF": "FAS", "XLV": "CURE", "XLE": "ERX", "XBI": "LABU", "XLRE": "DRN", "QQQ": "TQQQ", "SPY": "UPRO"}, "sweep_param": "cadence_days", "sweep_values": [10, 15, 21, 30, 42]}}},
+    {"id": "btm_qqq_trend_cash", "code": "R1", "name": "Nasdaq Trend to Cash", "risk": "Medium", "sleeve_pct": 30, "result": "failed the gate (test 1)",
+     **{"weights": {"QQQ": 1.0}, "base": {"BIL": 1.0}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200, "confirm_days": 3, "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]}}},
+    {"id": "btm_qqq_vol_managed", "code": "R2", "name": "Volatility-Managed Nasdaq", "risk": "Medium", "sleeve_pct": 30, "result": "failed the gate (test 1)",
+     **{"weights": {}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "vol_managed", "legs": {"cash": "BIL", "x1": "QQQ", "x2": "QLD", "x3": "TQQQ"}, "signal_ticker": "QQQ", "vol_days": 20, "target_vol_pct": 18, "max_exposure": 1.0, "rebalance_band": 0.15, "sweep_param": "target_vol_pct", "sweep_values": [14, 16, 18, 20, 22]}}},
+    {"id": "btm_qqq_vol_managed_15", "code": "R3", "name": "Volatility-Managed Nasdaq to 1.5x", "risk": "Medium-high", "sleeve_pct": 25, "result": "failed the gate (test 1: not 25% shallower than QQQ)",
+     **{"weights": {}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "vol_managed", "legs": {"cash": "BIL", "x1": "QQQ", "x2": "QLD", "x3": "TQQQ"}, "signal_ticker": "QQQ", "vol_days": 20, "target_vol_pct": 25, "max_exposure": 1.5, "rebalance_band": 0.15, "sweep_param": "target_vol_pct", "sweep_values": [20, 22.5, 25, 27.5, 30]}}},
+    {"id": "btm_qld_trend_cash", "code": "R4", "name": "2x Nasdaq Trend to Cash", "risk": "Medium-high", "sleeve_pct": 20, "result": "passed; a near-duplicate of R7 in its tier with a weaker edge (D94)",
+     **{"weights": {"QLD": 1.0}, "base": {"BIL": 1.0}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200, "confirm_days": 3, "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]}}},
+    {"id": "btm_qqq_vol_managed_2x", "code": "R5", "name": "Volatility-Managed 2x Nasdaq", "risk": "High", "sleeve_pct": 15, "result": "passed; a near-duplicate of R6 in its tier with a weaker edge (D94)",
+     **{"weights": {}, "drift_band": 0.1, "long_history": True, "overlay": {"kind": "vol_managed", "legs": {"cash": "BIL", "x1": "QQQ", "x2": "QLD", "x3": "TQQQ"}, "signal_ticker": "QQQ", "vol_days": 20, "target_vol_pct": 35, "max_exposure": 2.0, "rebalance_band": 0.15, "sweep_param": "target_vol_pct", "sweep_values": [30, 32.5, 35, 37.5, 40]}}},
 ]
 
 _BY_ID = {c["id"]: c for c in CANDIDATES}

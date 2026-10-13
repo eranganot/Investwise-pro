@@ -214,6 +214,10 @@
   the gate, not a way to pass. Rule fixed before measuring: adding it at its suggested size, the core making room, must
   raise return per unit of volatility by >= 0.02 and deepen the worst drop by <= 2 points over the ten-year window. The
   ten failed candidates are kept as specs (`strategy_candidates`) so it can be measured for them too. → PR 129
+- **D94 · 2026-10-13 · The near-duplicate test (gate test 5) applies within a measured tier** (owner, after round 2 was
+  measured). Daily correlation cannot tell a 1x rule from its 3x version (0.99), so read across every tier it would let one
+  Nasdaq rule ship. Within a tier the stronger edge ships: R7 in Medium-high (over R4), R6 in High (over R5 and MH3, which
+  is retired with a flag and moves to Hold the Nasdaq index). → PR 130
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

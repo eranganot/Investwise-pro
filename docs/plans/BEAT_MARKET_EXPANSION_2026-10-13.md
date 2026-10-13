@@ -91,7 +91,8 @@ Tiers come from the measured worst drop: Medium <= 36%, Medium-high <= 45%, High
 | 127 | Measure M1, M2, M3, MH1, MH3, H1, H2, H3 against the gate; passing ones enter the catalogue Explore-only. |
 | 128 | `risk_parity`, rank-on-index map, long-history test; measure VH1, VH2 (with walk-forward). |
 | 129 | Book effect for every candidate (D93); MH2 live picks dropped: MH2 failed the gate. |
-| 130 | Live: rotation cards (labelled swaps, CGT shown), "How it picks", selection-edge and proxy badges, overlap note, Explore grouping. Passing strategies become fundable. |
+| 130 | Round 2 (section 7): R6 and R7 join, MH3 retired (D94). |
+| later | Only once a selection strategy passes: live rotation cards (labelled swaps, CGT shown), "How it picks", selection-edge and proxy badges, overlap note, Explore grouping. Passing strategies become fundable. |
 
 ## 6. Results (measured 2026-10-13, engine a7, production data window 2016-06 to 2026-10, after 25% CGT)
 
@@ -120,3 +121,42 @@ Consequences under the decisions: MH3 joins the catalogue (PR 127). M2 did not p
 MH1 and MH2 did not pass, so Factor Stack stays. Per D3 the Medium, Medium-high and High tiers get no new strategy from
 this round, the Very-high tier none either, and replacements are to be designed. PR 129 (MH2 live picks) and PR 130
 (rotation cards) have nothing to make live until a selection strategy passes.
+
+## 7. Round 2 (approved 2026-10-13 14:40, pre-registered before any measurement)
+
+The owner approved the doc's section 11. Designed after seeing the 2016-2026 results, so every one is a hindsight
+design and must also pass the 2000-2016 long-history test. Settings below are fixed; a change makes a new candidate.
+
+| Id | Code | Designed tier | Spec | Sweep |
+| --- | --- | --- | --- | --- |
+| btm_qqq_trend_cash | R1 | Medium | `trend_filter` QQQ over its 200-day, 3-session confirm; holds QQQ, base BIL | ma_days 150-250 |
+| btm_qqq_vol_managed | R2 | Medium | `vol_managed` on QQQ's 20-day vol, target 18%, max 1.0x, band 0.15, legs BIL/QQQ/QLD/TQQQ | target 14-22 |
+| btm_qqq_vol_managed_15 | R3 | Medium-high | as R2, target 25%, max 1.5x | target 20-30 |
+| btm_qld_trend_cash | R4 | Medium-high | as R1 holding QLD, base BIL | ma_days 150-250 |
+| btm_qqq_vol_managed_2x | R5 | High | as R2, target 35%, max 2.0x | target 30-40 |
+| btm_tqqq_trend_cash | R6 | Very high | as R1 holding TQQQ, base BIL | ma_days 150-250 |
+| btm_tqqq_trend_vol_brake | R7 | Very high | `vol_target` TQQQ on TQQQ's 20-day vol, target 45%, max 1.0, rest QQQ; `trend_gate` QQQ 200-day (3-session) else BIL | target 35-55 |
+
+All carry `long_history` and `drift_band: 0.10` (R1, R4, R6 hold one fund at a time, so the band does not bind).
+
+Gate, as section 3, with three round-2 specifics fixed now: test 1 compares with holding QQQ (all seven are Nasdaq
+rules; a trend rule's own `base` is cash here, which would flatter it), and the Medium alternative applies when the
+MEASURED tier is Medium; test 2 does not apply (no selection); test 5 runs across the seven and MH3. The book effect
+(D93) is measured on the owner's book and recorded.
+
+### Round 2 results (measured 2026-10-13, engine a7, production data window; QQQ 21.2%/yr, -35.1%; 2000-2016 QQQ 2.0%/yr)
+
+| Code | /yr | Worst drop | vs QQQ | Tier | Test 3 | Sweep | 2000-2016 /yr, drop | Book effect (gain, drop) | Outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| R1 | 13.8% | -25.3% | -7.5 | Medium | holds up | 0.8 | 3.7%, -31% | -0.012, -0.8 | fails test 1 |
+| R2 | 14.9% | -27.0% | -6.5 | Medium | holds up | 2.2 | 5.7%, -50% | -0.014, +1.6 | fails test 1 |
+| R3 | 19.6% | -34.3% | -1.8 | Medium | holds up | 3.1 | 6.2%, -63% | -0.011, +2.7 | fails test 1 (not 25% shallower) |
+| R4 | 24.2% | -43.5% | +3.0 | Medium-high | holds up | 1.8 | 4.5%, -52% | -0.004, +1.0 | passes; loses test 5 to R7 |
+| R5 | 24.6% | -46.9% | +3.2 | High | holds up | 2.7 | 6.8%, -77% | -0.011, +2.4 | passes; loses test 5 to R6 |
+| **R6** | **33.5%** | -56.6% | **+12.3** | High | holds up | 3.3 | 4.3%, -66% | -0.004, +1.5 | **ships** |
+| **R7** | **29.5%** | -43.2% | **+8.2** | Medium-high | holds up | 2.8 | 4.8%, -62% | -0.004, +1.4 | **ships** |
+| MH3 | 27.2% | -52.7% | +5.9 | High | holds up | 0.8 | 2.3%, -84% | -0.013, +4.4 | retired: loses test 5 to R6 (D94) |
+
+Daily return correlations above 0.9 joined every pair of Nasdaq rules (R4-R6 0.999, R2-R5 0.990, R6-MH3 0.904), hence
+D94. No round-2 rule improves the owner's book by the D93 rule; R4, R6 and R7 come closest (-0.004), adding 2.4-3.3%/yr
+for 1.0-1.5 points of drawdown.
