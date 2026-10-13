@@ -87,3 +87,31 @@ Tiers come from the measured worst drop: Medium <= 36%, Medium-high <= 45%, High
 | 128 | `risk_parity`, rank-on-index map, long-history test; measure VH1, VH2 (with walk-forward). |
 | 129 | MH2 by proxy, live picks from the screener (US44 + 9 TASE). |
 | 130 | Live: rotation cards (labelled swaps, CGT shown), "How it picks", selection-edge and proxy badges, overlap note, Explore grouping. Passing strategies become fundable. |
+
+## 6. Results (measured 2026-10-13, engine a7, production data window 2016-06 to 2026-10, after 25% CGT)
+
+Test 1 compares with the strategy's base; M1, M2 and MH2 have none, so they are compared with QQQ, the catalogue's own
+baseline (they also lose to SPY: M1 by 5.5, M2 by 10.6, MH2 by 3.0 points a year; each comparison is over the strategy's own window). Selection edge = return minus an
+equal-weight hold of the same candidates.
+
+| Strategy | /yr | Worst drop | vs base | Edge | Test 3 (own) | Sweep spread | 2000-2016 | Gate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| M1 Low-Volatility Quality | 9.6% | -29.5% | -10.9 (QQQ) | -6.3 | holds up | 1.9 | n/a | fails 1, 2 |
+| M2 Accelerating Dual Momentum | 4.8% | -35.7% | -16.7 (QQQ) | -7.0 | holds up | 4.4 | n/a | fails 1, 2 |
+| M3 Sector Rotation | 11.3% | -28.8% | -9.9 | -0.5 | weaker | 1.5 | n/a | fails 1, 2 |
+| MH1 Large-Cap Momentum 10 | 17.4% | -34.6% | -3.8 | +0.7 | holds up | 2.7 | n/a | fails 1 |
+| MH2 Magic Formula (QVAL) | 12.3% | -51.5% | -8.9 (QQQ) | n/a | n/a | n/a | n/a | fails 1 |
+| **MH3 2x Nasdaq Trend** | **27.2%** | -52.7% | **+5.9** | n/a | holds up | 0.8 | 2.3% vs 2.0%, -84% | **passes; measures High** |
+| H1 Quality Momentum 5 | 16.0% | -40.6% | -5.3 | -0.8 | holds up | 2.7 | n/a | fails 1, 2 |
+| H2 52-Week-High Leaders | 12.5% | -27.8% | -8.8 | -4.3 | holds up | 2.9 | n/a | fails 1, 2 |
+| H3 Top-Down Sector Leaders | 19.7% | -31.9% | -1.5 | +2.3 | holds up | 3.7 | n/a | fails 1 |
+| VH1 Leveraged Risk Parity | 4.1% | -48.4% | -7.1 (own funds) | n/a | holds up | 1.1 | 8.9% vs own 11.1% | fails 1, long history |
+| VH2 Leveraged Sector Momentum | 8.4% | -87.3% | -12.8 | -17.0 | holds up | 22.4 | -7.7% vs 2.0%, -93% | fails 1, 2, 4, long history |
+
+Cross-checks before believing the engine: MH1 against the MTUM fund (16.2%/yr), M1 against USMV (10.1%/yr), and an
+independent day-by-day replay of M2's targets (5.55%/yr gross against the engine's 4.54% net).
+
+Consequences under the decisions: MH3 joins the catalogue (PR 127). M2 did not pass, so Dual Momentum Rotation stays;
+MH1 and MH2 did not pass, so Factor Stack stays. Per D3 the Medium, Medium-high and High tiers get no new strategy from
+this round, the Very-high tier none either, and replacements are to be designed. PR 129 (MH2 live picks) and PR 130
+(rotation cards) have nothing to make live until a selection strategy passes.

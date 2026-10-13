@@ -37,7 +37,11 @@ _CLASS_ASSUMPTIONS = {
     "min_vol": (6.5, 11.0),           # USMV
 }
 
-_LEVERAGED = {"TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA"}
+# PR 127: QLD (2x Nasdaq) joins the catalogue; the rest are the geared funds
+# the Beat the Market engine now measures (PR 128), so a basket holding any of
+# them is never modelled as a single stock.
+_LEVERAGED = {"TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA",
+              "QLD", "TMF", "FAS", "CURE", "ERX", "LABU", "DRN"}
 _BROAD = {"VTI", "VT", "ITOT", "VOO"}
 _INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG"}
 _SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB"}

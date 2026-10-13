@@ -32,7 +32,7 @@ foreach ($sid in @("btm_trend_tqqq", "btm_trend_soxl", "btm_vol_target_tqqq", "b
 }
 
 Sec "2  the shell"
-try { $sw = Invoke-WebRequest -Uri "$BaseUrl/sw.js" -UseBasicParsing -TimeoutSec 30 } catch { $sw = $null }
+try { $sw = Invoke-WebRequest -Uri "$BaseUrl/app/sw.js" -UseBasicParsing -TimeoutSec 30 } catch { $sw = $null }
 if ($sw -and $sw.Content -match "iw-v62") { Ok "sw.js iw-v62" } else { Bad "sw.js is not iw-v62" }
 
 Sec "3  nothing else changed"

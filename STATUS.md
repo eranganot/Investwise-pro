@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 128). Last product PR: **PR 128**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 127). Last product PR: **PR 127**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,28 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 127 — the eight rotation candidates measured; Trend-Filtered 2x Nasdaq joins the catalogue
+
+**Plan.** PR 127 of [`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md).
+Every candidate was measured on its pre-registered settings; the full table, with the Very-high pair from PR 128 and MH2
+on its proxy, is section 6 of that file.
+
+**Result.** 1 of 11 passed the gate: **MH3, Trend-Filtered 2x Nasdaq** (`btm_qld_trend`): 27.2%/yr against QQQ's
+21.2%, worst drop −52.7% (so it shows as High, D88), test 3 "holds up" against its own funds, sweep spread 0.8 points,
+and over 2000–2016 2.3%/yr against QQQ's 2.0% with a −84% worst drop. Every candidate that stepped away from mega-cap
+tech lost to holding QQQ over this decade; the closest was H3 Top-Down Sector Leaders (19.7%/yr, −1.5).
+
+**What.** `btm_qld_trend` in `CATALOG` (`trend_filter`, QLD over QQQ, `long_history`), fundable like the other trend
+sleeves. QLD and the other geared funds the engine now measures join `strategy_profile._LEVERAGED`. Dual Momentum
+Rotation and Factor Stack stay: their replacements did not pass.
+
+**Open.** Owner question sent 2026-10-13: keep the gate as approved and design replacements (D3), or add a
+"makes the whole book better" way to pass.
+
+**Smoke.** `scripts/smoke/smoke-pr127-catalogue-results.ps1 -Sha <sha>`.
 
 ---
 
@@ -74,7 +96,9 @@ Neither Very-high candidate enters the catalogue (plan D3: the tier is left shor
 
 **Tests.** `tests/test_pr128_long_history.py` (9).
 
-**Smoke.** `scripts/smoke/smoke-pr128-long-history.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr128-long-history.ps1 -Sha <sha>`. **Ran against `2903327` (GitHub PR #32 merge): 3 PASS,
+1 FAIL, 4 SKIP.** The FAIL was the smoke, not the deploy: it read `/sw.js` (404); the shell is served at `/app/sw.js`,
+which returned iw-v62. Script fixed in PR 127; re-run: **4 PASS, 0 FAIL, 4 SKIP** (the four rows re-measure at 03:30).
 
 ---
 
