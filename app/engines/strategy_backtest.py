@@ -638,7 +638,11 @@ def own_hold_spec(spec: dict) -> dict:
         return {"id": f"{spec.get('id')}__own", "weights": {},
                 "overlay": {"kind": "equal_hold", "universe": [hm.get(t, t) for t in uni],
                             "cadence_days": int(o.get("cadence_days", 21))}}
-    w = dict(spec.get("weights") or {}) or dict(spec.get("base") or {})
+    if o.get("kind") == "vol_managed":
+        # Its own instruments, held at its ceiling: the exposure it reaches for.
+        w = exposure_mix(float(o.get("max_exposure", 1.0)), o["legs"])
+    else:
+        w = dict(spec.get("weights") or {}) or dict(spec.get("base") or {})
     return {"id": f"{spec.get('id')}__own", "weights": w, "overlay": {"kind": "buy_hold"},
             "drift_band": 1.0}
 
@@ -732,11 +736,71 @@ def _risk_parity(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------
+# PR 130 -- round 2: volatility-managed exposure (approved 2026-10-13)
+# --------------------------------------------------------------------------
+#
+# Exposure to an index = min(max_exposure, target_vol / its recent realised
+# volatility) (Moreira & Muir, 2017): risk is cut when volatility rises, which
+# historically comes before the worst falls. The exposure is expressed in real
+# funds: below 1x the index plus cash, between 1x and 2x the index plus its 2x
+# fund, between 2x and 3x the 2x fund plus the 3x fund. Re-set only when the
+# exposure moves past `rebalance_band`, as `_vol_target` does.
+
+def exposure_mix(e: float, legs: dict[str, str]) -> dict[str, float]:
+    """`legs` = {"cash": .., "x1": .., "x2": .., "x3": ..}; e in [0, 3]."""
+    e = max(0.0, float(e))
+    if e <= 1.0:
+        out = {legs["x1"]: e, legs["cash"]: 1.0 - e}
+    elif e <= 2.0:
+        out = {legs["x2"]: e - 1.0, legs["x1"]: 2.0 - e}
+    else:
+        out = {legs["x3"]: min(1.0, e - 2.0), legs["x2"]: max(0.0, 3.0 - e)}
+    return {k: v for k, v in out.items() if v > 0.0005}
+
+
+def _vol_managed(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
+    o = spec["overlay"]
+    legs = o["legs"]
+    sig = px[o.get("signal_ticker") or legs["x1"]]
+    look = int(o.get("vol_days", 20))
+    target = float(o["target_vol_pct"])
+    cap = float(o.get("max_exposure", 1.0))
+    band = float(o.get("rebalance_band", 0.15))
+    r = np.diff(sig) / sig[:-1]
+    out: list[dict] = []
+    held = None
+    for i in range(sig.size):
+        if i < look:
+            out.append({})
+            continue
+        rv = float(r[i - look:i].std(ddof=1)) * (TRADING_DAYS ** 0.5) * 100
+        e = cap if rv <= 0 else min(cap, target / rv)
+        e = round(e, 2)
+        if held is not None and abs(e - held) < band:
+            e = held
+        held = e
+        out.append(exposure_mix(e, legs))
+    return out
+
+
+def _trend_gated(px: dict[str, np.ndarray], spec: dict, targets: list[dict]) -> list[dict]:
+    """R7: an overlay's targets while the trend is up, `off` while it is not."""
+    g = (spec.get("overlay") or {}).get("trend_gate")
+    if not g:
+        return targets
+    arr = px[g["ticker"]]
+    on = _confirm(np.nan_to_num(arr - sma(arr, int(g.get("ma_days", 200))), nan=-1.0) > 0,
+                  int(g.get("confirm_days", 3)))
+    off = dict(g.get("off") or {})
+    return [t if on[i] else dict(off) for i, t in enumerate(targets)]
+
+
 def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
     """Target weights per day, or an abstention dict when the spec is unusable."""
     kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
     weights, risk_off = spec.get("weights") or {}, spec.get("risk_off")
-    if not weights and kind not in ("dual_momentum", "rank_select", "equal_hold"):
+    if not weights and kind not in ("dual_momentum", "rank_select", "equal_hold", "vol_managed"):
         return _abstain(BAD_SPEC, "strategy has no basket weights")
     if kind == "buy_hold":
         return [dict(weights)] * len(next(iter(px.values())))
@@ -752,7 +816,9 @@ def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
     if kind == "sector_momentum":
         return _sector_momentum(px, spec)
     if kind == "vol_target":
-        return _vol_target(px, spec)
+        return _trend_gated(px, spec, _vol_target(px, spec))
+    if kind == "vol_managed":
+        return _vol_managed(px, spec)
     fn = {"trend_filter": _trend_filter, "ma_cross": _ma_cross,
           "donchian": _donchian, "rsi_pullback": _rsi_pullback,
           "drawdown_brake": _drawdown_brake}.get(kind)
@@ -998,8 +1064,18 @@ def tickers_needed(spec: dict, *, regime_gate: bool = False) -> list[str]:
             names.add(o[key])
     names.update(o.get("universe") or [])
     names.update(o.get("fallback") or [])
-    for fund, idx in (o.get("legs") or {}).items():
-        names.update((fund, idx))
+    legs = o.get("legs") or {}
+    if o.get("kind") == "vol_managed":
+        names.update(legs.values())
+        if o.get("signal_ticker"):
+            names.add(o["signal_ticker"])
+    else:
+        for fund, idx in legs.items():
+            names.update((fund, idx))
+    tg = o.get("trend_gate") or {}
+    if tg.get("ticker"):
+        names.add(tg["ticker"])
+        names.update(tg.get("off") or {})
     if o.get("cash"):
         names.add(o["cash"])
     names.update((o.get("hold_map") or {}).values())

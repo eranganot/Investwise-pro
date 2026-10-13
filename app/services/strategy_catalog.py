@@ -68,6 +68,10 @@ CATALOG: list[dict] = [
         # worst drop), and D88 shows the measured tier.
         "id": "btm_qld_trend",
         "name": "Trend-Filtered 2x Nasdaq",
+        "retired": {"on": "2026-10-13", "decision": "D94", "move_to": "btm_qqq_hold",
+                    "why": ("Superseded inside the High tier by 3x Nasdaq Trend to Cash, whose daily "
+                            "returns it tracks (correlation 0.90) with a weaker edge: 27.2%/yr against "
+                            "33.5%, and -84% against -66% over 2000-2016.")},
         "risk": "Medium-high",
         "sleeve_pct": 20,
         "horizon": "Hold for years; check weekly",
@@ -81,6 +85,47 @@ CATALOG: list[dict] = [
         "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200,
                     "confirm_days": 3,
                     "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        # PR 130, round 2 R6 (docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md, s7).
+        # Passed tests 1, 3, 4 and 2000-2016; kept over MH3 and R5 by the
+        # near-duplicate test applied within the measured tier (D94).
+        "id": "btm_tqqq_trend_cash",
+        "name": "3x Nasdaq Trend to Cash",
+        "risk": "Very high",
+        "sleeve_pct": 15,
+        "horizon": "Hold for years; check weekly",
+        "long_history": True,
+        "drift_band": 0.10,
+        "description": ("Holds 3x Nasdaq while QQQ is above its 200-day average and steps all the "
+                        "way out to T-bills when it is not. Stepping back into QQQ, as Trend-Filtered "
+                        "Leveraged Nasdaq does, still rides an index crash down: over 2000-2016 "
+                        "that rule's worst drop was -85%, this one's -66%."),
+        "weights": {"TQQQ": 1.0}, "base": {"BIL": 1.0},
+        "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200,
+                    "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        # PR 130, round 2 R7. Passed tests 1, 3, 4 and 2000-2016; the
+        # Medium-high tier's survivor of the near-duplicate test (D94).
+        "id": "btm_tqqq_trend_vol_brake",
+        "name": "3x Nasdaq Trend with a Volatility Brake",
+        "risk": "Very high",
+        "sleeve_pct": 15,
+        "horizon": "Hold for years; rebalances itself",
+        "long_history": True,
+        "drift_band": 0.10,
+        "description": ("While QQQ is above its 200-day average, holds 3x Nasdaq sized so its "
+                        "recent volatility stays near 45% (the rest in QQQ); when the trend breaks, "
+                        "T-bills. The brake cuts leverage as markets get choppy, before the trend "
+                        "rule has to act."),
+        "weights": {"TQQQ": 1.0}, "base": _QQQ_CORE,
+        "overlay": {"kind": "vol_target", "gate_ticker": "TQQQ", "vol_days": 20,
+                    "target_vol_pct": 45, "max_weight": 1.0, "rebalance_band": 0.15,
+                    "trend_gate": {"ticker": "QQQ", "ma_days": 200, "confirm_days": 3,
+                                   "off": {"BIL": 1.0}},
+                    "sweep_param": "target_vol_pct", "sweep_values": [35, 40, 45, 50, 55]},
     },
     {
         "id": "btm_vol_target_tqqq",
@@ -406,9 +451,12 @@ def _rule_summary(entry: dict) -> str:
         return (f"Enters on a {o.get('entry_days', 20)}-day high, exits on a "
                 f"{o.get('exit_days', 10)}-day low. Otherwise {base}.")
     if kind == "vol_target":
+        tg = o.get("trend_gate") or {}
+        gate = (f" Only while {tg['ticker']} is above its {tg.get('ma_days', 200)}-day average; "
+                f"otherwise {', '.join(sorted(tg.get('off') or {})) or 'cash'}." if tg else "")
         return (f"Scales the sleeve so realized volatility stays near "
                 f"{o.get('target_vol_pct')}%, rebalancing when the target moves more "
-                f"than {int(float(o.get('rebalance_band', 0.15)) * 100)} points. Remainder in {base}.")
+                f"than {int(float(o.get('rebalance_band', 0.15)) * 100)} points. Remainder in {base}.{gate}")
     if kind == "dual_momentum":
         return (f"Each month holds whichever of {', '.join(o.get('universe') or [])} has the "
                 f"strongest {int(o.get('lookback_days', 252) / 21)}-month return, or {base} "

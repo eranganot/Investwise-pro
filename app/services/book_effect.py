@@ -147,7 +147,10 @@ async def for_strategy(session: AsyncSession, user: User, strategy_id: str,
 
 async def for_all_candidates(session: AsyncSession, user: User) -> dict:
     """The gate record: every pre-registered candidate against this book."""
-    ids = [c["id"] for c in strategy_candidates.CANDIDATES] + ["btm_qld_trend"]
+    # Every candidate the plan pre-registered: the ones that failed or lost the
+    # near-duplicate test (kept as specs) and the ones the catalogue took.
+    ids = [c["id"] for c in strategy_candidates.CANDIDATES] + [
+        "btm_qld_trend", "btm_tqqq_trend_cash", "btm_tqqq_trend_vol_brake"]
     rows = []
     for sid in ids:
         rows.append(await for_strategy(session, user, sid))

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 129). Last product PR: **PR 129**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 130). Last product PR: **PR 130**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 130 — round 2: 3x Nasdaq Trend to Cash and 3x Trend with a Volatility Brake join; MH3 gives way (D94)
+
+**Owner, 2026-10-13:** approved the round-2 candidates (plan section 7, pre-registered before measurement), then, after
+seeing that daily correlation joins every pair of Nasdaq rules, chose to apply the near-duplicate test within a measured
+tier (D94).
+
+**What.**
+- Engine: `vol_managed` (exposure = min(ceiling, target vol ÷ QQQ's 20-day vol), built from BIL/QQQ/QLD/TQQQ with a
+  0.15 hysteresis band) and a `trend_gate` on `vol_target` (its targets while QQQ is above its 200-day, otherwise `off`).
+  The live signal reads the same `targets_for`, so a card describes exactly what was measured.
+- Catalogue: `btm_tqqq_trend_cash` (R6: TQQQ over QQQ's 200-day, otherwise BIL) and `btm_tqqq_trend_vol_brake` (R7).
+  `btm_qld_trend` (MH3) retired with a flag (D94), moving to Hold the Nasdaq index. R1-R5 kept in `strategy_candidates`.
+- `book_effect.for_all_candidates` covers every pre-registered candidate, catalogue ones included. The PR 129 smoke counts
+  them instead of expecting 11.
+
+**Measured.** Plan section 7 has the table. R6: 33.5%/yr (QQQ 21.2%), worst drop -56.6%, 2000-2016 4.3%/yr at -66%
+(Trend Nasdaq: 2.1% at -85.5%). R7: 29.5%/yr, -43.2%, 2000-2016 4.8%/yr at -62%. Neither improves the owner's book by the
+D93 rule (-0.004 each); each adds about 2.6-3.3%/yr to it for ~1.5 points of drawdown.
+
+**Tests.** `tests/test_pr130_round2.py` (12); PR 125 and PR 129 tests updated for the new retired entry and 15 candidates.
+
+**Smoke.** `scripts/smoke/smoke-pr130-round2.ps1 -Sha <sha>`. Merged without GitHub CI for the same billing reason (owner's
+instruction); local SQLite and Postgres both 2,484 passed (the one failure is Python-3.13-only and fails on main too).
 
 ---
 
@@ -82,7 +108,12 @@ today's holdings.
 
 **Tests.** `tests/test_pr129_book_effect.py` (11).
 
-**Smoke.** `scripts/smoke/smoke-pr129-book-effect.ps1 -Sha <sha>`.
+**Smoke.** `scripts/smoke/smoke-pr129-book-effect.ps1 -Sha <sha>`. **Ran against `d11833f` (GitHub PR #34 merge), with the
+owner's key: 7 PASS, 0 FAIL, 0 SKIP.** Production measured all 11 round-1 candidates against the live book: none improves
+it (closest M1 +0.007, H3 +0.002; MH3 -0.017 for +4.6 points of drawdown), matching the offline table above to a few
+hundredths. **Merged without GitHub CI** (owner, 2026-10-13: "Skip the ci in GH"): Actions refused to start any job
+("recent account payments have failed or your spending limit needs to be increased"). Local SQLite and Postgres gates
+passed.
 
 ---
 

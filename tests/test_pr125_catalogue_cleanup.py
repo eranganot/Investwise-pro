@@ -129,7 +129,8 @@ def test_a_retired_strategy_moves_somewhere_that_is_offered():
 
 
 def test_nothing_else_is_retired():
-    assert {e["id"] for e in cat.CATALOG if e.get("retired")} == set(RETIRED)
+    # PR 130 (D94): MH3 gave way to 3x Nasdaq Trend to Cash inside the High tier.
+    assert {e["id"] for e in cat.CATALOG if e.get("retired")} == set(RETIRED) | {"btm_qld_trend"}
 
 
 def _seed(c):

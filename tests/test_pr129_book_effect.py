@@ -121,12 +121,12 @@ def test_a_late_listing_does_not_cut_the_blend():
     assert m["ok"] and m["observations"] == N, m.get("observations")
 
 
-def test_the_candidates_are_the_ten_that_failed():
+def test_the_candidates_are_the_ones_the_catalogue_did_not_take():
     ids = {c["id"] for c in sc.CANDIDATES}
-    assert len(ids) == 10
-    assert not ids & set(cat.ids()), "a failed candidate is also in the catalogue"
+    assert len(ids) == 15                     # round 1's ten, round 2's R1-R5 (PR 130)
+    assert not ids & set(cat.ids()), "a candidate is also in the catalogue"
     assert {c["code"] for c in sc.CANDIDATES} == {"M1", "M2", "M3", "MH1", "MH2", "H1", "H2",
-                                                  "H3", "VH1", "VH2"}
+                                                  "H3", "VH1", "VH2", "R1", "R2", "R3", "R4", "R5"}
     assert sc.spec("btm_magic_formula")["proxy"] == {"ticker": "QVAL"}
 
 
