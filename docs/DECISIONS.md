@@ -199,6 +199,12 @@
 - **D89 · 2026-10-13 · A multi-leg backtest re-trues drift only past a per-strategy band** (`drift_band`, default 0.01 so
   nothing else moves; 0.10 for volatility targeting and every new multi-leg strategy). Measured: the vol-target sleeve's
   target moved 10.6 times a year but the 1% re-true made 162 trades a year. → PR 125
+- **D90 · 2026-10-13 · The out-of-sample verdict is judged against holding the strategy's own instruments** (plan gate
+  test 3, D2). Against SPY, holding TQQQ with no rule decays 53 points across the 2022 split while SPY decays 6, so every
+  3x strategy read "likely overfitted". `verdict_vs_benchmark` keeps the old reading. → PR 126 (engine a7)
+- **D91 · 2026-10-13 · A selection strategy is judged on its selection edge** (return minus an equal-weight hold of the
+  same universe, on the same cadence), because its universe is today's list of survivors; a fundamentals rule is
+  measured on a proxy fund and says `measured_by_proxy`; a backtest starts on the strategy's first live day. → PR 126
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

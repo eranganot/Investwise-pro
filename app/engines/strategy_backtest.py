@@ -136,14 +136,64 @@ def _confirm(flag: np.ndarray, days: int) -> np.ndarray:
 # alignment
 # --------------------------------------------------------------------------
 
-def align(series: dict[str, list[tuple[str, float]]]) -> tuple[list[str], dict[str, np.ndarray]]:
-    """Intersect dates across every ticker so all arrays share one calendar."""
+def align(series: dict[str, list[tuple[str, float]]], *,
+          late: set[str] | frozenset = frozenset()) -> tuple[list[str], dict[str, np.ndarray]]:
+    """Intersect dates across every ticker so all arrays share one calendar.
+
+    ``late`` (PR 126) names tickers that JOIN the calendar rather than define
+    it: a stock-selection universe whose members listed at different times.
+    Intersecting them would cut a 44-stock backtest to MNDY's 2021 listing. A
+    late ticker is NaN before its first price and carried forward over a gap
+    after it, and a selection rule treats NaN as "not eligible yet".
+    """
     if not series:
         return [], {}
     maps = {tk: {d: float(c) for d, c in rows} for tk, rows in series.items()}
-    common = set.intersection(*[set(m) for m in maps.values()])
-    dates = sorted(common)
-    return dates, {tk: np.array([m[d] for d in dates], dtype=float) for tk, m in maps.items()}
+    anchor = [m for tk, m in maps.items() if tk not in late]
+    if anchor:
+        dates = sorted(set.intersection(*[set(m) for m in anchor]))
+    else:
+        # Every ticker joins late and nothing anchors the calendar: use every
+        # date any of them traded. Intersecting would cut the whole universe to
+        # its youngest member -- the defect `late` exists to prevent.
+        dates = sorted(set().union(*[set(m) for m in maps.values()]))
+    out: dict[str, np.ndarray] = {}
+    for tk, m in maps.items():
+        if tk not in late:
+            out[tk] = np.array([m[d] for d in dates], dtype=float)
+            continue
+        arr = np.full(len(dates), np.nan)
+        last = np.nan
+        for i, d in enumerate(dates):
+            v = m.get(d)
+            if v is not None:
+                last = v
+            arr[i] = last
+        out[tk] = arr
+    return dates, out
+
+
+def clean_spikes(rows: list[tuple[str, float]], *, factor: float = 2.0,
+                 tol: float = 0.10) -> tuple[list[tuple[str, float]], int]:
+    """Drop one-day prints that jump by ``factor`` or more and come straight back.
+
+    Phase 0 (2026-10-13) found TSEM.TA closing at 1,066 on 2017-05-04 between
+    ~7,700 either side -- a 7x error a momentum or stop rule would act on. A
+    3x fund's real crash days (TECL ~30% in March 2020) must survive, so the
+    test is a 2x jump whose two neighbours agree within ``tol``: a price that
+    left and came back, not a market that moved.
+    """
+    if len(rows) < 3:
+        return list(rows), 0
+    drop: set[int] = set()
+    for i in range(1, len(rows) - 1):
+        a, b, c = rows[i - 1][1], rows[i][1], rows[i + 1][1]
+        if a <= 0 or b <= 0 or c <= 0:
+            continue
+        jump = max(b / a, a / b)
+        if jump >= factor and abs(c / a - 1.0) <= tol:
+            drop.add(i)
+    return [r for i, r in enumerate(rows) if i not in drop], len(drop)
 
 
 # --------------------------------------------------------------------------
@@ -357,14 +407,269 @@ def _sector_momentum(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------
+# PR 126 -- selection: rank a universe, hold the winners
+# --------------------------------------------------------------------------
+#
+# Every earlier overlay decides WHEN to hold a fixed basket. These decide WHAT
+# to hold (docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md). One function covers
+# the plan's ranking strategies, so their differences are settings in the
+# catalogue -- universe, score, filters, weights, cadence -- and not code paths
+# that can drift apart.
+#
+# A name is eligible on a day only when it has a finite price on that day AND
+# on every day its score reads. Late listings arrive as NaN (`align(late=...)`),
+# so a 2021 IPO simply cannot be picked before it has the history to be ranked.
+
+def _ok(a: np.ndarray, *idx: int) -> bool:
+    return all(0 <= j < a.size and np.isfinite(a[j]) and a[j] > 0 for j in idx)
+
+
+def _vol(a: np.ndarray, i: int, n: int) -> float | None:
+    if not _ok(a, i - n, i):
+        return None
+    w = a[i - n:i + 1]
+    if not np.all(np.isfinite(w)):
+        return None
+    r = np.diff(w) / w[:-1]
+    v = float(r.std(ddof=1)) * (TRADING_DAYS ** 0.5)
+    return v if v > 0 else None
+
+
+def score_at(a: np.ndarray, i: int, kind: str, o: dict) -> float | None:
+    """One name's score on day ``i``. Higher is better. None = not eligible."""
+    if kind == "mom_12_1":                # 12-month return skipping the latest month
+        return a[i - 21] / a[i - 252] - 1.0 if _ok(a, i - 252, i - 21, i) else None
+    if kind == "risk_adj_mom":            # 12-1 return per unit of 1-year volatility
+        m = score_at(a, i, "mom_12_1", o)
+        v = _vol(a, i, 252)
+        return m / v if m is not None and v else None
+    if kind == "blend":                   # mean of the 1-, 3- and 6-month returns
+        looks = o.get("blend_days") or (21, 63, 126)
+        if not _ok(a, i, *[i - n for n in looks]):
+            return None
+        return float(np.mean([a[i] / a[i - n] - 1.0 for n in looks]))
+    if kind == "ret":
+        n = int(o.get("lookback_days", 126))
+        return a[i] / a[i - n] - 1.0 if _ok(a, i - n, i) else None
+    if kind == "low_vol":                 # calmest first
+        v = _vol(a, i, int(o.get("vol_days", 252)))
+        return -v if v else None
+    if kind == "high_52w":                # nearness to the 52-week high
+        if not _ok(a, i - 251, i):
+            return None
+        w = a[i - 251:i + 1]
+        return float(a[i] / np.nanmax(w)) if np.all(np.isfinite(w)) else None
+    raise ValueError(f"unknown score '{kind}'")
+
+
+def _trend_ok(a: np.ndarray, i: int, n: int) -> bool:
+    if not _ok(a, i - n + 1, i):
+        return False
+    w = a[i - n + 1:i + 1]
+    return bool(np.all(np.isfinite(w)) and a[i] > w.mean())
+
+
+def _pick(ranked: list[str], held: list[str], top: int, keep_rank: int) -> list[str]:
+    """Hold the top ``top``; a name already held stays while it ranks within
+    ``keep_rank``. The buffer is a tax decision: at 25% CGT on every sale,
+    churning between the 10th and 11th name costs more than ranking sharper earns."""
+    rank = {t: k + 1 for k, t in enumerate(ranked)}
+    keep = [t for t in held if t in rank and rank[t] <= keep_rank][:top]
+    for t in ranked:
+        if len(keep) >= top:
+            break
+        if t not in keep:
+            keep.append(t)
+    return keep
+
+
+def _weights_for(px: dict[str, np.ndarray], i: int, names: list[str], slots: int,
+                 o: dict) -> dict[str, float]:
+    if not names:
+        return {}
+    share = len(names) / float(slots)          # empty slots fall to the base
+    if o.get("weighting") == "inverse_vol":
+        inv = {t: 1.0 / v for t in names if (v := _vol(px[t], i, int(o.get("vol_days", 252))))}
+        if len(inv) == len(names):
+            tot = sum(inv.values())
+            return {t: share * w / tot for t, w in inv.items()}
+    return {t: share / len(names) for t in names}
+
+
+def _with_base(picks: dict[str, float], base: dict[str, float]) -> dict:
+    rest = max(0.0, 1.0 - sum(picks.values()))
+    out = dict(picks)
+    for bk, bw in base.items():
+        out[bk] = out.get(bk, 0.0) + bw * rest
+    return {k: v for k, v in out.items() if v > 0.0005}
+
+
+def _select_two_stage(px, i, o, ts, held, base_kind):
+    """H3: rank the sectors, keep the top N in an uptrend with enough names, then
+    rank the stocks inside each."""
+    sectors = ts["sectors"]
+    min_names = int(ts.get("min_names", 2))
+    elig = {}
+    for etf, stocks in sectors.items():
+        if etf not in px or not _trend_ok(px[etf], i, int(ts.get("sector_trend_days", 200))):
+            continue
+        scored = {t: v for t in stocks if t in px
+                  and (v := score_at(px[t], i, base_kind, o)) is not None}
+        sc = score_at(px[etf], i, "ret", {"lookback_days": int(ts.get("sector_lookback_days", 126))})
+        if sc is not None and len(scored) >= min_names:
+            elig[etf] = (sc, scored)
+    ranked_sec = sorted(elig, key=lambda e: elig[e][0], reverse=True)
+    held_sec = []
+    for t in held:
+        sec = next((e for e, ss in sectors.items() if t in ss), None)
+        if sec and sec not in held_sec:
+            held_sec.append(sec)
+    chosen = _pick(ranked_sec, held_sec, int(ts.get("top_sectors", 2)),
+                   int(ts.get("sector_exit_rank", 3)))
+    names = []
+    for e in chosen:
+        scored = elig[e][1]
+        ranked = sorted(scored, key=scored.get, reverse=True)
+        mine = [t for t in held if t in scored]
+        names += _pick(ranked, mine, int(ts.get("per_sector", 2)), int(ts.get("stock_exit_rank", 4)))
+    return names, int(ts.get("top_sectors", 2)) * int(ts.get("per_sector", 2))
+
+
+def _rank_select(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
+    o = spec["overlay"]
+    base = dict(spec.get("base") or {})
+    kind = o.get("score", "mom_12_1")
+    universe = [t for t in (o.get("universe") or []) if t in px]
+    top = int(o.get("top_n", 10))
+    keep_rank = int(o.get("buffer", top))
+    cad = int(o.get("cadence_days", 21))
+    hold_map = o.get("hold_map") or {}
+    margin = float(o.get("switch_margin", 0.0))
+    veto = o.get("trend_veto_days")
+    ts = o.get("two_stage")
+    n = len(next(iter(px.values())))
+
+    gate_on = np.ones(n, dtype=bool)
+    if o.get("market_gate"):
+        g = o["market_gate"]
+        arr = px[g["ticker"]]
+        gate_on = _confirm(np.nan_to_num(arr - sma(arr, int(g.get("ma_days", 200))),
+                                         nan=-1.0) > 0, int(g.get("confirm_days", 3)))
+
+    out: list[dict] = []
+    held: list[str] = []
+    current = dict(base)
+    last = -10 ** 9
+    was_on = True
+    for i in range(n):
+        if not gate_on[i]:
+            held, current, was_on = [], dict(base), False
+            out.append(dict(current))
+            continue
+        due = (i - last >= cad) or not was_on
+        was_on = True
+        if due:
+            if ts:
+                names, slots = _select_two_stage(px, i, o, ts, held, kind)
+            else:
+                scored = {}
+                for t in universe:
+                    v = score_at(px[t], i, kind, o)
+                    if v is None:
+                        continue
+                    if veto and not _trend_ok(px[t], i, int(veto)):
+                        continue
+                    if hold_map and not _ok(px.get(hold_map.get(t, t), np.array([])), i):
+                        continue
+                    scored[t] = v
+                if o.get("require_positive"):
+                    scored = {t: v for t, v in scored.items() if v > 0}
+                ranked = sorted(scored, key=scored.get, reverse=True)
+                names = _pick(ranked, held, top, keep_rank)
+                if margin and held and names and names[0] not in held and held[0] in scored \
+                        and scored[names[0]] - scored[held[0]] < margin:
+                    names = held[:top]           # VH2: switch only on a clear lead
+                if not names and o.get("fallback"):
+                    fb = {t: v for t in o["fallback"] if t in px
+                          and (v := score_at(px[t], i, kind, o)) is not None}
+                    names = sorted(fb, key=fb.get, reverse=True)[:1]
+                slots = top
+            last = i
+            held = names
+            picks = _weights_for(px, i, names, slots, o)
+            if hold_map:
+                picks = {hold_map.get(t, t): w for t, w in picks.items()}
+            current = _with_base(picks, base) if (names or base) else {}
+        out.append(dict(current))
+    return out
+
+
+def equal_hold_targets(px: dict[str, np.ndarray], universe: list[str],
+                       cadence_days: int = 21) -> list[dict]:
+    """Every name in the universe that has a price, equally weighted, re-set on
+    the same cadence -- the "did the ranking add anything?" baseline."""
+    names = [t for t in universe if t in px]
+    n = len(next(iter(px.values())))
+    out, current, last = [], {}, -10 ** 9
+    for i in range(n):
+        if i - last >= cadence_days:
+            live = [t for t in names if _ok(px[t], i)]
+            if live:
+                current, last = {t: 1.0 / len(live) for t in live}, i
+        out.append(dict(current))
+    return out
+
+
+def own_hold_spec(spec: dict) -> dict:
+    """What the strategy would be if it held its own instruments and did nothing.
+
+    Gate test 3 (approved 2026-10-13) judges decay across the 2022 split against
+    THIS, not against SPY: simply holding TQQQ fell from 68.7%/yr to 15.6%/yr
+    across that split while SPY fell from 18.4% to 12.3%, so measured against
+    SPY every 3x rule looked overfitted -- including one with no parameters.
+    """
+    o = spec.get("overlay") or {}
+    uni = list(o.get("universe") or [])
+    if o.get("kind") == "rank_select" and o.get("two_stage"):
+        uni = sorted({t for ss in o["two_stage"]["sectors"].values() for t in ss})
+    if o.get("kind") in ("rank_select", "sector_momentum", "dual_momentum") and uni:
+        hm = o.get("hold_map") or {}
+        return {"id": f"{spec.get('id')}__own", "weights": {},
+                "overlay": {"kind": "equal_hold", "universe": [hm.get(t, t) for t in uni],
+                            "cadence_days": int(o.get("cadence_days", 21))}}
+    w = dict(spec.get("weights") or {}) or dict(spec.get("base") or {})
+    return {"id": f"{spec.get('id')}__own", "weights": w, "overlay": {"kind": "buy_hold"},
+            "drift_band": 1.0}
+
+
+def late_tickers(spec: dict) -> set[str]:
+    """Tickers that join the calendar instead of defining it (see `align`)."""
+    o = spec.get("overlay") or {}
+    if o.get("kind") not in ("rank_select", "equal_hold"):
+        return set()
+    names = set(o.get("universe") or []) | set(o.get("fallback") or [])
+    names |= set((o.get("hold_map") or {}).values())
+    ts = o.get("two_stage") or {}
+    for etf, stocks in (ts.get("sectors") or {}).items():
+        names.add(etf)
+        names.update(stocks)
+    return names
+
+
 def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
     """Target weights per day, or an abstention dict when the spec is unusable."""
     kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
     weights, risk_off = spec.get("weights") or {}, spec.get("risk_off")
-    if not weights and kind != "dual_momentum":
+    if not weights and kind not in ("dual_momentum", "rank_select", "equal_hold"):
         return _abstain(BAD_SPEC, "strategy has no basket weights")
     if kind == "buy_hold":
         return [dict(weights)] * len(next(iter(px.values())))
+    if kind == "rank_select":
+        return _rank_select(px, spec)
+    if kind == "equal_hold":
+        o = spec["overlay"]
+        return equal_hold_targets(px, list(o.get("universe") or []), int(o.get("cadence_days", 21)))
     if kind == "dual_momentum":
         return _dual_momentum(px, spec)
     if kind == "sector_momentum":
@@ -615,6 +920,13 @@ def tickers_needed(spec: dict, *, regime_gate: bool = False) -> list[str]:
         if o.get(key):
             names.add(o[key])
     names.update(o.get("universe") or [])
+    names.update(o.get("fallback") or [])
+    names.update((o.get("hold_map") or {}).values())
+    if (o.get("market_gate") or {}).get("ticker"):
+        names.add(o["market_gate"]["ticker"])
+    for etf, stocks in ((o.get("two_stage") or {}).get("sectors") or {}).items():
+        names.add(etf)
+        names.update(stocks)
     if spec.get("risk_off"):
         names.add(spec["risk_off"])
     if regime_gate:
@@ -712,7 +1024,13 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     if missing:
         return _abstain(MISSING_TICKER, f"no price history for {', '.join(missing)}")
 
-    feed = dict(series)
+    # PR 126: a one-day print that leaves and comes straight back is a data
+    # error, not a market (`clean_spikes`). Counted, so a row says it happened.
+    feed, bad_prints = {}, {}
+    for tk, rows in series.items():
+        feed[tk], k = clean_spikes(list(rows))
+        if k:
+            bad_prints[tk] = k
     if benchmark:
         feed["__bench__"] = benchmark
     # Which ticker's own inception date caps the window. Without this a short
@@ -720,8 +1038,10 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     # responses: a young fund is fine, a truncated feed is a bug. AVUV listing in
     # 2019 legitimately caps its basket at ~7y; the Yahoo ladder silently
     # returning 5y for a decade request was a defect.
-    first_seen = {tk: min(d for d, _ in rows) for tk, rows in feed.items() if rows}
-    dates, px = align(feed)
+    late = late_tickers(spec)
+    first_seen = {tk: min(d for d, _ in rows) for tk, rows in feed.items()
+                  if rows and tk not in late}
+    dates, px = align(feed, late=late)
     if not dates:
         return _abstain(NO_OVERLAP, "the tickers share no common trading dates")
     if len(dates) < _MIN_OBSERVATIONS:
@@ -732,6 +1052,20 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     targets = targets_for(px, spec)
     if isinstance(targets, dict):        # an abstention leaked through
         return targets
+    # PR 126: a strategy with no base holds NOTHING until its score has the
+    # history to be computed (252 sessions for a 1-year volatility). That is
+    # "not able to run yet", not "chose cash", and scoring it as cash drags the
+    # headline for a reason that is not the rule's. Measure from the first day
+    # the rule holds anything. A strategy with a base is never empty: no change.
+    first = next((k for k, t in enumerate(targets) if t), 0)
+    if first > 0:
+        dates, targets = dates[first:], targets[first:]
+        px = {tk: a[first:] for tk, a in px.items()}
+        if bench is not None:
+            bench = bench[first:]
+        if len(dates) < _MIN_OBSERVATIONS:
+            return _abstain(INSUFFICIENT_HISTORY,
+                            f"{len(dates)} sessions after warm-up; need {_MIN_OBSERVATIONS}")
     if regime_gate:
         # The SAME function the live read calls -- see app/engines/regime.py. If
         # these two ever diverge the card's numbers stop describing what runs.
@@ -745,6 +1079,23 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     # the market?" are different questions with different answers.
     _base_metrics(out, px, spec)
     out.update(_exposure_stats(targets, spec))
+    if bad_prints:
+        out["bad_prints_dropped"] = bad_prints
+    o = spec.get("overlay") or {}
+    if o.get("kind") == "rank_select":
+        # SELECTION EDGE: the ranking against holding every candidate equally on
+        # the same cadence. The universe is today's list -- companies that
+        # survived and grew -- so the headline flatters any rule run over it;
+        # the edge differences that flattery out, and it is what the gate reads.
+        own = own_hold_spec(spec)
+        eq = _simulate(px, targets_for(px, own), cost_bps=cost_bps, cgt_rate=cgt_rate,
+                       drift_band=band)
+        eq_cagr = cagr(eq["values"]) * 100
+        out["equal_hold_cagr_pct"] = round(eq_cagr, 2)
+        out["selection_edge_pct"] = round(out["cagr_pct"] - eq_cagr, 2)
+        out["universe_size"] = len(late & set(px))
+        out["survivorship"] = ("measured over today's list of names, which survived to be "
+                               "on it; read the selection edge, not the headline")
 
     starts = {k: v for k, v in first_seen.items() if k != "__bench__"}
     earliest = min(starts.values()) if starts else None
@@ -798,7 +1149,7 @@ def out_of_sample(series: dict[str, list[tuple[str, float]]], spec: dict, *,
 
     ins = run({tk: _slice(r, hi=split_date) for tk, r in series.items()}, spec, **kw)
     oos = run({tk: _slice(r, lo=split_date) for tk, r in series.items()}, spec, **kw)
-    verdict, decay, bench_decay = None, None, None
+    verdict_bench, decay, bench_decay = None, None, None
     if ins.get("ok") and oos.get("ok"):
         decay = ins["cagr_pct"] - oos["cagr_pct"]
         # Measured against the BENCHMARK's decay over the same split, not
@@ -811,13 +1162,34 @@ def out_of_sample(series: dict[str, list[tuple[str, float]]], spec: dict, *,
             relative = decay - bench_decay
         else:
             relative = decay
-        verdict = ("holds up" if relative <= 3 else
-                   "weaker out of sample" if relative <= 12 else "likely overfitted")
+        verdict_bench = ("holds up" if relative <= 3 else
+                         "weaker out of sample" if relative <= 12 else "likely overfitted")
+    # PR 126 (gate test 3, approved 2026-10-13): the verdict is judged against
+    # holding the strategy's OWN instruments over the same split. Against SPY,
+    # simply holding TQQQ -- no parameters at all -- decays 53 points across
+    # 2022 while SPY decays 6, so every 3x rule read "likely overfitted" for the
+    # crime of being levered. The SPY-relative verdict is kept, labelled.
+    own_decay, verdict = None, None
+    if ins.get("ok") and oos.get("ok"):
+        own = own_hold_spec(spec)
+        oi = run({tk: _slice(r, hi=split_date) for tk, r in series.items()}, own, **kw)
+        oo = run({tk: _slice(r, lo=split_date) for tk, r in series.items()}, own, **kw)
+        if oi.get("ok") and oo.get("ok"):
+            own_decay = oi["cagr_pct"] - oo["cagr_pct"]
+            rel = decay - own_decay
+            verdict = ("holds up" if rel <= 3 else
+                       "weaker out of sample" if rel <= 12 else "likely overfitted")
+        else:
+            verdict = verdict_bench
     return {"split_date": split_date, "in_sample": ins, "out_of_sample": oos,
             "cagr_decay_pct": (round(decay, 2) if decay is not None else None),
             "benchmark_decay_pct": (round(bench_decay, 2) if bench_decay is not None else None),
+            "own_hold_decay_pct": (round(own_decay, 2) if own_decay is not None else None),
             "verdict": verdict,
-            "verdict_basis": ("decay relative to the benchmark over the same split"
+            "verdict_vs_benchmark": verdict_bench if decay is not None else None,
+            "verdict_basis": ("decay relative to holding the strategy's own instruments over the same split"
+                              if own_decay is not None else
+                              "decay relative to the benchmark over the same split"
                               if bench_decay is not None else "raw decay (no benchmark)")}
 
 

@@ -246,7 +246,7 @@ def risk_label(entry: dict, backtest: dict | None) -> str:
 
 def _spec(entry: dict) -> dict:
     """The engine only wants the mechanical parts; the prose stays behind."""
-    keys = ("id", "weights", "base", "risk_off", "overlay", "drift_band")
+    keys = ("id", "weights", "base", "risk_off", "overlay", "drift_band", "proxy")
     return {k: entry[k] for k in keys if k in entry}
 
 

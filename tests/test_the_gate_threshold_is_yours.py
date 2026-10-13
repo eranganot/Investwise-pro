@@ -147,7 +147,7 @@ def test_the_engine_version_moved_with_the_meaning_of_a_row():
     row records which run produced it."""
     from app.services import backtest_service as bs
 
-    assert bs.ENGINE_VERSION == "a6"  # PR 101: total return
+    assert bs.ENGINE_VERSION == "a7"  # a6 PR 101 total return; a7 PR 126
     import inspect
     src = inspect.getsource(bs.measure)
     assert "regime_gate_applied" in src
