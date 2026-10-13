@@ -79,7 +79,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | PR |
 |---|---|---|---|
-| L7 | Fat routes; **3 services import from `app.api.routes.plan`** (layering inversion) | P | 118a/b |
+| L7 | Fat routes. *118a done: no service imports a route; `plan.py` is thin.* Left: `intake.py` (`get_portfolio`, `add_holding`, `_last_buy`, `_orders_payload`, CSV parsing) | P | 118b |
 | L8 | float vs Decimal: 1,051 vs 45 in `app/`; no bug traced to it | P (count) | parked |
 
 ## Verification debt

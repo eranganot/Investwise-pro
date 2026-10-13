@@ -135,7 +135,7 @@ def test_the_plan_screen_publishes_the_blend_and_nothing_beside_it():
     """
     from types import SimpleNamespace
 
-    from app.api.routes.plan import _portfolio_stats
+    from app.services.plan_view import portfolio_stats as _portfolio_stats
 
     rows = [SimpleNamespace(ticker="VTI", quantity=10, current_price=100.0,
                             market="US", meta={"asset_class": "Equities"})]
@@ -165,7 +165,7 @@ def test_the_plan_payload_itself_carries_no_trace_of_the_withdrawn_number():
     """
     from types import SimpleNamespace
 
-    from app.api.routes.plan import _plan_dict, _portfolio_stats
+    from app.services.plan_view import plan_dict as _plan_dict, portfolio_stats as _portfolio_stats
 
     rows = [SimpleNamespace(ticker="VTI", quantity=10, current_price=100.0,
                             market="US", meta={"asset_class": "Equities"})]

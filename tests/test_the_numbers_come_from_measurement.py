@@ -84,7 +84,7 @@ def test_an_override_moves_the_risk_input_and_keeps_the_old_one_visible():
 
 
 def test_portfolio_stats_without_a_measurement_is_exactly_what_it_was():
-    from app.api.routes.plan import _portfolio_stats
+    from app.services.plan_view import portfolio_stats as _portfolio_stats
     rows = [SimpleNamespace(ticker="TQQQ", market="NASDAQ", quantity=100,
                             current_price=70, meta={"asset_class": "Equities"})]
     out = _portfolio_stats(rows)
@@ -96,7 +96,7 @@ def test_portfolio_stats_without_a_measurement_is_exactly_what_it_was():
 
 
 def test_a_measurement_replaces_each_half_only_if_it_produced_one():
-    from app.api.routes.plan import _portfolio_stats
+    from app.services.plan_view import portfolio_stats as _portfolio_stats
     rows = [SimpleNamespace(ticker="TQQQ", market="NASDAQ", quantity=100,
                             current_price=70, meta={"asset_class": "Equities"})]
     half = _portfolio_stats(rows, {"expected_return_pct": None, "volatility_pct": 27.5,

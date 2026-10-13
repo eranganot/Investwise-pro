@@ -18,9 +18,9 @@ def observed(monkeypatch):
     """Force the war room to see one specific, grounded-looking observation."""
     def _set(**kw):
         obs = LagObservation(**kw)
-        monkeypatch.setattr("app.api.routes.war_room.signal_service.build_observations",
+        monkeypatch.setattr("app.services.signal_service.build_observations",
                             lambda *a, **k: [obs])
-        monkeypatch.setattr("app.api.routes.war_room.signal_service.candidate_set",
+        monkeypatch.setattr("app.services.signal_service.candidate_set",
                             lambda *a, **k: [{"ticker": obs.ticker, "market": obs.market.value}])
         return obs
     return _set

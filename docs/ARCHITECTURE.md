@@ -48,7 +48,7 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 | `app/core/` | Settings (`config.py`), DB engine/session (`database.py`), JWT + RBAC (`auth.py`), audit, metrics, offload, Decimal helpers | No business logic. |
 | `app/models/tables.py` | All 29 SQLAlchemy tables | Schema changes need an Alembic migration ([DEVELOPMENT.md §6](DEVELOPMENT.md#6-database-migrations)). |
 | `alembic/versions/` | 28 linear migrations `0001`→`0028` | `0001` runs `create_all` from current models; later ones are guarded add-only. |
-| `app/api/routes/` | 32 routers, ~143 endpoints | Should delegate to services. `plan.py` (1,123 lines) and `intake.py` (944) still hold logic. |
+| `app/api/routes/` | 32 routers, ~143 endpoints | Delegate to services; services never import routes (`test_services_never_import_routes`). PR 118a moved `plan.py`'s logic to `plan_view`, `projection_service`, `book_target.mix_report` (549 lines left) and the war-room payload to `services/war_room`; `intake.py` (953) is PR 118b. |
 | `app/api/deps.py` | `acting_user`: resolves the user **and** activates the plan's card thresholds for the request | Every user-scoped route depends on it. |
 | `app/services/` | Business logic: recommendations (Today), funding, plan/goal/frontier, rules, ledger, pricing, push, war room… | The app lives here. See [DOMAIN.md](DOMAIN.md). |
 | `app/engines/` | Deterministic calculators: tax, risk (Monte Carlo), frontier, backtest, simulation, scoring… | Same inputs give the same output. No DB access. |

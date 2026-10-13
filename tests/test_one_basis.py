@@ -61,6 +61,6 @@ async def test_the_plan_screen_and_the_projection_quote_the_goal_model(own_sessi
 
 
 def test_the_basis_sentence_names_the_estimate_and_the_market():
-    from app.api.routes.plan import _frontier_basis_text
+    from app.services.plan_view import frontier_basis_text as _frontier_basis_text
     t = _frontier_basis_text({"confidence": "blended", "recent_weight": 0.7, "regime": "risk_off"})
     assert "blended estimate" in t and "70%" in t and "risk_off" in t and "same numbers as your goal cards" in t

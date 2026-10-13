@@ -56,13 +56,13 @@ async def test_today_plan_and_the_assistant_quote_one_chance(own_session):
 
 def test_without_a_goal_verdict_the_rough_figure_says_what_it_is(monkeypatch):
     """No fresh verdict: the projection's no-rules figure, labelled as such."""
-    import app.api.routes.plan as plan_routes
+    import app.services.projection_service as projection_service
 
-    async def _proj(**_kw):
+    async def _proj(*_a, **_kw):
         return {"probability_meets_target": 0.353, "target_amount": 82692.0, "years": 5.2,
                 "goal_headline": None, "with_contributions": {}}
 
-    monkeypatch.setattr(plan_routes, "goal_projection", _proj)
+    monkeypatch.setattr(projection_service, "project", _proj)
     with TestClient(app) as c:
         _seed(c, 10)
         h = c.get("/api/v1/health-check").json()

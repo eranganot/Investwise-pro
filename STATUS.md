@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-12 by Claude (PR 122 hotfix, PR 123 rule impacts; PR 118a parked locally). Last product PR: **PR 123**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (PR 122, 123, 123.1 shipped; Wave F resumed: PR 118a). Last product PR: **PR 118a**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -52,6 +52,46 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 118a — thin plan routes (L7; Wave F, pure moves)
+
+**Plan v3, Wave F (structure, no behaviour change).** Owner go-ahead 2026-10-12.
+
+**What.** The business logic leaves `routes/plan.py` (1,126 → 549 lines) unchanged, by an AST-driven move:
+- **`services/plan_view.py`:**
+  - `positions`, `book_measured`, `frontier_basis_text`, `portfolio_stats`, `goal_of`, `plan_dict`, `PERIOD_MULT`;
+  - `sleeves_view` and `core_options_view`. These sit here rather than in `sleeve_service`, which would otherwise import
+    itself.
+- **`services/projection_service.py`:** `project()` (was the `goal_projection` handler) and `EXCESS_PP`.
+- **`book_target.mix_report()`:** was the `mix_check` handler.
+- **`services/war_room.war_room_payload`:** was `routes/war_room._war_room_payload`; the route keeps the old name as an
+  alias.
+
+Three services stopped calling route handlers as functions:
+- plan health (projection + mix);
+- the assistant context (projection);
+- Today (book stats, war room).
+
+The routes keep validation, `Depends` and response shaping.
+
+**Tests.**
+- New guard `tests/test_services_never_import_routes.py`: no file in services, engines, agents, the worker or core
+  imports `app.api`.
+- Moved targets: 7 tests import from `plan_view` / `projection_service`; 2 monkeypatch the war-room service.
+
+**Gate.** Local SQLite and Postgres, run in six resumable chunks (the session restarts overnight killed hour-long
+runs). The first pass found 8 failures, all from the move:
+- 5 tests patched `signal_service` through the route module;
+- an agent-roster line anchor (`services/war_room.py:18`) had been shifted by two added header lines.
+
+Both are fixed. On the re-run, Postgres passed all 6 chunks. SQLite failed one test,
+`test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable`, which also fails on `main` on this
+machine: it depends on live screener data that the provider rate-limited. CI is the check for it.
+
+**Smoke.** `scripts/smoke/smoke-pr118a-thin-plan-routes.ps1 -Sha <sha>`. The 6 moved endpoints return exactly the keys
+recorded from production before the move; `/plan` current value = NAV; plan health and Today build.
+
+---
+
 ## PR 123.1 — hotfix: the goal solve failed on a per-asset volatility scale (incident)
 
 **Incident, 2026-10-12, after PR 123 (`1ebe2aa`) deployed.** The first re-solve returned nothing, and the deploy log
@@ -69,6 +109,8 @@ kept being served.
 **Gate.** The local full-suite runs were killed twice by session restarts that night. The targeted goal/rules tests
 passed locally (27), and CI's full `test` and `test-postgres` jobs were the gate. The fix was merged only when they were
 green, because production could not re-solve until it shipped.
+
+**Merged** `2dd8635` (GitHub PR #26) on 2026-10-13 07:55 on a green CI. The 04:10 nightly solve had failed on the broken build.
 
 **Lesson.** A test fixture that omits a production input proves nothing about that input. A PR 123 test now passes
 `vol_scale` the way production does.
@@ -119,7 +161,16 @@ say "your rules cost growth".
 
 **Gate.** Local SQLite 2373 and Postgres 2373 passed; ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr123-rule-goal-impact.ps1 -Sha <sha>` (after one re-solve).
+**Smoke.** `scripts/smoke/smoke-pr123-rule-goal-impact.ps1 -Sha <sha>` (after one re-solve). **Ran against `2dd8635` (after the PR 123.1 hotfix, GitHub PR #26): 7 PASS, 0 FAIL.**
+
+**What the first per-rule solve said (2026-10-13 08:00):**
+- 8 held tickers modelled: USO, VXUS, JPM, CVX, UGA, VTI, BND, GOOGL. 26 active rules measured, 22 modelled, 4 weight
+  rules with a reason.
+- No holding rule moves the goal chance by a full point (−0.4 to +0.6 each). 9 are covered by a tighter rule on the
+  same holding: the trailing stops on BND, CVX, GOOGL's stop-loss, JPM, UGA, USO, VTI and VXUS.
+- The ~72% chance of halving comes from the sleeves. The drawdown guard is paused, so the D83 card offers guard
+  25% / sells 50% / re-arms 5 points under: goal 27.1% → 14.3%, halving 71.8% → 2.2%. The solve takes 65 s, up from
+  ~20 s.
 
 **QA (Pixel).**
 1. Holdings › Rules: each rule card has a "Goal chance …" line or a "not in the goal model (reason)" line.
