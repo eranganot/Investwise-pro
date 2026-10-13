@@ -190,6 +190,15 @@
   that the information on the goals chances would be also written in the recommendation cards"). The goal replay runs
   with the proposed rules added and without them, on the same paths. A proposed rule the model does not replay (an
   entry signal, an alert) is named. Measured on demand after Today renders, so Today is not slower. → PR 124
+- **D87 · 2026-10-13 · Retire a catalogue strategy with a flag, never by deleting it** (plan D5): Swing: Dip-Buy and
+  Swing: Channel Breakout did not beat holding QQQ, their own base. A retired entry stays in `CATALOG` (about ten paths
+  resolve a sleeve through `strategy_catalog.get`), keeps being measured, is not offered as a new sleeve or a swap target,
+  and a book still running one is offered the swap to its base. → PR 125, `docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`
+- **D88 · 2026-10-13 · A Beat the Market tier is read off the measured worst drop** (Medium <= 36%, Medium-high <= 45%,
+  High <= 60%, Very high above), not hand-labelled; the designed label is kept for an unmeasured strategy. → PR 125
+- **D89 · 2026-10-13 · A multi-leg backtest re-trues drift only past a per-strategy band** (`drift_band`, default 0.01 so
+  nothing else moves; 0.10 for volatility targeting and every new multi-leg strategy). Measured: the vol-target sleeve's
+  target moved 10.6 times a year but the 1% re-true made 162 trades a year. → PR 125
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

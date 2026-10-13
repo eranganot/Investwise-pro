@@ -68,6 +68,13 @@ CATALOG: list[dict] = [
                         "decay term directly rather than trying to time direction -- the "
                         "best-evidenced way to make leverage survivable."),
         "weights": {"TQQQ": 1.0}, "base": _QQQ_CORE,
+        # PR 125. The target moved 10.6 times a year but the simulator re-trued
+        # the book ~80 times a year at its 1% default, ~70 of them for price
+        # drift alone (a 3x leg beside its 1x base): 162 "trades a year". At a
+        # 10-point band (each leg 5 points off) the same rule measured 24.7
+        # trades a year, 32.27%/yr vs 32.03%/yr, worst drop 63.1% vs 63.25%.
+        # Widening `rebalance_band` instead did nothing: 0.5 traded MORE (201.7).
+        "drift_band": 0.10,
         "overlay": {"kind": "vol_target", "gate_ticker": "TQQQ", "vol_days": 20,
                     "target_vol_pct": 35, "max_weight": 1.0, "rebalance_band": 0.15,
                     "sweep_param": "target_vol_pct", "sweep_values": [25, 30, 35, 40, 45]},
@@ -75,6 +82,10 @@ CATALOG: list[dict] = [
     {
         "id": "btm_swing_dip",
         "name": "Swing: Dip-Buy in an Uptrend",
+        "retired": {"on": "2026-10-13", "decision": "D87", "move_to": "btm_qqq_hold",
+                    "why": ("Did not beat simply holding QQQ, its own base: 17.9%/yr "
+                            "against 21.3%, with a deeper worst drop (-40.6% vs "
+                            "-35.1%) and 45 trades a year.")},
         "risk": "High",
         "sleeve_pct": 15,
         "horizon": "Days to weeks per trade; check daily",
@@ -91,6 +102,10 @@ CATALOG: list[dict] = [
     {
         "id": "btm_swing_breakout",
         "name": "Swing: Channel Breakout",
+        "retired": {"on": "2026-10-13", "decision": "D87", "move_to": "btm_qqq_hold",
+                    "why": ("Matched holding QQQ (21.2%/yr against 21.3%) at nearly "
+                            "twice its worst drop (-61.3% vs -35.1%), and fell from "
+                            "32.0%/yr to 11.7%/yr between the two halves of its decade.")},
         "risk": "High",
         "sleeve_pct": 15,
         "horizon": "Weeks per trade; check daily",
@@ -183,9 +198,55 @@ CATALOG: list[dict] = [
 _BY_ID = {s["id"]: s for s in CATALOG}
 
 
+# --- Retirement (PR 125, D87) -----------------------------------------------
+#
+# A retired strategy is NOT deleted. About ten paths (signals, funding, the
+# target solver, the frontier) look a sleeve's strategy up by id through `get`;
+# removing the entry while any book still runs it would make every one of those
+# lookups return None and quietly stop steering that sleeve. So it stays in
+# CATALOG, keeps being measured, resolves through `get` -- and is simply not
+# offered: it leaves Explore's main list, cannot be added as a new sleeve or be
+# swapped into, and a sleeve still on it is shown with one action: move it to
+# `move_to` at the same size (the D47 swap).
+
+def retired(strategy_id: str) -> dict | None:
+    """The retirement record, or None for a strategy that is still offered."""
+    e = _BY_ID.get((strategy_id or "").strip())
+    return (e or {}).get("retired")
+
+
+def active_ids() -> list[str]:
+    return [e["id"] for e in CATALOG if not e.get("retired")]
+
+
+# --- Measured tiers (PR 125) --------------------------------------------------
+#
+# Risk tiers used to be hand-labelled, and disagreed with the measurement:
+# Channel Breakout (-61.3% worst drop) read "High" while Trend Nasdaq (-62.4%)
+# read "Very high". A tier now comes from the measured worst drop, by these
+# bands, whatever the strategy was designed to be. The hand label survives as
+# `designed_risk` for a strategy not yet measured.
+RISK_BANDS = ((36.0, "Medium"), (45.0, "Medium-high"), (60.0, "High"))
+
+
+def measured_risk(max_drawdown_pct: float | None) -> str | None:
+    if max_drawdown_pct is None:
+        return None
+    dd = abs(float(max_drawdown_pct))
+    for limit, label in RISK_BANDS:
+        if dd <= limit:
+            return label
+    return "Very high"
+
+
+def risk_label(entry: dict, backtest: dict | None) -> str:
+    m = ((backtest or {}).get("metrics") or {}) if isinstance(backtest, dict) else {}
+    return measured_risk(m.get("max_drawdown_pct")) or entry.get("risk") or "High"
+
+
 def _spec(entry: dict) -> dict:
     """The engine only wants the mechanical parts; the prose stays behind."""
-    keys = ("id", "weights", "base", "risk_off", "overlay")
+    keys = ("id", "weights", "base", "risk_off", "overlay", "drift_band")
     return {k: entry[k] for k in keys if k in entry}
 
 
@@ -274,8 +335,10 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
             # Applying one of these sets a growth objective; the DB column is
             # String(16) and would not hold the goal label itself.
             "objective": "Grow",
-            "risk_tolerance": _RISK_TOLERANCE.get(e.get("risk", ""), "High"),
-            "risk_label": e.get("risk"),
+            "risk_tolerance": _RISK_TOLERANCE.get(risk_label(e, measured.get(e["id"])), "High"),
+            "risk_label": risk_label(e, measured.get(e["id"])),
+            "designed_risk": e.get("risk"),
+            "retired": e.get("retired"),
             "sleeve_pct": e.get("sleeve_pct"),
             "sleeve_default_pct": e.get("sleeve_pct"),
             "horizon": e.get("horizon"),

@@ -364,6 +364,16 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
     if is_sleeve:
         from app.services import sleeve_service as sv
         pct = s.get("sleeve_pct")
+        # D87 (PR 125): a retired strategy is not offered as a NEW sleeve. A
+        # book that already runs one may still resize it -- that allocation is
+        # its own -- and is offered the swap to its base instead. Checked here,
+        # at the user's apply, not in `add_or_resize`: that primitive is how a
+        # book's existing sleeves are written, and must stay able to.
+        gone = strategy_catalog.retired(strategy_id)
+        if gone and not any(x.strategy_id == strategy_id
+                            for x in await sv.list_sleeves(session, user)):
+            return {"ok": False, "strategy_id": strategy_id, "error": "strategy retired",
+                    "reason": (f"retired on {gone['on']} ({gone['decision']}): {gone['why']}")}
         sleeve_result = await sv.add_or_resize(session, user, strategy_id, float(pct or 0.0))
         if not sleeve_result.get("ok"):
             # Return before the plan is touched, so a refused apply cannot leave
@@ -501,6 +511,11 @@ async def swap_sleeve(session: AsyncSession, user: User, *,
     # strategy that does not exist, sized, capped and funded against nothing.
     if strategy_catalog.get(to_id) is None and not cat.get(to_id):
         return {"ok": False, "error": f"'{to_id}' is not a strategy in the catalogue"}
+    gone = strategy_catalog.retired(to_id)
+    if gone:
+        # D87: swapping INTO a retired strategy would re-open what retiring closed.
+        return {"ok": False, "error": f"'{to_id}' was retired on {gone['on']}",
+                "reason": gone["why"]}
 
     sleeves = await sv.list_sleeves(session, user)
     src = next((x for x in sleeves if x.strategy_id == from_id), None)

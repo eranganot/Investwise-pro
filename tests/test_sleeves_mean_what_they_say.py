@@ -471,7 +471,10 @@ def test_s_the_real_book_reaches_its_64_percent_target():
              "cost_basis": 33.36, "expected_return_pct": 5, "volatility_pct": 12}]})
         c.post("/api/v1/portfolio/cash", json={"amount_ils": 3088.0})
         c.put("/api/v1/plan", json={"objective": "Grow", "risk_tolerance": "High"})
-        c.post(f"/api/v1/strategies/{'btm_swing_dip'}/apply?sleeve_pct=38.4")
+        # btm_swing_dip was retired (D87, PR 125) and can no longer be ADDED.
+        # btm_trend_tqqq has the identical basket (TQQQ, base QQQ), which is
+        # all this funding test reads.
+        c.post(f"/api/v1/strategies/{'btm_trend_tqqq'}/apply?sleeve_pct=38.4")
         c.post(f"/api/v1/strategies/{SOXL}/apply?sleeve_pct=25.6")
         res = c.post("/api/v1/plan/sleeves/fund?dry_run=true").json()
 

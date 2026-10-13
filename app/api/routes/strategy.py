@@ -61,6 +61,9 @@ async def backtests(session: AsyncSession = Depends(get_session)) -> dict:
                     "goal": strategy_catalog.GOAL,
                     "basket": sorted((tk, w) for tk, w in entry.get("weights", {}).items()),
                     "base_when_flat": sorted(entry.get("base") or {}) or None,
+                    # PR 125: the tier the measurement puts it in. `risk` stays
+                    # the designed label so the two can be compared.
+                    "measured_risk": strategy_catalog.risk_label(entry, rows.get(entry["id"])),
                     "backtest": rows.get(entry["id"])})
     return {"goal": strategy_catalog.GOAL,
             "engine_version": backtest_service.ENGINE_VERSION,
