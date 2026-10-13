@@ -3486,8 +3486,14 @@ async function loadStrategies(){
   // static one is a whole-book target mix, i.e. a CORE. They get different
   // labels, different second buttons and different ticks.
   const coreId=_coreId();
-  const list=(STRAT.by_goal[STGOAL]||[]).map(s=>{
+  // D87 (PR 125): a retired strategy leaves the main list. One you still run
+  // stays, with a single action -- move it to its base at the same size -- and
+  // the rest fold into "Tried and did not beat holding" with their numbers.
+  const all=(STRAT.by_goal[STGOAL]||[]);
+  const gone=all.filter(s=>s.retired&&!ids.has(s.id));
+  const list=all.filter(s=>!(s.retired&&!ids.has(s.id))).map(s=>{
     const isSleeve=!!s.measured, mine=isSleeve?ids.has(s.id):(coreId===s.id);
+    if(s.retired) return retiredMine(s);
     return `
     <div class="stcard${mine?" mine":""}">
       <div style="display:flex;justify-content:space-between"><span class="nm">${mine?`<span class="stmine">✓ ${isSleeve?"A SLEEVE OF YOURS":"YOUR CORE"}</span> `:""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
@@ -3517,7 +3523,7 @@ async function loadStrategies(){
   $("stratBox").innerHTML=`<div class="mk" style="text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Strategy catalog</div>`
     + `<div class="stgoal">${tabs}</div>`
     + `<div class="muted" style="font-size:12px;margin:2px 0 8px">Figures are planning assumptions from each basket's makeup, not forecasts.</div>`
-    + list;
+    + list + retiredFold(gone);
   $("wwitBody").innerHTML=targetCard();
 }
 
@@ -3557,6 +3563,45 @@ async function removeSleeve(id,name){
        stops steering toward that target, and the caps it armed are retired.</div>`
     + `<div style="margin-top:8px"><button class="load" onclick="removeSleeveConfirm('${id}','${name.replace(/'/g,"")}')">Remove it</button> <button onclick="$('stratOut').style.display='none'">Cancel</button></div>`;
   o.scrollIntoView({behavior:"smooth",block:"center"});
+}
+// D87: the numbers that retired a strategy, from its own stored backtest.
+function _retiredNums(s){
+  const m=(s.backtest&&s.backtest.metrics)||{};
+  if(m.cagr_pct==null) return "";
+  return `${m.cagr_pct}%/yr, worst drop -${m.max_drawdown_pct}%`
+    + (m.base_cagr_pct!=null?` · holding ${(s.base_when_flat||[]).join(", ")||"its base"}: ${m.base_cagr_pct}%/yr, -${m.base_max_drawdown_pct}%`:"");
+}
+function retiredFold(gone){
+  if(!gone.length) return "";
+  return `<details class="stcard" style="opacity:.85"><summary class="mk">Tried and did not beat holding (${gone.length})</summary>`
+    + gone.map(s=>`<div style="margin-top:8px"><b>${s.name}</b> <span class="mk">· retired ${s.retired.on}</span>
+        <div class="ds" style="font-size:12px">${s.retired.why}</div>
+        ${_retiredNums(s)?`<div class="mk" style="font-size:11px">${_retiredNums(s)}</div>`:""}</div>`).join("")
+    + `</details>`;
+}
+function retiredMine(s){
+  const to=s.retired.move_to, toName=((STRAT.by_goal[STGOAL]||[]).find(x=>x.id===to)||{}).name||to;
+  return `<div class="stcard mine">
+    <div style="display:flex;justify-content:space-between"><span class="nm"><span class="stmine">✓ A SLEEVE OF YOURS · RETIRED</span> ${s.name}</span><span class="rk">${s.risk_label} risk</span></div>
+    <div class="ds">${s.retired.why}</div>
+    ${_retiredNums(s)?`<div class="mk" style="font-size:12px">${_retiredNums(s)}</div>`:""}
+    <div class="ds" style="font-size:12px">Moving it keeps the same share of your book and sells nothing: the sleeve steers toward ${toName} instead.</div>
+    <div class="acts"><button class="load" onclick="swapRetired('${s.id}','${to}','${toName.replace(/'/g,"")}')">Move to ${toName}</button></div>
+  </div>`;
+}
+async function swapRetired(id,to,toName){
+  const o=$("stratOut"); o.style.display="block"; o.innerHTML="Moving the sleeve…";
+  o.scrollIntoView({behavior:"smooth",block:"center"});
+  try{
+    const resp=await fetch(`/api/v1/plan/sleeves/${id}/swap?to=${encodeURIComponent(to)}`,{method:"POST"});
+    if(resp.status===401){location.href="/login";return;}
+    const r=await resp.json();
+    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't move it: ${r.reason||r.error||resp.status}</span>`;return;}
+    o.innerHTML=`<span class="ok">✓ That sleeve now steers toward ${toName}, at the same size.</span>`
+      + `<div class="muted" style="font-size:11px;margin-top:4px">Nothing was bought or sold. Today's cards say what, if anything, to trade.</div>`;
+    delete SLEEVE[id]; SLEEVE_SEEDED.delete(id);
+    loadStrategies();
+  }catch(e){o.innerHTML=`<span class="bad">${e}</span>`;}
 }
 async function removeSleeveConfirm(id,name){
   const o=$("stratOut"); o.innerHTML="Removing the sleeve…";

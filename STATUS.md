@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (plan v3 complete: PR 118b). Last product PR: **PR 118b**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 125). Last product PR: **PR 125**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,48 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 125 — Beat the Market clean-up: two strategies retired, tiers measured, a backtest that stopped over-trading (D87–D89)
+
+**Plan.** First PR of the Beat the Market expansion approved 2026-10-13
+([`docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md`](docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md), Claude doc linked
+there). Phase 0 (the data check) ran first and is recorded in that file's section 4: nothing blocked the plan.
+
+**What.**
+- **Retired with a flag (D87):** Swing: Dip-Buy (17.9%/yr against QQQ's 21.3%, deeper drop) and Swing: Channel Breakout
+  (21.2%/yr at nearly twice QQQ's worst drop). Each entry keeps resolving through `strategy_catalog.get` and keeps being
+  measured; it is no longer offered as a new sleeve (`apply_strategy`) or a swap target (`swap_sleeve`), and the
+  sleeve-count search only considers it for a book that still runs it. Explore folds them into "Tried and did not beat
+  holding" with their numbers; a sleeve still on one shows a single button, "Move to Hold the Nasdaq index", which is the
+  D47 swap (same size, nothing traded). `sw.js` iw-v60.
+- **Measured tiers (D88):** `risk_label` is now the band the measured worst drop falls in (Medium ≤ 36%, Medium-high ≤ 45%,
+  High ≤ 60%, Very high above). `designed_risk` keeps the hand label; `/strategies/backtests` adds `measured_risk`.
+  Channel Breakout (-61.3%) read "High" beside Trend Nasdaq (-62.4%) "Very high"; both now read Very high.
+- **Drift band (D89):** `_simulate` takes `drift_band` (default 0.01, so cores, blends and the frontier are unchanged). Volatility
+  targeting uses 0.10.
+
+**Root cause of the vol-targeting trade count (proven, not inferred).** The plan said "widen the rebalance band". Measured
+on the shipped engine over the production window: widening `rebalance_band` did nothing (0.15 → 162.3 trades a year,
+0.25 → 157.9, 0.5 → 201.7). Instrumented: the target moved 10.6 times a year, yet the book was re-trued ~80 times a year,
+~70 of them for price drift alone, because `_simulate` re-trues any drift of 1% and a 3x leg beside its 1x base drifts
+that far most days. Ruled out: the hysteresis band (above) and the vol estimate itself (10.6 changes a year). Fix:
+re-true an unchanged target only past `drift_band`. At 0.10: 24.7 trades a year, 32.27%/yr against 32.03%/yr, worst drop
+63.1% against 63.25%. Blast radius: every multi-leg spec at the 1% default; Factor Stack's 69 trades a year on a
+buy-and-hold basket is the same effect and is left alone (it is replaced in PR 127 if MH1/MH2 pass). It was silent
+because the trade count is reported, not gated, and tax drag hid it inside a plausible-looking 8.8%.
+
+**Not changed on purpose.** `ENGINE_VERSION` stays `a6`: no field changes meaning, only volatility targeting's spec. Its
+stored row updates at the 03:30 refresh. Measured on today's data it moves to "Very high" (63.1% worst drop), not "High".
+
+**Tests.** `tests/test_pr125_catalogue_cleanup.py` (23, all failing on the old tree). `test_sleeves_mean_what_they_say`
+and `test_the_sleeve_holds_what_the_rule_wants` added `btm_swing_dip` as a fresh sleeve; they now use `btm_trend_tqqq`
+(identical basket). Gate: SQLite and Postgres 2,401 passed; the one failure (`test_no_card_rewrites_the_target`) fails
+identically on `main` under the sandbox's Python 3.13 (docstring dedent) and not on CI's 3.12.
+
+**Smoke.** `scripts/smoke/smoke-pr125-catalogue-cleanup.ps1 -Sha <sha>`. Public endpoints only. Run against the old build
+before the push: 4 PASS, 14 FAIL (every new field), as expected.
 
 ---
 

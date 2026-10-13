@@ -1462,7 +1462,11 @@ async def solve_sleeve_count_for(session: AsyncSession, user: User, *,
     book, err = await _book_for_solve(session, user)
     if err:
         return {"ok": False, **err}
-    specs = strategy_catalog.backtestable()
+    # D87: a retired strategy is a candidate only for a book that still runs
+    # it -- the count must be able to say "drop it", never "add it".
+    held = {s["id"] for s in book["sleeves"]}
+    specs = [s for s in strategy_catalog.backtestable()
+             if not strategy_catalog.retired(s["id"]) or s["id"] in held]
     if not specs:
         return {"ok": False, "reason": "NO_CANDIDATES",
                 "detail": "no backtestable strategies in the catalog"}

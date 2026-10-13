@@ -384,7 +384,7 @@ def targets_for(px: dict[str, np.ndarray], spec: dict) -> list[dict] | dict:
 # --------------------------------------------------------------------------
 
 def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
-              cost_bps: float, cgt_rate: float) -> dict:
+              cost_bps: float, cgt_rate: float, drift_band: float = 0.01) -> dict:
     """Walk the calendar, trading at the close one day after each signal.
 
     Positions are share counts; ``basis`` is the average cost per share. A sale
@@ -405,6 +405,11 @@ def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
     cash = 100.0
     values, tax_paid, traded_notional = [], 0.0, 0.0
     loss_bank, trades, wins, closed = 0.0, 0, 0, 0
+    # The target the book was last traded to. A NEW target is acted on at the
+    # 1% floor; a book merely drifting from an UNCHANGED target is re-trued only
+    # past `drift_band` (PR 125). With the band at its 0.01 default the two are
+    # the same test and every existing caller is unchanged.
+    last_traded: dict | None = None
 
     for i in range(n):
         held = sum(shares.get(tk, 0.0) * px[tk][i] for tk in shares)
@@ -417,6 +422,15 @@ def _simulate(px: dict[str, np.ndarray], targets: list[dict], *,
                     for tk in set(want) | set(cur))
         if drift < 0.01 or value <= 0:
             continue
+        # Measured on btm_vol_target_tqqq before this existed: its target moved
+        # 10.6 times a year, yet the book was re-trued ~80 times a year, ~70 of
+        # them for price drift alone -- a 3x leg beside its 1x base leaves a 1%
+        # band most days. 162 "trades a year" were the simulator's, not the
+        # rule's. A sleeve the app tells you to trim at a 5-point band would
+        # never trade like that.
+        if want == last_traded and drift < drift_band:
+            continue
+        last_traded = dict(want)
 
         for tk in list(shares):                                   # sells first
             tgt_val = want.get(tk, 0.0) * value
@@ -723,7 +737,8 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
         # these two ever diverge the card's numbers stop describing what runs.
         targets = _apply_regime_gate(targets, rg.gate(px), spec)
 
-    sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate)
+    band = float(spec.get("drift_band", 0.01))
+    sim = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=cgt_rate, drift_band=band)
     out = _metrics(sim, dates, bench)
     # Two benchmarks, never conflated: the book's (above, in _metrics) and the
     # strategy's own base (here). "Does the rule work?" and "does the book beat
@@ -749,7 +764,7 @@ def run(series: dict[str, list[tuple[str, float]]], spec: dict, *,
     # Tax drag is the honest headline for a high-turnover strategy: the same
     # path re-run tax-free, differenced. Buy-and-hold defers CGT indefinitely;
     # a swing system pays it as it goes, and that gap compounds.
-    gross = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=0.0)
+    gross = _simulate(px, targets, cost_bps=cost_bps, cgt_rate=0.0, drift_band=band)
     gross_cagr = cagr(gross["values"]) * 100
     out.update({
         "ok": True,

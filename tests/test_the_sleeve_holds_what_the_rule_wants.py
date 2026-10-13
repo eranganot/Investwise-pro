@@ -45,7 +45,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 import app.main as m  # noqa: E402
 from app.services.strategy_service import sleeve_targets  # noqa: E402
 
-SWING = "btm_swing_dip"      # weights {TQQQ}, base {QQQ}
+# Was btm_swing_dip, retired in PR 125 (D87) and no longer addable as a new
+# sleeve. btm_trend_tqqq has the identical basket, which is all this file reads.
+SWING = "btm_trend_tqqq"     # weights {TQQQ}, base {QQQ}
 SOXL = "btm_trend_soxl"      # weights {SOXL}, base {SMH}
 
 
