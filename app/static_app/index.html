@@ -1063,6 +1063,7 @@ async function loadToday(){
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
       + headsupList(r.headsups||[])
       + reviewTable(r.holding_review||[],all.concat(more));
+    setTimeout(_fillRuleImpacts,300);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
   try{const p=await TP.plan;
     $("goal").innerHTML=p.goal_progress!=null?`🎯 Goal: ${ils(p.target_amount)} by ${(p.goal&&p.goal.deadline)||p.target_date||'—'} — <b>${pct(p.goal_progress)}</b> there`:"";
@@ -1286,11 +1287,45 @@ function recCard(o){
   return `<div class="rec"${o.refired_because?' style="border-left:3px solid #60a5fa"':''}><div class="h"><span class="t">${o.title}</span><span class="pill ${o.severity}"${o.priority?` title="Priority ${o.priority.score}: money ${o.priority.money}, time ${o.priority.time}, your rules ${o.priority.rules}${o.priority.quality!=null?`, idea quality ${o.priority.quality}`:""}"`:""}>${o.severity==='CRITICAL'?'Important':o.severity==='HIGH'?'Worth doing':o.severity==='MEDIUM'?'Nice to have':'Minor'}</span></div>
     ${scopeChip}${body}
     <div class="act">${act}</div>
+    ${_ruleCardSlot(o)}
     ${chipsHtml(o)}
     ${back}${notes}
     ${decisionBlock(o)}
     ${details}
     <div class="acts">${actBtn(o)}<button class="ghost" onclick="snooze('${o.id}')">Ignore</button></div></div>`;
+}
+// PR 124 (D86): a card that PROPOSES rules says what they would do to the goal.
+// Measured on demand after Today renders (the goal replay with and without the
+// proposed rules, same paths), one card at a time, cached for the session.
+const _RULE_CARD_IMPACT={}, _RULE_CARD_SPECS={};
+function _ruleCardSlot(o){
+  const ap=o.apply||{}; const rules=ap.kind==="create_rules"?ap.rules:ap.kind==="create_rule"?[ap]:null;
+  if(!rules||!rules.length) return "";
+  _RULE_CARD_SPECS[o.id]=rules.map(r=>({ticker:r.ticker,rule_type:r.rule_type,mode:r.mode,level:r.level,params:r.params}));
+  return `<div class="mk rimpact" id="gi_${o.id}">${_RULE_CARD_IMPACT[o.id]||"Goal impact: measuring…"}</div>`;
+}
+function _ruleCardText(j){
+  if(!j||!j.ok) return `Goal impact: could not be measured${j&&j.reason?` (${esc(String(j.reason))})`:""}.`;
+  const off=(j.proposed||[]).filter(p=>!p.modelled);
+  const offTxt=off.length?` ${off.map(p=>`${p.ticker} ${String(p.rule_type).replace(/_/g," ")}`).join(", ")}: not in the goal model (${esc(off[0].reason||"")}).`:"";
+  const c=j.compare;
+  if(!c) return `Goal impact: none of these rules is a sale the goal model replays.${offTxt}`;
+  const pts=Number(c.goal_pts||0), hw=c.with.p_halve_pct, ho=c.without.p_halve_pct;
+  const head=Math.abs(pts)<0.1?"no measurable effect on your goal chance":`goal chance ${pts>0?"+":""}${pts} pts (${c.without.p_goal_pct}% → ${c.with.p_goal_pct}%)`;
+  const halv=Math.abs(ho-hw)>=0.1?`; chance the book halves ${ho}% → ${hw}%`:"";
+  return `<b>Goal impact:</b> <span class="${pts<=-1?"warn":pts>=1?"ok":""}">${head}</span>${halv}.${offTxt}`;
+}
+async function _fillRuleImpacts(){
+  for(const id of Object.keys(_RULE_CARD_SPECS)){
+    if(_RULE_CARD_IMPACT[id]) continue;
+    const el=document.getElementById("gi_"+id); if(!el) continue;
+    try{
+      const r=await fetch("/api/v1/plan/frontier/rule-impact",{method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({rules:_RULE_CARD_SPECS[id]})});
+      _RULE_CARD_IMPACT[id]=_ruleCardText(r.ok?await r.json():{ok:false,reason:"HTTP "+r.status});
+    }catch(e){_RULE_CARD_IMPACT[id]=_ruleCardText({ok:false});}
+    const el2=document.getElementById("gi_"+id); if(el2) el2.innerHTML=_RULE_CARD_IMPACT[id];
+  }
 }
 // PR 103: "Your goal" once, above the first goal card.
 function withGoalSummary(list,summary,head){

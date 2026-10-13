@@ -408,6 +408,19 @@ async def frontier_preview(req: PreviewRequest, session: AsyncSession = Depends(
                             monthly=req.monthly_ils, armed=req.armed, guard_pct=req.guard_pct)
 
 
+class RuleImpactRequest(BaseModel):
+    """PR 124: the rules a card proposes (its `apply.rules`)."""
+    rules: list[dict] = Field(min_length=1, max_length=12)
+
+
+@router.post("/plan/frontier/rule-impact")
+async def frontier_rule_impact(req: RuleImpactRequest, session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    """What arming these rules would do to the goal's chance. Read-only: nothing is saved."""
+    from app.services import frontier_service as fs
+    return await fs.preview(session, user, extra_rules=req.rules)
+
+
 @router.get("/plan/frontier")
 async def frontier_latest(session: AsyncSession = Depends(get_session),
                           user: User = Depends(acting_user)) -> dict:
