@@ -62,6 +62,27 @@ CATALOG: list[dict] = [
                     "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
     },
     {
+        # PR 127. The one candidate of the eleven in the 2026-10-13 plan that
+        # passed every gate test (docs/plans/BEAT_MARKET_EXPANSION_2026-10-13.md,
+        # section 6). Pre-registered as Medium-high; it MEASURES High (52.7%
+        # worst drop), and D88 shows the measured tier.
+        "id": "btm_qld_trend",
+        "name": "Trend-Filtered 2x Nasdaq",
+        "risk": "Medium-high",
+        "sleeve_pct": 20,
+        "horizon": "Hold for years; check weekly",
+        "long_history": True,
+        "description": ("The Trend-Filtered Leveraged Nasdaq rule at 2x instead of 3x: QLD "
+                        "while QQQ is above its 200-day average, plain QQQ when it is not. "
+                        "Leverage decay grows with roughly the square of the leverage, so 2x "
+                        "keeps most of the trend's benefit at well under half the decay. It is "
+                        "still a Nasdaq bet, not a diversifier."),
+        "weights": {"QLD": 1.0}, "base": _QQQ_CORE,
+        "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200,
+                    "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
         "id": "btm_vol_target_tqqq",
         # PR 128 (D92): also measured over 2000-2016 with leveraged funds rebuilt.
         "long_history": True,
