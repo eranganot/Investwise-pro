@@ -51,7 +51,7 @@ def a_tel_aviv_quote(monkeypatch):
     """One ticker, quoted the way Tel Aviv is actually quoted."""
     from types import SimpleNamespace as NS
 
-    from app.api.routes import intake as intake_routes
+    from app.services import intake_service as intake_routes
 
     def _quote(tk):
         if (tk or "").upper() != "TEVA.TA":

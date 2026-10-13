@@ -25,6 +25,7 @@
 > **Closed in PR 117:** L12 (one `.seg`, D84; theme variables defined; focus ring; 17 click targets keyboard-reachable; Escape, Enter/Space and the sheet's focus handling).
 > **Closed in W0-5:** L2 (`investwise.db` and `frontend/` removed; CORS is off unless `FRONTEND_ORIGIN` is set). Owner follow-up: production still sets `FRONTEND_ORIGIN=http://localhost:5173`; delete its line from `.railway/railway.ts`, then `railway config apply` removes it.
 > **Closed in PR 123:** P3 (held stocks with sale rules are simulated as their own columns; every rule shows its goal impact, D85).
+> **Closed in PR 118a/118b:** L7 (routes are thin; no service imports a route, guarded by `test_services_never_import_routes`).
 >
 > Before working an item: confirm it is still open (several older items turned out to be closed). When it ships, delete
 > the row, note the PR, and add a STATUS entry.
@@ -79,7 +80,6 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item | Verdict | PR |
 |---|---|---|---|
-| L7 | Fat routes. *118a done: no service imports a route; `plan.py` is thin.* Left: `intake.py` (`get_portfolio`, `add_holding`, `_last_buy`, `_orders_payload`, CSV parsing) | P | 118b |
 | L8 | float vs Decimal: 1,051 vs 45 in `app/`; no bug traced to it | P (count) | parked |
 
 ## Verification debt

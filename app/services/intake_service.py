@@ -18,6 +18,10 @@ from app.models.tables import Account, Contribution, Entity, Position, User, db_
 from app.schemas.intake import IntakePosition
 from app.services.allocation_mix import ASSET_CLASS_SOURCE_USER
 from app.schemas.lag import LagObservation
+# PR 118b: module-level so tests can stand in for the quote (they patched the route's name before).
+from app.core.offload import offload
+from app.providers.registry import guarded_quote
+from app.services.allocation_mix import classify
 
 logger = logging.getLogger(__name__)
 
@@ -614,3 +618,88 @@ async def set_contributed(session: AsyncSession, user: User, amount_ils: float,
     session.add(row)
     await session.commit()
     return amount_ils
+
+
+# PR 118b (L7): moved from routes/intake.py, unchanged.
+
+def row_to_position(row: dict) -> IntakePosition:
+    def num(key, default=None):
+        v = (row.get(key) or "").strip()
+        return float(v) if v != "" else default
+    return IntakePosition(
+        ticker=(row.get("ticker") or "").strip(),
+        market=(row.get("market") or "").strip(),
+        depth=int(num("depth", 1)),
+        spot_price=num("spot_price"),
+        listing_price=num("listing_price"),
+        quantity=num("quantity", 0.0),
+        cost_basis=num("cost_basis", 0.0),
+        expected_return_pct=num("expected_return_pct"),
+        volatility_pct=num("volatility_pct"),
+        action_type=(row.get("action_type") or "Buy").strip() or "Buy",
+    )
+
+
+async def persist(session: AsyncSession, user: User, entity_name, entity_type, account_name, positions):
+    entity = await ensure_entity(session, user, entity_name, entity_type)
+    account = await ensure_account(session, entity, account_name)
+    n = await upsert_positions(session, account, positions)
+    await session.commit()
+    return {"entity": entity.name, "account": account.name, "positions_saved": n}
+
+
+async def add_by_amount(session, user, *, ticker: str, amount: float, asset_class: str | None = None,
+                        market: str = "NYSE") -> dict:
+    """Buy a holding by a money amount, paid out of cash, priced live.
+
+    PR 105. This called `upsert_positions`, an intake writer that REPLACES the
+    row: "add $1,000 of IAU" to 100 held shares left 7.54 shares, and the money
+    came from nowhere -- no cash debit, no ledger row. A purchase is now what
+    every other buy in the app is: `buy_into_book` blends into what you hold,
+    the cost leaves cash (owner, 2026-10-11: "to buy a holding I put money in
+    cash, then buy with it"), and the leg is recorded.
+    """
+    from app.schemas.state_machine import Market
+    from app.services import ledger_service
+    from app.services.commodities import get as commodity, is_commodity
+    from app.services.fx import quote_in_ils
+    from app.services.intake_service import buy_into_book, get_cash, set_cash
+    try:
+        _q = await offload(guarded_quote, ticker)
+        # THE 100x TRAP: Yahoo quotes Tel Aviv in AGOROT and says so only in the
+        # currency code (TEVA.TA 11030.0 ILA = 110.30 ILS). `quote_in_ils` takes
+        # the major unit first, then converts.
+        price, _ccy, price_ils = quote_in_ils(float(_q.price), getattr(_q, "currency", None))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"couldn't price {ticker}: {str(e)[:80]}"}
+    if price <= 0 or price_ils <= 0:
+        return {"ok": False, "error": f"no live price for {ticker}"}
+    qty = amount / price
+    cost_ils = round(qty * price_ils, 2)
+    cash = await get_cash(session, user)
+    if cost_ils > cash + 0.005:
+        return {"ok": False, "error": (f"not enough cash: this costs ₪{cost_ils:,.0f} and you have "
+                                       f"₪{cash:,.0f}. Add money to cash first (Holdings › Set liquid cash)."),
+                "cost_ils": cost_ils, "cash_ils": round(cash, 2)}
+    # No "Equities" fallback: `classify` reads the tables far better than a
+    # coin flip at the moment of least information does.
+    ac = asset_class or ("Commodities" if is_commodity(ticker) else None)
+    mk = market if market in {m.value for m in Market} else "NYSE"
+    tk = ticker.upper()
+    await buy_into_book(session, user, ticker=tk, market=mk, price=price, shares=qty,
+                        asset_class=ac)
+    er = (commodity(tk) or {}).get("expense_ratio_pct")
+    if er is not None:
+        from app.services.intake_service import list_positions
+        for p in await list_positions(session, user):
+            if (p.ticker or "").upper() == tk and isinstance(p.meta, dict)                     and p.meta.get("expense_ratio_pct") is None:
+                p.meta = {**p.meta, "expense_ratio_pct": er}
+    await set_cash(session, user, round(cash - cost_ils, 2))
+    await ledger_service.record_leg(session, user, ticker=tk, txn_type=ledger_service.BUY,
+                                    quantity=qty, price=price, value_ils=cost_ils, market=mk,
+                                    source="holdings_add")
+    await session.commit()
+    return {"ok": True, "ticker": tk, "price": round(price, 2),
+            "quantity": round(qty, 4), "value": round(qty * price, 2),
+            "cost_ils": cost_ils, "cash_left_ils": round(cash - cost_ils, 2),
+            "asset_class": classify(tk, mk, ac)}

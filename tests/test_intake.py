@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 import app.models.tables as tables  # noqa: F401
-from app.api.routes.intake import _row_to_position
+from app.services.intake_service import row_to_position as _row_to_position
 from app.models.base import Base
 from app.schemas.intake import IntakePosition
 from app.schemas.state_machine import ActionType, Market
