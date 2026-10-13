@@ -86,6 +86,27 @@ async def refresh_backtests(only: str | None = None,
     return await backtest_service.refresh_all(session, only=ids)
 
 
+@router.get("/strategies/candidates/book-effect")
+async def candidates_book_effect(session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """PR 129: every pre-registered candidate's effect on YOUR book. Read-only, slow
+    (one blended ten-year simulation per candidate, twice). Declared before the
+    `{strategy_id}` routes so "candidates" is never read as an id."""
+    from app.services import book_effect
+
+    return await book_effect.for_all_candidates(session, user)
+
+
+@router.get("/strategies/{strategy_id}/book-effect")
+async def strategy_book_effect(strategy_id: str, sleeve_pct: float | None = None,
+                               session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    """PR 129: what adding this strategy does to the whole book. Read-only."""
+    from app.services import book_effect
+
+    return await book_effect.for_strategy(session, user, strategy_id, sleeve_pct)
+
+
 @router.get("/strategies/{strategy_id}/preview")
 async def preview(strategy_id: str, sleeve_pct: float | None = None,
                   session: AsyncSession = Depends(get_session),

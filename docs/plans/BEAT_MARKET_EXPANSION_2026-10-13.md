@@ -60,6 +60,11 @@ All five, recorded in STATUS pass or fail:
 4. Robust: the parameter sweep stays within 5 points.
 5. Not a near-duplicate: daily returns correlated above 0.9 with another candidate -> only the better edge ships.
 
+Recorded beside the five, not a way to pass (owner, 2026-10-13, D93): **book effect** -- added at its suggested size
+with the core making room, does the owner's whole book gain >= 0.02 in return per unit of volatility while its worst
+drop deepens by <= 2 points? `GET /api/v1/strategies/{id}/book-effect`; all candidates at
+`/api/v1/strategies/candidates/book-effect`.
+
 Hindsight-designed and many-knob strategies (VH1, VH2, H3) must also pass the long-history test (synthetic 3x series from
 the underlying index, 2000-2016) and, with five or more free choices, the walk-forward check.
 
@@ -85,7 +90,7 @@ Tiers come from the measured worst drop: Medium <= 36%, Medium-high <= 45%, High
 | 126 | Engine: `rank_select` (late listings, scores, buffer, gates, two-stage, weights), selection edge, survivorship label, proxy measurement, gate test 3 against own instruments, bad-print filter. |
 | 127 | Measure M1, M2, M3, MH1, MH3, H1, H2, H3 against the gate; passing ones enter the catalogue Explore-only. |
 | 128 | `risk_parity`, rank-on-index map, long-history test; measure VH1, VH2 (with walk-forward). |
-| 129 | MH2 by proxy, live picks from the screener (US44 + 9 TASE). |
+| 129 | Book effect for every candidate (D93); MH2 live picks dropped: MH2 failed the gate. |
 | 130 | Live: rotation cards (labelled swaps, CGT shown), "How it picks", selection-edge and proxy badges, overlap note, Explore grouping. Passing strategies become fundable. |
 
 ## 6. Results (measured 2026-10-13, engine a7, production data window 2016-06 to 2026-10, after 25% CGT)
