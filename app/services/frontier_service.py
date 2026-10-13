@@ -607,7 +607,10 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
             core_room -= w
         if held:
             core_col = unit_daily[:, k]
-            vs_h = float(est_kw.get("vol_scale") or 1.0)
+            # `vol_scale` is one factor per asset in production (fi.vol_scale), a
+            # scalar or absent in tests: a held ticker takes the book-wide mean.
+            _vs = est_kw.get("vol_scale")
+            vs_h = float(np.mean(_vs)) if _vs is not None else 1.0
             cols = [(np.asarray(h) - np.mean(h)) * vs_h + core_col.mean() for _tk, h in held]
             unit_daily = np.column_stack([unit_daily[:, :k], *cols, unit_daily[:, k:]])
             w_book = np.concatenate([w_book[:k], held_w, [core_room], w_book[k + 1:]])

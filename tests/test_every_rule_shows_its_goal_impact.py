@@ -129,3 +129,14 @@ def test_the_retune_can_pause_a_held_tickers_take_profit():
     t = fs._tune_protection(run, sl, g, rules, ["lev"], np.zeros((10, 2)), 1, run(sl=sl), floor=1.0)
     assert t["material"] and t["best"]["pause_take_profits"] == ["CVX"]
     assert t["changes"]["pause_rule_ids"] == ["tp9"]
+
+
+def test_a_per_asset_vol_scale_does_not_break_the_replay():
+    """PR 123.1: production passes `vol_scale` as one factor per asset. PR 123 did
+    `float(...)` on it and every goal solve failed ("truth value of an array")."""
+    prep = _prep()
+    est = {**EST_KW, "vol_scale": np.array([1.1, 1.0, 0.9, 1.2, 1.3, 1.0])}
+    v = fs.goal_solve(prep, sleeves_pct={"lev": 30.0, "calm": 3.0}, core_basket={"VTI": 0.6, "BND": 0.4},
+                      cash_pct=4.0, objective="Grow", est_kw=est, nav=10_000, target=25_000, years=5.0,
+                      draws=0, rules=_rules(prep["ils"].shape[0]))
+    assert v["rules"]["holdings_modelled"] == ["CVX"] and v["rules"]["per_rule"]["rules"]

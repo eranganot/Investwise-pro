@@ -52,6 +52,29 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 - `docs/AGENTS.md`: fixed its closing "all four are still open" (two were fixed in PR 58) and added a currency note.
 - **Left for the owner:** deleting `investwise.db` and `frontend/` (BACKLOG L2), and committing the untracked plans/design (above).
 
+## PR 123.1 — hotfix: the goal solve failed on a per-asset volatility scale (incident)
+
+**Incident, 2026-10-12, after PR 123 (`1ebe2aa`) deployed.** The first re-solve returned nothing, and the deploy log
+showed `ValueError: The truth value of an array with more than one element is ambiguous`
+(`goal_solve`, frontier_service.py:610). In production `est_kw["vol_scale"]` is one factor per asset (`fi.vol_scale`);
+PR 123's held-ticker column did `float(vol_scale or 1.0)` on it. The tests passed because they never set `vol_scale`.
+Every goal solve failed from this deploy until the hotfix, the nightly one included; the last good verdict (17:02)
+kept being served.
+
+**Fix.** A held ticker's column takes the mean of the per-asset scale (a scalar or no scale works as before).
+
+**Test.** `test_a_per_asset_vol_scale_does_not_break_the_replay`: the replay with an array `vol_scale`. It fails on
+`1ebe2aa` with the production error.
+
+**Gate.** The local full-suite runs were killed twice by session restarts that night. The targeted goal/rules tests
+passed locally (27), and CI's full `test` and `test-postgres` jobs were the gate. The fix was merged only when they were
+green, because production could not re-solve until it shipped.
+
+**Lesson.** A test fixture that omits a production input proves nothing about that input. A PR 123 test now passes
+`vol_scale` the way production does.
+
+---
+
 ## PR 123 — every rule shows its effect on your goal (D85, closes P3)
 
 **Owner, 2026-10-12:**
