@@ -61,6 +61,11 @@ def _fail_solver(mp):
     mp.setattr(solver_store, "refresh_all", _aboom)
 
 
+def _fail_correlation(mp):
+    from app.services import sleeve_diversity
+    mp.setattr(sleeve_diversity, "measure_blocking", _boom)
+
+
 def _fail_review(mp):
     from app.services import holding_review
     mp.setattr(holding_review, "_measure_all_async", _aboom)
@@ -87,6 +92,7 @@ FAIL_WITH = {
     "nav_snapshot": _fail_nav,
     "backtest_refresh": _fail_backtests,
     "solver_refresh": _fail_solver,
+    "strategy_correlation": _fail_correlation,
     "holding_review": _fail_review,
     "strategy_signals": _fail_signals,
     "standing_orders": _fail_orders,

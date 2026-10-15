@@ -144,7 +144,7 @@ def test_a_sleeve_may_take_the_whole_book_but_not_a_point_more():
 # --------------------------------------------------------------------------- #
 # One cap per ticker, at the sum
 # --------------------------------------------------------------------------- #
-def test_two_sleeves_wanting_the_same_ticker_arm_ONE_cap_at_the_sum():
+def test_two_sleeves_wanting_the_same_ticker_arm_ONE_cap_at_the_sum(look_alikes_allowed):
     """The P1 duplicate bug, pre-empted at N scale.
 
     btm_trend_tqqq and btm_vol_target_tqqq both hold TQQQ. Each arming its own
@@ -165,7 +165,7 @@ def test_two_sleeves_wanting_the_same_ticker_arm_ONE_cap_at_the_sum():
         assert "+" in tqqq[0]["note"]
 
 
-def test_resizing_one_sleeve_relevels_the_shared_cap():
+def test_resizing_one_sleeve_relevels_the_shared_cap(look_alikes_allowed):
     with TestClient(m.app) as c:
         _seed(c)
         _apply(c, TREND, 20)
@@ -204,7 +204,7 @@ def test_removing_a_sleeve_retires_the_cap_it_armed():
         assert _sleeves(c)["sleeves"] == []
 
 
-def test_removing_one_of_two_sleeves_relevels_a_shared_cap_rather_than_retiring_it():
+def test_removing_one_of_two_sleeves_relevels_a_shared_cap_rather_than_retiring_it(look_alikes_allowed):
     """TQQQ is still wanted by the sleeve that remains, so its cap survives --
     at the size that sleeve alone asks for."""
     with TestClient(m.app) as c:

@@ -328,6 +328,12 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
 - **Sleeve occupancy** (`sleeve_occupancy`, PR 131, D95): a ticker several sleeves want is split between them
   pro-rata to their target weights on it, never credited whole to each, so the per-sleeve held figures add up to the
   sleeves' union (`allocated_held_pct`). Each row says which tickers it shares (`shared_with`).
+- **Every sleeve a different bet** (`sleeve_diversity`, PR 132, D97). Each ticker maps to the market it is a bet on;
+  a strategy's profile is, per market, its largest share in any state (on / base / risk-off / universe), cash excluded.
+  Two strategies are the same bet when their profiles overlap >= `sleeve_overlap_alert_pct` (40) or their stored
+  daily-return correlation >= `sleeve_correlation_limit` (0.80). Adding (or swapping in) a same-bet sleeve is refused
+  with `replace`; resizing a held one is not. `/plan/sleeves` carries `same_bet` (catalogue -> held look-alikes) and
+  `held_same_bets`; `/strategies/correlations` the measured table (job `strategy_correlation`, 03:50).
 - "Where this could end up": `simulation_engine` median / 5% / 95%. It always states that it assumes no deposits (W3).
 - The account-history chart shows **real NAV snapshots only**, as time-weighted return vs SPY. It never draws a reconstruction.
 

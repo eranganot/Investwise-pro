@@ -43,13 +43,23 @@ def _pos(ticker, ils, cls="Equities"):
             "expected_return_pct": 8, "volatility_pct": 20}
 
 
-def _book(c):
-    """The owner's shape: one TQQQ position two sleeves want, SOXL for a third."""
+async def _book(c, own_session):
+    """The owner's shape: one TQQQ position two sleeves want, SOXL for a third.
+
+    The second TQQQ sleeve is written straight to the book: since PR 132 the app
+    refuses to ADD a sleeve that is the same bet as one held, but a book that
+    already runs two (as the owner's did) must still be measured right.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.feed_service import ensure_superadmin
+
     c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
         _pos("TQQQ", 3840.0), _pos("SOXL", 1350.0), _pos("VTI", 2700.0),
         _pos("BND", 2110.0, cls="Fixed Income")]})
     c.post(f"/api/v1/strategies/{VOL_TARGET}/apply?sleeve_pct=25")
-    c.post(f"/api/v1/strategies/{NASDAQ_TREND}/apply?sleeve_pct=20")
+    async with own_session() as s:
+        await sv.add_or_resize(s, await ensure_superadmin(s), NASDAQ_TREND, 20.0)
+        await s.commit()
     c.post(f"/api/v1/strategies/{SEMIS}/apply?sleeve_pct=15")
     return c.get("/api/v1/plan/sleeves").json()
 
@@ -57,9 +67,9 @@ def _book(c):
 # --------------------------------------------------------------------------- #
 # D95: one holding, split
 # --------------------------------------------------------------------------- #
-def test_a_shared_ticker_is_split_by_target_weight_not_counted_twice():
+async def test_a_shared_ticker_is_split_by_target_weight_not_counted_twice(own_session):
     with TestClient(m.app) as c:
-        j = _book(c)
+        j = await _book(c, own_session)
     rows = {s["strategy_id"]: s for s in j["sleeves"]}
     tqqq = rows[VOL_TARGET]["held_ils"] + rows[NASDAQ_TREND]["held_ils"]
     # On HEAD each sleeve held all ~3,840 of TQQQ: 7,680 between them.
@@ -70,18 +80,18 @@ def test_a_shared_ticker_is_split_by_target_weight_not_counted_twice():
     assert rows[SEMIS]["shared_with"] == {}
 
 
-def test_the_rows_add_up_to_the_book_total():
+async def test_the_rows_add_up_to_the_book_total(own_session):
     """The invariant the screenshot broke: per-sleeve held == the union."""
     with TestClient(m.app) as c:
-        j = _book(c)
+        j = await _book(c, own_session)
     total = sum(s["held_pct"] for s in j["sleeves"])
     assert total == pytest.approx(j["allocated_held_pct"], abs=2e-4), j
     assert total <= 1.0
 
 
-def test_a_ticker_only_one_sleeve_wants_is_unchanged():
+async def test_a_ticker_only_one_sleeve_wants_is_unchanged(own_session):
     with TestClient(m.app) as c:
-        j = _book(c)
+        j = await _book(c, own_session)
     semis = next(s for s in j["sleeves"] if s["strategy_id"] == SEMIS)
     assert semis["held_ils"] == pytest.approx(1350.0, rel=1e-3)
 
@@ -92,7 +102,7 @@ async def test_the_measured_return_weights_the_sleeves_by_what_they_hold(own_ses
     from app.services.feed_service import ensure_superadmin
     from app.services.measured_assumptions import book_assumptions
     with TestClient(m.app) as c:
-        j = _book(c)
+        j = await _book(c, own_session)
     async with own_session() as s:
         a = await book_assumptions(s, await ensure_superadmin(s))
     w = sum(x["weight_pct"] for x in a.get("components") or [] if x.get("kind") == "sleeve")

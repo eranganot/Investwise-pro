@@ -178,7 +178,7 @@ def test_the_ack_route_can_target_one_sleeve_and_refuses_a_stranger():
 # --------------------------------------------------------------------------- #
 # Drift: per ticker, at the sum
 # --------------------------------------------------------------------------- #
-def test_two_sleeves_wanting_one_ticker_produce_ONE_drift_card():
+def test_two_sleeves_wanting_one_ticker_produce_ONE_drift_card(look_alikes_allowed):
     """The P1 duplicate bug in card form. TQQQ is one position; two cards about
     it at two targets means acting on either makes the other wrong."""
     with TestClient(m.app) as c:

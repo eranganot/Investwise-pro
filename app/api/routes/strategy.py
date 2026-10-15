@@ -86,6 +86,42 @@ async def refresh_backtests(only: str | None = None,
     return await backtest_service.refresh_all(session, only=ids)
 
 
+@router.get("/strategies/correlations")
+async def strategy_correlations(session: AsyncSession = Depends(get_session),
+                                user: User = Depends(acting_user)) -> dict:
+    """PR 132 (D97): how closely each catalogue pair moves, as last measured, and
+    which pairs are the same bet under your limits. Never computes."""
+    from app.services import sleeve_diversity as div
+    corr = await div.load_correlations(session)
+    ids = strategy_catalog.active_ids()
+    rows = []
+    for n, a in enumerate(ids):
+        for b in ids[n + 1:]:
+            ov, markets = div.overlap_pct(div._spec_of(a), div._spec_of(b))
+            rho = (corr.get("pairs") or {}).get(div.pair_key(a, b))
+            sb = div.same_bet(a, b, corr)
+            rows.append({"a": a, "b": b, "a_name": div._name(a), "b_name": div._name(b),
+                         "correlation": rho, "overlap_pct": ov, "markets": markets,
+                         "same_bet": sb is not None, "why": sb["why"] if sb else None})
+    rows.sort(key=lambda r: -(r["correlation"] if r["correlation"] is not None else -2))
+    lim_o, lim_c = div._limits()
+    return {"ok": bool(corr), "as_of": corr.get("as_of"), "overlap_limit_pct": lim_o,
+            "correlation_limit": lim_c, "pairs": rows,
+            "unmeasured": corr.get("unmeasured") or [], "missing_tickers": corr.get("missing_tickers") or []}
+
+
+@router.post("/strategies/correlations/refresh",
+             dependencies=[Depends(require_role(Role.ANALYST))])
+async def refresh_strategy_correlations(session: AsyncSession = Depends(get_session)) -> dict:
+    """Measure every catalogue pair now (the nightly job runs at 03:50). Slow: ten
+    years of closes for every catalogue ticker. Stores the matrix; trades nothing."""
+    from app.services import sleeve_diversity as div
+    out = await div.refresh_correlations(session)
+    return {"stored": out.get("stored"), "as_of": out.get("as_of"),
+            "pairs": len(out.get("pairs") or {}), "unmeasured": out.get("unmeasured") or [],
+            "missing_tickers": out.get("missing_tickers") or []}
+
+
 @router.get("/strategies/candidates/book-effect")
 async def candidates_book_effect(session: AsyncSession = Depends(get_session),
                                  user: User = Depends(acting_user)) -> dict:

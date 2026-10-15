@@ -58,6 +58,7 @@ Shipped: **A + C**.
   - "Ways to close the gap" (goal cards).
 - **My mix:**
   - "What you hold vs your plan": per sleeve, Core, Commodities and Cash, held% / target% with a bar and target tick. Sleeves have Remove (sells nothing). A ticker two sleeves share is split between them (PR 131). The chip counts both sides: "N pts to fund · M pts over", or "on plan".
+  - Explore: a strategy that is the same bet as a sleeve you hold says so ("⚠ Same bet as your …") and its button is "Replace <sleeve> with this" (a swap: same size, nothing sold) instead of "Add as a sleeve"; a refused add offers the same replace (PR 132).
   - The goal card quotes `goal_chance`; an out-of-date one shows "As of … — <reason>" and is re-solved once per load (PR 131).
   - **Fund all sleeves** (dry-run, then confirm) and **Change core**.
   - **Your protective rules**, with the odds they cost, the retune card, and **Edit rules**.

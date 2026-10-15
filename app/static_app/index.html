@@ -3542,10 +3542,13 @@ async function loadStrategies(){
       ${isSleeve?`<div class="ds bookfx" id="bfx-${s.id}" style="font-size:12px;opacity:.85">Measuring what it does to your whole book…</div>`:""}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
       ${isSleeve?sleeveControl(s):coreMixLine(s)}
+      ${isSleeve&&!mine&&_sameBet(s.id)?`<div class="ds warn" style="font-size:12px">⚠ Same bet as your ${_sameBet(s.id).name} sleeve: ${_sameBet(s.id).why}. Every sleeve must be a different bet, so this can replace it but not join it.</div>`:""}
       <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
-        ${isSleeve
+        ${isSleeve&&!mine&&_sameBet(s.id)
+          ? `<button onclick="swapRetired('${_sameBet(s.id).strategy_id}','${s.id}','${s.name.replace(/'/g,"")}')">Replace ${_sameBet(s.id).name.replace(/'/g,"")} with this</button>`
+          : isSleeve
           ? `<button onclick="applyStrat('${s.id}')">${mine?"Resize sleeve":"Add as a sleeve"}</button>`
           : (mine
               ? `<button disabled style="opacity:.5;cursor:default">✓ Your core</button>`
@@ -3645,6 +3648,11 @@ function retiredFold(gone){
         <div class="ds" style="font-size:12px">${s.retired.why}</div>
         ${_retiredNums(s)?`<div class="mk" style="font-size:11px">${_retiredNums(s)}</div>`:""}</div>`).join("")
     + `</details>`;
+}
+// PR 132 (D97): the first held sleeve this strategy would repeat, or null.
+function _sameBet(id){
+  const c=((MYSLEEVES&&MYSLEEVES.same_bet)||{})[id];
+  return c&&c.length?c[0]:null;
 }
 function retiredMine(s){
   const to=s.retired.move_to, toName=((STRAT.by_goal[STGOAL]||[]).find(x=>x.id===to)||{}).name||to;
@@ -3898,7 +3906,12 @@ async function applyStrat(id){
   try{const resp=await fetch(`/api/v1/strategies/${id}/apply${sleeveQS(id)}`,{method:"POST"});
     if(resp.status===401){location.href="/login";return;}
     const r=await resp.json();
-    if(!resp.ok||!r.ok){o.innerHTML=`<span class="bad">Couldn't apply: ${r.reason||r.error||resp.status}</span>`;return;}
+    if(!resp.ok||!r.ok){
+      // PR 132: a same-bet refusal offers the replacement it names.
+      const rep=r.replace&&(r.same_bet_as||[])[0];
+      o.innerHTML=`<span class="bad">Couldn't apply: ${r.reason||r.error||resp.status}</span>`
+        +(rep?`<div style="margin-top:8px"><button class="load" onclick="swapRetired('${rep.strategy_id}','${id}','${((STRAT&&Object.values(STRAT.by_goal||{}).flat().find(x=>x.id===id))||{}).name||id}')">Replace ${rep.name} with it</button></div>`:"");
+      return;}
     const acts=(r.rebalance_actions||[]).map(a=>`<li>${a.action_type} ${a.asset_class}: ~₪${Math.round(a.estimated_trade_value_currency).toLocaleString()}</li>`).join("");
     // Applying used to be indistinguishable at 20% and at 90%, because the sleeve
     // only ever changed the basket. It now arms a real, enforced ceiling -- so say

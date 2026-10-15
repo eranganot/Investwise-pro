@@ -288,8 +288,28 @@ async def sleeves_view(session, user) -> dict:
         _comm, _cashr = float(_btv.get("commodities_pct") or 0.0), float(_btv.get("cash_pct") or 0.0)
     except Exception:  # noqa: BLE001 -- the sleeve table must still render
         logger.warning("book target unavailable for the sleeves view", exc_info=False)
+    # PR 132 (D97): every sleeve must be a different bet. `same_bet` says, per
+    # catalogue strategy you do not hold, which of your sleeves it would repeat
+    # (Explore marks it and offers "replace" instead of "add"); `held_same_bets`
+    # names the pairs you already hold that are one bet (the wave-4 card).
+    _same, _held_pairs = {}, []
+    try:
+        from app.services import sleeve_diversity as div
+        from app.services import strategy_catalog as _cat
+        _corr = await div.load_correlations(session)
+        _held = [s.strategy_id for s in sleeves]
+        for _sid in _cat.active_ids():
+            if _sid not in _held:
+                _c = div.same_bets_for(_sid, _held, _corr)
+                if _c:
+                    _same[_sid] = _c
+        _held_pairs = await div.held_clashes(session, user)
+    except Exception:  # noqa: BLE001 -- the sleeve table must still render
+        logger.warning("same-bet check unavailable for the sleeves view", exc_info=True)
     return {
         "sleeves": _sleeves,
+        "same_bet": _same,
+        "held_same_bets": _held_pairs,
         "commodities_pct": round(_comm, 4),
         "cash_reserve_pct": round(_cashr, 4),
         "allocated_pct": sv.total_pct(sleeves),
