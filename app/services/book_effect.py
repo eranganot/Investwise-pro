@@ -28,11 +28,39 @@ from app.engines import strategy_backtest as bt
 from app.models.tables import User
 from app.services import strategy_candidates, strategy_catalog
 
-RATIO_GAIN = 0.02
-DD_TOLERANCE_PTS = 2.0
-RULE = (f"improves the book when adding it raises return per unit of volatility by at least "
-        f"{RATIO_GAIN} and deepens the worst drop by no more than {DD_TOLERANCE_PTS:g} points, "
-        f"over the ten-year window")
+RATIO_GAIN = 0.02            # default; the setting is `book_effect_ratio_gain` (PR 133)
+DD_TOLERANCE_PTS = 2.0       # default; the setting is `book_effect_drop_tolerance_pts` (PR 133)
+
+
+def limits() -> tuple[float, float]:
+    """The two limits in force for the user being served. Read in the request's
+    context and passed to the worker: a thread does not inherit the overrides."""
+    from app.services import thresholds
+    return (float(thresholds.get("book_effect_ratio_gain", RATIO_GAIN)),
+            float(thresholds.get("book_effect_drop_tolerance_pts", DD_TOLERANCE_PTS)))
+
+
+def rule_text(ratio_gain: float = RATIO_GAIN, drop_tol: float = DD_TOLERANCE_PTS) -> str:
+    return (f"improves the book when adding it raises return per unit of volatility by at least "
+            f"{ratio_gain:g} and deepens the worst drop by no more than {drop_tol:g} points, "
+            f"over the ten-year window")
+
+
+RULE = rule_text()
+
+
+def verdict(gain: float | None, deeper: float, ratio_gain: float, drop_tol: float) -> dict:
+    """PR 133 (owner: "is that suggestion that no one of the sleeves are good to be
+    taken?"): WHICH test failed and by how much, not just "does not improve"."""
+    failed = []
+    if gain is None or gain < ratio_gain:
+        failed.append({"test": "ratio", "got": gain, "limit": ratio_gain,
+                       "text": ("return per unit of risk could not be measured" if gain is None else
+                                f"return per unit of risk moves {gain:+.3f}; your limit is +{ratio_gain:g}")})
+    if deeper > drop_tol:
+        failed.append({"test": "drop", "got": deeper, "limit": drop_tol,
+                       "text": f"the worst drop gets {deeper:.1f} points deeper; your limit is {drop_tol:g}"})
+    return {"improves": not failed, "failed": failed}
 
 
 def _lookup(strategy_id: str) -> tuple[dict | None, dict | None]:
@@ -63,7 +91,8 @@ def _summary(m: dict) -> dict:
             "start": m.get("start"), "end": m.get("end")}
 
 
-def compare_blocking(book: dict, cand: dict, pct: float, fetch=None) -> dict:
+def compare_blocking(book: dict, cand: dict, pct: float, fetch=None, *,
+                     ratio_gain: float | None = None, drop_tol: float | None = None) -> dict:
     """Measure the book without and with ``cand`` at ``pct``% of NAV. Blocking."""
     from app.services.backtest_service import _fetch
 
@@ -114,13 +143,16 @@ def compare_blocking(book: dict, cand: dict, pct: float, fetch=None) -> dict:
     gain = (round(sb["return_per_risk"] - sa["return_per_risk"], 3)
             if sa["return_per_risk"] is not None and sb["return_per_risk"] is not None else None)
     deeper = round(float(sb["max_drawdown_pct"]) - float(sa["max_drawdown_pct"]), 2)
+    rg, dt = (ratio_gain if ratio_gain is not None else RATIO_GAIN,
+              drop_tol if drop_tol is not None else DD_TOLERANCE_PTS)
+    v = verdict(gain, deeper, rg, dt)
     return {"ok": True, "strategy_id": sid, "sleeve_pct": round(add * 100, 2),
             "already_held": held is not None,
             "without": sa, "with": sb,
             "return_per_risk_gain": gain, "worst_drop_change_pts": deeper,
-            "improves": bool(gain is not None and gain >= RATIO_GAIN
-                             and deeper <= DD_TOLERANCE_PTS),
-            "rule": RULE}
+            "improves": v["improves"], "failed": v["failed"],
+            "limits": {"ratio_gain": rg, "drop_tolerance_pts": dt},
+            "rule": rule_text(rg, dt)}
 
 
 async def for_strategy(session: AsyncSession, user: User, strategy_id: str,
@@ -138,7 +170,8 @@ async def for_strategy(session: AsyncSession, user: User, strategy_id: str,
     held = next((s for s in book["sleeves"] if s["id"] == strategy_id), None)
     if held and sleeve_pct is None:
         pct = float(held["current_pct"])            # its effect at the size you run
-    out = await offload(compare_blocking, book, spec, pct)
+    rg, dt = limits()
+    out = await offload(compare_blocking, book, spec, pct, ratio_gain=rg, drop_tol=dt)
     if isinstance(out, dict):
         out["name"] = entry.get("name")
         out["candidate_code"] = entry.get("code")
@@ -154,5 +187,5 @@ async def for_all_candidates(session: AsyncSession, user: User) -> dict:
     rows = []
     for sid in ids:
         rows.append(await for_strategy(session, user, sid))
-    return {"ok": True, "rule": RULE, "candidates": rows,
+    return {"ok": True, "rule": rule_text(*limits()), "candidates": rows,
             "disclaimer": "Measured on your current book over one ten-year window. Not financial advice."}

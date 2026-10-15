@@ -3588,7 +3588,11 @@ async function fillBookEffects(ids){
       const r=await resp.json(); const e=$("bfx-"+id); if(!e) continue;
       if(!r.ok){e.textContent=`Your book: not measurable (${r.detail||r.reason||"unknown"})`;continue;}
       const a=r.without,b=r.with;
-      const verdict=r.improves?`<b class="ok">improves your book</b>`:`<b>does not improve your book</b>`;
+      // PR 133: say WHICH test failed and by how much (owner: "is that suggestion
+      // that no one of the sleeves are good to be taken?"). Limits are settings.
+      const why=(r.failed||[]).map(f=>f.text).join("; ");
+      const verdict=r.improves?`<b class="ok">improves your book</b>`
+        :`<b>does not improve your book</b>${why?` (${why})`:""}`;
       e.innerHTML=`${r.already_held?`At the ${r.sleeve_pct}% you run`:`Added at ${r.sleeve_pct}% of your book`}: return per unit of risk `
         +`${a.return_per_risk} → ${b.return_per_risk}, worst drop -${a.max_drawdown_pct}% → -${b.max_drawdown_pct}%, `
         +`${a.cagr_pct}% → ${b.cagr_pct}%/yr — ${verdict}`

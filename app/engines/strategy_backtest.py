@@ -680,6 +680,9 @@ SYNTHETIC = {
     "TQQQ": ("QQQ", 3), "QLD": ("QQQ", 2), "UPRO": ("SPY", 3), "TMF": ("TLT", 3),
     "SOXL": ("SOXX", 3), "TECL": ("XLK", 3), "FAS": ("XLF", 3), "CURE": ("XLV", 3),
     "ERX": ("XLE", 3), "LABU": ("XBI", 3), "DRN": ("XLRE", 3),
+    # PR 133: the wave-3 diversifiers' leveraged and inverse legs.
+    "SSO": ("SPY", 2), "UBT": ("TLT", 2), "UGL": ("GLD", 2),
+    "PSQ": ("QQQ", -1), "SH": ("SPY", -1),
 }
 RATE_TICKER = "^IRX"        # 13-week T-bill yield, percent
 CASH_LIKE = {"BIL"}         # rebuilt from the T-bill yield before it listed
@@ -694,7 +697,15 @@ def synthetic_leveraged(under: list[tuple[str, float]], lev: float,
     v = 100.0
     for (_, a), (d, b) in zip(under, under[1:]):
         last = r.get(d, last)
-        v *= 1 + lev * (b / a - 1) - (fee + (lev - 1) * (last / 100.0 + spread)) / TRADING_DAYS
+        if lev < 0:
+            # PR 133: an INVERSE fund borrows nothing. Its NAV sits in cash at the
+            # T-bill rate and its short swap receives financing less a spread, so
+            # it earns about (1 - lev) x the rate less |lev| x the spread. The
+            # leveraged formula below would book that as negative borrowing.
+            carry = (1 - lev) * last / 100.0 - abs(lev) * spread - fee
+            v *= 1 + lev * (b / a - 1) + carry / TRADING_DAYS
+        else:
+            v *= 1 + lev * (b / a - 1) - (fee + (lev - 1) * (last / 100.0 + spread)) / TRADING_DAYS
         out.append((d, max(v, 1e-6)))
     return out
 

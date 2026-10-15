@@ -233,6 +233,14 @@
   >= 0.80 (owner asked for a recommendation; 0.80 chosen). Both limits are settings. A NEW sleeve that is the same bet
   is refused with "replace instead"; held look-alikes are left alone (owner: card only; the card is wave 4).
   Correlations are measured nightly (03:50) on production prices and only read online. → PR 132
+- **D98 · 2026-10-15 · Wave-3 candidates are gated on beating the market first; "different" is a badge** (owner: "the
+  main goal is not only to diversify but to beat the market (diversification is just a plus)"; "yes, add them, but I
+  want to see the risk level per strategy"; short history "ship with a badge"). Thirteen pre-registered candidates
+  (D1-D13, `plans/DIVERSIFIERS_2026-10-15.md`): B1 beats QQQ after tax OR raises the whole book's return; G2 book
+  effect; G3 above T-bills with a shallower drop than QQQ; G4 long history (or a "short history" badge); G5 sweep
+  within 5 points; G6 no near-duplicate above 0.90; G1 correlation with QQQ <= 0.50 is the "different engine" badge.
+  The book-effect verdict names the failed test, and its two limits are settings. Measured on production; passing ones
+  join the catalogue in a follow-up PR. → PR 133
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model
