@@ -274,7 +274,10 @@ async def sleeves_view(session, user) -> dict:
                          # make possible.
                          "following_signal": o.get("following_signal"),
                          "signal_as_of": o.get("signal_as_of"),
-                         "tickers": o.get("tickers")})
+                         "tickers": o.get("tickers"),
+                         # PR 131: a shared ticker is split between its sleeves;
+                         # this says which ones share it.
+                         "shared_with": o.get("shared_with") or {}})
     # PR 71: what the unclaimed remainder is split into, from THE book target,
     # so the Plan tab can say the core is not all of the remainder.
     _comm = _cashr = 0.0

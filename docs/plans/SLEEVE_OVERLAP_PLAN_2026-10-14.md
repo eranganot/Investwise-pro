@@ -120,6 +120,8 @@ owner's to make, and every card must show both numbers.
     momentum 10 / quality momentum / 52-week-high leaders are re-measured on it under their original gate. A rule
     that passes shows its current picks on a card ("this month's picks: …") — picks only ever come from a gated rule,
     with its measured record beside them, never from a screen or a guess.
+- **Owner review first (2026-10-15):** before anything is measured, the full list of candidate specs (rule, tickers,
+  fall-back, cadence, sweep, gate) goes to the owner for approval; only approved specs are measured.
 - Passing ones join the catalogue; failures are kept as specs and reported.
 - **Not in this plan: shorting single stocks.** It needs a short book (negative quantities, margin, borrow fees,
   forced exits) through every layer, and the evidence above says the edge mostly disappears after fees. Logged in
@@ -140,8 +142,7 @@ All measured by the goal model (chance with rules, chance the book halves, befor
 - Card claims: apply each, re-measure — the claimed chance and mix must reappear.
 
 ### Wave 5 — PR 135: the best book for your goal, goal unchanged (asks 8, 9) — D100
-- **The optimiser:** `sleeve_count`'s greedy sleeve-set search (it already adds sleeves while each one helps and
-  reports why it stopped) gets the goal as its objective: maximise the chance of reaching the goal with your rules,
+- **The optimiser** (a new search; reusing `sleeve_count` is optional, owner 2026-10-15): maximise the chance of reaching the goal with your rules,
   over which sleeves (catalogue, never two that are the same bet), their sizes, the core, and the protection setup —
   subject to the chance of halving staying under your limit (`halve_limit_pct`, already a setting).
 - **One card, "the best book we can measure for your goal":** today's chance -> the best found, the chance of halving
@@ -162,6 +163,7 @@ STATUS (with result), BACKLOG, DECISIONS, doc pages. Stop and report.
 3. Goal definition (deposits): **skipped for now**; deposit lever out of wave 5.
 4. Diversifiers: **both** — shown when they raise the chance, and as "safer, lower chance" when they cut halving.
 5. Goal stays fixed: no target/deadline levers.
+6. 2026-10-15: plan approved; wave 3 candidate specs reviewed by the owner before measuring.
 
 ## Why 0.80
 Typical long-run daily correlations (to be measured in wave 2, not assumed): US large-cap equity funds with each other

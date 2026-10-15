@@ -1763,6 +1763,9 @@ def _roi_for_amount(goal: dict, amount: float) -> float | None:
 RESOLVE_ON = frozenset({"stop_loss", "trailing_stop", "profit_protect", "take_profit", "buy_back",
                         "trend_break", "drawdown_guard", "strategy_signal"})
 RESOLVE_MIN_AGE_H = 1.0
+#: PR 131: the screens' automatic re-solve of an out-of-date goal chance runs at
+#: most once in this many hours (6 minutes), however many tabs ask.
+AUTO_RESOLVE_MIN_AGE_H = 0.1
 RESOLVE_ON_RULE_FIRE = True
 
 
@@ -1990,31 +1993,57 @@ def rules_changed_since(v: dict, fp_now: str | None) -> bool:
     return bool(v.get("rules_fp") and fp_now and v["rules_fp"] != fp_now)
 
 
-def _goal_verdict_current(plan, live: dict, v: dict, age: float | None,
-                          fp_now: str | None = None) -> bool:
-    """Is a stored GOAL verdict still about this plan, this book and these rules?"""
-    if age is None or age > MAX_AGE_H or plan is None:
-        return False
-    if rules_changed_since(v, fp_now):
-        return False
+#: Why a stored goal verdict no longer speaks for the plan, in the user's words.
+#: PR 131 (D96): the screens used to fall back to the projection's rough no-rules
+#: run without saying so; now they quote the last verdict and say why it is old.
+STALE_TEXT = {
+    "TOO_OLD": f"solved more than {MAX_AGE_H:g} hours ago",
+    "RULES_CHANGED": "your protective rules changed since",
+    "SLEEVES_CHANGED": "your sleeve sizes changed since",
+    "SETTINGS_CHANGED": "your objective or goal settings changed since",
+    "GOAL_CHANGED": "your goal changed since",
+    "STALE_VIEWS": "the strategies are being re-measured",
+    "NO_PLAN": "there is no plan",
+}
+#: Reasons whose old chance describes a different GOAL (or rests on numbers that
+#: are known wrong) -- quoting it, even labelled, would answer another question.
+STALE_WITHHELD = {"GOAL_CHANGED", "STALE_VIEWS", "NO_PLAN"}
+
+
+def goal_stale_reason(plan, live: dict, v: dict, age: float | None,
+                      fp_now: str | None = None) -> str | None:
+    """Why a stored GOAL verdict is not about this plan, book and rules; None if it is."""
+    if plan is None:
+        return "NO_PLAN"
     g = v.get("goal") or {}
+    if (g.get("roi_pct") is None
+            or abs(float(g["roi_pct"]) - float(plan.target_roi_pct)) > 1e-9
+            or (g.get("target_date_raw") or None) != (getattr(plan, "target_date", None) or None)):
+        return "GOAL_CHANGED"
+    if age is None or age > MAX_AGE_H:
+        return "TOO_OLD"
+    if rules_changed_since(v, fp_now):
+        return "RULES_CHANGED"
     st = settings_of(plan)
     if ((getattr(plan, "objective", None) or "Balanced") != v.get("objective")
             or st["mode"] != "goal"
             or abs(float(v.get("kelly_ceiling") or 0) - st["kelly_fraction"]) > 1e-6
             or (v.get("confidence") or fi.DEFAULT_CONFIDENCE) != st["return_confidence"]
-            or g.get("roi_pct") is None
-            or abs(float(g["roi_pct"]) - float(plan.target_roi_pct)) > 1e-9
-            or (g.get("target_date_raw") or None) != (getattr(plan, "target_date", None) or None)
             # PR 104c: solved under the limits the plan has now.
             or abs(float(v.get("p_star") or GOAL_CONFIDENCE) - st["goal_confidence"]) > 1e-9
             or abs(float(((v.get("rules") or {}).get("tuning") or {}).get("halve_floor_pct", st["halve_limit_pct"]))
                    - st["halve_limit_pct"]) > 1e-9):
-        return False
+        return "SETTINGS_CHANGED"
     for s in v.get("sleeves") or []:
         if abs(live.get(s["id"], -1.0) - float(s["current_pct"])) > 0.01:
-            return False
-    return True
+            return "SLEEVES_CHANGED"
+    return None
+
+
+def _goal_verdict_current(plan, live: dict, v: dict, age: float | None,
+                          fp_now: str | None = None) -> bool:
+    """Is a stored GOAL verdict still about this plan, this book and these rules?"""
+    return goal_stale_reason(plan, live, v, age, fp_now) is None
 
 
 def stale_views(v: dict) -> list[str]:
@@ -2061,6 +2090,48 @@ async def book_expectation(session, user) -> dict | None:
             "basis": "frontier", "confidence": v.get("confidence"), "regime": mk.get("state"),
             "recent_weight": mk.get("recent_weight"), "age_hours": round(age or 0.0, 1),
             "goal_probability_pct": b.get("goal_probability_pct"), "headline": v.get("headline")}
+
+
+async def goal_chance(session, user) -> dict | None:
+    """PR 131 (D96): THE goal chance every screen quotes, current or not.
+
+    `book_expectation` answers "may the verdict's return and volatility stand in
+    for the book's" and must stay strict. This answers "what is the goal's
+    chance", and when the verdict is merely old -- a day passed, a rule or a
+    sleeve size changed -- the honest answer is the last solved chance, labelled
+    with its age and why, while a re-solve runs. Until PR 131 the screens fell
+    back to the projection's rough no-rules run instead, which read 44% beside
+    the Plan tab's 20% for the same goal.
+
+    The headline keys (`p_goal_pct`, `without_rules_pct`, ...) plus `current`,
+    `stale_reason`, `stale_text` and `age_hours`. None when there is no goal
+    verdict, or when the old chance would answer a different question
+    (`STALE_WITHHELD`: the goal itself changed, or its measurements are known
+    stale) -- then callers keep their own labelled fallback.
+    """
+    from app.services import sleeve_service as sv
+    from app.services.plan_service import get_plan
+    row = await latest(session, user)
+    if row is None:
+        return None
+    v = row.detail or {}
+    if v.get("mode") != "goal" or v.get("outcome") in (NOT_MEASURABLE, UNAVAILABLE, GOAL_NO_TARGET):
+        return None
+    hl = v.get("headline") or {}
+    if hl.get("p_goal_pct") is None:
+        return None
+    age = _age_hours(row)
+    if stale_views(v):
+        reason = "STALE_VIEWS"
+    else:
+        live = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+        reason = goal_stale_reason(await get_plan(session, user), live, v, age,
+                                   await rules_fingerprint(session, user))
+    if reason in STALE_WITHHELD:
+        return None
+    return {**hl, "current": reason is None, "stale_reason": reason,
+            "stale_text": STALE_TEXT.get(reason) if reason else None,
+            "age_hours": round(age, 1) if age is not None else None}
 
 
 async def goal_story_active(session, user) -> bool:

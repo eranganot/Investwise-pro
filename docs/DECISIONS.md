@@ -218,6 +218,15 @@
   measured). Daily correlation cannot tell a 1x rule from its 3x version (0.99), so read across every tier it would let one
   Nasdaq rule ship. Within a tier the stronger edge ships: R7 in Medium-high (over R4), R6 in High (over R5 and MH3, which
   is retired with a flag and moves to Hold the Nasdaq index). → PR 130
+- **D95 · 2026-10-15 · A ticker several sleeves want is split between them, pro-rata to target weight** (owner,
+  2026-10-14: "the sleeves holds much more than they should"; split approved as assumption A1 of
+  `plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`). Holdings carry no lot tags, so ownership is unknowable; pro-rata to target
+  makes per-sleeve over/under add up to the per-ticker drift card. Fixed: the Plan mix rows (97.6% shown for 59.2%
+  held), the core's "sleeve overshoot", the health sleeve score and the measured-return weights. → PR 131
+- **D96 · 2026-10-15 · One goal chance: an old verdict is quoted with its age and reason, not swapped for the rough
+  run** (owner: "how come the chances of meeting the goals are still not aligned?" — Today 44%, Plan 20%; "show the
+  20%/28%"). Withheld only when it is about a different goal or built on stale measurements. Screens ask once per load
+  for a re-solve. → PR 131
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

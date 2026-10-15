@@ -47,6 +47,11 @@ async def project(session, user, contribution_per_year: float | None = None) -> 
         return {"message": "Add holdings to project your goal."}
     goal = await goal_of(session, user, plan, stats["nav"])
     target = goal.get("target")
+    try:
+        from app.services.frontier_service import goal_chance
+        goal_headline = await goal_chance(session, user)
+    except Exception:  # noqa: BLE001 -- the projection stands without the goal model
+        goal_headline = None
     # The deadline governs (Eran, Q1): years LEFT to it, the same figure the
     # behind card uses. Horizon only when there is no deadline at all.
     if goal.get("deadline"):
@@ -166,8 +171,10 @@ async def project(session, user, contribution_per_year: float | None = None) -> 
         # PR 99: the goal's ONE headline chance (with the protective rules as
         # they work, rules-off beside it), so this card quotes the goal cards'
         # figure; the chart's own no-rules run stays labelled as such.
-        "goal_headline": ((stats.get("expectation") or {}).get("headline")
-                          if stats.get("assumption_basis") == "frontier" else None),
+        # PR 131 (D96): from `goal_chance`, so an OLD verdict is quoted with its
+        # age and reason (`current`, `stale_text`) instead of being dropped for
+        # the chart's no-rules run -- which read 44% beside Plan's 20%.
+        "goal_headline": goal_headline,
         "probability_of_loss_real": round(sim.probability_of_loss_real, 3),
         "probability_of_gain_real": round(sim.probability_of_gain_real, 3),
         "runs": sim.runs,

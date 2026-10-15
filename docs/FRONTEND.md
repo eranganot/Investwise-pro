@@ -57,7 +57,8 @@ Shipped: **A + C**.
   - Four rows, each with **Edit**: **Target** · **Monthly deposit** → Edit-goal sheet; **Risk dials** → Risk-dials sheet; **Card thresholds** → thresholds sheet.
   - "Ways to close the gap" (goal cards).
 - **My mix:**
-  - "What you hold vs your plan": per sleeve, Core, Commodities and Cash, held% / target% with a bar and target tick. Sleeves have Remove (sells nothing).
+  - "What you hold vs your plan": per sleeve, Core, Commodities and Cash, held% / target% with a bar and target tick. Sleeves have Remove (sells nothing). A ticker two sleeves share is split between them (PR 131). The chip counts both sides: "N pts to fund · M pts over", or "on plan".
+  - The goal card quotes `goal_chance`; an out-of-date one shows "As of … — <reason>" and is re-solved once per load (PR 131).
   - **Fund all sleeves** (dry-run, then confirm) and **Change core**.
   - **Your protective rules**, with the odds they cost, the retune card, and **Edit rules**.
 - **Explore:**
