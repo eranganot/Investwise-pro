@@ -128,8 +128,20 @@ def compare_blocking(book: dict, cand: dict, pct: float, fetch=None, *,
                 "detail": f"no price history for {', '.join(missing)}"}
     bench = series.get(bench_tk)
 
+    # ONE WINDOW FOR BOTH RUNS. PR 133: each run used to align only its own
+    # tickers, so a candidate on a young fund (DBMF from 2019) compared the book
+    # over 2016-2026 without it against 2019-2026 with it -- a different decade,
+    # not the candidate's effect. Both runs now align on every ticker either
+    # needs, except a selection universe's late listings, which join the calendar
+    # instead of cutting it (`late_tickers`).
+    late = bt.late_tickers(_engine_spec(cand))
+    shared = set()
+    for c in with_:
+        shared |= set(bt.tickers_needed(c["spec"]))
+    shared -= late
+
     def run(cs: list[dict]) -> dict:
-        tks = set()
+        tks = set(shared)
         for c in cs:
             tks |= set(bt.tickers_needed(c["spec"]))
         return blend.measure_blend({t: series[t] for t in tks if t in series}, cs,

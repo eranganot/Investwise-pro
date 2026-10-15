@@ -53,6 +53,24 @@ def _walk(n, drift, vol, seed):
 N = 900
 
 
+def test_a_young_fund_is_compared_on_its_own_window_not_a_different_decade():
+    """PR 133: DBMF (2019) was compared as "book 2016-2026 without it" against
+    "book 2019-2026 with it". Both runs must start on the same day."""
+    core = _walk(N, 0.0006, 0.015, 1)
+    d = _days(N)
+    young = list(zip(d[400:], map(float, _walk(N - 400, 0.0004, 0.006, 5))))
+    data = {"CORE": list(zip(d, map(float, core))), "SPY": list(zip(d, map(float, _walk(N, 0.0004, 0.01, 3)))),
+            "YOUNG": young}
+
+    def fetch(tickers, **kw):
+        return {t: data[t] for t in tickers if t in data}, [t for t in tickers if t not in data]
+
+    cand = {"id": "y", "weights": {"YOUNG": 1.0}, "overlay": {"kind": "buy_hold"}}
+    r = be.compare_blocking(_book(), cand, 20, fetch=fetch)
+    assert r["ok"], r
+    assert r["without"]["start"] == r["with"]["start"] == d[400], (r["without"]["start"], r["with"]["start"])
+
+
 def test_a_calm_diversifier_improves_a_volatile_book():
     rng_core = _walk(N, 0.0006, 0.02, 1)
     calm = _walk(N, 0.0005, 0.004, 2)                    # uncorrelated, much calmer

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 133). Last product PR: **PR 133**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134a). Last product PR: **PR 134a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,48 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 134a — wave-3 results: none of the 13 passes; the book effect compared young funds on the wrong window
+
+**Measured on production, 2026-10-15** (owner ran `scripts/measure-diversifiers.ps1` on `66e152d`; PR 133 smoke
+**PASS 12, FAIL 0, SKIP 0**). Window 2016-10 to 2026-10 unless noted; QQQ 20.81%/yr over it. Book effect against
+the owner's book at each candidate's suggested size, core making room: the book alone is **30.41%/yr, worst drop
+-49.61%, return per unit of risk 0.732**.
+
+| Code | Strategy | /yr | Worst drop | Risk (measured) | Corr QQQ | Book /yr | Book drop | Return/risk gain | Gate |
+|---|---|---|---|---|---|---|---|---|---|
+| D1 | GTAA-5 | 3.83% | -22.75% | Medium | 0.62 | 29.06% | -49.34% | -0.017 | fails B1, G2 |
+| D2 | Trend Risk Parity | 4.42% | -12.93% | Medium | 0.30 | 29.38% | -49.44% | -0.001 | fails B1, G2 |
+| D3 | Gold Trend | 6.52% | -32.35% | Medium | 0.07 | 30.37% | -49.56% | +0.013 | fails B1, G2 |
+| D4 | Treasury Trend | 0.95% | -14.92% | Medium | -0.20 | 29.25% | -48.86% | -0.002 | fails B1, G2, G3 |
+| D5 | Non-US Stocks Trend | 4.62% | -19.59% | Medium | 0.45 | 29.59% | -49.34% | -0.013 | fails B1, G2 |
+| D6 | GEM | 3.95% | -34.23% | Medium | 0.77 | 28.72% | -51.80% | -0.050 | fails B1, G2 |
+| D7 | Managed Futures (KMLM) | 6.95% (2020-12+) | -31.01% | Medium | -0.16 | *wrong window* | | | re-measure |
+| D8 | Managed Futures (DBMF) | 9.80% (2019-05+) | -20.39% | Medium | 0.17 | *wrong window* | | | re-measure |
+| D9 | Nasdaq Trend, Short in Downtrends | 7.83% | -25.72% | Medium | 0.04 | 30.49% | -47.36% | +0.006 | fails G2, G4 |
+| D10 | S&P Trend, Short in Downtrends | 1.69% | -31.57% | Medium | -0.11 | 29.44% | -48.69% | -0.007 | fails B1, G2, G3 |
+| D11 | 2x Trend Risk Parity | 6.06% | -31.99% | Medium | 0.32 | 29.95% | -50.30% | -0.002 | fails B1, G2 |
+| D12 | 2x Gold Trend | 8.13% | -53.04% | High | 0.07 | 30.78% | -49.97% | +0.019 | fails G2 (by 0.001), G3, G4 |
+| D13 | 3x Treasury Trend | -8.94% | -84.81% | Very high | -0.22 | 29.10% | -49.47% | -0.008 | fails B1, G2, G3, G4 |
+
+G6: D3 and D12 are near-duplicates (0.996). No candidate beats QQQ on its own; three raise the book's return a
+little (D9 +0.08, D12 +0.37 points; D8 to be re-measured). The closest to G2 is 2x Gold Trend, 0.001 short of the
++0.02 bar, and it also fails G3 and G4 (a -53% drop, deeper than QQQ's). As pre-registered, nothing is changed after
+the fact: **none joins the catalogue.** The specs and their results stay in `diversifier_candidates`.
+
+**Bug found and fixed.** `book_effect.compare_blocking` aligned each run on its own tickers, so a candidate on a
+young fund compared the book over 2016-2026 WITHOUT it against 2019-2026 WITH it (D7: 2020-12, D8: 2019-05). It
+also touched the "improves your book" line on catalogue cards for any strategy with a young fund (Factor Stack holds
+AVUV, listed 2019). Both runs now align on every ticker either needs (a selection universe's late listings still
+join late). Test: `test_pr129_book_effect::test_a_young_fund_is_compared_on_its_own_window_not_a_different_decade`.
+D7 and D8 are re-measured after deploy (`scripts/measure-diversifiers.ps1 -Only D7,D8`).
+
+**Tests.** Local SQLite 2,529 passed, local Postgres (full) 2,529 passed; one failure each, the pre-existing `dismissed_count` test. CI blocked (billing); merged on local results (owner-authorised for this plan). Ruff clean.
+**Smoke.** The re-measure of D7 / D8 is the check: both windows must start on the fund's first day. Result: SMOKE134A.
+
+**Next (owner, 2026-10-15: "run both option 2 and option 3"):** [`docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`](docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md), approved: S1-S3 on US125 with a T-bill fall-back; every candidate funded from Volatility-Targeted Leverage at its size and at double. PR 134b.
+
+---
+
 ## PR 133 — wave 3: different strategies that beat the market, gated (D98); the book-effect verdict says why
 
 **Owner, 2026-10-15:** approved the candidate list after review, with three changes: "the main goal is not only to
@@ -68,7 +110,7 @@ engine; specs match the approved text; -1x rebuild; the verdict names the failed
 flip a verdict; B1 / G3 / G1 on constructed prices; the short-history badge; near-duplicates; multi-leg candidates sit
 in T-bills when nothing trends. Local SQLite: 2,528 passed, 1 failed — the pre-existing `dismissed_count` test. Local Postgres (full): 2,528 passed, 1 failed — the same pre-existing test. Ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr133-diversifiers.ps1` (read-only; measures D4 end to end). Result: SMOKE133.
+**Smoke.** `scripts/smoke/smoke-pr133-diversifiers.ps1` (read-only; measures D4 end to end). Result on `66e152d` (owner): **PASS 12, FAIL 0, SKIP 0** (D4 measured end to end; the book-effect line named both failed tests).
 
 ---
 
