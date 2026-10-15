@@ -334,6 +334,10 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
   daily-return correlation >= `sleeve_correlation_limit` (0.80). Adding (or swapping in) a same-bet sleeve is refused
   with `replace`; resizing a held one is not. `/plan/sleeves` carries `same_bet` (catalogue -> held look-alikes) and
   `held_same_bets`; `/strategies/correlations` the measured table (job `strategy_correlation`, 03:50).
+- **Wave-3 candidates** (`diversifier_candidates`, `diversifier_gate`, PR 133, D98): D1-D13 pre-registered, measured
+  against B1 (beats QQQ, or raises the book's return), G2-G6 and the G1 "different engine" badge; they join the
+  catalogue only after passing on production. The **book-effect verdict** (`book_effect.verdict`) names the failed test
+  and its margin; its limits are the settings `book_effect_ratio_gain` / `book_effect_drop_tolerance_pts`.
 - "Where this could end up": `simulation_engine` median / 5% / 95%. It always states that it assumes no deposits (W3).
 - The account-history chart shows **real NAV snapshots only**, as time-weighted return vs SPY. It never draws a reconstruction.
 

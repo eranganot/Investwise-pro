@@ -110,6 +110,45 @@ async def strategy_correlations(session: AsyncSession = Depends(get_session),
             "unmeasured": corr.get("unmeasured") or [], "missing_tickers": corr.get("missing_tickers") or []}
 
 
+@router.get("/strategies/diversifiers")
+async def diversifier_candidates(user: User = Depends(acting_user)) -> dict:
+    """PR 133: the 13 wave-3 candidates as the owner approved them (not offered as sleeves)."""
+    from app.services import diversifier_candidates as dc
+    return {"candidates": [{k: c.get(k) for k in ("code", "id", "family", "name", "expected_risk",
+                                                  "sleeve_pct", "short_history")} | {"spec": dc.spec(c["id"])}
+                           for c in dc.CANDIDATES]}
+
+
+@router.get("/strategies/diversifiers/near-duplicates")
+async def diversifier_near_duplicates(user: User = Depends(acting_user)) -> dict:
+    """PR 133, gate G6: candidate pairs whose daily returns correlate above 0.90. Read-only."""
+    from app.core.offload import offload
+    from app.services import diversifier_candidates as dc
+    from app.services import diversifier_gate as gate
+    return await offload(gate.near_duplicates_blocking, [c["id"] for c in dc.CANDIDATES])
+
+
+@router.get("/strategies/diversifiers/{key}/measure")
+async def diversifier_measure(key: str, session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """PR 133: one candidate against the wave-3 gate (B1, G2-G5, G1 badge) on your book.
+
+    Slow -- ten years of prices, the long history, a five-point sweep and two book
+    simulations. Read-only: nothing is stored, offered or traded."""
+    from app.core.offload import offload
+    from app.services import book_effect
+    from app.services import diversifier_gate as gate
+    from app.services.target_solver import _book_for_solve
+
+    book, err = await _book_for_solve(session, user)
+    rg, dt = book_effect.limits()
+    out = await offload(gate.evaluate_blocking, key, None if err else book,
+                        ratio_gain=rg, drop_tol=dt)
+    if err and isinstance(out, dict):
+        out["book_unavailable"] = err
+    return out
+
+
 @router.post("/strategies/correlations/refresh",
              dependencies=[Depends(require_role(Role.ANALYST))])
 async def refresh_strategy_correlations(session: AsyncSession = Depends(get_session)) -> dict:

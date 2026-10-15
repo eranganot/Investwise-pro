@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 2: PR 132). Last product PR: **PR 132**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 133). Last product PR: **PR 133**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,40 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 133 — wave 3: different strategies that beat the market, gated (D98); the book-effect verdict says why
+
+**Owner, 2026-10-15:** approved the candidate list after review, with three changes: "the main goal is not only to
+diversify but to beat the market (diversification is just a plus)"; "yes, add them [leveraged versions], but I want to
+see the risk level per strategy"; short-history funds "ship with a badge". The list and gate are in
+[`docs/plans/DIVERSIFIERS_2026-10-15.md`](docs/plans/DIVERSIFIERS_2026-10-15.md). Earlier, on every strategy card's
+"does not improve your book": "is that suggestion that no one of the sleeves are good to be taken?".
+
+**What.**
+- `app/services/diversifier_candidates.py`: D1-D13 pre-registered exactly as approved, each with its expected risk
+  tier and suggested size — Family A (GTAA-5, trend risk parity, gold / Treasury / non-US trend, GEM), B (KMLM, DBMF;
+  short history), C (Nasdaq / S&P trend with a -1x leg), D (2x trend risk parity, 2x gold trend, 3x Treasury trend).
+- `app/services/diversifier_gate.py`: B1 (beats QQQ after tax, or raises the whole book's return), G2 (book effect),
+  G3 (above T-bills, shallower drop than QQQ), G4 (longest history, or the "short history" badge), G5 (sweep within 5),
+  G6 (near-duplicates above 0.90), G1 ("different engine" badge at correlation <= 0.50). Candidate, QQQ and T-bills
+  always run on one series dict, so they share one window.
+- Engine: SSO, UBT, UGL, PSQ, SH rebuildable for the long history; a -1x fund is rebuilt as earning (1 - L) x the
+  T-bill rate less |L| x the spread and fee, not as negative borrowing.
+- `GET /strategies/diversifiers`, `GET /strategies/diversifiers/{code}/measure`,
+  `GET /strategies/diversifiers/near-duplicates` (read-only; slow). `scripts/measure-diversifiers.ps1` runs all 13 on
+  production and saves the JSON. **Nothing joins the catalogue in this PR**; the ones that pass do in PR 134a.
+- Book effect: `failed` names the test that failed and its margin ("the worst drop gets 9.1 points deeper; your limit
+  is 2"); the line on every strategy card shows it. `book_effect_ratio_gain` (0.02) and
+  `book_effect_drop_tolerance_pts` (2) are settings (32 in all). `sw.js` iw-v66.
+
+**Tests.** `tests/test_pr133_diversifiers.py` (16): the list is D1-D13 with risk tiers; every spec runs on the
+engine; specs match the approved text; -1x rebuild; the verdict names the failed test; both limits are settings and
+flip a verdict; B1 / G3 / G1 on constructed prices; the short-history badge; near-duplicates; multi-leg candidates sit
+in T-bills when nothing trends. Local SQLite: 2,528 passed, 1 failed — the pre-existing `dismissed_count` test. Local Postgres (full): 2,528 passed, 1 failed — the same pre-existing test. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr133-diversifiers.ps1` (read-only; measures D4 end to end). Result: SMOKE133.
 
 ---
 
@@ -73,7 +107,7 @@ relied on — it is a setting.
 job; `test_every_decision_is_a_setting` counts 30; PR 131's tests seed their second TQQQ sleeve directly (a book that
 already holds two must still be measured). Four older tests (`test_c2_sleeves` x3, `test_c4_per_sleeve` x1) built a two-TQQQ book through the add path, which now refuses it; they test the shared-ticker arithmetic such books still need, so they use a new `look_alikes_allowed` fixture (conftest) that switches the refusal off for them only. Local SQLite: 2,508 passed, 5 failed — those four (then 30/30 on re-run with the fixture) and the pre-existing `dismissed_count` test. Local Postgres (full, resumed after a low-memory stop): 2,512 passed, 1 failed — the pre-existing `dismissed_count` test. **CI did not run** (GitHub billing); merged on the local results at the owner's word (2026-10-15). Ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr132-every-sleeve-a-different-bet.ps1` (read-only). Result: SMOKE132.
+**Smoke.** `scripts/smoke/smoke-pr132-every-sleeve-a-different-bet.ps1` (read-only). Result on `d74e6da` (run by the owner after `POST /strategies/correlations/refresh`, 2026-10-15): **PASS 11, FAIL 0, SKIP 0**. Real correlations: every catalogue pair 0.59-0.99; Semis vs Volatility-Targeted Leverage 0.78 (the owner's two sleeves, just under 0.80, so allowed together); Factor Stack vs it 0.86 (same bet by correlation alone, no shared ticker); every strategy the owner does not hold is a look-alike of that sleeve. 0.80 kept for now (recommendation: revisit, e.g. 0.75, once wave 3 adds genuinely different strategies).
 
 ---
 
