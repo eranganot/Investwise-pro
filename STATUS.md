@@ -62,7 +62,7 @@ exactly what was approved.
 
 **Tests.** `tests/test_pr134b_round2.py` (11): US115 once each; S1-S3 match the approved text and their scores exist;
 each runs on the engine; `fund_from` shrinks only that sleeve; a sleeve not held is refused; option 3 at 1x and 2x with
-F1 / F2; S-candidates take option 3 too; scale is 1 or 2. Local SQLite: 2,540 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres: PG134B. Ruff clean.
+F1 / F2; S-candidates take option 3 too; scale is 1 or 2. Local SQLite: 2,540 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full, resumed after a low-memory stop): 2,540 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr134b-round2.ps1` (read-only; D4 x1 end to end, and D8's book effect on one window —
 the production check of PR 134a). Result: SMOKE134B.
