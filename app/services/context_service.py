@@ -136,7 +136,10 @@ async def gather(session: AsyncSession, user: User) -> dict:
             _gh = _pj.get("goal_headline") or {}
             if _gh.get("p_goal_pct") is not None:
                 ctx["projection"]["probability_meets_target"] = round(float(_gh["p_goal_pct"]) / 100.0, 3)
-                ctx["projection"]["probability_basis"] = "goal model, protective rules as they are"
+                ctx["projection"]["probability_basis"] = (
+                    "goal model, protective rules as they are"
+                    + (f"; last solved {_gh.get('age_hours')}h ago and out of date "
+                       f"({_gh.get('stale_text')}), re-solving" if _gh.get("current") is False else ""))
             else:
                 ctx["projection"]["probability_basis"] = "rough projection, protective rules not simulated"
     except Exception:  # noqa: BLE001

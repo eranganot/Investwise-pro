@@ -111,6 +111,18 @@ def score_cash(cash: float, floor: float, redeploy_at: float | None) -> float:
     return 100.0
 
 
+def _age_text(hours) -> str:
+    """"3 hours ago" / "2 days ago" for a verdict's age."""
+    if hours is None:
+        return "an earlier solve"
+    h = float(hours)
+    if h < 1:
+        return "less than an hour ago"
+    if h < 48:
+        return f"{h:.0f} hours ago"
+    return f"{h / 24:.0f} days ago"
+
+
 def _r(x: float) -> int:
     """Half-up. `round()` is banker's rounding: a 26.5% chance would show as 26."""
     return int(float(x) + 0.5)
@@ -247,6 +259,12 @@ async def plan_health(session, user) -> dict | None:
             track_detail = (f"{on_track:g}% chance of {tail}, with your protective rules as they are"
                             + (f" ({float(gh['without_rules_pct']):g}% without them)"
                                if gh.get("without_rules_pct") is not None else ""))
+            # PR 131 (D96): an old verdict is still the goal's chance -- quoted
+            # with its age and why, never swapped for the rough no-rules run.
+            if gh.get("current") is False:
+                track_basis = "goal_model_stale"
+                track_detail += (f". As of {_age_text(gh.get('age_hours'))}; "
+                                 f"{gh.get('stale_text') or 'it is out of date'}, so it is being re-solved")
         elif wc.get("available") and wc.get("source") == "standing_order" \
                 and wc.get("probability_meets_target") is not None:
             p, track_basis = float(wc["probability_meets_target"]), "standing_order"

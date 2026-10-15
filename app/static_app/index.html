@@ -1073,9 +1073,13 @@ async function loadToday(){
       const lossP=Math.round((r.probability_of_loss_real||0)*100);
       // PR 120: the goal's one chance (Plan's number, rules as they are); the
       // chart's own no-rules run only when there is no goal verdict.
-      const gpc=(r.goal_headline&&r.goal_headline.p_goal_pct!=null)?r.goal_headline.p_goal_pct/100:r.probability_meets_target;
+      // PR 131: an out-of-date verdict is still quoted (labelled), not swapped
+      // for the no-rules run; that run only stands in when the goal was never solved.
+      const gh=r.goal_headline;
+      const gpc=(gh&&gh.p_goal_pct!=null)?gh.p_goal_pct/100:r.probability_meets_target;
+      if(gh&&gh.current===false) _autoResolveGoal();
       const goalRow=(r.target_amount&&gpc!=null)
-        ?`<div class="oc"><span class="k">Chance of hitting your goal</span><span class="v ${gpc>=.6?'ok':gpc>=.4?'warn':'bad'}">${Math.round(gpc*100)}%</span></div>`:"";
+        ?`<div class="oc"><span class="k">Chance of hitting your goal${gh&&gh.p_goal_pct!=null?"":" (rough, no rules)"}</span><span class="v ${gpc>=.6?'ok':gpc>=.4?'warn':'bad'}">${Math.round(gpc*100)}%</span></div>${_staleGoalNote(gh)}`:"";
       // W3. Every figure above assumes you never add another shekel. That was
       // always true and the card never said it; the caveat is not optional text.
       const wc=r.with_contributions||{};
@@ -3349,10 +3353,42 @@ async function saveRulesSheet(btn){
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save rules";}
 }
 
+// PR 131 (D96): an out-of-date goal chance is still THE chance, said with its
+// age and why. Until PR 131 Today swapped it for the projection's rough no-rules
+// run (44%) while Plan showed the goal model (20%).
+function _ageText(h){
+  if(h==null) return "an earlier solve";
+  return h<1?"less than an hour ago":h<48?`${Math.round(h)} hours ago`:`${Math.round(h/24)} days ago`;
+}
+function _staleGoalNote(g){
+  if(!g||g.current!==false) return "";
+  return `<div class="mk" style="margin-top:4px">As of ${_ageText(g.age_hours)} — ${g.stale_text||"out of date"}. ${
+    !GOAL_RESOLVE||GOAL_RESOLVE==="running"?"Re-solving…"
+      :GOAL_RESOLVE==="failed"?"The automatic re-solve failed; use Re-solve now on Plan."
+      :"Use Re-solve now on Plan to update it."}</div>`;
+}
+// One automatic re-solve per page load, and the server skips it when the chance
+// is already current or a solve ran in the last few minutes.
+let GOAL_RESOLVE=null;
+async function _autoResolveGoal(){
+  if(GOAL_RESOLVE) return;
+  GOAL_RESOLVE="running";
+  try{
+    const r=await fetch("/api/v1/plan/frontier/refresh?only_if_stale=true",{method:"POST"});
+    if(!r.ok) throw new Error(r.status);
+    const j=await r.json();
+    GOAL_RESOLVE="done";
+    if(!j.skipped) _reloadView();
+  }catch(e){GOAL_RESOLVE="failed";}
+}
+
 function goalSummary(p,f,rules){
   const g=p.goal||{};
   if(!p.target_amount) return `<div class="muted">No goal yet. Tap <b>Edit</b> next to Target below to set a target return and a deadline.</div>`;
-  const hl=(p.expectation&&p.expectation.headline)||null;
+  // PR 131 (D96): the goal's one chance, current or labelled old -- the same
+  // `goal_chance` Today quotes. An old one triggers a re-solve, once.
+  const hl=p.goal_chance||(p.expectation&&p.expectation.headline)||null;
+  if(hl&&hl.current===false) _autoResolveGoal();
   const prog=Math.max(0,Math.min(100,Math.round((p.goal_progress||0)*100)));
   const bar=Math.round(((p.frontier||{}).goal_confidence??0.7)*100);   // PR 104c: the plan's on-track bar
   const on=hl&&hl.p_goal_pct!=null?hl.p_goal_pct>=bar:null;
@@ -3367,7 +3403,8 @@ function goalSummary(p,f,rules){
     <div class="mk" style="display:flex;justify-content:space-between"><span>${ils(p.current_value||0)} today</span><span>${prog}% of the way</span></div>
     ${hl&&hl.p_goal_pct!=null?`<div style="display:flex;align-items:baseline;gap:10px;margin-top:8px">
         <span style="font-size:32px;font-weight:800;color:${on?"var(--green)":"var(--warn,#e5b857)"}">${hl.p_goal_pct}%</span>
-        <span>chance${hl.without_rules_pct!=null?", with your protective rules as they are":""}</span></div>`
+        <span>chance${hl.without_rules_pct!=null?", with your protective rules as they are":""}</span></div>
+        ${_staleGoalNote(hl)}`
       :`<div class="mk" style="margin-top:8px">${f&&f.ok?"Your rules or your book changed since the goal was last solved, so its odds are out of date.":"The goal has not been solved yet."}
           <div class="acts" style="margin-top:6px"><button class="acc" onclick="resolveGoalNow(this)">Re-solve now</button></div></div>`}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
@@ -3400,7 +3437,10 @@ function mixPanel(){
     ...(comT>0||comH>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
     {name:"Cash",held:cashH,tgt:cashT,kind:"cash"}];
   const max=Math.max(1,...rows.map(x=>Math.max(x.held,x.tgt)));
+  // PR 131: both sides. This counted only the under-funded sleeves, so a sleeve
+  // 20 points over read as "1.5 pts to fund".
   const toFund=sl.reduce((a,x)=>a+Math.max(0,x.tgt-x.held),0);
+  const over=sl.reduce((a,x)=>a+Math.max(0,x.held-x.tgt),0);
   const r1=v=>(Math.round(v*10)/10).toFixed(1);
   const bar=x=>{const off=Math.abs(x.held-x.tgt)>=1;
     return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
@@ -3413,7 +3453,7 @@ function mixPanel(){
         <i style="position:absolute;top:-4px;width:2px;height:16px;background:var(--ink,#e6edf6);left:${Math.min(100,x.tgt/max*100)}%"></i></div></div>`;};
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 4px 6px">
       <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">What you hold vs your plan</span>
-      ${toFund>=0.5?_chip(`${r1(toFund)} pts to fund`,"warn"):_chip("funded","ok")}</div>
+      ${toFund>=0.5||over>=0.5?_chip([toFund>=0.5?`${r1(toFund)} pts to fund`:"",over>=0.5?`${r1(over)} pts over`:""].filter(Boolean).join(" · "),"warn"):_chip("on plan","ok")}</div>
     <div class="card" style="padding-top:2px;padding-bottom:2px">${rows.map(bar).join("")}</div>
     <div class="acts" style="margin-top:8px"><button class="acc" style="flex:1" onclick="fundAllSleeves()">Fund all sleeves</button>
       <button style="flex:1" onclick="toggleCorePicker()">${COREPICK?"Close":"Change core"}</button></div>
@@ -4146,7 +4186,8 @@ function drawProjection(r){
   if(r.target_amount&&gh&&gh.p_goal_pct!=null){const p=Math.round(gh.p_goal_pct);
     cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}`
       +(gh.without_rules_pct!=null?` with your protective rules (${Math.round(gh.without_rules_pct)}% without them).`:".")
-      +(r.probability_meets_target!=null?` This chart runs without rules: ${Math.round(r.probability_meets_target*100)}%.`:"");}
+      +(r.probability_meets_target!=null?` This chart runs without rules: ${Math.round(r.probability_meets_target*100)}%.`:"")
+      +_staleGoalNote(gh);}
   else if(r.target_amount&&r.probability_meets_target!=null){const p=Math.round(r.probability_meets_target*100);
     cap=`<b class="${p>=60?'ok':p>=40?'warn':'bad'}">${p}% chance</b> of reaching ${ils(r.target_amount)}.`;}
   else if(r.target_amount){cap=`Goal ${ils(r.target_amount)} — <b class="${r.on_track?'ok':'warn'}">${r.on_track?'on track ✅':'behind ⚠️'}</b>`;}

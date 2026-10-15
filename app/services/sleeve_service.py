@@ -285,14 +285,38 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
 
     sleeves = await list_sleeves(session, user)
     live = await live_sleeve_targets(session, user)
+    # ONE HOLDING, SPLIT BETWEEN THE SLEEVES THAT WANT IT. PR 131 (D95). Each
+    # sleeve used to be credited with the WHOLE position of every ticker it
+    # targets, so two sleeves on TQQQ both "held" all of it: on the owner's book
+    # the rows read 45.7% / 38.4% / 13.5% (97.6%) while the sleeves together
+    # held 59.2% against a 60% target. The holdings carry no lot tags, so who
+    # owns which share is unknowable; the split is pro-rata to each sleeve's
+    # TARGET weight on the ticker -- the same weights `all_sleeve_targets` sums
+    # -- which makes per-sleeve over/under add up to the per-ticker drift card's.
+    # Equal shares when every sleeve wants it at weight 0.
+    per_sleeve: list[dict[str, float]] = []
+    wanted: dict[str, list[float]] = {}
+    for s in sleeves:
+        targets = {tk.upper(): float(w or 0.0) for tk, w in (sleeve_targets(
+            s.strategy_id, s.sleeve_pct, live=_live_for(live, s.strategy_id)) or {}).items()}
+        per_sleeve.append(targets)
+        for tk, w in targets.items():
+            wanted.setdefault(tk, []).append(w)
+
+    def _share(tk: str, w: float) -> float:
+        ws = wanted.get(tk) or [w]
+        tot = sum(ws)
+        return (w / tot) if tot > 0 else 1.0 / len(ws)
+
     out = []
     counted: set[str] = set()
-    for s in sleeves:
+    for s, targets in zip(sleeves, per_sleeve):
         _sig = (live or {}).get(s.strategy_id) or {}
-        targets = sleeve_targets(s.strategy_id, s.sleeve_pct,
-                                 live=_live_for(live, s.strategy_id)) or {}
-        held_ils = sum(held.get(tk.upper(), 0.0) for tk in targets)
-        counted |= {tk.upper() for tk in targets}
+        held_ils = sum(held.get(tk, 0.0) * _share(tk, w) for tk, w in targets.items())
+        counted |= set(targets)
+        shared_with = {tk: sorted(o.strategy_id for o, t in zip(sleeves, per_sleeve)
+                                  if o is not s and tk in t)
+                       for tk in targets if len(wanted.get(tk) or []) > 1}
         target_pct = round(float(s.sleeve_pct or 0.0), 4)
         held_pct = round(held_ils / nav, 4) if nav else 0.0
         out.append({
@@ -317,13 +341,14 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
             # points OVER. The number was wrong by the whole held fraction, and
             # always in the direction of "you hold nothing". PR 60.1.
             "gap_pct": round(target_pct - held_pct * 100.0, 4),
-            "tickers": sorted(tk.upper() for tk in targets),
+            "tickers": sorted(targets),
+            # PR 131: the tickers this sleeve shares, and with whom.
+            "shared_with": shared_with,
         })
 
-    # A ticker two sleeves both want belongs to both, so summing the per-sleeve
-    # figures would double-count it at book level. The total comes from the
-    # union instead -- the same reason `all_sleeve_targets` sums per ticker
-    # rather than per sleeve.
+    # The book total from the union of tickers. Since PR 131 the per-sleeve
+    # figures add up to the same number (each shared ticker is split, not
+    # counted in every sleeve); the union stays the source of truth.
     allocated_held_ils = sum(held.get(tk, 0.0) for tk in counted)
     allocated_held_pct = round(allocated_held_ils / nav, 4) if nav else 0.0
     return {

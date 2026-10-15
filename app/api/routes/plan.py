@@ -62,11 +62,22 @@ class PlanRequest(BaseModel):
     thresholds: dict | None = None
 
 
+async def _goal_chance(session, user) -> dict | None:
+    """PR 131 (D96): the goal's one chance, current or labelled old (`frontier_service.goal_chance`)."""
+    from app.services import frontier_service as fs
+    try:
+        return await fs.goal_chance(session, user)
+    except Exception:  # noqa: BLE001 -- the plan screen stands without it
+        return None
+
+
 @router.get("/plan")
 async def get_my_plan(session: AsyncSession = Depends(get_session), user: User = Depends(acting_user)) -> dict:
     plan = await get_plan(session, user)
     stats = pv.portfolio_stats(await pv.positions(session, user), await pv.book_measured(session, user))
-    return pv.plan_dict(plan, stats, await pv.goal_of(session, user, plan, stats["nav"]))
+    out = pv.plan_dict(plan, stats, await pv.goal_of(session, user, plan, stats["nav"]))
+    out["goal_chance"] = await _goal_chance(session, user)
+    return out
 
 
 @router.put("/plan", dependencies=[Depends(require_role(Role.ANALYST))])
@@ -92,7 +103,9 @@ async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_sess
         from decimal import Decimal
         plan.target_amount = Decimal(str(goal["target"]))
     await session.commit()
-    return pv.plan_dict(plan, stats, goal)
+    out = pv.plan_dict(plan, stats, goal)
+    out["goal_chance"] = await _goal_chance(session, user)
+    return out
 
 
 @router.get("/plan/sleeves")
@@ -435,15 +448,28 @@ async def frontier_latest(session: AsyncSession = Depends(get_session),
 
 
 @router.post("/plan/frontier/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
-async def frontier_refresh(session: AsyncSession = Depends(get_session),
+async def frontier_refresh(only_if_stale: bool = False,
+                           session: AsyncSession = Depends(get_session),
                            user: User = Depends(acting_user)) -> dict:
     """PR 90 -- solve now and store the verdict. Reads the book; changes nothing.
 
     ~10-20s: fetches ~10y of closes and resamples the solve. The resize itself
     happens only when the Today card it produces is accepted.
+
+    PR 131: `only_if_stale` is the screens' automatic re-solve. It does nothing
+    when the goal's chance is current, or when a solve ran in the last
+    `AUTO_RESOLVE_MIN_AGE_H` (two tabs open must not cost two solves).
     """
     from app.services import frontier_service as fs
-    return await fs.compute_for(session, user, source="on_demand")
+    if only_if_stale:
+        gc = await fs.goal_chance(session, user)
+        if gc is not None and gc.get("current"):
+            return {"skipped": "CURRENT"}
+        row = await fs.latest(session, user)
+        age = fs._age_hours(row) if row is not None else None
+        if age is not None and age < fs.AUTO_RESOLVE_MIN_AGE_H:
+            return {"skipped": "RECENT_SOLVE", "age_hours": round(age, 2)}
+    return await fs.compute_for(session, user, source="auto_stale" if only_if_stale else "on_demand")
 
 
 @router.get("/plan/target/cores")

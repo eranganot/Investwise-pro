@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-13 by Claude (Beat the Market expansion: PR 130). Last product PR: **PR 130**. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 1: PR 131). Last product PR: **PR 131**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 2-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,55 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 131 — one holding split between the sleeves that share it (D95); one goal chance (D96)
+
+**Owner, 2026-10-14/15:** "the sleeves holds much more than they should but I'm not getting any alert" (Plan mix:
+Volatility-Targeted Leverage 45.7% / 25%, Trend-Filtered Leveraged Nasdaq 38.4% / 20%, Semis 13.5% / 15%), then "how
+come the chances of meeting the goals are still not aligned?" (Today 43.7% / 44%, Plan 20% with rules, 28.7% without),
+"show the 20%/28%". Wave 1 of the approved [sleeve plan](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (v3).
+
+**Root causes.**
+- `sleeve_occupancy` credited each sleeve with the WHOLE position of every ticker it targets. Two sleeves both run TQQQ,
+  so its 38.4% was counted twice: rows added to 97.6% while the sleeves together held 59.2% of a 60% target — no real
+  overweight, so no card was right. The same rows fed the core's "sleeve overshoot" (~39 points of NAV that did not
+  exist; the core may sell that much from the sleeves once it is underfunded), the health sleeve score, and the
+  measured-return weights (leveraged sleeves ~84% of the book instead of ~38%).
+- Every screen reads the goal verdict through `book_expectation`, which returns nothing unless the verdict is fully
+  current (age, rules fingerprint, sleeve sizes, dials). Then Today and "Where this could end up" fell back to the
+  projection's rough no-rules run — on the inflated measured return above. Two models, one label.
+
+**What.**
+- `sleeve_occupancy`: a shared ticker is split pro-rata to each sleeve's target weight on it (D95); rows carry
+  `shared_with`; per-sleeve held now adds up to `allocated_held_pct`. `/plan/sleeves` passes `shared_with` through.
+- `frontier_service.goal_stale_reason` (why a verdict is not current; `_goal_verdict_current` unchanged in effect) and
+  `goal_chance` (the chance, current or not, with `current`, `stale_reason`, `stale_text`, `age_hours`). Withheld when
+  the goal itself changed or the measurements are stale (`STALE_WITHHELD`).
+- The projection's `goal_headline`, Today's On track (`on_track_basis: goal_model_stale` + "As of … — reason"), the
+  assistant context and the Plan goal card (`/plan` → `goal_chance`) all quote it. The rough no-rules figure stands in
+  only when there is no quotable verdict, still labelled "rough estimate"; the Today row then says "(rough, no rules)".
+- `POST /plan/frontier/refresh?only_if_stale=true`: skipped when current or solved in the last 6 minutes
+  (`AUTO_RESOLVE_MIN_AGE_H`); the screens call it once per load for an old chance.
+- Mix panel chip: "N pts to fund · M pts over", or "on plan" (it counted only under-funding). `sw.js` iw-v64.
+
+**Correction to the plan (v3, section C).** The goal lever cards (deposit / target / deadline) already exist when the
+solver says OUT_OF_REACH (`test_frontier_goal`); they stand down whenever the verdict is not current, which is likely
+why the owner never saw one. The owner keeps the goal fixed, so wave 5 replaces them with the optimiser.
+
+**Tests.** `tests/test_pr131_one_number_per_sleeve.py` (11): split by target weight; rows add to the union; a ticker
+one sleeve wants unchanged; measured-return weights; an old verdict quoted with its reason on projection, Today and
+Plan; current says current; a different goal withheld; the auto re-solve skips (CURRENT, RECENT_SOLVE); every reason
+has words; the chip counts both sides; the screens label and re-solve.
+Local SQLite: 2,495 passed, 1 failed — `test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable`,
+which **fails identically on untouched `origin/main` (c5b8e43)** on this machine: live market data is rate-limited
+locally, so the second Today build does not rebuild the dismissed card and `dismissed_count` reads 0. Not this PR;
+CI is the arbiter. Local Postgres (full, resumed after a low-memory stop): 2,495 passed, 1 failed — the same pre-existing `dismissed_count` test. **CI did not run:** GitHub refused every job (failed account payment / spending limit); the owner chose to merge on the local results (2026-10-15). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr131-one-number-per-sleeve.ps1` (read-only): rows add to the union; projection, Plan
+and Today quote one chance and label an old one; the auto re-solve skips a current goal; shell iw-v64; sleeves behind
+the login. Result: SMOKE_RESULT.
 
 ---
 
