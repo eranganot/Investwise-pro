@@ -88,12 +88,19 @@ def _summary(m: dict) -> dict:
     return {"cagr_pct": m.get("cagr_pct"), "volatility_pct": m.get("volatility_pct"),
             "max_drawdown_pct": m.get("max_drawdown_pct"),
             "return_per_risk": round(m["cagr_pct"] / vol, 3) if vol else None,
+            "benchmark_cagr_pct": m.get("benchmark_cagr_pct"),
             "start": m.get("start"), "end": m.get("end")}
 
 
 def compare_blocking(book: dict, cand: dict, pct: float, fetch=None, *,
-                     ratio_gain: float | None = None, drop_tol: float | None = None) -> dict:
-    """Measure the book without and with ``cand`` at ``pct``% of NAV. Blocking."""
+                     ratio_gain: float | None = None, drop_tol: float | None = None,
+                     fund_from: str | None = None) -> dict:
+    """Measure the book without and with ``cand`` at ``pct``% of NAV. Blocking.
+
+    ``fund_from`` (PR 134b, owner's option 3): the id of a held sleeve that makes
+    the room instead of the core -- "move part of the leveraged sleeve into X".
+    That sleeve shrinks by the candidate's size (never below zero); the core and
+    every other sleeve are untouched."""
     from app.services.backtest_service import _fetch
 
     fetch = fetch or _fetch
@@ -103,13 +110,20 @@ def compare_blocking(book: dict, cand: dict, pct: float, fetch=None, *,
     held = next((s for s in book["sleeves"] if s["id"] == sid), None)
     others_w = sum(float(s["current_pct"]) for s in others) / 100.0
     free = max(0.0, 1.0 - floor - others_w)          # core + this candidate's room
-    add = min(float(pct) / 100.0, free)
+    source = next((s for s in others if s["id"] == fund_from), None) if fund_from else None
+    if fund_from and source is None:
+        return {"ok": False, "reason": "NOT_HELD",
+                "detail": f"{fund_from!r} is not a sleeve on this book, so it cannot make the room"}
+    add = (min(float(pct) / 100.0, float(source["current_pct"]) / 100.0) if source
+           else min(float(pct) / 100.0, free))
     core = book.get("core") or {}
 
     def comps(with_cand: bool) -> list[dict]:
-        out = [{"id": s["id"], "spec": s["spec"], "weight": float(s["current_pct"]) / 100.0}
+        out = [{"id": s["id"], "spec": s["spec"],
+                "weight": float(s["current_pct"]) / 100.0 - (add if (with_cand and s is source) else 0.0)}
                for s in others]
-        core_w = free - (add if with_cand else 0.0)
+        out = [c for c in out if c["weight"] > 0.0005]
+        core_w = free - (add if (with_cand and source is None) else 0.0)
         if core.get("weights") and core_w > 0.0005:
             out.append({"id": "core", "spec": core, "weight": core_w})
         if with_cand and add > 0:
@@ -159,7 +173,7 @@ def compare_blocking(book: dict, cand: dict, pct: float, fetch=None, *,
               drop_tol if drop_tol is not None else DD_TOLERANCE_PTS)
     v = verdict(gain, deeper, rg, dt)
     return {"ok": True, "strategy_id": sid, "sleeve_pct": round(add * 100, 2),
-            "already_held": held is not None,
+            "already_held": held is not None, "funded_from": fund_from or "core",
             "without": sa, "with": sb,
             "return_per_risk_gain": gain, "worst_drop_change_pts": deeper,
             "improves": v["improves"], "failed": v["failed"],

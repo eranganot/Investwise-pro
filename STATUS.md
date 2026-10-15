@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134a). Last product PR: **PR 134a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134b). Last product PR: **PR 134b**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 134b — round 2: hot stocks on 115 US names (option 2) and diversifiers funded from the leveraged sleeve (option 3) (D99)
+
+**Owner, 2026-10-15:** after none of wave 3's 13 candidates passed, "once you complete 134a I want you to run both
+option 2 and option 3"; option 2 approved as written; option 3 at the suggested size and at double ("both"). Plan:
+[`docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`](docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md).
+Correction recorded there: the approved universe has **115** names (first described as ~125); the list itself is
+exactly what was approved.
+
+**What.**
+- `app/services/round2.py`: US115; S1 Large-Cap Momentum 10 (`mom_12_1`, top 10, buffer 20), S2 Quality Momentum 5
+  (`risk_adj_mom`, top 5, buffer 10), S3 52-Week-High Leaders (`high_52w`, top 6, buffer 12), monthly, T-bills when
+  SPY is below its 200-day. `evaluate_stock_blocking`: the Beat-the-Market gate (beats QQQ after tax; selection edge;
+  not "likely overfitted"; sweep within 5) plus the book effect and the same-bet verdict against each sleeve held;
+  `near_duplicates_blocking` for S5.
+- Option 3: `book_effect.compare_blocking(fund_from=...)` takes the candidate's room out of a named held sleeve
+  (core untouched; refuses a sleeve not held) and reports QQQ's return over the same window.
+  `evaluate_funding_blocking`: D1-D13 and S1-S3 out of Volatility-Targeted Leverage at 1x / 2x; F1 the book still beats
+  QQQ, F2 the book-effect rule.
+- `GET /strategies/round2/stocks/{S}/measure`, `/strategies/round2/stocks/near-duplicates`,
+  `/strategies/round2/funding/{code}/measure?scale=1|2` (read-only). `scripts/measure-round2.ps1` runs it all on
+  production and saves the JSON. Nothing joins the catalogue; what passes does in PR 134c.
+
+**Tests.** `tests/test_pr134b_round2.py` (11): US115 once each; S1-S3 match the approved text and their scores exist;
+each runs on the engine; `fund_from` shrinks only that sleeve; a sleeve not held is refused; option 3 at 1x and 2x with
+F1 / F2; S-candidates take option 3 too; scale is 1 or 2. Local SQLite: 2,540 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres: PG134B. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr134b-round2.ps1` (read-only; D4 x1 end to end, and D8's book effect on one window —
+the production check of PR 134a). Result: SMOKE134B.
 
 ---
 
@@ -76,7 +107,7 @@ D7 and D8 are re-measured after deploy (`scripts/measure-diversifiers.ps1 -Only 
 **Tests.** Local SQLite 2,529 passed, local Postgres (full) 2,529 passed; one failure each, the pre-existing `dismissed_count` test. CI blocked (billing); merged on local results (owner-authorised for this plan). Ruff clean.
 **Smoke.** The re-measure of D7 / D8 is the check: both windows must start on the fund's first day. Result: SMOKE134A.
 
-**Next (owner, 2026-10-15: "run both option 2 and option 3"):** [`docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`](docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md), approved: S1-S3 on US125 with a T-bill fall-back; every candidate funded from Volatility-Targeted Leverage at its size and at double. PR 134b.
+**Next (owner, 2026-10-15: "run both option 2 and option 3"):** [`docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`](docs/plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md), approved: S1-S3 on US115 with a T-bill fall-back; every candidate funded from Volatility-Targeted Leverage at its size and at double. PR 134b.
 
 ---
 

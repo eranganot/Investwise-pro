@@ -5,12 +5,12 @@ Status: **approved by the owner 2026-10-15** (option 2 as written; option 3 at t
 measuring). Pre-registered once approved: measured as written, never edited after a result.
 Context: wave 3's 13 candidates all failed (STATUS, PR 134a); [the sleeve plan](SLEEVE_OVERLAP_PLAN_2026-10-14.md).
 
-## Option 2 — "hot stocks": stock-picking rules on ~125 large US stocks
+## Option 2 — "hot stocks": stock-picking rules on 115 large US stocks
 
 **Why again.** PR 127 measured three stock-picking rules on 44 stocks; all failed "beat QQQ" by 4-9 points. The
-universe was thin (BACKLOG P13). This round gives them ~125 of today's largest US stocks.
+universe was thin (BACKLOG P13). This round gives them 115 of today's largest US stocks.
 
-**Universe US125** (today's largest US stocks by sector — a survivorship-biased list, which is why gate test S2 judges
+**Universe US115** (115 names; first described as ~125 -- the list below, which the owner approved, has 115. Today's largest US stocks by sector — a survivorship-biased list, which is why gate test S2 judges
 each rule against an equal-weight hold of the SAME universe; listings after 2016 join late, never cut the window):
 
 - Tech / communication (38): AAPL MSFT NVDA GOOGL AMZN META AVGO TSLA ORCL CRM ADBE AMD INTC CSCO QCOM TXN IBM NOW
@@ -27,19 +27,19 @@ Nasdaq sleeve).
 
 | Code | Name | Expected risk | Rule | Engine spec | Size | Sweep |
 |---|---|---|---|---|---|---|
-| **S1** | Large-Cap Momentum 10 | High | The 10 stocks with the strongest 12-month return (skipping the last month), equal weight; keep a holding while it stays in the top 20. | `rank_select` universe US125, score `mom_12_1`, `top_n` 10, `buffer` 20, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 20% | `top_n` 6/8/10/12/15 |
-| **S2** | Quality Momentum 5 | High to Very high | The 5 stocks with the best 12-month return per unit of volatility, equal weight; keep while in the top 10. | `rank_select` US125, score `risk_adj_mom`, `top_n` 5, `buffer` 10, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 15% | `top_n` 3/4/5/6/8 |
-| **S3** | 52-Week-High Leaders | High | The 6 stocks closest to their 52-week high, equal weight; keep while in the top 12. | `rank_select` US125, score `high_52w`, `top_n` 6, `buffer` 12, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 15% | `top_n` 4/5/6/8/10 |
+| **S1** | Large-Cap Momentum 10 | High | The 10 stocks with the strongest 12-month return (skipping the last month), equal weight; keep a holding while it stays in the top 20. | `rank_select` universe US115, score `mom_12_1`, `top_n` 10, `buffer` 20, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 20% | `top_n` 6/8/10/12/15 |
+| **S2** | Quality Momentum 5 | High to Very high | The 5 stocks with the best 12-month return per unit of volatility, equal weight; keep while in the top 10. | `rank_select` US115, score `risk_adj_mom`, `top_n` 5, `buffer` 10, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 15% | `top_n` 3/4/5/6/8 |
+| **S3** | 52-Week-High Leaders | High | The 6 stocks closest to their 52-week high, equal weight; keep while in the top 12. | `rank_select` US115, score `high_52w`, `top_n` 6, `buffer` 12, `cadence_days` 21, market gate SPY 200, base {BIL: 1} | 15% | `top_n` 4/5/6/8/10 |
 
 Score names are the engine's existing ones (PR 126), checked against `score_at`.
 
 **Gate (the Beat-the-Market gate, PR 127, unchanged)** — S1 beats QQQ after tax over the window (the owner's first
-goal); S2 positive selection edge vs an equal-weight hold of US125; S3 not overfitted across the 2022 split; S4 sweep
+goal); S2 positive selection edge vs an equal-weight hold of US115; S3 not overfitted across the 2022 split; S4 sweep
 within 5 points; S5 not a near-duplicate (0.90). Recorded beside it: the book effect (D93) and the same-bet verdict
 against your sleeves (D97). **Honest expectation:** large US stocks moved with your sleeve at 0.86 even as a factor fund,
 so even a winner here will most likely be "the same bet" as Volatility-Targeted Leverage and could only REPLACE it.
 
-**Cost of measuring.** ~125 tickers x 10 years from the price provider; if it rate-limits, the run retries and reports
+**Cost of measuring.** 115 tickers x 10 years from the price provider; if it rate-limits, the run retries and reports
 which tickers were missing instead of measuring a smaller universe silently.
 
 ## Option 3 — the diversifiers, funded from your leveraged sleeve instead of the core
@@ -63,12 +63,12 @@ visible even when it fails (owner decision 4: shown both ways). A pass here is t
 
 ## Owner decisions (2026-10-15)
 
-- Option 2: approved as written (US125, S1-S3, T-bill fall-back).
+- Option 2: approved as written (US115, S1-S3, T-bill fall-back).
 - Option 3: approved, measured at each candidate's suggested size **and** at double that size (e.g. 10% and 20% of the book out of Volatility-Targeted Leverage); F1 + F2 apply at each size.
 
 ## How it ships
 
-1. **PR 134b** — US125 and S1-S3 registered; the book effect learns `fund_from` (which sleeve makes room); option 3
+1. **PR 134b** — US115 and S1-S3 registered; the book effect learns `fund_from` (which sleeve makes room); option 3
    evaluated by code; endpoints and `scripts/measure-round2.ps1`. Nothing joins the catalogue.
 2. **Measured on production** by the owner's script; results into STATUS.
 3. **PR 134c** — whatever passes joins the catalogue (Explore) with its measured risk tier and badges.
