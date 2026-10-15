@@ -79,7 +79,7 @@ has words; the chip counts both sides; the screens label and re-solve.
 Local SQLite: 2,495 passed, 1 failed — `test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable`,
 which **fails identically on untouched `origin/main` (c5b8e43)** on this machine: live market data is rate-limited
 locally, so the second Today build does not rebuild the dismissed card and `dismissed_count` reads 0. Not this PR;
-CI is the arbiter. Local Postgres: 3 of 6 chunks, 1,176 passed, 0 failed; the run was then stopped by the host for low memory (not a test failure), so CI's `test-postgres` on the PR branch is the Postgres gate for this PR. Ruff clean.
+CI is the arbiter. Local Postgres (full, resumed after a low-memory stop): 2,495 passed, 1 failed — the same pre-existing `dismissed_count` test. **CI did not run:** GitHub refused every job (failed account payment / spending limit); the owner chose to merge on the local results (2026-10-15). Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr131-one-number-per-sleeve.ps1` (read-only): rows add to the union; projection, Plan
 and Today quote one chance and label an old one; the auto re-solve skips a current goal; shell iw-v64; sleeves behind
