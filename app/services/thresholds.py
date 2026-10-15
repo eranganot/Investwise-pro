@@ -57,6 +57,13 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
     "sleeve_drift_band_pts": ("Sleeve drift band (± points)",
                               "How far a sleeve may drift from the size you chose before Today asks to resize it.",
                               0.5, 30.0),
+    # PR 132 (D97): every sleeve must be a different bet.
+    "sleeve_overlap_alert_pct": ("Two sleeves are the same bet at (% shared market)",
+                                 "Sleeves whose holdings are bets on the same market (TQQQ and QQQ are both the "
+                                 "Nasdaq-100) for at least this share of the smaller one count as one bet.", 5.0, 100.0),
+    "sleeve_correlation_limit": ("Two sleeves are the same bet at (correlation)",
+                                 "Sleeves whose daily returns move together at least this much (0-1, measured over "
+                                 "ten years) count as one bet.", 0.3, 1.0),
     "min_resize_pts": ("Smallest sleeve resize worth a card (points)",
                        "A goal-solver resize smaller than this is not offered.", 0.1, 20.0),
     "material_gap_close_pct": ("Resize must close at least (% of the gap)",
@@ -102,12 +109,15 @@ def defaults(plan=None) -> dict:
     from app.services import funding_service as fund
     from app.services import headsup
     from app.services import recommendations as rec
+    from app.services import sleeve_diversity as div
     from app.services.advanced_rules import DEFAULTS as ADV
     from app.services.advanced_rules import DERISK_FRACTION, REARM_GAP_PTS
     from app.services.plan_service import RISK_CAPS
     _row = RISK_CAPS.get(getattr(plan, "risk_tolerance", None) or "Medium", RISK_CAPS["Medium"])
     return {"concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
             "sleeve_drift_band_pts": rec.SLEEVE_DRIFT_BAND_PCT,
+            "sleeve_overlap_alert_pct": div.OVERLAP_ALERT_PCT,
+            "sleeve_correlation_limit": div.CORRELATION_LIMIT,
             "min_resize_pts": fs.MIN_MOVE_PCT,
             "material_gap_close_pct": round(fs.MATERIAL_GAP_CLOSE * 100.0, 2),
             "material_vol_drop_pts": fs.MATERIAL_VOL_DROP_PCT,

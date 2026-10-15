@@ -201,6 +201,17 @@ def start_scheduler() -> None:
         logger.warning("Strategy backtest refresh not scheduled.", exc_info=False)
 
     try:
+        # PR 132 (D97): which strategies move together, for the same-bet test.
+        # After the 03:30 backtest refresh, on the same price history.
+        from app.services.sleeve_diversity import run_correlation_refresh_blocking
+        _scheduler.add_job(_guarded("strategy_correlation", run_correlation_refresh_blocking),
+                           "cron", hour=3, minute=50, id="strategy_correlation",
+                           misfire_grace_time=21600)
+        logger.info("Strategy correlation refresh scheduled (03:50 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Strategy correlation refresh not scheduled.", exc_info=False)
+
+    try:
         # T5. 04:10, after the 03:30 backtest refresh, because a re-solve reads
         # the measurements that job writes -- solving first would answer from
         # yesterday's numbers and stamp today's timestamp on them.

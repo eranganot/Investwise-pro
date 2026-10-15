@@ -312,6 +312,21 @@ async def retire_strategy_rules(session: AsyncSession, user: User,
     return retired + unattributable
 
 
+async def _same_bet_refusal(session: AsyncSession, user: User, strategy_id: str,
+                            leaving: str | None = None) -> dict | None:
+    """PR 132 (D97): the refusal for a NEW sleeve that is the same bet as one
+    held, or None. A strategy already on the book is a resize, never refused."""
+    from app.services import sleeve_diversity as div
+    from app.services import sleeve_service as sv
+
+    held = [s.strategy_id for s in await sv.list_sleeves(session, user)]
+    if strategy_id in held:
+        return None
+    others = [h for h in held if h != leaving]
+    clashes = div.same_bets_for(strategy_id, others, await div.load_correlations(session))
+    return div.refusal(strategy_id, clashes) if clashes else None
+
+
 async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                          sleeve_pct: float | None = None) -> dict:
     """Apply a strategy. For the rule-based family this ADDS a sleeve (C2).
@@ -374,6 +389,13 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                             for x in await sv.list_sleeves(session, user)):
             return {"ok": False, "strategy_id": strategy_id, "error": "strategy retired",
                     "reason": (f"retired on {gone['on']} ({gone['decision']}): {gone['why']}")}
+        # PR 132 (D97): a NEW sleeve must be a different bet from every sleeve
+        # held. Checked here, like retirement, and not in `add_or_resize`: a book
+        # that already runs two look-alikes may still resize them (owner: "card
+        # only" for held sleeves -- the same-bet card offers the replacement).
+        clash = await _same_bet_refusal(session, user, strategy_id)
+        if clash:
+            return clash
         sleeve_result = await sv.add_or_resize(session, user, strategy_id, float(pct or 0.0))
         if not sleeve_result.get("ok"):
             # Return before the plan is touched, so a refused apply cannot leave
@@ -528,6 +550,12 @@ async def swap_sleeve(session: AsyncSession, user: User, *,
                 "reason": ("swapping into it would merge two sleeves at two sizes. "
                            "Resize that one and retire this one instead, so the "
                            "size you end up with is one you chose.")}
+
+    # PR 132 (D97): the strategy swapped IN must be a different bet from every
+    # sleeve that stays (the departing one does not count -- it is leaving).
+    clash = await _same_bet_refusal(session, user, to_id, leaving=from_id)
+    if clash:
+        return clash
 
     pct = float(src.sleeve_pct or 0.0)
     removed = await sv.remove(session, user, from_id)

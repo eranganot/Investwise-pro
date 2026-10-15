@@ -229,3 +229,17 @@ def pytest_sessionfinish(session, exitstatus):
     print("  reason in tests/conftest.py::_ALLOWED_SKIPS with why it cannot.")
     print("=" * 70)
     session.exitstatus = 1
+
+
+@pytest.fixture
+def look_alikes_allowed(monkeypatch):
+    """PR 132 (D97): lets a test build a book that runs two sleeves on one market.
+
+    The app refuses to ADD a sleeve that is the same bet as one held, but books
+    that already hold look-alikes exist (the owner's did, with two TQQQ sleeves),
+    and the shared-ticker arithmetic -- one cap at the sum, one drift card -- must
+    keep working for them. Tests of that arithmetic build such a book through the
+    normal apply path with the refusal switched off; nothing else changes.
+    """
+    from app.services import sleeve_diversity
+    monkeypatch.setattr(sleeve_diversity, "same_bets_for", lambda *a, **k: [])

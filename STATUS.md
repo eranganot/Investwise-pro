@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 1: PR 131). Last product PR: **PR 131**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 2-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 2: PR 132). Last product PR: **PR 132**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,45 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 132 — every sleeve must be a different bet (D97)
+
+**Owner, 2026-10-15:** "each sleeve (that I chose) MUST be different and not similar/depending on the same stocks that
+other sleeve already use"; on the limit, "what is your recommendation? 0.8? 0.75? 0.7?" (0.80 chosen, plan v3);
+held look-alikes "card only but the cards should be actionable" (the card is wave 4). Wave 2 of the
+[sleeve plan](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md).
+
+**What.**
+- `app/services/sleeve_diversity.py`: ticker -> market map (TQQQ / QLD / QQQ are one Nasdaq-100; SOXL / SMH semis;
+  cash never counts); a strategy's exposure profile (largest share per market across its on / base / risk-off /
+  universe states); `overlap_pct`; `same_bet` (shared market >= `sleeve_overlap_alert_pct` 40, or stored correlation
+  >= `sleeve_correlation_limit` 0.80); the correlation of daily returns rebuilt from the engine's own `targets_for`.
+- Correlations are measured offline and only read online: `refresh_correlations` stores the matrix in `kv_settings`
+  (`strategy_correlation:v1`) and keeps the last good one when prices fail; job `strategy_correlation` at 03:50
+  (after the backtest refresh); `POST /strategies/correlations/refresh` on demand; `GET /strategies/correlations` the
+  table with each pair's shared market, correlation and verdict.
+- Enforced where you act: `apply_strategy` refuses a NEW sleeve that is the same bet as one held (`replace` names the
+  sleeve to swap instead); `swap_sleeve` refuses a swap into a bet another remaining sleeve already makes. Resizing a
+  held sleeve is never refused.
+- `/plan/sleeves`: `same_bet` (catalogue strategy -> the held sleeves it would repeat) and `held_same_bets`.
+- Explore: "⚠ Same bet as your … sleeve: <why>" and "Replace <sleeve> with this" instead of "Add as a sleeve"; a refused
+  add offers the same replace. Both limits on the Card-thresholds sheet (30 settings). `sw.js` iw-v65.
+
+**Measured on the catalogue.** Shared market (exact, no prices needed): the six Nasdaq strategies are one bet with
+each other (100%, or 66.7% for dual momentum, which also holds VTI / VXUS); Semis and Factor Stack share no market with
+any of them. **Correlations could not be measured locally**: this machine's price feed returns synthetic, independent
+random walks (2,600 calendar-day rows 2019-2026, QQQ vs TQQQ read 0.008). The method is tested on constructed series
+(identical moves 1.0, independent ~0). The real table comes from production after deploy (the 03:50 job or the
+refresh endpoint) and the smoke prints it; if 0.80 does something unexpected there, the owner sees it before it is
+relied on — it is a setting.
+
+**Tests.** `tests/test_pr132_every_sleeve_a_different_bet.py` (15); `test_every_job_says_when_it_fails` covers the new
+job; `test_every_decision_is_a_setting` counts 30; PR 131's tests seed their second TQQQ sleeve directly (a book that
+already holds two must still be measured). Four older tests (`test_c2_sleeves` x3, `test_c4_per_sleeve` x1) built a two-TQQQ book through the add path, which now refuses it; they test the shared-ticker arithmetic such books still need, so they use a new `look_alikes_allowed` fixture (conftest) that switches the refusal off for them only. Local SQLite: 2,508 passed, 5 failed — those four (then 30/30 on re-run with the fixture) and the pre-existing `dismissed_count` test. Local Postgres (full, resumed after a low-memory stop): 2,512 passed, 1 failed — the pre-existing `dismissed_count` test. **CI did not run** (GitHub billing); merged on the local results at the owner's word (2026-10-15). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr132-every-sleeve-a-different-bet.ps1` (read-only). Result: SMOKE132.
 
 ---
 
@@ -83,7 +122,7 @@ CI is the arbiter. Local Postgres (full, resumed after a low-memory stop): 2,495
 
 **Smoke.** `scripts/smoke/smoke-pr131-one-number-per-sleeve.ps1` (read-only): rows add to the union; projection, Plan
 and Today quote one chance and label an old one; the auto re-solve skips a current goal; shell iw-v64; sleeves behind
-the login. Result: SMOKE_RESULT.
+the login. Result on `51d46a3` (run by the owner, 2026-10-15): **PASS 11, FAIL 0, SKIP 0** — the live book now runs two sleeves (Volatility-Targeted Leverage 40.4% / 40%, Semis 24.4% / 26.5%), rows add to the union 64.8%, and projection, Plan and Today all quote 20.0% (28.7% without rules), current.
 
 ---
 

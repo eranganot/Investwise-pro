@@ -227,6 +227,12 @@
   run** (owner: "how come the chances of meeting the goals are still not aligned?" — Today 44%, Plan 20%; "show the
   20%/28%"). Withheld only when it is about a different goal or built on stale measurements. Screens ask once per load
   for a re-solve. → PR 131
+- **D97 · 2026-10-15 · Every sleeve must be a different bet** (owner: "each sleeve MUST be different and not
+  similar/depending on the same stocks"). Same bet = shared underlying market (TQQQ/QLD/QQQ are one Nasdaq-100) >= 40%
+  of the smaller sleeve, counting on, base and risk-off legs (cash never counts), OR ten-year daily-return correlation
+  >= 0.80 (owner asked for a recommendation; 0.80 chosen). Both limits are settings. A NEW sleeve that is the same bet
+  is refused with "replace instead"; held look-alikes are left alone (owner: card only; the card is wave 4).
+  Correlations are measured nightly (03:50) on production prices and only read online. → PR 132
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model
