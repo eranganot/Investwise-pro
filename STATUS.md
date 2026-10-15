@@ -71,7 +71,7 @@ relied on — it is a setting.
 
 **Tests.** `tests/test_pr132_every_sleeve_a_different_bet.py` (15); `test_every_job_says_when_it_fails` covers the new
 job; `test_every_decision_is_a_setting` counts 30; PR 131's tests seed their second TQQQ sleeve directly (a book that
-already holds two must still be measured). Four older tests (`test_c2_sleeves` x3, `test_c4_per_sleeve` x1) built a two-TQQQ book through the add path, which now refuses it; they test the shared-ticker arithmetic such books still need, so they use a new `look_alikes_allowed` fixture (conftest) that switches the refusal off for them only. Local SQLite: 2,508 passed, 5 failed — those four (then 30/30 on re-run with the fixture) and the pre-existing `dismissed_count` test. Local Postgres: PG132. Ruff clean.
+already holds two must still be measured). Four older tests (`test_c2_sleeves` x3, `test_c4_per_sleeve` x1) built a two-TQQQ book through the add path, which now refuses it; they test the shared-ticker arithmetic such books still need, so they use a new `look_alikes_allowed` fixture (conftest) that switches the refusal off for them only. Local SQLite: 2,508 passed, 5 failed — those four (then 30/30 on re-run with the fixture) and the pre-existing `dismissed_count` test. Local Postgres (full, resumed after a low-memory stop): 2,512 passed, 1 failed — the pre-existing `dismissed_count` test. **CI did not run** (GitHub billing); merged on the local results at the owner's word (2026-10-15). Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr132-every-sleeve-a-different-bet.ps1` (read-only). Result: SMOKE132.
 
