@@ -1,7 +1,7 @@
-# Sleeves that differ, one goal chance, and cards that raise it — plan v2 (2026-10-15)
+# Sleeves that differ, one goal chance, and cards that raise it — plan v3 (2026-10-15)
 
 Status: **proposed, awaiting owner approval.** Wave by wave; stop and report after each.
-Base: `origin/main` @ `c5b8e43` (PR 130). Replaces v1 of 2026-10-14 (same file).
+Base: `origin/main` @ `c5b8e43` (PR 130). Replaces v1 (2026-10-14) and v2 (same file).
 
 ## Owner asks
 
@@ -14,6 +14,8 @@ Base: `origin/main` @ `c5b8e43` (PR 130). Replaces v1 of 2026-10-14 (same file).
 6. (v2) Research popular strategies and check that they make sense before they enter the catalogue.
 7. (v2) **The goal chance is not the same on every screen** (Today 43.7% / 44%, Plan 20% with rules, 28.7% without).
 8. (v2) **Cards that raise the chance of reaching the goal**, not only "remove rules".
+9. (v3) **Keep the goal fixed** (no "lower the target / later deadline" levers) and optimise the book for it.
+10. (v3) More, and more different, strategies: trend / regime-change ones and "hot stocks". Why no shorts?
 
 ## What the investigation found
 
@@ -63,77 +65,113 @@ pass test 1 — so the gate, not the research, is what has kept the catalogue on
 None of these is likely to raise the chance of a 29%/yr goal. They lower the chance of halving. That trade is the
 owner's to make, and every card must show both numbers.
 
+### Research, v3 additions — stock picks and shorting
+- **The stock-pick rules already exist and were measured** (PR 126-127, `rank_select`, 44 US large caps): Large-Cap
+  Momentum 10 17.4%/yr, Quality Momentum 5 16.0%, 52-Week-High Leaders 12.5% — all failed gate test 1 by 4-9 points
+  against QQQ over a decade the Nasdaq dominated. The universe is thin (BACKLOG P13) and built from today's winners
+  (survivorship). US large-cap momentum also moves closely with the Nasdaq, so under wave 2 it would be "the same bet"
+  as a Nasdaq sleeve.
+- **Shorting single stocks:** the app cannot hold or measure a short today — the book, funding and backtest engine
+  are long-only end to end. The evidence is weak for doing it as a retail investor: across 162 anomalies, long-short
+  profits averaged ~0.15%/month before borrow fees and about zero after (Muravyev, Pearson & Pollet 2022, as
+  summarised by Wealth Management); the momentum short leg's return sits mostly in hard-to-borrow stocks; retail
+  shorting signals look profitable only before fees and mainly in small caps (Kelley & Tetlock). Losses are unbounded
+  and margin calls force exits at the worst time.
+- **Inverse ETFs** fit the long-only book (you buy them): SH (-1x S&P), PSQ (-1x Nasdaq). 3x inverse (SQQQ) decays —
+  reportedly below -99% since 2010 — and is only usable for days. A -1x fund held only while the trend is down is a
+  measurable way to profit from falls.
+
 ## The plan
 
 ### Wave 1 — PR 131: true numbers (asks 1, 7) — D95, D96
-- Shared holdings split between the sleeves that hold them, pro-rata to target weight (v1 wave 1, unchanged): rows
-  add up to the 59.2%, `core_realign` overshoot becomes real, health and measured return corrected.
-- **One goal chance, labelled.** When the verdict is not current, screens show the last verdict's chance with
-  "as of <time> — <reason>, re-solving" instead of the rough projection, and Today queues a re-solve (the existing
-  `POST /plan/frontier/refresh` path, rate-limited). The rough projection stays only on the projection chart, labelled
-  "no rules, rough". `book_expectation` returns *why* it stood down (`stale_reason`), so the screen can say it.
+- Shared holdings split between the sleeves that hold them, pro-rata to target weight: rows add up to the 59.2%,
+  `core_realign` overshoot becomes real, health and measured return corrected.
+- **One goal chance everywhere: the goal model, with your rules (today 20%), and "without them" beside it (28.7%).**
+  The rough no-rules projection (44%) stops being called a goal chance anywhere. When the verdict is not current,
+  screens show the last verdict labelled "as of <time> — <reason>, re-solving", and Today queues a re-solve
+  (`POST /plan/frontier/refresh` path, rate-limited). `book_expectation` returns why it stood down.
 - Mix panel chip: "N pts to fund · M pts over".
-- Tests: attribution invariants; each stand-down reason yields the labelled last verdict, never the rough figure;
-  health and Plan quote the same number. Smoke: Today's on-track == Plan's goal chance.
+- Tests: attribution invariants; every stand-down reason yields the labelled last verdict, never the rough figure;
+  health, "Where this could end up" and Plan quote the same number. Smoke: they match on production.
 
 ### Wave 2 — PR 132: sleeves must differ (ask 4) — D97
-- **Exposure map** in the catalogue: every ticker gets an underlying market (Nasdaq-100: QQQ/QLD/TQQQ; semis:
-  SMH/SOXL; US large: SPY/UPRO; US small value: AVUV; factors: MTUM/QUAL; T-bills: BIL; treasuries: IEF/TLT/TMF;
-  gold: GLD/IAU; commodities: DBC; managed futures: KMLM/DBMF; non-US: VXUS/EFA/EEM).
-- **Two sleeves are "the same bet"** when either test trips:
-  1. shared underlying market >= `sleeve_overlap_alert_pct` (default **40**) of the smaller sleeve, counting both its
-     risk-on and its fall-back legs (TQQQ and QQQ are both Nasdaq-100);
-  2. daily-return correlation over the ten-year window >= `sleeve_correlation_limit` (default **0.85**, proposed).
-- **MUST, enforced:** adding or resizing a sleeve that is the same bet as one you hold is refused, with the reason
-  and a "replace X instead" option. Sleeves you already hold are not touched automatically; they get the HIGH card
-  in wave 4.
-- The Explore catalogue marks each strategy "same bet as your <sleeve>" and filters it out of "add" suggestions.
-- Settings for both limits; `test_every_decision_is_a_setting` extended.
+- **Exposure map**: every ticker gets an underlying market (Nasdaq-100: QQQ/QLD/TQQQ/PSQ; semis: SMH/SOXL; US large:
+  SPY/UPRO/SH; US small value: AVUV; factors: MTUM/QUAL; T-bills: BIL; treasuries: IEF/TLT/TMF; gold: GLD/IAU;
+  commodities: DBC; managed futures: KMLM/DBMF; non-US: VXUS/EFA/EEM).
+- **"The same bet"** when either trips: (1) shared underlying market >= `sleeve_overlap_alert_pct` (default **40**)
+  of the smaller sleeve, counting risk-on and fall-back legs; (2) correlation of the two STRATEGIES' daily returns
+  over ten years >= `sleeve_correlation_limit` (default **0.80**, see below).
+- **First the measured table:** the PR measures the correlation of every catalogue pair and puts it in the STATUS
+  entry; if 0.80 does something unexpected on real numbers, I stop and show you before shipping the default.
+- Adding or resizing a sleeve that is the same bet as one held is refused, with "replace X instead". Held sleeves:
+  card only (owner decision 1), and the card is actionable (wave 4).
+- Explore marks "same bet as your <sleeve>" and leaves those out of add suggestions. Both limits are settings.
 
-### Wave 3 — PR 133: diversifiers, researched and measured (ask 6, plus v1 ask 2) — D98
-- Book-effect verdict names the failed test and its margin; `book_effect_ratio_gain` and
-  `book_effect_drop_tolerance_pts` become settings (v1 wave 2).
-- **A second gate for diversifiers**, fixed before measuring: (1) correlation to QQQ <= 0.5 over ten years;
-  (2) improves this book by the book-effect rule; (3) holds up 2000-2016 or its longest history (proxy where short);
-  (4) stable across its parameter sweep. Beat-the-Market candidates keep their own gate.
-- Pre-registered candidates: GTAA-5 (Faber), managed futures (KMLM, proxy for history), gold trend (GLD over its
-  200-day, else BIL), treasury trend (IEF/TLT over 200-day, else BIL), non-US equity trend (VXUS/EFA), GEM.
-  Passing ones join the catalogue; failures are kept as specs and reported, as PR 127-130 did.
+### Wave 3 — PR 133: more, and different, strategies (asks 6, 10, v1 ask 2) — D98
+- Book-effect verdict names the failed test and its margin; its two limits become settings (v1 wave 2).
+- **Diversifier gate**, fixed before measuring: correlation to QQQ <= 0.5; improves this book by the book-effect rule;
+  holds up 2000-2016 or its longest history (proxy where short); stable across its sweep.
+- Pre-registered candidates, in three families:
+  - *Diversifiers:* GTAA-5 (Faber), managed futures (KMLM, proxied), gold trend (GLD over 200-day else BIL), treasury
+    trend (IEF/TLT), non-US equity trend (VXUS/EFA), GEM.
+  - *Profit from falls (long-only):* Nasdaq trend with an inverse leg (QQQ above its 200-day, PSQ below, BIL in the
+    3-session confirmation gap); the same on the S&P with SH.
+  - *Hot stocks, re-run fairly:* the universe grows to the ~100 largest S&P names plus the Nasdaq-100 (P13), and
+    momentum 10 / quality momentum / 52-week-high leaders are re-measured on it under their original gate. A rule
+    that passes shows its current picks on a card ("this month's picks: …") — picks only ever come from a gated rule,
+    with its measured record beside them, never from a screen or a guess.
+- Passing ones join the catalogue; failures are kept as specs and reported.
+- **Not in this plan: shorting single stocks.** It needs a short book (negative quantities, margin, borrow fees,
+  forced exits) through every layer, and the evidence above says the edge mostly disappears after fees. Logged in
+  BACKLOG as a separate project if you want it later.
 
-### Wave 4 — PR 134: sleeve cards — add, remove, replace, resize (asks 3, 5) — D99
-One ranking, all measured by the goal model (chance with rules, chance the book halves, before and after):
-- **Same bet (HIGH):** "Volatility-Targeted Leverage and Trend-Filtered Leveraged Nasdaq are one 45% Nasdaq bet".
-  Recommends which to keep (the one the book misses most) and the best passing different strategy to replace the
-  other. Accept goes through the Plan-tab change and `propose_funded_buy`; nothing in one tap that starts a 3x
-  position (existing rule).
-- **Replace / add:** a passing strategy that is different from every held sleeve and improves the goal chance or
-  cuts the chance of halving without costing chance beyond the book-effect limits.
-- **Remove:** a sleeve whose removal raises the chance (or cuts halving) by a material amount.
-- **Resize:** the existing frontier resize, plus v1's overweight card with Trim / Raise the size and its measured
+### Wave 4 — PR 134: actionable sleeve cards — same bet, add, remove, replace, resize (asks 3, 5) — D99
+All measured by the goal model (chance with rules, chance the book halves, before -> after):
+- **Same bet (HIGH, actionable):** "Volatility-Targeted Leverage and Trend-Filtered Leveraged Nasdaq are one 45%
+  Nasdaq bet." Recommends which to keep (the one the book misses most) and the replacement (the best passing
+  strategy that is the same bet as none of your sleeves). **Accept = replace**: removes one, adds the other at the same
+  size, funds it by selling the removed sleeve's holdings through `propose_funded_buy`, with every leg and its tax
+  shown before confirm. Starting a 3x position still routes through "Fund this sleeve" (existing rule).
+- **Add / replace:** a passing different strategy that raises the goal chance, or ("safer, lower chance" — decision
+  4, both) cuts the chance of halving; the card says which, with both numbers.
+- **Remove:** a sleeve whose removal raises the chance or cuts halving materially.
+- **Resize:** the frontier resize, plus the overweight card with Trim / Raise the size and its measured
   recommendation (one card per position).
-- Card claims (`tests/test_card_claims.py`): apply each, re-measure — the claimed chance and mix must reappear.
+- Card claims: apply each, re-measure — the claimed chance and mix must reappear.
 
-### Wave 5 — PR 135: "how to raise your chance" (ask 8) — D100
-- One card when the goal is off track, listing every lever with its measured effect, best first: sleeve changes from
-  wave 4, core change, rules (existing), a later deadline (+N years -> X%), a lower target at your confidence
-  (₪Y at Z%), and a deposit — once the goal definition decision below is taken. Each lever opens its own card or
-  setting. Numbers only from the solver; nothing invented. Ends "Not financial advice."
-- When the solver says `OUT_OF_REACH`, the card says so plainly: no allocation the app can measure gets this goal to
-  your confidence; the levers that do are time, amount and deposits.
+### Wave 5 — PR 135: the best book for your goal, goal unchanged (asks 8, 9) — D100
+- **The optimiser:** `sleeve_count`'s greedy sleeve-set search (it already adds sleeves while each one helps and
+  reports why it stopped) gets the goal as its objective: maximise the chance of reaching the goal with your rules,
+  over which sleeves (catalogue, never two that are the same bet), their sizes, the core, and the protection setup —
+  subject to the chance of halving staying under your limit (`halve_limit_pct`, already a setting).
+- **One card, "the best book we can measure for your goal":** today's chance -> the best found, the chance of halving
+  before -> after, and the moves that get there, each as its own wave-4 card, biggest gain first.
+- No target or deadline levers (owner: the goal stays). Deposits stay out until the goal-definition decision.
+- **If the best is still low, it says so with the number**: "the best measured book reaches X% with a Y% chance of
+  halving; anything higher needs more risk than your halving limit allows." Raising that limit is shown as the one
+  remaining lever, with its measured price.
+- Every number from the solver; ends "Not financial advice."
 
 ### Every wave
 Local SQLite + local Postgres + ruff on `app` and `tests` -> PR branch, CI green -> merge -> smoke with `-Sha` ->
 STATUS (with result), BACKLOG, DECISIONS, doc pages. Stop and report.
 
-## Decisions needed from the owner
-- Q1. "Must differ" for sleeves already held: card only (proposed), or also block their resizes until resolved?
-- Q2. Correlation limit 0.85 (proposed). At 0.85, SOXL beside a Nasdaq sleeve is likely "the same bet".
-- Q3. BACKLOG P1, the goal definition: should deposits count toward the goal (fixed amount) or raise it ("30% on
-  every shekel")? Without an answer the deposit lever stays out of wave 5.
-- Q4. Diversifiers lower the expected return; with a 29%/yr goal they will usually lower the goal chance while cutting
-  the chance of halving. Show them as "safer, lower chance" choices — or only when they also raise the chance?
+## Owner decisions (2026-10-15)
+1. Held sleeves that are the same bet: **card only, and actionable** (wave 4 Accept = replace).
+2. Correlation limit: asked for a recommendation — **0.80 proposed**, confirmed against the measured table in wave 2.
+3. Goal definition (deposits): **skipped for now**; deposit lever out of wave 5.
+4. Diversifiers: **both** — shown when they raise the chance, and as "safer, lower chance" when they cut halving.
+5. Goal stays fixed: no target/deadline levers.
 
-## Assumptions (v1, still standing)
+## Why 0.80
+Typical long-run daily correlations (to be measured in wave 2, not assumed): US large-cap equity funds with each other
+~0.9; semis with the Nasdaq ~0.85-0.9; non-US developed with US ~0.8; US small value with the Nasdaq ~0.7; gold, bonds
+and managed futures near 0. At 0.85 most US large-cap variants still pass beside a Nasdaq sleeve — not "different".
+At 0.70 even non-US stocks and small value fail, leaving one equity sleeve plus diversifiers — too strict to build a
+book that can chase a 29%/yr goal. 0.80 separates "another flavour of US growth" from "a different engine".
+Trend-filtered strategies spend time in cash, so their measured correlations will be lower than their tickers'.
+
+## Assumptions
 - A1. Shared holdings split pro-rata to target weight. A2. "Raise the size" raises every sharing sleeve pro-rata.
 
 ## Sources (research)
@@ -145,5 +183,10 @@ STATUS (with result), BACKLOG, DECISIONS, doc pages. Stop and report.
   https://global.morningstar.com/en-nd/markets/gold-is-starting-behave-like-equities-is-it-still-useful-hedge
 - GEM: https://www.advisorperspectives.com/articles/2019/05/06/global-equity-momentum-a-craftsmans-perspective ;
   https://alphaarchitect.com/book-review-dual-momentum-investing/
+- Short selling: https://www.wealthmanagement.com/equities/do-short-sale-costs-explain-anomaly-returns- ;
+  https://business.columbia.edu/sites/default/files-efs/pubfiles/6123/Kelley_Tetlock_Retail_Short_Selling.pdf ;
+  https://www.cxoadvisory.com/short-selling/exploitability-of-monthly-short-interest-for-individual-stocks/
+- Inverse ETFs: https://247wallst.com/investing/2026/06/19/sqqqs-silent-killer-how-daily-resets-have-erased-99-97-since-launch/ ;
+  https://myetfjourney.com/blog/inverse-etfs-explained
 
 Not financial advice.
