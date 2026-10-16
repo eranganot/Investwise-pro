@@ -241,6 +241,12 @@
   within 5 points; G6 no near-duplicate above 0.90; G1 correlation with QQQ <= 0.50 is the "different engine" badge.
   The book-effect verdict names the failed test, and its two limits are settings. Measured on production; passing ones
   join the catalogue in a follow-up PR. → PR 133
+- **D99 · 2026-10-15 · Round 2: hot stocks on 115 US names, and diversifiers funded from the leveraged sleeve** (owner,
+  after none of D1-D13 passed: "run both option 2 and option 3"; option 3 "both" sizes). S1-S3 (momentum 10, quality
+  momentum 5, 52-week-high leaders) on US115 with a T-bill fall-back, judged by the Beat-the-Market gate; every
+  candidate also measured taken out of Volatility-Targeted Leverage at 1x and 2x its size, passing when the book still
+  beats QQQ (F1) and the book-effect rule holds (F2). Pre-registered in
+  `plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`; the universe is 115 names (first described as ~125). → PR 134b
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

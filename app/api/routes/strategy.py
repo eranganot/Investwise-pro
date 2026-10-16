@@ -149,6 +149,52 @@ async def diversifier_measure(key: str, session: AsyncSession = Depends(get_sess
     return out
 
 
+async def _round2_ctx(session, user):
+    from app.services import book_effect
+    from app.services.target_solver import _book_for_solve
+    book, err = await _book_for_solve(session, user)
+    return (None if err else book), err, book_effect.limits()
+
+
+@router.get("/strategies/round2/stocks/near-duplicates")
+async def round2_stock_near_duplicates(user: User = Depends(acting_user)) -> dict:
+    """PR 134b, gate S5: S-candidate pairs correlated above 0.90. Read-only."""
+    from app.core.offload import offload
+    from app.services import round2
+    return await offload(round2.near_duplicates_blocking)
+
+
+@router.get("/strategies/round2/stocks/{key}/measure")
+async def round2_stock_measure(key: str, session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    """PR 134b, option 2: one S-candidate against the Beat-the-Market gate on 115 US
+    stocks, with its book effect and same-bet verdicts. Slow; read-only."""
+    from app.core.offload import offload
+    from app.services import round2
+    book, err, (rg, dt) = await _round2_ctx(session, user)
+    out = await offload(round2.evaluate_stock_blocking, key, book, ratio_gain=rg, drop_tol=dt)
+    if err and isinstance(out, dict):
+        out["book_unavailable"] = err
+    return out
+
+
+@router.get("/strategies/round2/funding/{key}/measure")
+async def round2_funding_measure(key: str, scale: float = 1.0, session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """PR 134b, option 3: a candidate (D1-D13, S1-S3) taken out of Volatility-Targeted
+    Leverage at `scale` x its suggested size (1 or 2). Read-only."""
+    from fastapi import HTTPException
+
+    from app.core.offload import offload
+    from app.services import round2
+    if scale not in (1.0, 2.0):
+        raise HTTPException(status_code=422, detail="scale is 1 (suggested size) or 2 (double), as approved")
+    book, err, (rg, dt) = await _round2_ctx(session, user)
+    if err:
+        return {"ok": False, **err}
+    return await offload(round2.evaluate_funding_blocking, key, book, scale=scale, ratio_gain=rg, drop_tol=dt)
+
+
 @router.post("/strategies/correlations/refresh",
              dependencies=[Depends(require_role(Role.ANALYST))])
 async def refresh_strategy_correlations(session: AsyncSession = Depends(get_session)) -> dict:
