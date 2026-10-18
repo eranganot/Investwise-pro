@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135c). Last product PR: **PR 135c**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 5: PR 136a). Last product PR: **PR 136a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 136a — wave 5, part 1: the goal optimiser (D105)
+
+**Owner, 2026-10-18:** "ok, continue" into wave 5; for a new user with an empty book, include a starter book; the core
+"a variable and not hard coded". PR 135c live as `2de5e54` (wave 4 complete).
+
+**What.**
+- `app/services/book_optimizer.py`. Step A: up to 3 greedy steps -- add a catalogue strategy (never a same-bet
+  look-alike of what is held, never Explore-only; at its suggested size within the room) or remove a sleeve; every
+  candidate scored beside the current book in ONE solve (one window); the step's winner re-sized by the goal model's
+  own proposal and re-checked; kept only when it gains `optimizer_min_step_pts` (new setting, 0.5) and the chance of
+  halving stays within `halve_limit_pct` (or no higher than today's when today's is already over). Step B: the whole
+  change in one full solve -- the protection retune against the halving limit and the core choice on that book.
+- `frontier_service.score_books(nominal_nav=..., full=...)`: an empty book is scored on a nominal amount (a %/yr goal
+  is scale-free: target = amount x (1 + ROI)^years); each score carries the model's `proposed` sizes; `full` adds the
+  protection retune and core choice. `_goal_context(nominal_nav=...)`.
+- The core comes from `_core_basket` on every solve: the user's chosen core, else the objective's mix -- pinned by a
+  test that switches cores. **The goal model supports only %/yr goals**: a plan without a yearly ROI target gets
+  `NO_GOAL` (so the "how much will you start with?" question for fixed-amount goals has no model to feed yet).
+- Job `book_optimizer` 05:10; `GET /plan/optimizer`, `POST /plan/optimizer/refresh`; `scripts/run-optimizer.ps1`
+  prints today vs the best book, the steps, and step B. No card yet (PR 136b). Nothing traded. 33 settings.
+
+**Tests.** `tests/test_pr136a_book_optimizer.py` (11): candidates never add a look-alike or an Explore-only, remove
+each; an empty book only adds; no room, no add; steps best first and only above the minimum; a step that breaks the
+halving limit is not taken; the minimum is a setting; a real run on a book with a goal is stored and served; an empty
+book gets a starter book; no goal, no optimiser; the core is read at run time. Local SQLite: 2,774 passed, 1 failed (the pre-existing `dismissed_count` test). Local
+Postgres (full): 2,774 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr136a-optimizer.ps1` (read-only). Result: SMOKE136A.
 
 ---
 

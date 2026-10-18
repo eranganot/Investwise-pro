@@ -64,6 +64,10 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
     "book_effect_drop_tolerance_pts": ("…and deepens its worst drop by no more than (points)",
                                        "Adding it may make the whole book's worst drop at most this many "
                                        "points deeper.", 0.0, 30.0),
+    # PR 136a: the goal optimiser keeps a step only if it gains at least this much.
+    "optimizer_min_step_pts": ("Smallest step the goal optimiser keeps (points of goal chance)",
+                               "When the app searches for the best book for your goal, a change is kept only if "
+                               "it raises the chance by at least this much.", 0.1, 20.0),
     # PR 132 (D97): every sleeve must be a different bet.
     "sleeve_overlap_alert_pct": ("Two sleeves are the same bet at (% shared market)",
                                  "Sleeves whose holdings are bets on the same market (TQQQ and QQQ are both the "
@@ -117,6 +121,7 @@ def defaults(plan=None) -> dict:
     from app.services import headsup
     from app.services import recommendations as rec
     from app.services import book_effect as bfx
+    from app.services import book_optimizer as bopt
     from app.services import sleeve_diversity as div
     from app.services.advanced_rules import DEFAULTS as ADV
     from app.services.advanced_rules import DERISK_FRACTION, REARM_GAP_PTS
@@ -124,6 +129,7 @@ def defaults(plan=None) -> dict:
     _row = RISK_CAPS.get(getattr(plan, "risk_tolerance", None) or "Medium", RISK_CAPS["Medium"])
     return {"concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
             "sleeve_drift_band_pts": rec.SLEEVE_DRIFT_BAND_PCT,
+            "optimizer_min_step_pts": bopt.MIN_STEP_PTS,
             "book_effect_ratio_gain": bfx.RATIO_GAIN,
             "book_effect_drop_tolerance_pts": bfx.DD_TOLERANCE_PTS,
             "sleeve_overlap_alert_pct": div.OVERLAP_ALERT_PCT,

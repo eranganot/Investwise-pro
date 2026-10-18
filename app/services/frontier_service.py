@@ -1575,7 +1575,8 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
 
 
 async def score_books(session, user, books: list[dict[str, float]], *,
-                      extra_sleeves: list[str] | None = None) -> dict:
+                      extra_sleeves: list[str] | None = None, nominal_nav: float | None = None,
+                      full: bool = False) -> dict:
     """PR 135a: the goal's chance for each of several HYPOTHETICAL sleeve sets.
 
     ``books`` are ``{strategy_id: sleeve_pct}`` maps; a sleeve left out is removed
@@ -1596,9 +1597,12 @@ async def score_books(session, user, books: list[dict[str, float]], *,
     mix, _nav = current_mix(rows)
     cash_pct = float(mix.get("Cash") or 0.0) * 100.0
     basket = await _core_basket(session, user, ctx["objective"])
-    goal = await _goal_context(session, user, rows)
+    goal = await _goal_context(session, user, rows, nominal_nav=nominal_nav)
     if not goal:
         return {"ok": False, "reason": "NO_GOAL"}
+    from app.services import sleeve_service as _sv
+    from app.services import strategies as _static_cat
+    current_core = await _sv.core_strategy_id(session, user) if full else None
     rules_ctx = await _rules_context(session, user, ctx["sleeves"])
     try:
         _hseries = {**ctx["series"], **await _holding_series(rules_ctx, ctx["series"])}
@@ -1629,17 +1633,46 @@ async def score_books(session, user, books: list[dict[str, float]], *,
                            nav=goal["nav"], target=goal["target"], years=goal["years"], monthly=goal["monthly"],
                            kelly_setting=ctx.get("kelly_fraction_setting"), sleeve_cap_pct=goal["sleeve_cap_pct"],
                            volatility_cap_pct=goal["volatility_cap_pct"], draws=0, rules=rules_ctx,
-                           goal_roi=goal.get("roi_annual"), light=True, p_star=_st["goal_confidence"])
+                           goal_roi=goal.get("roi_annual"), light=not full, p_star=_st["goal_confidence"],
+                           halve_floor_pct=_st["halve_limit_pct"])
             if not v.get("ok") or v.get("mode") != "goal" or "before" not in v:
                 out.append({"ok": False, "reason": v.get("reason") or v.get("outcome") or "NOT_MEASURABLE"})
                 continue
-            on = (v.get("rules") or {}).get("on") or {}
+            rb = v.get("rules") or {}
+            on = rb.get("on") or {}
             hl = v.get("headline") or {}
-            out.append({"ok": True, "p_goal_pct": hl.get("p_goal_pct"),
-                        "p_goal_without_rules_pct": hl.get("without_rules_pct"),
-                        "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
-                        "median": on.get("median"),
-                        "growth_cagr_pct": (v.get("before") or {}).get("growth_cagr_pct")})
+            row = {"ok": True, "p_goal_pct": hl.get("p_goal_pct"),
+                   "p_goal_without_rules_pct": hl.get("without_rules_pct"),
+                   "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
+                   "median": on.get("median"),
+                   "growth_cagr_pct": (v.get("before") or {}).get("growth_cagr_pct"),
+                   # PR 136a: the sizes the goal model would choose for THIS set of sleeves.
+                   "proposed": {s["id"]: s.get("proposed_pct") for s in v.get("sleeves") or []
+                                if s.get("proposed_pct") is not None}}
+            if full:
+                # PR 136a step B: the protection retune and the core choice, on this book.
+                tu = rb.get("tuning") or {}
+                best = tu.get("best") or {}
+                row["protection"] = {"material": tu.get("material"), "breach": tu.get("breach"),
+                                     "halve_floor_pct": tu.get("halve_floor_pct"),
+                                     "best_p_goal_pct": (best.get("stats") or {}).get("p_goal_pct"),
+                                     "best_p_halve_pct": (best.get("stats") or {}).get("p_halve_pct"),
+                                     "changes": tu.get("changes")} if tu else None
+                if current_core:
+                    try:
+                        cs = core_solve(prep, sleeves_pct={k: float(p) for k, p in b.items() if p > 0},
+                                        current_core_id=current_core, candidates=_static_cat.core_candidates(),
+                                        cash_pct=cash_pct, est_kw={**ctx["est_kw"], "vol_scale": vs["scale"]},
+                                        nav=goal["nav"], target=goal["target"], years=goal["years"],
+                                        monthly=goal["monthly"], objective=ctx["objective"],
+                                        kelly_setting=ctx.get("kelly_fraction_setting"),
+                                        p_star=_st["goal_confidence"])
+                        best_c = cs.get("best") or {}
+                        row["core"] = {"outcome": cs.get("outcome"), "current": current_core,
+                                       "best": best_c.get("id"), "best_name": best_c.get("name")}
+                    except Exception:  # noqa: BLE001 -- the book stands without the core choice
+                        logger.warning("core choice failed in score_books", exc_info=False)
+            out.append(row)
         return {"ok": True, "scores": out}
 
     return await offload(work)
@@ -1750,11 +1783,17 @@ def _attach_holding_returns(rules_ctx: dict | None, prep: dict, series: dict) ->
 
 
 async def _goal_context(session, user, rows, *, roi_pct: float | None = None,
-                        target_date: str | None = None, monthly: float | None = None) -> dict | None:
+                        target_date: str | None = None, monthly: float | None = None,
+                        nominal_nav: float | None = None) -> dict | None:
     """The plan's goal as the solve needs it, from the SAME functions /plan uses.
 
     None when the plan has no ROI target and deadline: there is nothing to
     steer by, and the solve falls back to managing risk.
+
+    ``nominal_nav`` (PR 136a, the starter book): an EMPTY book is scored as if it
+    held this much. A "%/yr on every shekel" goal does not depend on the amount --
+    the target is the amount grown at the goal's ROI -- so any positive amount gives
+    the same chance; a fixed-amount goal needs the user's real starting amount.
     """
     from app.services.goal_service import annual_roi, compute_goal
     from app.services.plan_service import effective_caps, get_plan
@@ -1775,9 +1814,16 @@ async def _goal_context(session, user, rows, *, roi_pct: float | None = None,
             plan.target_roi_pct, plan.target_roi_period = float(roi_pct), "yearly"
         if target_date is not None:
             plan.target_date = str(target_date)
+    nominal = False
+    if nav <= 0 and nominal_nav and nominal_nav > 0:
+        nav, nominal = float(nominal_nav), True
     if plan is None or getattr(plan, "target_roi_pct", None) is None or nav <= 0:
         return None
     g = await compute_goal(session, user, plan, nav)
+    if nominal and not g.get("target") and g.get("years_left") and annual_roi(plan) is not None:
+        # Nothing put in yet: the goal is this amount grown at the goal's ROI.
+        g = {**g, "target": nav * (1.0 + float(annual_roi(plan))) ** float(g["years_left"]),
+             "basis": "contributions"}
     if not g.get("target") or not g.get("years_left"):
         return None
     caps = effective_caps(plan)
