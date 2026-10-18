@@ -148,6 +148,21 @@ All measured by the goal model (chance with rules, chance the book halves, befor
 - **One card, "the best book we can measure for your goal":** today's chance -> the best found, the chance of halving
   before -> after, and the moves that get there, each as its own wave-4 card, biggest gain first.
 - No target or deadline levers (owner: the goal stays). Deposits stay out until the goal-definition decision.
+- **Design (2026-10-18):** step A -- which sleeves and what sizes, scored with the rules as armed: from the book as it
+  is, try adding each catalogue strategy (never a same-bet look-alike, never Explore-only) and removing each sleeve; the
+  goal model proposes the sizes, the set is re-scored with the rules; a step is kept only if it raises the goal chance
+  and keeps the chance of halving under `halve_limit_pct`; up to 3 steps. Step B -- protection and core: the full solve
+  on the best book (the existing protection retune and core choice). Ships as PR 136a (search, storage, endpoint, job)
+  and 136b (the card).
+- **Starter book for an empty portfolio (owner, 2026-10-18: "if I will have nothing in my book (i.e. new user) how it
+  will know what to recommend me?" -> include it).** An empty book starts all-core (the objective's core and the cash
+  floor) and the search only adds. An ROI goal ("30% on every shekel") is scored on a nominal amount -- its chance
+  does not depend on the amount; a fixed-amount goal asks "how much will you start with?". Accept sets up the plan
+  (buys nothing); the first deposit funds it through the usual "Fund this sleeve" cards.
+- **The core is the user's, read at run time -- never a fixed mix (owner, 2026-10-18: "it's important to make this a
+  variable and not hard coded").** Every solve reads `_core_basket`: the user's chosen core strategy, else the
+  objective's mix. Step B may propose a different core (the existing core card). Pinned by a test that changes the
+  user's core and checks the optimiser starts from the new one.
 - **If the best is still low, it says so with the number**: "the best measured book reaches X% with a Y% chance of
   halving; anything higher needs more risk than your halving limit allows." Raising that limit is shown as the one
   remaining lever, with its measured price.

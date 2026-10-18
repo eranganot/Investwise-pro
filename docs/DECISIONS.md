@@ -269,6 +269,12 @@
   lower chance" move that cuts the chance of halving by that much. Accept sets every sleeve to the card's sizes
   (refused untouched if the book moved) and re-arms the caps; the trim and "Fund this sleeve" cards then carry the
   trades, so the card never claims one. → PR 135b
+- **D104 · 2026-10-18 · An overweight sleeve is a choice: trim, or raise the size; the goal model recommends** (owner,
+  2026-10-14: "option 3 (trim or raise the size) with a recommendation that is based on the agents analysis"). The
+  nightly scoring adds a "raise to what you hold" move for each sleeve over its size by more than the drift band; the
+  existing per-ticker overweight card becomes one two-tile choice. Recommend RAISE only when it does not lower the goal
+  chance and does not raise the chance of halving by `material_odds_pts` or more; otherwise (or unmeasured) TRIM.
+  Raise sets the size and sells nothing. → PR 135c
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

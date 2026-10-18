@@ -42,11 +42,21 @@ def hedge_ids() -> list[str]:
             if HEDGE_BADGE in ((cat.get(i) or {}).get("badges") or []) and not (cat.get(i) or {}).get("explore_only")]
 
 
-def candidate_moves(held: dict[str, float], corr: dict | None) -> list[dict]:
-    """Every move to score, from the held sleeves {id: pct}. Pure."""
+def candidate_moves(held: dict[str, float], corr: dict | None,
+                    overweight: dict[str, float] | None = None) -> list[dict]:
+    """Every move to score, from the held sleeves {id: pct}. Pure.
+
+    ``overweight`` (PR 135c): {sleeve id: % of the book it actually holds} for the
+    sleeves held above their size by more than the drift band; each gets a "raise"
+    move -- the plan's size set to what is held, nothing else changed."""
     from app.services import sleeve_diversity as div
     cat = _cat()
     moves: list[dict] = []
+    for s, held_pct in (overweight or {}).items():
+        if s in held and held_pct > held[s]:
+            book = dict(held)
+            book[s] = round(float(held_pct), 1)
+            moves.append({"kind": "raise", "from": s, "to": s, "pct": book[s], "book": book})
     levered = [s for s in held if (cat.get(s) or {}).get("risk") in LEVERAGED_RISK]
     for src in levered:
         for h in hedge_ids():
@@ -101,30 +111,55 @@ async def compute(session, user) -> dict:
     if not held:
         return {"ok": False, "reason": "NO_SLEEVES"}
     corr = await div.load_correlations(session)
-    moves = candidate_moves(held, corr)
-    extra = sorted({m["to"] for m in moves if m.get("to")} - set(held))
-    res = await fs.score_books(session, user, [held] + [m["book"] for m in moves], extra_sleeves=extra)
-    if not res.get("ok"):
-        return {"ok": False, "reason": res.get("reason")}
-    base, scores = res["scores"][0], res["scores"][1:]
-    if not base.get("ok"):
-        return {"ok": False, "reason": base.get("reason"), "detail": base.get("detail")}
+    # PR 135c: sleeves held above their size by more than the drift band get a
+    # "raise the size to what you hold" move, for the overweight card's choice.
+    from app.services.recommendations import SLEEVE_DRIFT_BAND_PCT, _setting
+    band = float(_setting("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT))
+    occ = await sv.sleeve_occupancy(session, user)
+    over = {o["strategy_id"]: float(o["held_pct"]) * 100.0 for o in occ.get("sleeves") or []
+            if float(o["held_pct"]) * 100.0 - float(o["target_pct"]) > band}
+    moves = candidate_moves(held, corr, over)
+    # ONE WINDOW PER STRATEGY (PR 135c). Loading every candidate into one solve
+    # let the youngest fund (KMLM, 2020) shorten the price window for all of them,
+    # which moved the book's own score (production, 2026-10-18: 8.5% -> 7.7%).
+    # Each strategy a move adds is scored in its own group, beside the book as it
+    # is ON THAT GROUP'S WINDOW, so every delta compares like with like. Moves
+    # that add nothing (remove, raise) share the plain group, whose baseline is
+    # the book's headline -- the same solve the goal sheet's preview runs.
+    _keys = ("p_goal_pct", "p_halve_pct", "median", "growth_cagr_pct")
+    groups: dict[str | None, list[dict]] = {}
+    for mv in moves:
+        add = mv.get("to") if (mv.get("to") and mv["to"] not in held) else None
+        groups.setdefault(add, []).append(mv)
+    groups.setdefault(None, [])
+    headline = None
     out = []
-    for m, sc in zip(moves, scores):
-        row = {k: v for k, v in m.items() if k != "book"}
-        row["book"] = m["book"]
-        row["ok"] = bool(sc.get("ok"))
-        if sc.get("ok"):
-            row["after"] = {k: sc.get(k) for k in ("p_goal_pct", "p_halve_pct", "median", "growth_cagr_pct")}
-            row["goal_pts"] = _delta(base, sc, "p_goal_pct")
-            row["halve_pts"] = _delta(base, sc, "p_halve_pct")
-        else:
-            row["reason"] = sc.get("reason")
-        out.append(row)
+    for add, ms in groups.items():
+        res = await fs.score_books(session, user, [held] + [mv["book"] for mv in ms],
+                                   extra_sleeves=[add] if add else None)
+        if not res.get("ok"):
+            if add is None:
+                return {"ok": False, "reason": res.get("reason")}
+            out += [{**{k: v for k, v in mv.items()}, "ok": False, "reason": res.get("reason")} for mv in ms]
+            continue
+        base, scores = res["scores"][0], res["scores"][1:]
+        if add is None:
+            if not base.get("ok"):
+                return {"ok": False, "reason": base.get("reason"), "detail": base.get("detail")}
+            headline = {k: base.get(k) for k in _keys}
+        for mv, sc in zip(ms, scores):
+            row = dict(mv)
+            row["ok"] = bool(sc.get("ok") and base.get("ok"))
+            if row["ok"]:
+                row["before"] = {k: base.get(k) for k in _keys}
+                row["after"] = {k: sc.get(k) for k in _keys}
+                row["goal_pts"] = _delta(base, sc, "p_goal_pct")
+                row["halve_pts"] = _delta(base, sc, "p_halve_pct")
+            else:
+                row["reason"] = sc.get("reason") or base.get("reason")
+            out.append(row)
     return {"ok": True, "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "held": held, "before": {k: base.get(k) for k in ("p_goal_pct", "p_halve_pct", "median",
-                                                              "growth_cagr_pct")},
-            "moves": out}
+            "held": held, "before": headline, "moves": out}
 
 
 async def load(session, user) -> dict:
@@ -217,7 +252,8 @@ def select(stored: dict, material_pts: float) -> list[dict]:
     * up to MAX_SAFER "safer, lower chance" moves (owner decision 4): the chance of halving falls by
       `material_pts` or more while the goal's chance does not rise by that much.
     """
-    ok = [m for m in (stored.get("moves") or []) if m.get("ok") and m.get("goal_pts") is not None]
+    ok = [m for m in (stored.get("moves") or []) if m.get("ok") and m.get("goal_pts") is not None
+          and m["kind"] != "raise"]          # a raise is a choice on the overweight card, not a card
     out: list[dict] = []
     best_replace: dict[str, dict] = {}
     for m in ok:
@@ -251,9 +287,10 @@ async def cards(session, user) -> list[dict]:
     held = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
     if {k: round(v, 4) for k, v in held.items()} != {k: round(float(v), 4) for k, v in stored["held"].items()}:
         return []
-    b = stored["before"]
     out = []
     for m in select(stored, _material()):
+        # The move's own baseline (its window), so before -> after never mixes two.
+        b = m.get("before") or stored["before"]
         a = m["after"]
         goal_txt = f"goal chance {_pct(b['p_goal_pct'])} -> {_pct(a['p_goal_pct'])}"
         halve_txt = (f"chance the book halves {_pct(b['p_halve_pct'])} -> {_pct(a['p_halve_pct'])}"
@@ -288,6 +325,46 @@ async def cards(session, user) -> list[dict]:
                      "goal_pts": m["goal_pts"], "halve_pts": m.get("halve_pts"), "as_of": stored.get("as_of")},
         })
     return out
+
+
+def raise_recommendation(move: dict | None, material_pts: float) -> tuple[str, str]:
+    """PR 135c: "trim" or "raise" for an overweight sleeve, and why. Pure.
+
+    The rule, fixed before any card showed it: recommend RAISE only when raising the
+    sleeve to what is held does not lower the goal's chance and does not raise the
+    chance of the book halving by `material_pts` or more. Otherwise TRIM -- also when
+    the raise could not be measured, which the reason says."""
+    if not move or not move.get("ok") or move.get("goal_pts") is None:
+        return "trim", "Raising could not be measured, so the size you chose stands."
+    g, h = float(move["goal_pts"]), move.get("halve_pts")
+    if g >= 0 and (h is None or float(h) < material_pts):
+        return "raise", (f"Measured by your goal model: keeping it raises the goal chance by {g:g} points"
+                         + (f" and changes the chance of halving by {float(h):+g}." if h is not None else "."))
+    if g < 0:
+        return "trim", f"Measured by your goal model: keeping it would cost {abs(g):g} points of goal chance."
+    return "trim", (f"Measured by your goal model: keeping it adds {float(h):g} points to the chance of the "
+                    f"book halving.")
+
+
+async def overweight_choice(session, user, sleeve_ids: list[str]) -> dict | None:
+    """PR 135c: the stored "raise" move for the first of `sleeve_ids` that has one,
+    with its recommendation -- only while the scores are about the sleeves held."""
+    from app.services import sleeve_service as sv
+    from app.services.frontier_service import _material
+
+    stored = await load(session, user)
+    if not stored.get("ok"):
+        return None
+    held = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    if {k: round(v, 4) for k, v in held.items()} != {k: round(float(v), 4) for k, v in stored["held"].items()}:
+        return None
+    for sid in sleeve_ids:
+        mv = next((m for m in stored.get("moves") or [] if m["kind"] == "raise" and m["from"] == sid), None)
+        if mv:
+            rec, why = raise_recommendation(mv, _material())
+            return {"sleeve": sid, "move": mv, "held": held, "recommended": rec, "why": why,
+                    "before": stored.get("before"), "as_of": stored.get("as_of")}
+    return None
 
 
 async def apply_move(session, user, spec: dict) -> dict:
