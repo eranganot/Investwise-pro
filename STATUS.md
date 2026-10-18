@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 5: PR 136a). Last product PR: **PR 136a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-18 by Claude (sleeve plan wave 5: PR 136b). Last product PR: **PR 136b**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,30 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 136b — wave 5, part 2: the optimiser's card (D106)
+
+**What.**
+- `book_optimizer.card`, from the stored result and only while it is about the sleeves held:
+  - a better book by `material_odds_pts` (5) or more -> "The best book we can measure for your goal: X% -> Y%" (HIGH):
+    goal chance and chance of halving before -> after (with the halving limit), the steps, what step B found on
+    protection and core; Accept sets the sleeves (`sleeve_move`; sells nothing);
+  - an empty book -> "Your starter book: goal chance X%"; it reaches Today even with no holdings (the empty-book
+    early return now carries it), and Accept sets up the plan;
+  - nothing material while under the on-track bar -> a heads-up saying how many changes were measured, that none
+    clears the bar, and the price of the halving limit: the chance without the protective rules and its chance of
+    halving. The limit is the owner's to change.
+- `score_books` also returns the chance of halving with no rule acting; the optimiser stores both "without rules"
+  figures and the on-track bar.
+
+**Tests.** `tests/test_pr136b_optimizer_card.py` (7): a better book is actionable and Accept sets the sizes without a
+trade; nothing material under the bar -> the heads-up with the price of the limit; a small gain is not a card to act
+on; no card about another book; on track with nothing to gain -> no card; the starter card reaches Today for an empty
+book; the starter card's Accept sets up the plan. Local SQLite: 2,781 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full): 2,781 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr136b-optimizer-card.ps1` (read-only); all six unrun smokes (134d-136b) in one run: `scripts/smoke/smoke-sleeve-plan-all.ps1`. Result: SMOKE136B. `run-optimizer.ps1` now says "keep" for the core plainly instead of naming a best core that is not worth switching to.
+
+---
+
 ## PR 136a — wave 5, part 1: the goal optimiser (D105)
 
 **Owner, 2026-10-18:** "ok, continue" into wave 5; for a new user with an empty book, include a starter book; the core
@@ -65,7 +89,9 @@ halving limit is not taken; the minimum is a setting; a real run on a book with 
 book gets a starter book; no goal, no optimiser; the core is read at run time. Local SQLite: 2,774 passed, 1 failed (the pre-existing `dismissed_count` test). Local
 Postgres (full): 2,774 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr136a-optimizer.ps1` (read-only). Result: SMOKE136A.
+**First production run (owner, 2026-10-18, `scripts/run-optimizer.ps1` on `28c9187`):** 10 candidates measured, halving limit 30%, minimum step 0.5 -- **no change qualifies**: today and best both 8.9% goal chance, 2.9% chance of halving; the protection retune on that book reaches 10.0% (halving 4.3%), not material; the core stays (Classic 60/40). The goal (~29%/yr) is out of reach of every sleeve, size, protection and core change the app can measure within a 30% halving limit; the lever left is the limit itself (~26% without the rules, ~67% halving).
+
+**Smoke.** `scripts/smoke/smoke-pr136a-optimizer.ps1` (read-only); in `smoke-sleeve-plan-all.ps1`. Result: SMOKE136A.
 
 ---
 

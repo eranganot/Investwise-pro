@@ -1,6 +1,6 @@
 # Sleeves that differ, one goal chance, and cards that raise it — plan v3 (2026-10-15)
 
-Status: **proposed, awaiting owner approval.** Wave by wave; stop and report after each.
+Status: **complete (2026-10-18)** -- waves 1-5 shipped as PR 131-136b; follow-ups in BACKLOG P14-P19, O6, V3. History of the plan's own status: proposed 2026-10-14, approved v3 2026-10-15.
 Base: `origin/main` @ `c5b8e43` (PR 130). Replaces v1 (2026-10-14) and v2 (same file).
 
 ## Owner asks

@@ -1643,6 +1643,8 @@ async def score_books(session, user, books: list[dict[str, float]], *,
             hl = v.get("headline") or {}
             row = {"ok": True, "p_goal_pct": hl.get("p_goal_pct"),
                    "p_goal_without_rules_pct": hl.get("without_rules_pct"),
+                   # PR 136b: the price of the protection -- halving with no rule acting.
+                   "p_halve_without_rules_pct": (rb.get("off") or {}).get("p_halve_pct"),
                    "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
                    "median": on.get("median"),
                    "growth_cagr_pct": (v.get("before") or {}).get("growth_cagr_pct"),

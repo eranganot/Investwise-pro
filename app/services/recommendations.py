@@ -1294,7 +1294,16 @@ async def build_recommendations(session: AsyncSession, user: User,
     _tm = _Stopwatch()
     rows = await list_positions(session, user)
     if not rows:
-        return {"count": 0, "recommendations": [], "message": "Add holdings to get recommendations."}
+        # PR 136b (owner: a new user with nothing in the book must still be told
+        # what to start with): the optimiser's starter book is the one card an
+        # empty portfolio can have. Accept sets up the plan; nothing is bought.
+        starter = []
+        try:
+            from app.services import book_optimizer
+            starter = [c for c in await book_optimizer.card(session, user) if (c.get("meta") or {}).get("starter")]
+        except Exception:  # noqa: BLE001 -- an empty book still answers
+            logger.warning("starter card failed", exc_info=True)
+        return {"count": len(starter), "recommendations": starter, "message": "Add holdings to get recommendations."}
     pdicts = [{"ticker": p.ticker, "market": p.market, "quantity": float(p.quantity),
                "cost_basis": float(p.cost_basis), "current_price": float(p.current_price or 0),
                "volatility_pct": (p.meta or {}).get("volatility_pct"),
@@ -2318,6 +2327,15 @@ async def build_recommendations(session: AsyncSession, user: User,
     except Exception:  # noqa: BLE001
         logger.warning("sleeve move cards failed", exc_info=True)
         degraded.append("sleeve_moves")
+    # PR 136b (wave 5): "the best book we can measure for your goal", from the
+    # optimiser's stored result. Read-only here.
+    try:
+        async with _agent_tx(session):
+            from app.services import book_optimizer
+            recs += await book_optimizer.card(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("optimizer card failed", exc_info=True)
+        degraded.append("optimizer")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
