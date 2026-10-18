@@ -134,10 +134,12 @@ async def optimize(session, user) -> dict:
     final = await fs.score_books(session, user, [held, current], extra_sleeves=adds or None,
                                  nominal_nav=nominal, full=True)
     fin_before, fin_after = (final["scores"] if final.get("ok") and len(final["scores"]) == 2 else (None, None))
-    keys = ("p_goal_pct", "p_halve_pct", "median", "growth_cagr_pct")
+    keys = ("p_goal_pct", "p_halve_pct", "median", "growth_cagr_pct", "p_goal_without_rules_pct",
+            "p_halve_without_rules_pct")
     return {"ok": True, "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "starter": nav <= 0, "nominal_nav": nominal, "held": held, "best": current,
             "halve_limit_pct": limit, "min_step_pts": min_step, "candidates_tried": tried,
+            "on_track_pct": round(float(fs.settings_of(plan)["goal_confidence"]) * 100.0, 1),
             "steps": steps,
             "before": {k: (fin_before or start["scores"][0]).get(k) for k in keys},
             "after": {k: fin_after.get(k) for k in keys} if fin_after and fin_after.get("ok") else None,
@@ -212,3 +214,98 @@ def run_book_optimizer_blocking() -> dict:
         raise RuntimeError(f"book optimizer: every user failed ({res['optimizer_failed']})")
     logger.info("book optimizer: %s", res)
     return res
+
+
+# --------------------------------------------------------------------------- #
+# PR 136b: the card
+# --------------------------------------------------------------------------- #
+def _name(sid: str) -> str:
+    return ((_cat().get(sid) or {}).get("name") or sid)
+
+
+def _p(x) -> str:
+    return f"{float(x):g}%" if x is not None else "?"
+
+
+async def card(session, user) -> list[dict]:
+    """"The best book we can measure for your goal", from the stored result.
+
+    * a better book, by `material_odds_pts` or more -> an actionable card; Accept sets the
+      sleeves (sells nothing; the trim and "Fund this sleeve" cards carry the trades);
+    * an empty book -> the same card as the STARTER book;
+    * nothing material, while the goal chance is under the on-track bar -> one plain card
+      that says so, with the best measured and the price of the halving limit (the chance
+      without the protective rules, and its chance of halving) -- the one lever left.
+    Nothing when the result is about a different book than the one held."""
+    from app.services import sleeve_service as sv
+    from app.services.frontier_service import _material
+    from app.services.recommendations import _rid
+    from app.services.sleeve_moves import _sizes_line
+
+    r = await load(session, user)
+    if not r.get("ok"):
+        return []
+    held = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    if {k: round(v, 4) for k, v in held.items()} != {k: round(float(v), 4) for k, v in (r.get("held") or {}).items()}:
+        return []
+    b, a = r.get("before") or {}, r.get("after") or {}
+    if b.get("p_goal_pct") is None:
+        return []
+    gain = (float(a["p_goal_pct"]) - float(b["p_goal_pct"])) if a.get("p_goal_pct") is not None else 0.0
+    steps = r.get("steps") or []
+    step_txt = "; ".join(f"{'add' if st['kind'] == 'add' else 'remove'} {_name(st['sleeve'])} (+{st['goal_pts']:g})"
+                         for st in steps)
+    price = ""
+    if b.get("p_goal_without_rules_pct") is not None and b.get("p_halve_without_rules_pct") is not None:
+        price = (f" Without your protective rules the chance is {_p(b['p_goal_without_rules_pct'])}, with a "
+                 f"{_p(b['p_halve_without_rules_pct'])} chance of the book halving; your halving limit is "
+                 f"{_p(r.get('halve_limit_pct'))}. Changing that limit is the one lever left, and it is yours.")
+    extras = []
+    pr = r.get("protection") or {}
+    if pr.get("material"):
+        extras.append(f"On that book, retuning your protection measures {_p(pr.get('best_p_goal_pct'))} "
+                      f"(halving {_p(pr.get('best_p_halve_pct'))}) -- its own card follows the next solve.")
+    co = r.get("core") or {}
+    from app.services.frontier_service import CORE_SWITCH
+    if co.get("outcome") == CORE_SWITCH and co.get("best_name"):
+        extras.append(f"A different core, {co['best_name']}, measures better on that book -- its own card "
+                      f"follows the next solve.")
+    starter = bool(r.get("starter"))
+    if steps and (starter or gain >= _material()):
+        return [{
+            "id": _rid("optimizer", *sorted(f"{k}:{v:g}" for k, v in (r.get("best") or {}).items())),
+            "dimension": "goal", "severity": "HIGH",
+            "title": ((f"Your starter book: goal chance {_p(a['p_goal_pct'])}" if starter else
+                       f"The best book we can measure for your goal: {_p(b['p_goal_pct'])} -> "
+                       f"{_p(a['p_goal_pct'])}")),
+            "why": (f"Measured by your goal model with your rules ({str(r.get('as_of', ''))[:10]}): goal chance "
+                    f"{_p(b['p_goal_pct'])} -> {_p(a['p_goal_pct'])}; chance the book halves "
+                    f"{_p(b.get('p_halve_pct'))} -> {_p(a.get('p_halve_pct'))} (your limit {_p(r.get('halve_limit_pct'))}). "
+                    f"Steps: {step_txt}." + (" " + " ".join(extras) if extras else "")),
+            "action": f"Accept changes your plan: {_sizes_line(held, r['best'])}.",
+            "impact": ("Nothing is bought or sold by Accepting. A sleeve that shrinks gets its trim card and a new "
+                       "one gets \"Fund this sleeve\", each naming every trade and its tax first."),
+            "how": ["Accept changes the sleeve sizes on your plan",
+                    "The trades come next, on their own cards, each shown before it happens",
+                    "No brokerage order is placed"],
+            "persistent": True,
+            "apply": {"kind": "sleeve_move", "held": held, "book": r["best"]},
+            "meta": {"optimizer": True, "starter": starter, "before": b, "after": a, "gain_pts": round(gain, 2),
+                     "steps": steps, "as_of": r.get("as_of")},
+        }]
+    if float(b["p_goal_pct"]) < float(r.get("on_track_pct") or 70.0):
+        best = a.get("p_goal_pct") if a.get("p_goal_pct") is not None else b["p_goal_pct"]
+        return [{
+            "id": _rid("optimizer_ceiling", round(float(best))),
+            "dimension": "goal", "severity": "LOW",
+            "title": f"No sleeve change we can measure lifts your goal chance much above {_p(best)}",
+            "why": (f"The optimiser tried {r.get('candidates_tried', 0)} changes -- adding or removing strategies "
+                    f"from the catalogue, sized by your goal model, with your rules as armed -- and none raises the "
+                    f"chance by {_material():g} points or more within your halving limit. Your goal chance "
+                    f"is {_p(b['p_goal_pct'])}; your on-track bar is {_p(r.get('on_track_pct'))}." + price),
+            "action": "Nothing to accept here. The goal and the halving limit are yours to set on the Plan tab.",
+            "impact": "This is what the measurements say, not a recommendation to trade.",
+            "how": ["Plan tab -> your goal and its limits", "Holdings -> Rules for the protective rules"],
+            "meta": {"optimizer": True, "ceiling": True, "before": b, "after": a, "as_of": r.get("as_of")},
+        }]
+    return []

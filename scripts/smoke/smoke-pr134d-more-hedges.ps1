@@ -39,7 +39,7 @@ else {
 
 Sec "4  nothing else changed"
 try { $sw = Invoke-WebRequest -Uri "$BaseUrl/app/sw.js" -UseBasicParsing -TimeoutSec 30
-      if ($sw.Content -match "iw-v68") { Ok "shell iw-v68" } else { Bad "sw.js is not iw-v68" } } catch { Bad "/app/sw.js unreachable" }
+      if ($sw.Content -match "iw-v(6[89]|[7-9][0-9])") { Ok "shell iw-v68 or later" } else { Bad "sw.js is older than iw-v68" } } catch { Bad "/app/sw.js unreachable" }
 try { Invoke-RestMethod -Uri "$BaseUrl/api/v1/plan/sleeves" -TimeoutSec 60 | Out-Null; Bad "/plan/sleeves answered without a key" }
 catch { $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}; if ($code -eq 401) { Ok "/plan/sleeves needs a key (401)" } else { Bad "/plan/sleeves answered $code" } }
 

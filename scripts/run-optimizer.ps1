@@ -18,4 +18,7 @@ foreach ($s in @($r.steps)) { $i++; Write-Host ("  step {0}: {1} {2}  (+{3} pts 
 if (-not @($r.steps).Count) { Write-Host "  no change raises the goal chance by the minimum step within the halving limit" }
 Write-Host ("best sleeves: {0}" -f (($r.best.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '))
 if ($r.protection) { Write-Host ("protection retune on that book: best {0}% goal / {1}% halving; worth changing: {2}" -f $r.protection.best_p_goal_pct, $r.protection.best_p_halve_pct, $r.protection.material) }
-if ($r.core) { Write-Host ("core on that book: {0} (current {1}, best {2})" -f $r.core.outcome, $r.core.current, $r.core.best_name) }
+if ($r.core) {
+    if ($r.core.outcome -eq "SWITCH") { Write-Host ("core on that book: switching to {0} measures better (current {1})" -f $r.core.best_name, $r.core.current) }
+    else { Write-Host ("core on that book: keep {0} (no other core measures better by enough to switch)" -f $r.core.current) }
+}

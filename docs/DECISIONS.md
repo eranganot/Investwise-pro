@@ -284,6 +284,12 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D106 · 2026-10-18 · The optimiser's card: act when it is material, say so plainly when it is not** (wave 5). A better
+  book by `material_odds_pts` (5) or more -> "The best book we can measure for your goal: X% -> Y%" (HIGH), Accept sets
+  the sleeves (sells nothing); an empty book -> "Your starter book", the one card an empty portfolio can have; nothing
+  material while under the on-track bar -> a heads-up saying so, with the best measured and the price of the halving
+  limit (the chance without the protective rules and its chance of halving) -- the lever left, which is the owner's.
+  → PR 136b
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

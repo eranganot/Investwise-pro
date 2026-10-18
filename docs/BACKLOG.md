@@ -38,6 +38,7 @@
 
 | # | Item | Status | Pri |
 |---|---|---|---|
+| O6 | **GitHub Actions is not running** -- every job refused since 2026-10-15 ("recent account payments have failed or your spending limit needs to be increased"). PR 131-136b merged on full local SQLite + Postgres runs instead. Fix in GitHub -> Settings -> Billing & plans. | Open | P1 |
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
 | O3 | **Database backups and a restore procedure.** Nothing in the repo describes them; the Railway CLI can't show backup status. | Confirmed gap 10-08. Check the Railway dashboard → Postgres → Backups (plan W0-1) | P1 |
 | R2 | Orphan `redis-volume` (150 MB, attached to nothing) in the Railway project | Plan W0-2 | P3 |
@@ -57,7 +58,11 @@
 | P10 | Promote engines to agents ("Tier 4") + a synthesising "Chief" agent (decided 2026-08-30, not started). Or drop it. | [AGENTS.md](AGENTS.md) | ? |
 | P12 | **"Best trend right now" commodity pick** (owner, 2026-10-11, D80): a way to catch the strongest commodity trend when the core basket is the default. Today `commodity_buys_core_only = 0` falls back to the plan-blind screen leader; a real design would size it as a separate, labelled bet. | D80 | Parked |
 | P13 | **Revisit the stock universe for the Beat the Market stock strategies** (plan D6): 44 US names is thin for a top-10 ranking. Expand to the ~100 largest S&P names if MH1 or H1 pass the gate. | `plans/BEAT_MARKET_EXPANSION_2026-10-13.md` | Later |
-| P14 | **Sleeve plan, rest of waves 3-5** (owner-approved 2026-10-15): actionable sleeve cards (PR 134, wave 4: "move N% of your leveraged sleeve into a hedge"); goal optimiser with the goal fixed (PR 135). Waves 1-2 shipped as PR 131, 132; wave 3 as PR 133, 134a-c (three hedges joined: DBMF, 2x Gold Trend, 2x Trend Risk Parity) and 134d (seven more; option 2 S1-S3 failed; Quality Momentum 5 Explore only). Later: live stock rotation (lets Explore-only strategies be added). | [`plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) | P1 |
+| P14 | **Sleeve plan follow-ups** (plan complete 2026-10-18, PR 131-136b): run `scripts/smoke/smoke-sleeve-plan-all.ps1` and record 134d-136b in STATUS; revisit the same-bet correlation limit (0.80 -> 0.75?) now that the catalogue has different engines. | [`plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) | P1 |
+| P16 | **The halving limit (owner decision).** The optimiser (PR 136a) finds no measurable change that lifts the goal chance past ~9-10% within the 30% limit; without the protective rules ~26%, with ~67% halving. The limit is the lever left. | STATUS PR 136a | P1 |
+| P17 | **Live stock rotation** -- hold and rotate a selection strategy's monthly picks, so Explore-only strategies (Quality Momentum 5) can be added as sleeves. | D101 | P2 |
+| P18 | **Fixed-amount goals in the goal model.** Only a %/yr goal gets odds, sleeve moves, the optimiser and a starter book; a plan with an amount and no yearly ROI gets none. | D105 | P2 |
+| P19 | **Objective default core mixes as settings** (used only when no core is chosen; code constants today -- "every decision is a setting"). | owner, 2026-10-18 | P3 |
 | P15 | **Single-stock short selling.** The book, funding and backtest engine are long-only end to end; it needs negative quantities, margin, borrow fees and forced exits through every layer, and the research in the sleeve plan finds the edge mostly gone after fees. Inverse-ETF legs (PSQ/SH) are the in-plan route. | sleeve plan, research | Parked |
 | P11 | The objective tilt for the screener (`OBJECTIVE_WEIGHTS` is empty and `OWNER_REVIEWED = False`). | AGENTS.md | ? |
 
@@ -91,6 +96,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 |---|---|
 | V1 | Pixel QA for PR 104a (`qa/QA-2026-10-06-pr104a-plan-tabs.md`). Its successors 104b–104d passed, so it is probably covered; record it or void it. |
 | V2 | `qa/QA-2026-07-12-notification-alignment.md` and `qa/QA-2026-08-10-p0-safety.md` were never run. Void them or re-scope. |
+| V3 | `test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable` fails locally on untouched main (live market data is rate-limited, so the second Today build does not rebuild the dismissed card); make it deterministic. |
 
 ## Recently closed (do not re-open)
 
