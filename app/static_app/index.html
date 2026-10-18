@@ -3538,6 +3538,7 @@ async function loadStrategies(){
     <div class="stcard${mine?" mine":""}">
       <div style="display:flex;justify-content:space-between"><span class="nm">${mine?`<span class="stmine">✓ ${isSleeve?"A SLEEVE OF YOURS":"YOUR CORE"}</span> `:""}${s.name}</span><span class="rk">${s.risk_label||s.risk_tolerance} risk</span></div>
       <div class="ds">${s.description}</div>
+      ${(s.badges||[]).length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0">${s.badges.map(b=>_chip(b)).join("")}</div>`:""}
       ${isSleeve?measuredProfile(s):stratProfile(s.profile)}
       ${isSleeve?`<div class="ds bookfx" id="bfx-${s.id}" style="font-size:12px;opacity:.85">Measuring what it does to your whole book…</div>`:""}
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}

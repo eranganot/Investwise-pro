@@ -59,6 +59,7 @@ Shipped: **A + C**.
 - **My mix:**
   - "What you hold vs your plan": per sleeve, Core, Commodities and Cash, held% / target% with a bar and target tick. Sleeves have Remove (sells nothing). A ticker two sleeves share is split between them (PR 131). The chip counts both sides: "N pts to fund · M pts over", or "on plan".
   - Explore: a strategy that is the same bet as a sleeve you hold says so ("⚠ Same bet as your …") and its button is "Replace <sleeve> with this" (a swap: same size, nothing sold) instead of "Add as a sleeve"; a refused add offers the same replace (PR 132).
+  - Strategy cards show `badges` as chips, e.g. "Hedge for a leveraged sleeve", "Short history (since 2019)" (PR 134c).
   - The strategy card's book-effect line says why it does not improve your book ("the worst drop gets 9.1 points deeper; your limit is 2"), from `failed` (PR 133).
   - The goal card quotes `goal_chance`; an out-of-date one shows "As of … — <reason>" and is re-solved once per load (PR 131).
   - **Fund all sleeves** (dry-run, then confirm) and **Change core**.
