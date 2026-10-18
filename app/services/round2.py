@@ -72,14 +72,32 @@ def spec(key: str) -> dict | None:
     return None if c is None else {k: deepcopy(v) for k, v in c.items() if k not in _META}
 
 
-def _any(key: str) -> tuple[dict | None, dict | None]:
-    """(entry, spec) for an S- or D-candidate."""
+def measurable_spec(key: str, fetch=None) -> tuple[dict | None, list[str]]:
+    """The S-spec with any universe member the price provider has no history for
+    left out, and the names left out. PR 134c: MMC had none on production, and one
+    missing name aborted the whole round before anything was measured. Dropping it
+    changes no result -- none existed -- and the payload says which were dropped."""
+    from app.services.backtest_service import _fetch
+    sp = spec(key)
+    if sp is None:
+        return None, []
+    uni = list(sp["overlay"]["universe"])
+    _, missing = (fetch or _fetch)(uni)
+    gone = sorted(set(missing or []) & set(uni))
+    if gone:
+        sp["overlay"]["universe"] = [t for t in uni if t not in gone]
+    return sp, gone
+
+
+def _any(key: str, fetch=None) -> tuple[dict | None, dict | None, list[str]]:
+    """(entry, spec, dropped universe names) for an S- or D-candidate."""
     from app.services import diversifier_candidates as dc
     if get(key):
-        return get(key), spec(key)
+        sp, gone = measurable_spec(key, fetch)
+        return get(key), sp, gone
     if dc.get(key):
-        return dc.get(key), dc.spec(key)
-    return None, None
+        return dc.get(key), dc.spec(key), []
+    return None, None, []
 
 
 # --------------------------------------------------------------------------- #
@@ -91,9 +109,10 @@ def evaluate_stock_blocking(key: str, book: dict | None, *, ratio_gain: float, d
     from app.services import book_effect, sleeve_diversity as div, strategy_catalog
     from app.services.backtest_service import _fetch, measure
 
-    entry, sp = get(key), spec(key)
+    entry = get(key)
     if entry is None:
         return {"ok": False, "reason": "UNKNOWN_CANDIDATE", "detail": f"{key!r} is not a round-2 stock candidate"}
+    sp, dropped = measurable_spec(key, fetch)
     m = measure({**sp, "id": entry["id"]}, benchmark_ticker="QQQ")
     if not m.get("ok"):
         return {"ok": False, "code": entry["code"], "reason": m.get("reason"), "detail": m.get("detail")}
@@ -130,7 +149,7 @@ def evaluate_stock_blocking(key: str, book: dict | None, *, ratio_gain: float, d
             "measured_risk": strategy_catalog.measured_risk(m.get("max_drawdown_pct")),
             "window": {"cagr_pct": m["cagr_pct"], "max_drawdown_pct": m.get("max_drawdown_pct"),
                        "start": m.get("start"), "end": m.get("end")},
-            "tests": tests, "passes_before_s5": passes,
+            "tests": tests, "passes_before_s5": passes, "universe_dropped": dropped,
             "book_effect": be if be.get("ok") else None, "same_bet": same}
 
 
@@ -140,7 +159,7 @@ def near_duplicates_blocking(fetch=None) -> dict:
     from app.services.backtest_service import _fetch
 
     fetch = fetch or _fetch
-    specs = {c["code"]: spec(c["id"]) for c in STOCK_CANDIDATES}
+    specs = {c["code"]: measurable_spec(c["id"], fetch)[0] for c in STOCK_CANDIDATES}
     need: set[str] = set()
     for s in specs.values():
         need |= set(bt.tickers_needed(s))
@@ -163,7 +182,7 @@ def evaluate_funding_blocking(key: str, book: dict, *, scale: float, ratio_gain:
     """One candidate taken out of the leveraged sleeve at `scale` x its suggested size."""
     from app.services import book_effect
 
-    entry, sp = _any(key)
+    entry, sp, dropped = _any(key, fetch)
     if entry is None:
         return {"ok": False, "reason": "UNKNOWN_CANDIDATE", "detail": f"{key!r} is not a candidate"}
     size = float(entry["sleeve_pct"]) * float(scale)
@@ -182,4 +201,4 @@ def evaluate_funding_blocking(key: str, book: dict, *, scale: float, ratio_gain:
             "tests": {"F1": {"pass": f1}, "F2": {"pass": be["improves"], "failed": be.get("failed"),
                                                  "gain": be.get("return_per_risk_gain"),
                                                  "deeper_pts": be.get("worst_drop_change_pts")}},
-            "passes": bool(f1 and be["improves"])}
+            "passes": bool(f1 and be["improves"]), "universe_dropped": dropped}

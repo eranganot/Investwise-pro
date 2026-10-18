@@ -247,6 +247,11 @@
   candidate also measured taken out of Volatility-Targeted Leverage at 1x and 2x its size, passing when the book still
   beats QQQ (F1) and the book-effect rule holds (F2). Pre-registered in
   `plans/ROUND2_STOCKS_AND_SLEEVE_FUNDING_2026-10-15.md`; the universe is 115 names (first described as ~125). → PR 134b
+- **D100 · 2026-10-16 · Three hedges join the catalogue, labelled as hedges** (owner: "only the best 3" of the eight
+  that passed option 3). Managed Futures (DBMF; short history), 2x Gold Trend and 2x Trend Risk Parity, exactly as
+  measured, each badged "Hedge for a leveraged sleeve": none beats the market alone, and each lowers the book's return
+  while cutting its worst drop. Whether that raises the goal chance is wave 5's question. A universe member the price
+  provider has no history for (MMC) is dropped from that run and reported, rather than aborting it. → PR 134c
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134b). Last product PR: **PR 134b**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134c). Last product PR: **PR 134c**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,51 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 134c — three hedges join the catalogue (D100); round 2 no longer aborts on a missing ticker
+
+**Round 2 measured on production, 2026-10-16** (owner ran `scripts/measure-round2.ps1` on `6167c34`; PR 134b smoke
+**PASS 9, FAIL 0, SKIP 0**, including D8's book effect on one window from 2019-05-08 — the production check of PR 134a).
+
+**Option 2 did not run:** the provider has no history for MMC, and one missing name aborted S1-S3 (and their option-3
+rows). Fixed here (below); option 2 is re-run after deploy.
+
+**Option 3 — taken out of Volatility-Targeted Leverage** (book alone 30.53%/yr, worst drop -49.65%, return per unit of
+risk 0.735; QQQ 20.97%; D7 from 2020-12, D8 from 2019-05):
+
+| Code | x | Moved | Book /yr | Worst drop | Return/risk | Verdict |
+|---|---|---|---|---|---|---|
+| D1 GTAA-5 | 1 / 2 | 20 / 40% | 25.30 / 19.79 | -41.95 / -36.45 | 0.747 / 0.739 | fails F2 / F1, F2 |
+| D2 Trend Risk Parity | 1 / 2 | 20 / 40% | 25.57 / 20.10 | -39.52 / -30.75 | 0.765 / 0.775 | **passes** / fails F1 |
+| D3 Gold Trend | 1 / 2 | 10 / 20% | 28.53 / 26.32 | -44.67 / -39.93 | 0.764 / 0.790 | **passes / passes** |
+| D4 Treasury Trend | 1 / 2 | 15 / 30% | 26.47 / 21.82 | -41.43 / -34.23 | 0.758 / 0.762 | **passes / passes** |
+| D5 Non-US Trend | 1 / 2 | 15 / 30% | 26.79 / 22.66 | -41.81 / -37.57 | 0.744 / 0.735 | fails F2 |
+| D6 GEM | 1 / 2 | 20 / 40% | 25.05 / 19.34 | -44.05 / -40.84 | 0.710 / 0.657 | fails F2 / F1, F2 |
+| D7 KMLM | 1 / 2 | 15 / 30% | 27.71 -> 25.64 / 23.12 | -49.2 -> -41.0 / -36.28 | 0.665 -> 0.729 / 0.794 | **passes / passes** |
+| D8 DBMF | 1 / 2 | 15 / 30% | 32.12 -> 29.52 / 26.23 | -49.64 -> -41.82 / -38.22 | 0.732 -> 0.784 / 0.825 | **passes / passes** |
+| D9 Nasdaq trend + PSQ | 1 / 2 | 15 / 30% | 27.78 / 24.29 | -40.74 / -36.36 | 0.767 / 0.766 | **passes / passes** |
+| D10 S&P trend + SH | 1 / 2 | 15 / 30% | 26.63 / 22.20 | -41.46 / -33.41 | 0.750 / 0.738 | fails F2 |
+| D11 2x Trend Risk Parity | 1 / 2 | 15 / 30% | 27.14 / 23.44 | -43.11 / -36.77 | 0.757 / 0.768 | **passes / passes** |
+| D12 2x Gold Trend | 1 / 2 | 10 / 20% | 28.89 / 27.11 | -45.18 / -41.24 | 0.769 / 0.799 | **passes / passes** |
+| D13 3x Treasury Trend | 1 / 2 | 10 / 20% | 27.24 / 23.95 | -44.62 / -41.72 | 0.741 / 0.742 | fails F2 |
+
+Every pass LOWERS the book's return and cuts its worst drop; none beats the market alone (PR 134a). D9 is "the same
+bet" as Volatility-Targeted Leverage under D97 (Nasdaq both ways); D3 and D12 are near-duplicates (0.996).
+**Owner: "only the best 3"** — DBMF (best return per risk), 2x Gold Trend (smallest return cost), 2x Trend Risk Parity.
+
+**What.**
+- `strategy_catalog`: `div_dbmf`, `div_2x_gold_trend`, `div_2x_trend_risk_parity`, specs identical to the measured
+  ones, each badged "Hedge for a leveraged sleeve" (DBMF also "Short history (since 2019)"), descriptions carrying the
+  measured trade. Cards carry `badges`; Explore shows them. `risk_parity` gets a plain-language rule line.
+- `round2.measurable_spec`: a universe member with no price history is dropped from that run and reported in
+  `universe_dropped` (the registered spec is unchanged); used by the gate, S5 and option 3.
+- `sw.js` iw-v67.
+
+**Tests.** `tests/test_pr134c_hedges_join.py` (11). Local SQLite: 2,590 passed, 2 failed — the catalogue shape test, whose overlay allow-list predated `risk_parity` in the catalogue (now allowed; 20/20 on re-run), and the pre-existing `dismissed_count` test. Local Postgres (full): 2,591 passed, 1 failed (the pre-existing test). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr134c-hedges.ps1` (read-only; measures S1 to prove option 2 now runs). Result: SMOKE134C.
+
+---
+
 ## PR 134b — round 2: hot stocks on 115 US names (option 2) and diversifiers funded from the leveraged sleeve (option 3) (D99)
 
 **Owner, 2026-10-15:** after none of wave 3's 13 candidates passed, "once you complete 134a I want you to run both
@@ -65,7 +110,7 @@ each runs on the engine; `fund_from` shrinks only that sleeve; a sleeve not held
 F1 / F2; S-candidates take option 3 too; scale is 1 or 2. Local SQLite: 2,540 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full, resumed after a low-memory stop): 2,540 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr134b-round2.ps1` (read-only; D4 x1 end to end, and D8's book effect on one window —
-the production check of PR 134a). Result: SMOKE134B.
+the production check of PR 134a). Result on `6167c34` (owner): **PASS 9, FAIL 0, SKIP 0**.
 
 ---
 

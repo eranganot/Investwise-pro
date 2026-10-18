@@ -25,7 +25,9 @@ def test_the_catalog_specs_are_all_shaped_for_the_engine():
         kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
         assert kind in {"buy_hold", "trend_filter", "ma_cross", "donchian",
                         "rsi_pullback", "dual_momentum", "vol_target",
-                        "drawdown_brake", "sector_momentum"}
+                        "drawdown_brake", "sector_momentum",
+                        # PR 134c: 2x Trend Risk Parity (engine kind since PR 128).
+                        "risk_parity"}
         assert bt.tickers_needed(spec), f"{spec['id']} references no tickers"
 
 

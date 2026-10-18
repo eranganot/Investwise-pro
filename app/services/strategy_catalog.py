@@ -267,6 +267,60 @@ CATALOG: list[dict] = [
         "weights": _QQQ_CORE,
         "overlay": {"kind": "buy_hold"},
     },
+    # ---- PR 134c (D100): hedges for a leveraged sleeve ------------------------
+    # Round-2 option 3 (owner, 2026-10-15): measured taken OUT OF Volatility-
+    # Targeted Leverage, each kept the book above QQQ and raised its return per
+    # unit of risk by the book-effect rule, at 1x and 2x its size. None beats the
+    # market alone (wave 3, PR 134a), so each is labelled a hedge, not a winner.
+    # The owner chose these three of the eight that passed ("only the best 3").
+    {
+        "id": "div_dbmf",
+        "name": "Managed Futures (DBMF)",
+        "risk": "Medium",
+        "sleeve_pct": 15,
+        "horizon": "Years; nothing to check",
+        "badges": ["Hedge for a leveraged sleeve", "Short history (since 2019)"],
+        "description": ("Holds DBMF, a fund that copies the average managed-futures hedge fund: trend "
+                        "following across stocks, bonds, currencies and commodities. Measured 2019-2026, "
+                        "moving 15% of a leveraged Nasdaq sleeve into it cut the book's worst drop from "
+                        "-49.6% to -41.8% for about 2.6 points a year of return."),
+        "weights": {"DBMF": 1.0},
+        "overlay": {"kind": "buy_hold"},
+    },
+    {
+        "id": "div_2x_gold_trend",
+        # Gold from 2004; UGL rebuilt as 2x gold before its 2008 listing (PR 133).
+        "long_history": True,
+        "name": "2x Gold Trend",
+        "risk": "High",
+        "sleeve_pct": 10,
+        "horizon": "Hold for years; check weekly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("Holds 2x gold (UGL) while gold is above its 200-day average, T-bills otherwise. "
+                        "Measured 2016-2026, moving 10% of a leveraged Nasdaq sleeve into it cost the book "
+                        "about 1.6 points a year and cut its worst drop by 4.5 points. On its own its "
+                        "worst drop was -53%."),
+        "weights": {"UGL": 1.0}, "base": {"BIL": 1.0},
+        "overlay": {"kind": "trend_filter", "gate_ticker": "GLD", "ma_days": 200, "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        "id": "div_2x_trend_risk_parity",
+        "long_history": True,
+        "name": "2x Trend Risk Parity",
+        "risk": "Medium",
+        "sleeve_pct": 15,
+        "horizon": "Hold for years; rebalances itself monthly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("2x US stocks, 2x long Treasuries and 2x gold, each sized by its own volatility "
+                        "and held only while its market trends up, T-bills otherwise. Measured 2016-2026, "
+                        "moving 15% of a leveraged Nasdaq sleeve into it cost the book about 3.4 points a "
+                        "year and cut its worst drop by 6.5 points."),
+        "weights": {"SSO": 1 / 3, "UBT": 1 / 3, "UGL": 1 / 3},
+        "overlay": {"kind": "risk_parity", "legs": {"SSO": "SPY", "UBT": "TLT", "UGL": "GLD"},
+                    "vol_days": 60, "trend_days": 200, "confirm_days": 1, "cadence_days": 21, "cash": "BIL",
+                    "sweep_param": "vol_days", "sweep_values": [20, 40, 60, 90, 120]},
+    },
 ]
 
 _BY_ID = {s["id"]: s for s in CATALOG}
@@ -422,6 +476,8 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
             "basket": sorted((tk, w) for tk, w in weights.items()),
             "base_when_flat": sorted(e.get("base") or {}) or None,
             "rule": _rule_summary(e),
+            # PR 134c: e.g. "Hedge for a leveraged sleeve", "Short history (since 2019)".
+            "badges": list(e.get("badges") or []),
             "measured": True,
             "backtest": measured.get(e["id"]),
         })
@@ -467,6 +523,12 @@ def _rule_summary(entry: dict) -> str:
     if kind == "ma_cross":
         return (f"Holds while the {o.get('fast')}-day average is above the "
                 f"{o.get('slow')}-day; otherwise {base}.")
+    if kind == "risk_parity":
+        legs = o.get("legs") or {}
+        return (f"Holds {', '.join(legs)}, each sized inverse to its {o.get('vol_days', 60)}-day "
+                f"volatility and held only while its index ({', '.join(legs[f] for f in legs)}) is above "
+                f"its {o.get('trend_days', 200)}-day average; an off leg's share sits in "
+                f"{o.get('cash', 'BIL')}. Re-weighted every {o.get('cadence_days', 21)} sessions.")
     return f"Rule: {kind}."
 
 
