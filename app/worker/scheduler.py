@@ -234,6 +234,17 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Sleeve moves job not scheduled.", exc_info=False)
 
+    try:
+        # PR 136a (wave 5): the best book the app can measure for each goal,
+        # after the 04:40 sleeve moves and on the same measurements.
+        from app.services.book_optimizer import run_book_optimizer_blocking
+        _scheduler.add_job(_guarded("book_optimizer", run_book_optimizer_blocking),
+                           "cron", hour=5, minute=10, id="book_optimizer",
+                           misfire_grace_time=21600)
+        logger.info("Book optimizer scheduled (05:10 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Book optimizer job not scheduled.", exc_info=False)
+
     # PR 77: the holding review's backtests (each holding's own ~10 years, both
     # sell signals against holding). Nightly, after the strategy backtests, so the
     # history they fetched is cached; the Today build only reads the results.

@@ -275,6 +275,15 @@
   existing per-ticker overweight card becomes one two-tile choice. Recommend RAISE only when it does not lower the goal
   chance and does not raise the chance of halving by `material_odds_pts` or more; otherwise (or unmeasured) TRIM.
   Raise sets the size and sells nothing. → PR 135c
+- **D105 · 2026-10-18 · The goal optimiser: the best measured book, goal unchanged; a starter book for an empty
+  portfolio; the core always the user's own** (wave 5; owner: keep the goal and optimise; "if I will have nothing in my
+  book ... how it will know what to recommend me?" -> include; the core "a variable and not hard coded"). Step A: up
+  to 3 greedy steps over adding (never a look-alike, never Explore-only) or removing a sleeve, each candidate scored
+  beside the current book in one solve, the winner re-sized by the goal model; kept only if it gains
+  `optimizer_min_step_pts` (0.5, a setting) and halving stays within `halve_limit_pct`. Step B: the full solve on the
+  result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
+  is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
+  Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

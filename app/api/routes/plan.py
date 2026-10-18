@@ -447,6 +447,25 @@ async def frontier_latest(session: AsyncSession = Depends(get_session),
             "max_age_hours": fs.MAX_AGE_H, "source": row.source, **(row.detail or {})}
 
 
+@router.get("/plan/optimizer")
+async def optimizer_latest(session: AsyncSession = Depends(get_session),
+                           user: User = Depends(acting_user)) -> dict:
+    """PR 136a: the best book the app can measure for your goal (nightly at 05:10). Never computes."""
+    from app.services import book_optimizer
+    got = await book_optimizer.load(session, user)
+    return got or {"ok": False, "reason": "NOT_RUN",
+                   "detail": "the optimiser has not run yet - POST /plan/optimizer/refresh runs it"}
+
+
+@router.post("/plan/optimizer/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def optimizer_refresh(session: AsyncSession = Depends(get_session),
+                            user: User = Depends(acting_user)) -> dict:
+    """PR 136a: search for the best book now and store it. Slow (dozens of light goal
+    solves and one full one). Stores the result only; changes nothing in the book."""
+    from app.services import book_optimizer
+    return await book_optimizer.refresh(session, user)
+
+
 @router.get("/plan/sleeve-moves")
 async def sleeve_moves_latest(session: AsyncSession = Depends(get_session),
                               user: User = Depends(acting_user)) -> dict:

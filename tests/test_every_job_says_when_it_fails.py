@@ -72,6 +72,12 @@ def _fail_sleeve_moves(mp):
     mp.setattr(sleeve_moves, "refresh_all", _aboom)
 
 
+def _fail_optimizer(mp):
+    from app.services import book_optimizer
+    _seed_user()
+    mp.setattr(book_optimizer, "refresh_all", _aboom)
+
+
 def _fail_review(mp):
     from app.services import holding_review
     mp.setattr(holding_review, "_measure_all_async", _aboom)
@@ -100,6 +106,7 @@ FAIL_WITH = {
     "solver_refresh": _fail_solver,
     "strategy_correlation": _fail_correlation,
     "sleeve_moves": _fail_sleeve_moves,
+    "book_optimizer": _fail_optimizer,
     "holding_review": _fail_review,
     "strategy_signals": _fail_signals,
     "standing_orders": _fail_orders,
