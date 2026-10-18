@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135a). Last product PR: **PR 135a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135b). Last product PR: **PR 135b**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,29 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 135b — wave 4, part 2: the sleeve cards (D103)
+
+**What.**
+- `sleeve_moves.select` (pure): the best replacement for each side of a same-bet pair (HIGH); up to two moves that
+  raise the goal chance by `material_odds_pts` (5) or more; one "safer, lower chance" move that cuts the chance of
+  halving by that much (owner decision 4: both ways).
+- `sleeve_moves.cards`: Today's cards from the stored scores, only while they are about the sleeves held. Each says
+  goal chance before -> after and chance the book halves before -> after, names every size that changes, and that
+  Accept buys and sells nothing.
+- Accept (`sleeve_move`, `apply_move`): sets every sleeve to the card's sizes -- removals and shrinks first -- re-arms
+  the caps, refuses untouched if the book moved since scoring. The trim card and "Fund this sleeve" carry the trades.
+- Recommendations: the cards join the Today build beside the goal cards (degrades alone as `sleeve_moves`).
+
+**Tests.** `tests/test_pr135b_sleeve_cards.py` (8): raises capped and best first; one safer card only when material;
+nothing material -> no card; the best replacement for a look-alike always shows; a card quotes both numbers and says
+Accept sells nothing; no card when the scores are about a different book; Accept refuses when the book moved;
+**card claims** -- applying a scored move produces its sizes, and re-scoring gives the goal chance the card quoted.
+Local SQLite: 2,752 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full): 2,752 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr135b-sleeve-cards.ps1` (read-only; never accepts). Result: SMOKE135B.
 
 ---
 

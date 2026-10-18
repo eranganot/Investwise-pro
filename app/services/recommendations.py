@@ -70,7 +70,9 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # converts caps into rebalance bands.
                      "edit_rule", "caps_to_bands",
                      # PR 83: cash a buy-back hold is keeping back -- a choice.
-                     "held_cash"}
+                     "held_cash",
+                     # PR 135b (wave 4): set the sleeve sizes a scored move proposes.
+                     "sleeve_move"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -2305,6 +2307,15 @@ async def build_recommendations(session: AsyncSession, user: User,
     except Exception:  # noqa: BLE001
         logger.warning("frontier recommendation failed", exc_info=True)
         degraded.append("frontier")
+    # PR 135b (wave 4): add / remove / replace / move-to-a-hedge cards, from the
+    # moves the goal model scored overnight. Read-only here.
+    try:
+        async with _agent_tx(session):
+            from app.services import sleeve_moves
+            recs += await sleeve_moves.cards(session, user)
+    except Exception:  # noqa: BLE001
+        logger.warning("sleeve move cards failed", exc_info=True)
+        degraded.append("sleeve_moves")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
@@ -6151,6 +6162,11 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
             logger.warning("re-solve after a rules retune failed", exc_info=True)
             detail["note"] = ("Done. Your rules are changed; the goal's odds update after the next solve "
                               "(Plan > Goal > Re-solve now).")
+    elif kind == "sleeve_move":
+        from app.services.sleeve_moves import apply_move
+        detail = await apply_move(session, user, spec)
+        if detail.get("refused"):
+            return {"ok": False, "applied": "none", "title": rec["title"], **detail}
     elif kind == "frontier_core":
         from app.services.frontier_service import apply_core_switch
         detail = await apply_core_switch(session, user, spec)

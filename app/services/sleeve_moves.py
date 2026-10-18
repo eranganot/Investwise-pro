@@ -175,6 +175,162 @@ async def refresh_all(session) -> dict:
     return {"sleeve_moves_stored": done, "sleeve_moves_failed": failed}
 
 
+# --------------------------------------------------------------------------- #
+# PR 135b: the cards, and what Accept does
+# --------------------------------------------------------------------------- #
+#: Card budget per kind, so Today shows the best moves rather than all forty.
+MAX_RAISES = 2
+MAX_SAFER = 1
+
+
+def _name(sid: str | None) -> str:
+    return ((_cat().get(sid) or {}).get("name") or sid or "")
+
+
+def _pct(x) -> str:
+    return f"{float(x):g}%" if x is not None else "?"
+
+
+def _sizes_line(held: dict, book: dict) -> str:
+    """Every sleeve whose size changes, before -> after."""
+    parts = []
+    for sid in sorted(set(held) | set(book)):
+        a, b = float(held.get(sid, 0.0)), float(book.get(sid, 0.0))
+        if abs(a - b) > 1e-6:
+            parts.append(f"{_name(sid)} {a:g}% -> {b:g}%")
+    return "; ".join(parts)
+
+
+def _title(m: dict) -> str:
+    if m["kind"] == "hedge":
+        return f"Move {m['pct']:g}% of {_name(m['from'])} into {_name(m['to'])}"
+    if m["kind"] == "remove":
+        return f"Remove the {_name(m['from'])} sleeve"
+    return f"Replace {_name(m['from'])} with {_name(m['to'])}"
+
+
+def select(stored: dict, material_pts: float) -> list[dict]:
+    """The moves worth a card. Pure.
+
+    * every REPLACE of a same-bet pair -- the best replacement for each sleeve that could go;
+    * up to MAX_RAISES moves that raise the goal's chance by `material_pts` or more;
+    * up to MAX_SAFER "safer, lower chance" moves (owner decision 4): the chance of halving falls by
+      `material_pts` or more while the goal's chance does not rise by that much.
+    """
+    ok = [m for m in (stored.get("moves") or []) if m.get("ok") and m.get("goal_pts") is not None]
+    out: list[dict] = []
+    best_replace: dict[str, dict] = {}
+    for m in ok:
+        if m["kind"] == "replace":
+            cur = best_replace.get(m["from"])
+            if cur is None or m["after"]["p_goal_pct"] > cur["after"]["p_goal_pct"]:
+                best_replace[m["from"]] = m
+    out += [{**m, "verdict": "same_bet"} for m in best_replace.values()]
+    rest = [m for m in ok if m["kind"] != "replace"]
+    raises = sorted((m for m in rest if m["goal_pts"] >= material_pts), key=lambda m: -m["goal_pts"])
+    out += [{**m, "verdict": "raises"} for m in raises[:MAX_RAISES]]
+    shown = {id(m) for m in raises[:MAX_RAISES]}
+    safer = sorted((m for m in rest if id(m) not in shown and m.get("halve_pts") is not None
+                    and m["halve_pts"] <= -material_pts and m["goal_pts"] < material_pts),
+                   key=lambda m: (m["halve_pts"], -m["goal_pts"]))
+    out += [{**m, "verdict": "safer"} for m in safer[:MAX_SAFER]]
+    return out
+
+
+async def cards(session, user) -> list[dict]:
+    """Today's sleeve cards, from the stored scores. Nothing when the scores are
+    about a different book (a sleeve changed since): a card about sizes you no
+    longer hold would claim a move it cannot make."""
+    from app.services import sleeve_service as sv
+    from app.services.frontier_service import _material
+    from app.services.recommendations import _rid
+
+    stored = await load(session, user)
+    if not stored.get("ok"):
+        return []
+    held = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    if {k: round(v, 4) for k, v in held.items()} != {k: round(float(v), 4) for k, v in stored["held"].items()}:
+        return []
+    b = stored["before"]
+    out = []
+    for m in select(stored, _material()):
+        a = m["after"]
+        goal_txt = f"goal chance {_pct(b['p_goal_pct'])} -> {_pct(a['p_goal_pct'])}"
+        halve_txt = (f"chance the book halves {_pct(b['p_halve_pct'])} -> {_pct(a['p_halve_pct'])}"
+                     if b.get("p_halve_pct") is not None and a.get("p_halve_pct") is not None else "")
+        if m["verdict"] == "raises":
+            lead = "Raises your chance of reaching the goal."
+        elif m["verdict"] == "safer":
+            lead = (f"Safer, lower chance: it costs {abs(m['goal_pts']):g} points of goal chance for "
+                    f"{abs(m['halve_pts']):g} points less chance of the book halving." if m["goal_pts"] < 0 else
+                    f"Safer: {abs(m['halve_pts']):g} points less chance of the book halving.")
+        else:
+            lead = (f"{_name(m['from'])} and {_name(m['keep'])} are the same bet (D97), so they count as one. "
+                    f"Of the strategies that are different from what you keep, {_name(m['to'])} does the most "
+                    f"for your goal.")
+        out.append({
+            "id": _rid("sleeve_move", m["kind"], m.get("from"), m.get("to"), m.get("scale")),
+            "dimension": "strategy",
+            "severity": "HIGH" if m["verdict"] == "same_bet" else "MEDIUM",
+            "title": (("Safer, lower chance: " if m["verdict"] == "safer" else "") + _title(m)),
+            "why": (f"{lead} Measured by your goal model ({stored.get('as_of', '')[:10]}): "
+                    f"{goal_txt}" + (f"; {halve_txt}" if halve_txt else "") + "."),
+            "action": f"Accept changes your plan: {_sizes_line(held, m['book'])}.",
+            "impact": ("Nothing is bought or sold by Accepting. The sleeve that shrinks gets its trim card and a "
+                       "new sleeve gets \"Fund this sleeve\", each naming every trade and its tax first."),
+            "how": ["Accept changes the sleeve sizes on your plan",
+                    "The trades come next, on their own cards, each shown before it happens",
+                    "No brokerage order is placed"],
+            "persistent": True,
+            "apply": {"kind": "sleeve_move", "held": held, "book": m["book"]},
+            "meta": {"move": m["kind"], "verdict": m["verdict"], "from": m.get("from"), "to": m.get("to"),
+                     "scale": m.get("scale"), "before": b, "after": a,
+                     "goal_pts": m["goal_pts"], "halve_pts": m.get("halve_pts"), "as_of": stored.get("as_of")},
+        })
+    return out
+
+
+async def apply_move(session, user, spec: dict) -> dict:
+    """Accept a sleeve card: set every sleeve to the card's book. Refuses untouched
+    when the book moved since it was scored. Sells nothing."""
+    from app.services import sleeve_service as sv
+    from app.services.strategy_service import _arm_sleeve_caps
+
+    held = {s.strategy_id: float(s.sleeve_pct or 0.0) for s in await sv.list_sleeves(session, user)}
+    want_held = {k: float(v) for k, v in (spec.get("held") or {}).items()}
+    if {k: round(v, 4) for k, v in held.items()} != {k: round(v, 4) for k, v in want_held.items()}:
+        return {"ok": False, "refused": "BOOK_CHANGED",
+                "error": "your sleeves changed since this move was scored - nothing was changed"}
+    book = {k: float(v) for k, v in (spec.get("book") or {}).items()}
+    changed = []
+    for sid in sorted(held):                       # shrink and remove first, so the room exists
+        if sid not in book or book[sid] <= 0:
+            r = await sv.remove(session, user, sid)
+            if not r.get("ok"):
+                await session.rollback()
+                return {"ok": False, "refused": "REMOVE_REFUSED", "error": r.get("error")}
+            changed.append({"strategy_id": sid, "from_pct": held[sid], "to_pct": 0.0})
+        elif book[sid] < held[sid]:
+            r = await sv.add_or_resize(session, user, sid, book[sid])
+            if not r.get("ok"):
+                await session.rollback()
+                return {"ok": False, "refused": "RESIZE_REFUSED", "error": r.get("reason") or r.get("error")}
+            changed.append({"strategy_id": sid, "from_pct": held[sid], "to_pct": book[sid]})
+    for sid in sorted(book):
+        if book[sid] > 0 and book[sid] > held.get(sid, 0.0):
+            r = await sv.add_or_resize(session, user, sid, book[sid])
+            if not r.get("ok"):
+                await session.rollback()
+                return {"ok": False, "refused": "RESIZE_REFUSED", "error": r.get("reason") or r.get("error")}
+            changed.append({"strategy_id": sid, "from_pct": held.get(sid, 0.0), "to_pct": book[sid]})
+    await session.commit()
+    caps = await _arm_sleeve_caps(session, user)
+    await session.commit()
+    return {"ok": True, "applied": "plan", "sleeves": changed, "caps": caps,
+            "note": ("Your plan is changed. Nothing was bought or sold: the trim and \"Fund this sleeve\" "
+                     "cards now show the trades.")}
+
+
 async def _job() -> dict:
     # Own NullPool engine in this loop (CLAUDE.md, "Cross-loop sessions").
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
