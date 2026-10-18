@@ -21,13 +21,17 @@ def test_the_catalog_specs_are_all_shaped_for_the_engine():
     from app.engines import strategy_backtest as bt
     for spec in strategy_catalog.backtestable():
         assert spec["id"]
-        assert spec.get("weights"), f"{spec['id']} has no basket"
         kind = (spec.get("overlay") or {}).get("kind", "buy_hold")
+        # PR 134d: a selection rule has a universe instead of a fixed basket.
+        assert spec.get("weights") or (kind == "rank_select" and spec["overlay"].get("universe")), \
+            f"{spec['id']} has no basket"
         assert kind in {"buy_hold", "trend_filter", "ma_cross", "donchian",
                         "rsi_pullback", "dual_momentum", "vol_target",
                         "drawdown_brake", "sector_momentum",
                         # PR 134c: 2x Trend Risk Parity (engine kind since PR 128).
-                        "risk_parity"}
+                        "risk_parity",
+                        # PR 134d: GTAA-5 and Quality Momentum 5 (engine kind since PR 126).
+                        "rank_select"}
         assert bt.tickers_needed(spec), f"{spec['id']} references no tickers"
 
 

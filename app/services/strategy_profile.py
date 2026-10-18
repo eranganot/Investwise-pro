@@ -41,10 +41,12 @@ _CLASS_ASSUMPTIONS = {
 # the Beat the Market engine now measures (PR 128), so a basket holding any of
 # them is never modelled as a single stock.
 _LEVERAGED = {"TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA",
-              "QLD", "TMF", "FAS", "CURE", "ERX", "LABU", "DRN"}
+              "QLD", "TMF", "FAS", "CURE", "ERX", "LABU", "DRN",
+              # PR 134d: the hedges' geared and -1x legs (a -1x fund is geared too).
+              "SSO", "UBT", "UGL", "PSQ", "SH"}
 _BROAD = {"VTI", "VT", "ITOT", "VOO"}
-_INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG"}
-_SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB"}
+_INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG", "EFA"}
+_SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB", "VNQ"}
 _US_LARGE = {"QQQ", "SPY", "IVV", "DIA"}
 # Factor ETFs. Absent from every bucket, these fell through to "single_name" --
 # so the Factor Stack, three broadly diversified funds, was modelled at a single
@@ -60,7 +62,9 @@ _FACTOR = {"MTUM", "QUAL", "AVUV", "VTV", "VUG", "VBR", "VB", "IWF", "IWD",
            "IWM"}
 _DIVIDEND = {"SCHD", "VIG", "VYM", "DVY", "NOBL"}
 _OPTION_INCOME = {"JEPI", "JEPQ", "QYLD"}
-_BONDS = {"BND", "AGG", "BNDX"}
+_BONDS = {"BND", "AGG", "BNDX",
+          # PR 134d: Treasury funds the hedges hold.
+          "IEF", "TLT"}
 _SHORT_BOND = {"SHY", "BIL", "SGOV", "SHV"}
 _TIPS = {"TIP", "VTIP", "SCHP"}
 _HY_BOND = {"HYG", "JNK"}
@@ -69,7 +73,11 @@ _HY_BOND = {"HYG", "JNK"}
 # 32%-volatility individual stock. Correcting it lowers the book's weighted
 # volatility slightly, which RAISES the risk score: the previous number was
 # pessimistic by artefact, not by measurement.
-_COMMODITY = {"DBC", "IAU", "GLD", "SLV", "DBA", "PDBC", "USO", "GLDM", "COW"}
+_COMMODITY = {"DBC", "IAU", "GLD", "SLV", "DBA", "PDBC", "USO", "GLDM", "COW",
+              # PR 134d: managed-futures funds trade commodities, currencies and
+              # bonds; the commodity row is the nearest planning assumption, and
+              # far nearer than a single stock's 32% volatility.
+              "KMLM", "DBMF"}
 _MIN_VOL = {"USMV", "SPLV"}
 
 

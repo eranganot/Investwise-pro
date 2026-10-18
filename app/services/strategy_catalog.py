@@ -321,7 +321,132 @@ CATALOG: list[dict] = [
                     "vol_days": 60, "trend_days": 200, "confirm_days": 1, "cadence_days": 21, "cash": "BIL",
                     "sweep_param": "vol_days", "sweep_values": [20, 40, 60, 90, 120]},
     },
+    # ---- PR 134d (D101): every other option-3 pass (owner, 2026-10-18: "add the
+    # passed strategies"). Measured 2026-10-18 out of Volatility-Targeted Leverage
+    # (book alone 30.81%/yr, worst drop -51.38%). Specs identical to the measured
+    # ones; numbers in each description are the 1x run.
+    {
+        "id": "div_gtaa5",
+        "long_history": True,
+        "name": "Global Tactical Allocation (GTAA-5)",
+        "risk": "Medium",
+        "sleeve_pct": 20,
+        "horizon": "Years; re-checked monthly",
+        "badges": ["Hedge for a leveraged sleeve", "Borderline: passed by the narrowest margin"],
+        "description": ("Five equal slots -- US stocks, non-US stocks, Treasuries, commodities, real estate -- "
+                        "each held only while above its 200-day average, T-bills otherwise (Faber). Moving 20% "
+                        "of a leveraged Nasdaq sleeve into it cost the book about 5.0 points a year and cut its "
+                        "worst drop by 9.7 points. It failed this test on 2026-10-16 and passed on 2026-10-18 by "
+                        "exactly the +0.02 bar."),
+        "weights": {}, "base": {"BIL": 1.0},
+        "overlay": {"kind": "rank_select", "universe": ["SPY", "EFA", "IEF", "DBC", "VNQ"], "score": "ret",
+                    "lookback_days": 252, "top_n": 5, "buffer": 5, "trend_veto_days": 200, "cadence_days": 21,
+                    "sweep_param": "trend_veto_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        "id": "div_trend_risk_parity",
+        "long_history": True,
+        "name": "Trend Risk Parity",
+        "risk": "Medium",
+        "sleeve_pct": 20,
+        "horizon": "Hold for years; rebalances itself monthly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("US stocks, long Treasuries, gold and commodities, each sized by its own volatility and "
+                        "held only while it trends up, T-bills otherwise. Moving 20% of a leveraged Nasdaq sleeve "
+                        "into it cost the book about 4.6 points a year and cut its worst drop by 9.8 points."),
+        "weights": {"SPY": 0.25, "TLT": 0.25, "GLD": 0.25, "DBC": 0.25},
+        "overlay": {"kind": "risk_parity", "legs": {"SPY": "SPY", "TLT": "TLT", "GLD": "GLD", "DBC": "DBC"},
+                    "vol_days": 60, "trend_days": 200, "confirm_days": 1, "cadence_days": 21, "cash": "BIL",
+                    "sweep_param": "vol_days", "sweep_values": [20, 40, 60, 90, 120]},
+    },
+    {
+        "id": "div_gold_trend",
+        "long_history": True,
+        "name": "Gold Trend",
+        "risk": "Medium",
+        "sleeve_pct": 10,
+        "horizon": "Hold for years; check weekly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("Gold (GLD) while above its 200-day average, T-bills otherwise. Moving 10% of a "
+                        "leveraged Nasdaq sleeve into it cost the book about 1.7 points a year and cut its worst "
+                        "drop by 5.0 points. Moves almost exactly with 2x Gold Trend (0.996): hold one or the other."),
+        "weights": {"GLD": 1.0}, "base": {"BIL": 1.0},
+        "overlay": {"kind": "trend_filter", "gate_ticker": "GLD", "ma_days": 200, "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        "id": "div_treasury_trend",
+        "long_history": True,
+        "name": "Treasury Trend",
+        "risk": "Medium",
+        "sleeve_pct": 15,
+        "horizon": "Hold for years; check weekly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("7-10 year Treasuries (IEF) while above their 200-day average, T-bills otherwise. Moving "
+                        "15% of a leveraged Nasdaq sleeve into it cost the book about 4.0 points a year and cut "
+                        "its worst drop by 8.2 points."),
+        "weights": {"IEF": 1.0}, "base": {"BIL": 1.0},
+        "overlay": {"kind": "trend_filter", "gate_ticker": "IEF", "ma_days": 200, "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        "id": "div_kmlm",
+        "name": "Managed Futures (KMLM)",
+        "risk": "Medium",
+        "sleeve_pct": 15,
+        "horizon": "Years; nothing to check",
+        "badges": ["Hedge for a leveraged sleeve", "Short history (since 2020)"],
+        "description": ("Holds KMLM: trend following across commodities, currencies and global bonds, no stocks. "
+                        "Measured 2020-2026, moving 15% of a leveraged Nasdaq sleeve into it cost the book about "
+                        "1.5 points a year and cut its worst drop by 9.2 points."),
+        "weights": {"KMLM": 1.0},
+        "overlay": {"kind": "buy_hold"},
+    },
+    {
+        "id": "div_qqq_trend_short",
+        "long_history": True,
+        "name": "Nasdaq Trend, Short in Downtrends",
+        "risk": "Medium",
+        "sleeve_pct": 15,
+        "horizon": "Hold for years; check weekly",
+        "badges": ["Hedge for a leveraged sleeve"],
+        "description": ("The Nasdaq-100 (QQQ) while above its 200-day average, the -1x Nasdaq fund (PSQ) "
+                        "otherwise. Moving 15% of a leveraged Nasdaq sleeve into it cost the book about 2.7 points "
+                        "a year and cut its worst drop by 9.6 points. It is a Nasdaq bet both ways, so next to a "
+                        "Nasdaq sleeve it can replace it, not join it."),
+        "weights": {"QQQ": 1.0}, "base": {"PSQ": 1.0},
+        "overlay": {"kind": "trend_filter", "gate_ticker": "QQQ", "ma_days": 200, "confirm_days": 3,
+                    "sweep_param": "ma_days", "sweep_values": [150, 175, 200, 225, 250]},
+    },
+    {
+        "id": "r2_quality_momentum_5",
+        # Explore only: live stock rotation (buying and rotating five names a
+        # month) is not built, so `apply_strategy` refuses it as a new sleeve.
+        "explore_only": True,
+        "name": "Quality Momentum 5",
+        "risk": "Medium-high",
+        "sleeve_pct": 15,
+        "horizon": "Months per position; re-checked monthly",
+        "badges": ["Hedge for a leveraged sleeve", "Explore only: live stock rotation not built yet"],
+        "description": ("The 5 of 114 large US stocks with the best 12-month return per unit of volatility, "
+                        "T-bills when the S&P is below its 200-day. On its own it trailed QQQ (14.3%/yr vs 20.7%); "
+                        "moving 15% of a leveraged Nasdaq sleeve into it cost the book about 2.0 points a year "
+                        "and cut its worst drop by 6.1 points."),
+        "weights": {}, "base": {"BIL": 1.0}, "drift_band": 0.1,
+        "overlay": {"kind": "rank_select", "universe": [], "score": "risk_adj_mom", "top_n": 5, "buffer": 10,
+                    "cadence_days": 21, "market_gate": {"ticker": "SPY", "ma_days": 200, "confirm_days": 3},
+                    "sweep_param": "top_n", "sweep_values": [3, 4, 5, 6, 8]},
+    },
 ]
+
+# S2's universe is the measured one: US115 less MMC, which the price provider has
+# no history for (PR 134c dropped it from the run that passed).
+def _measured_universe() -> list[str]:
+    from app.services.round2 import US115
+    return [t for t in US115 if t != "MMC"]
+
+
+CATALOG[-1]["overlay"]["universe"] = _measured_universe()
 
 _BY_ID = {s["id"]: s for s in CATALOG}
 
@@ -454,7 +579,11 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
         # derived return/vol from the same call are deliberately NOT used here:
         # these cards report what the rule actually did, and mixing an estimate
         # in among measurements is the confusion this family exists to avoid.
-        _p = _prof.profile({"basket": sorted((tk, w) for tk, w in weights.items())}) or {}
+        # PR 134d: a selection rule has no fixed basket; its style comes from what
+        # it can hold -- its universe, equally weighted.
+        _uni = (e.get("overlay") or {}).get("universe") or []
+        _style_basket = weights or ({t: 1.0 / len(_uni) for t in _uni} if _uni else {})
+        _p = _prof.profile({"basket": sorted((tk, w) for tk, w in _style_basket.items())}) or {}
         cards.append({
             "id": e["id"],
             "goal": GOAL,
@@ -478,6 +607,8 @@ def as_plan_cards(measured: dict[str, dict] | None = None) -> list[dict]:
             "rule": _rule_summary(e),
             # PR 134c: e.g. "Hedge for a leveraged sleeve", "Short history (since 2019)".
             "badges": list(e.get("badges") or []),
+            # PR 134d: visible and measured, not addable (live stock rotation not built).
+            "explore_only": bool(e.get("explore_only")),
             "measured": True,
             "backtest": measured.get(e["id"]),
         })
@@ -523,6 +654,15 @@ def _rule_summary(entry: dict) -> str:
     if kind == "ma_cross":
         return (f"Holds while the {o.get('fast')}-day average is above the "
                 f"{o.get('slow')}-day; otherwise {base}.")
+    if kind == "rank_select":
+        uni = o.get("universe") or []
+        names = ", ".join(uni) if len(uni) <= 6 else f"{len(uni)} large US stocks"
+        veto = (f", each only while above its {o['trend_veto_days']}-day average" if o.get("trend_veto_days")
+                else "")
+        gate = (f"; all in {base} while {o['market_gate']['ticker']} is below its "
+                f"{o['market_gate'].get('ma_days', 200)}-day average" if o.get("market_gate") else "")
+        return (f"Every {o.get('cadence_days', 21)} sessions holds the top {o.get('top_n')} of {names}{veto}, "
+                f"equal weight; an empty slot sits in {base}{gate}.")
     if kind == "risk_parity":
         legs = o.get("legs") or {}
         return (f"Holds {', '.join(legs)}, each sized inverse to its {o.get('vol_days', 60)}-day "

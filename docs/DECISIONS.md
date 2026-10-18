@@ -252,6 +252,11 @@
   measured, each badged "Hedge for a leveraged sleeve": none beats the market alone, and each lowers the book's return
   while cutting its worst drop. Whether that raises the goal chance is wave 5's question. A universe member the price
   provider has no history for (MMC) is dropped from that run and reported, rather than aborting it. → PR 134c
+- **D101 · 2026-10-18 · Every option-3 pass joins; a stock-picking one is Explore only** (owner: "add the passed
+  strategies", after the 10-18 re-run). GTAA-5, Trend Risk Parity, Gold Trend, Treasury Trend, KMLM, Nasdaq Trend with
+  PSQ and Quality Momentum 5 join beside the three of D100. GTAA-5 is badged "borderline" (failed on 10-16, passed on
+  10-18 by exactly the bar). Quality Momentum 5 is `explore_only`: measured and shown, refused as a new sleeve until
+  live stock rotation exists. Option 2's S1-S3 all failed the Beat-the-Market gate on their own. → PR 134d
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model

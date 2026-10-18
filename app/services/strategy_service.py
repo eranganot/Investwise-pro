@@ -389,6 +389,14 @@ async def apply_strategy(session: AsyncSession, user: User, strategy_id: str,
                             for x in await sv.list_sleeves(session, user)):
             return {"ok": False, "strategy_id": strategy_id, "error": "strategy retired",
                     "reason": (f"retired on {gone['on']} ({gone['decision']}): {gone['why']}")}
+        # PR 134d (D101): an Explore-only strategy is measured and shown, never
+        # added -- holding and rotating individual stocks has no live path yet.
+        if (strategy_catalog.get(strategy_id) or {}).get("explore_only") and not any(
+                x.strategy_id == strategy_id for x in await sv.list_sleeves(session, user)):
+            return {"ok": False, "strategy_id": strategy_id, "error": "explore only",
+                    "reason": ("this strategy picks individual stocks each month, and the app cannot yet "
+                               "hold and rotate them for you -- it is shown so you can follow its measured "
+                               "record, not added as a sleeve")}
         # PR 132 (D97): a NEW sleeve must be a different bet from every sleeve
         # held. Checked here, like retirement, and not in `add_or_resize`: a book
         # that already runs two look-alikes may still resize them (owner: "card

@@ -3544,10 +3544,13 @@ async function loadStrategies(){
       ${s.rule?`<div class="ds" style="font-size:11px;opacity:.75">⚙ ${s.rule}</div>`:""}
       ${isSleeve?sleeveControl(s):coreMixLine(s)}
       ${isSleeve&&!mine&&_sameBet(s.id)?`<div class="ds warn" style="font-size:12px">⚠ Same bet as your ${_sameBet(s.id).name} sleeve: ${_sameBet(s.id).why}. Every sleeve must be a different bet, so this can replace it but not join it.</div>`:""}
-      <div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>
+      ${s.basket.length?`<div class="bk">Model basket: ${s.basket.map(b=>b[0]+" "+Math.round(b[1]*100)+"%").join(" · ")}${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>`
+        :`<div class="bk">Picks from a list each month (see the rule above)${s.base_when_flat?` · otherwise ${s.base_when_flat.join(", ")}`:""}</div>`}
       <div class="acts">
         <button onclick="previewStrat('${s.id}','${s.name.replace(/'/g,'')}')">What changes?</button>
-        ${isSleeve&&!mine&&_sameBet(s.id)
+        ${isSleeve&&!mine&&s.explore_only
+          ? `<button disabled style="opacity:.5;cursor:default" title="Live stock rotation is not built yet">Explore only</button>`
+          : isSleeve&&!mine&&_sameBet(s.id)
           ? `<button onclick="swapRetired('${_sameBet(s.id).strategy_id}','${s.id}','${s.name.replace(/'/g,"")}')">Replace ${_sameBet(s.id).name.replace(/'/g,"")} with this</button>`
           : isSleeve
           ? `<button onclick="applyStrat('${s.id}')">${mine?"Resize sleeve":"Add as a sleeve"}</button>`
