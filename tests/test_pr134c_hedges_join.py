@@ -43,11 +43,11 @@ def _fetch_missing(*gone):
     return fetch
 
 
-def test_the_three_chosen_hedges_are_in_the_catalogue_and_no_others():
+def test_the_three_chosen_hedges_are_in_the_catalogue():
+    # PR 134d added the other option-3 passes (owner: "add the passed strategies");
+    # which candidates may NOT be there is pinned in test_pr134d_more_hedges.
     ids = cat.active_ids()
     assert all(h in ids for h in HEDGES)
-    others = [c["id"] for c in dc.CANDIDATES if c["id"] not in HEDGES]
-    assert not [i for i in ids if i in others], "only the three the owner chose"
 
 
 @pytest.mark.parametrize("sid", HEDGES)

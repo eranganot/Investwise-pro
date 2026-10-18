@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134c). Last product PR: **PR 134c**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134d). Last product PR: **PR 134d**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,46 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 134d — every option-3 pass joins the catalogue; Quality Momentum 5 is Explore only (D101)
+
+**Measured on production, 2026-10-18** (owner, on `8ac8554`; PR 134c smoke **PASS 11, FAIL 0, SKIP 0**: the three
+hedges badged, none the same bet as the owner's sleeves, S1 measured with MMC dropped).
+
+**Option 2 (hot stocks, 114 names after MMC) — all fail the Beat-the-Market gate on their own** (QQQ 20.65%/yr):
+
+| | /yr | Worst drop | Risk | S1 beats QQQ | S2 selection edge | S3 overfit | S4 sweep | Corr with VTL sleeve |
+|---|---|---|---|---|---|---|---|---|
+| S1 Momentum 10 | 10.17% | -32.97% | Medium | fail | fail (-8.43) | holds up | pass | 0.642 |
+| S2 Quality Momentum 5 | 14.32% | -36.79% | Medium-high | fail | fail (-4.28) | holds up | fail | 0.547 |
+| S3 52-Week-High Leaders | 7.62% | -21.55% | Medium | fail | fail (-10.98) | holds up | pass | 0.534 |
+
+**Option 3 re-run** (book alone 30.81%/yr, worst drop -51.38%, return/risk 0.722; QQQ 20.65%): passes at 1x / 2x —
+D1 1x only (0.742, exactly +0.020; it failed on 10-16), D2 both (2x now passes: 20.85% > QQQ), D3, D4, D7, D8, D9, D11,
+D12, and **S2 both** (28.86% / 26.53%, return/risk 0.755 / 0.772). Fail: D5, D6, D10, D13, S1, S3. The window moved
+two days and the book's worst drop deepened (-49.65% -> -51.38%), which is why borderline rows flipped.
+
+**Owner, 2026-10-18: "add the passed strategies".**
+
+**What.**
+- `strategy_catalog`: `div_gtaa5` (badged "Borderline: passed by the narrowest margin"), `div_trend_risk_parity`,
+  `div_gold_trend`, `div_treasury_trend`, `div_kmlm` ("Short history (since 2020)"), `div_qqq_trend_short` (a Nasdaq
+  bet both ways: next to a Nasdaq sleeve it can replace, not join — D97), `r2_quality_momentum_5` (universe US115 less
+  MMC, as measured). Each badged "Hedge for a leveraged sleeve", each description stating its measured 1x trade.
+  The catalogue now lists 18 strategies.
+- `explore_only`: Quality Momentum 5 is shown and measured, and `apply_strategy` refuses it as a new sleeve — the app
+  cannot hold and rotate individual stocks yet. Explore shows a disabled "Explore only" button.
+- `rank_select` gets a plain-language rule line; a card with no fixed basket says it picks from a list.
+- Style chips: a selection rule's style comes from its universe; EFA, IEF, TLT, VNQ, KMLM, DBMF and the geared / -1x legs (SSO, UBT, UGL, PSQ, SH) join the ticker buckets -- they fell through to "single stock" (32% assumed volatility, "Concentrated"), which also mis-stated the static risk of anyone holding them unmeasured.
+- `sw.js` iw-v68.
+
+**Tests.** `tests/test_pr134d_more_hedges.py` (16); the catalogue-shape test accepts `rank_select` (a universe, not a
+basket); PR 134c's "only these three" test now pins only that the three are present. Local SQLite (full, after the style fix): 2,735 passed, 1 failed (the pre-existing `dismissed_count` test). A first run caught `test_p2_cards::test_every_card_carries_style_and_horizon` (no style for a basket-less rule), fixed above. Local
+Postgres (full): 2,735 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr134d-more-hedges.ps1` (read-only). Result: SMOKE134D.
 
 ---
 
@@ -79,7 +119,7 @@ bet" as Volatility-Targeted Leverage under D97 (Nasdaq both ways); D3 and D12 ar
 
 **Tests.** `tests/test_pr134c_hedges_join.py` (11). Local SQLite: 2,590 passed, 2 failed — the catalogue shape test, whose overlay allow-list predated `risk_parity` in the catalogue (now allowed; 20/20 on re-run), and the pre-existing `dismissed_count` test. Local Postgres (full): 2,591 passed, 1 failed (the pre-existing test). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
 
-**Smoke.** `scripts/smoke/smoke-pr134c-hedges.ps1` (read-only; measures S1 to prove option 2 now runs). Result: SMOKE134C.
+**Smoke.** `scripts/smoke/smoke-pr134c-hedges.ps1` (read-only; measures S1 to prove option 2 now runs). Result on `8ac8554` (owner): **PASS 11, FAIL 0, SKIP 0**.
 
 ---
 
