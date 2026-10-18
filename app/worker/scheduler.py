@@ -223,6 +223,17 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Backtest refresh job not scheduled.", exc_info=False)
 
+    try:
+        # PR 135a (wave 4): every sleeve move scored by the goal model, after the
+        # 04:10 goal solve and on the same measurements; Today reads the result.
+        from app.services.sleeve_moves import run_sleeve_moves_blocking
+        _scheduler.add_job(_guarded("sleeve_moves", run_sleeve_moves_blocking),
+                           "cron", hour=4, minute=40, id="sleeve_moves",
+                           misfire_grace_time=21600)
+        logger.info("Sleeve moves scheduled (04:40 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Sleeve moves job not scheduled.", exc_info=False)
+
     # PR 77: the holding review's backtests (each holding's own ~10 years, both
     # sell signals against holding). Nightly, after the strategy backtests, so the
     # history they fetched is cached; the Today build only reads the results.

@@ -524,11 +524,15 @@ def _fetch_blocking(tickers: list[str]) -> tuple[dict, list[str], list[str]]:
     return _fetch(sorted(tickers), classify=True)
 
 
-async def load_context(session, user) -> dict:
+async def load_context(session, user, *, extra_sleeves: list[str] | None = None) -> dict:
     """Everything a frontier solve needs about the acting user's book, fetched once.
 
     ONE loader for the inputs endpoint and the PR 90 resize solve, so the two
     cannot disagree about which sleeves, which measurements or which prices.
+
+    ``extra_sleeves`` (PR 135a): catalogue strategies the user does NOT hold, loaded
+    at 0% beside the held ones -- prices, stored measurement and all -- so a
+    hypothetical book that adds one can be scored by the same model.
     """
     from app.core.offload import offload
     from app.services import backtest_service, target_solver
@@ -540,7 +544,15 @@ async def load_context(session, user) -> dict:
     book, err = await target_solver._book_for_solve(session, user)
     if err and err.get("reason") != "NO_SLEEVES":
         return {"ok": False, **{k: v for k, v in err.items() if k != "execution_plan"}}
-    sleeves = (book or {}).get("sleeves") or []
+    sleeves = list((book or {}).get("sleeves") or [])
+    if extra_sleeves:
+        from app.services import strategy_catalog
+        held = {s["id"] for s in sleeves}
+        for sid in extra_sleeves:
+            e = strategy_catalog.get(sid)
+            if e and sid not in held:
+                sleeves.append({"id": sid, "spec": strategy_catalog._spec(e), "current_pct": 0.0,
+                                "extra": True})
     plan = (book or {}).get("plan") or await get_plan(session, user)
     objective = getattr(plan, "objective", None) or "Balanced"
     objective_target = OBJ_TARGET.get(objective) or OBJ_TARGET["Balanced"]

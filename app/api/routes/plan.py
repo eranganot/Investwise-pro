@@ -447,6 +447,25 @@ async def frontier_latest(session: AsyncSession = Depends(get_session),
             "max_age_hours": fs.MAX_AGE_H, "source": row.source, **(row.detail or {})}
 
 
+@router.get("/plan/sleeve-moves")
+async def sleeve_moves_latest(session: AsyncSession = Depends(get_session),
+                              user: User = Depends(acting_user)) -> dict:
+    """PR 135a: the last scored sleeve moves (nightly at 04:40). Never computes."""
+    from app.services import sleeve_moves
+    got = await sleeve_moves.load(session, user)
+    return got or {"ok": False, "reason": "NOT_SCORED",
+                   "detail": "no sleeve moves scored yet - POST /plan/sleeve-moves/refresh runs one"}
+
+
+@router.post("/plan/sleeve-moves/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def sleeve_moves_refresh(session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    """PR 135a: score every sleeve move now and store it. Slow (a light goal solve per
+    move). Stores scores only; changes nothing in the book."""
+    from app.services import sleeve_moves
+    return await sleeve_moves.refresh(session, user)
+
+
 @router.post("/plan/frontier/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
 async def frontier_refresh(only_if_stale: bool = False,
                            session: AsyncSession = Depends(get_session),

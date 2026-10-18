@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 3: PR 134d). Last product PR: **PR 134d**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135a). Last product PR: **PR 135a**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 135a — wave 4, part 1: every sleeve move scored by the goal model (D102)
+
+**Owner, 2026-10-18:** "ok, continue" (wave 4 of the sleeve plan: actionable sleeve cards, each showing what its move
+does to the goal's chance and to the chance the book halves, both ways). PR 134d live as `dbd71d0`.
+
+**What.**
+- `frontier_inputs.load_context(extra_sleeves=...)`: catalogue strategies not held load at 0% beside the held ones.
+- `frontier_service.score_books`: the goal's chance (with rules), the chance of halving, the median and growth for
+  each of several hypothetical sleeve sets -- one context load, one rules replay, the light goal solve per book.
+- `app/services/sleeve_moves.py`: `candidate_moves` (each hedge -- badged, not Explore-only, not the same bet as a
+  held sleeve -- at 1x and 2x its size out of each High / Very high sleeve; remove each sleeve; for a same-bet pair,
+  replace either side with a different-bet strategy at its size) -> `compute` -> stored per user in `kv_settings`.
+  Job `sleeve_moves` at 04:40 (raises only when every book failed); `GET /plan/sleeve-moves` (never computes),
+  `POST /plan/sleeve-moves/refresh`; `scripts/refresh-sleeve-moves.ps1` scores on demand and prints the moves.
+- No card yet (PR 135b). Nothing traded.
+
+**Tests.** `tests/test_pr135a_sleeve_moves.py` (7): hedge moves at 1x / 2x from the leveraged sleeve, other sleeves
+untouched; no hedge beside a look-alike; a remove per sleeve; replace both ways for a same-bet pair, never into a
+look-alike or an Explore-only; end to end on a seeded book with a goal (scored, stored, served); a book without sleeves
+is not scored. `test_every_job_says_when_it_fails` covers the job. Local SQLite: 2,744 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full): 2,744 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised).
+Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr135a-sleeve-moves.ps1` (read-only). PR 134d smoke: SMOKE134D. Result: SMOKE135A.
 
 ---
 

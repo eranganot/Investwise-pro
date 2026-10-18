@@ -257,6 +257,12 @@
   PSQ and Quality Momentum 5 join beside the three of D100. GTAA-5 is badged "borderline" (failed on 10-16, passed on
   10-18 by exactly the bar). Quality Momentum 5 is `explore_only`: measured and shown, refused as a new sleeve until
   live stock rotation exists. Option 2's S1-S3 all failed the Beat-the-Market gate on their own. → PR 134d
+- **D102 · 2026-10-18 · Sleeve moves are scored nightly by the goal model; cards only read them** (wave 4 of the
+  sleeve plan, owner "ok, continue"). Every candidate move -- each hedge at 1x and 2x out of a leveraged sleeve (not
+  next to a look-alike, D97), removing each sleeve, replacing either side of a same-bet pair -- is scored by the light
+  goal solve (`frontier_service.score_books`, the one `preview` uses): goal chance with rules and chance of halving,
+  before and after. Job `sleeve_moves` at 04:40 (after the 04:10 goal solve) and `POST /plan/sleeve-moves/refresh`;
+  stored per user in `kv_settings`. → PR 135a (cards: PR 135b)
 - **D85 · 2026-10-12 · Every rule card shows its own effect on the chance of reaching the goal** (owner: "you need to
   add to the rules cards the impact on the chances of meeting the goals"). A held stock with a sale rule is its own
   column in the goal replay. Each rule's effect is the replay with that rule off, on the same paths, and a rule the model
