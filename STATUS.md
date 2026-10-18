@@ -64,7 +64,7 @@ recommendation that is based on the agents analysis". PR 135b live as `44c1b71`.
 never becomes its own card; each added strategy is scored on its own window (regression for the fix); on a book with SOXL over its 10% sleeve: both options offered with RAISE recommended when
 it helps and TRIM when it costs goal chance; Raise sets the size and trades nothing; Trim sells the excess; Accept
 without an answer is refused; no scored raise -> the plain trim card. Local SQLite (full, after the window fix): 2,761 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full): 2,761 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised).
-(full) 2,761 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised). Ruff clean.
+Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr135c-overweight-choice.ps1` (read-only). Result: SMOKE135C.
 
