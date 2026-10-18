@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135b). Last product PR: **PR 135b**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-15 by Claude (sleeve plan wave 4: PR 135c). Last product PR: **PR 135c**. Active plan: [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md) (waves 3-5 open, BACKLOG P14). Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,38 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 135c — wave 4, part 3: an overweight sleeve is a choice -- trim, or raise the size (D104)
+
+**Owner, 2026-10-14** (plan v1, item 4): overweight must get a card too, "option 3 (trim or raise the size) with a
+recommendation that is based on the agents analysis". PR 135b live as `44c1b71`.
+
+**What.**
+- `sleeve_moves`: the nightly scoring adds a "raise" move for each sleeve held above its size by more than
+  `sleeve_drift_band_pts` (the plan's size set to what is held); it is never a card of its own.
+- `raise_recommendation` (pure; the rule fixed before any card showed it): RAISE only when the goal chance does not
+  fall and the chance of halving does not rise by `material_odds_pts` (5) or more; otherwise TRIM, also when unmeasured.
+- The per-ticker overweight card (`sleeve_drift`) becomes `overweight_choice` when a scored raise exists for the
+  sleeve behind it: options `trim` (the existing trim) and `raise` (a `sleeve_move`, sells nothing), the recommended
+  one marked with its reason. One card per position, as before. Accept needs `choice=trim|raise`.
+- Today: two tiles, "Trim <ticker> back to N%" and "Raise the sleeve to M%". `sw.js` iw-v69.
+- **Fix -- one window per strategy.** The owner's first production scoring (2026-10-18) read the book at 7.7% while the
+  goal card said 9.0% and the light preview 8.5%: every hedge was loaded into ONE solve, and the youngest fund (KMLM,
+  2020) shortened the price window for all of them. Each added strategy is now scored in its own group beside the book
+  on that group's window; every move carries its own `before`; the headline is the plain solve (= the preview).
+  **Measured on that run (owner's book, before the fix): no move clears the 5-point bar** -- the best, "remove
+  Volatility-Targeted Leverage", +1.2 points -- so no card showed, as designed. The comparison also showed where the
+  goal chance goes: 25.8% without the ~30 armed rules, 9.0% with them; the chance of halving 66.7% -> 0.5%.
+
+**Tests.** `tests/test_pr135c_overweight_choice.py` (9): the rule's cases; an overweight sleeve gets a raise move that
+never becomes its own card; each added strategy is scored on its own window (regression for the fix); on a book with SOXL over its 10% sleeve: both options offered with RAISE recommended when
+it helps and TRIM when it costs goal chance; Raise sets the size and trades nothing; Trim sells the excess; Accept
+without an answer is refused; no scored raise -> the plain trim card. Local SQLite (full, after the window fix): 2,761 passed, 1 failed (the pre-existing `dismissed_count` test). Local Postgres (full): 2,761 passed, 1 failed (the same). CI blocked (billing); merged on local results (owner-authorised).
+Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr135c-overweight-choice.ps1` (read-only). Result: SMOKE135C.
 
 ---
 

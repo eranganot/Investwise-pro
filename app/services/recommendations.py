@@ -72,7 +72,9 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # PR 83: cash a buy-back hold is keeping back -- a choice.
                      "held_cash",
                      # PR 135b (wave 4): set the sleeve sizes a scored move proposes.
-                     "sleeve_move"}
+                     "sleeve_move",
+                     # PR 135c: an overweight position -- trim, or raise the sleeve.
+                     "overweight_choice"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -2597,6 +2599,30 @@ async def build_recommendations(session: AsyncSession, user: User,
                     "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
                 })
+                # PR 135c (wave 4): an overweight position is a CHOICE -- trim it
+                # back, or raise the sleeve to what you hold -- with the goal
+                # model's recommendation. One card per position, as before.
+                if _over:
+                    try:
+                        from app.services import sleeve_moves as _sm
+                        _ch = await _sm.overweight_choice(session, user, _wanted_by.get(_tk) or [])
+                    except Exception:  # noqa: BLE001 -- the plain trim card stands
+                        _ch = None
+                    if _ch:
+                        _c = recs[-1]
+                        _mv, _to = _ch["move"], _ch["move"]["book"][_ch["sleeve"]]
+                        _c["apply"] = {"kind": "overweight_choice", "ticker": _tk,
+                                       "options": {"trim": _c["apply"],
+                                                   "raise": {"kind": "sleeve_move", "held": _ch["held"],
+                                                             "book": _mv["book"]}},
+                                       "recommended": _ch["recommended"], "recommended_why": _ch["why"],
+                                       "sleeve": _ch["sleeve"], "raise_to_pct": _to,
+                                       "trim_to_pct": round(_target_pct, 1)}
+                        _c["action"] = (f"Choose: trim about {_ils(_amount)} of {_tk} back to "
+                                        f"{_target_pct:.0f}%, or raise the sleeve to {_to:g}% -- what you "
+                                        f"already hold (sells nothing).")
+                        _c["meta"]["choice"] = {"recommended": _ch["recommended"],
+                                                "goal_pts": _mv.get("goal_pts"), "halve_pts": _mv.get("halve_pts")}
 
         # ---- A CAP THAT FIGHTS THE SLEEVE IT SITS ON --------------------- #
         #
@@ -6000,6 +6026,14 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     spec = rec.get("apply") or {"kind": "none"}
     kind = spec.get("kind")
     _sleeve_after = None
+    if kind == "overweight_choice":
+        # PR 135c: the answer picks which of the card's two moves runs; each then
+        # goes through its own path (`trim`, or `sleeve_move`, which sells nothing).
+        if choice not in ("trim", "raise"):
+            return {"ok": False, "applied": "none", "needs_choice": True, "title": rec["title"],
+                    "error": "This card needs a choice: trim back to your size, or raise the sleeve to what you hold."}
+        spec = (spec.get("options") or {})[choice]
+        kind = spec.get("kind")
     if kind == "rule_vs_sleeve":
         opts = spec.get("options") or {}
         if choice not in ("sell", "keep"):

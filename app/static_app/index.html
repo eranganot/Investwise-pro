@@ -1364,6 +1364,7 @@ function _applyMsg(j){
 function decisionBlock(o){
   const ap=o.apply||{};
   if(ap.kind==="held_cash"&&ap.options) return heldCashBlock(o);
+  if(ap.kind==="overweight_choice"&&ap.options) return overweightBlock(o);
   if(!(ap.kind==="rule_vs_sleeve"&&ap.options)) return "";
   const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
   const sh=(s.apply||{}).shares, tk=ap.ticker||"", r=ap.recommended||"sell";
@@ -1451,6 +1452,7 @@ function actBtn(o){
   const ap=o.apply||{};
   if(ap.kind==="held_cash"&&ap.options) return "";
   if(ap.kind==="rule_vs_sleeve"&&ap.options) return "";
+  if(ap.kind==="overweight_choice"&&ap.options) return "";
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true,this)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
@@ -1497,6 +1499,35 @@ async function acceptRec(id,actionable,btn){
     alert(j.note||_applyMsg(j));
     _reloadView();  // clear cached holdings so the sale/cash shows immediately
   }catch(e){alert(e.message||e); if(btn){btn.disabled=false;btn.textContent="✓ Accept";}}
+}
+// PR 135c (wave 4): an overweight position is a choice -- trim back to the size you
+// chose, or raise the sleeve to what you hold -- with the goal model's recommendation.
+function overweightBlock(o){
+  const ap=o.apply||{}, r=ap.recommended||"trim", tk=esc(ap.ticker||"");
+  const tag=c=>r===c?`<span class="tag">Recommended</span>`:"";
+  const why=c=>r===c&&ap.recommended_why?`<div class="dw">${esc(ap.recommended_why)}</div>`:"";
+  return `<div class="dec">
+    <div class="dopt${r==="trim"?" rec":""}">${tag("trim")}
+      <div class="dt">Trim ${tk} back to ${ap.trim_to_pct}%</div>
+      <div class="dd">Sells the excess; every leg and its tax is named first.</div>${why("trim")}
+      <div class="dgo"><button onclick="decideOverweight('${o.id}','trim')">Trim</button></div></div>
+    <div class="dopt${r==="raise"?" rec":""}">${tag("raise")}
+      <div class="dt">Raise the sleeve to ${ap.raise_to_pct}%</div>
+      <div class="dd">Your plan takes the size you already hold. Nothing is sold.</div>${why("raise")}
+      <div class="dgo"><button onclick="decideOverweight('${o.id}','raise')">Raise the size</button></div></div>
+  </div>`;
+}
+async function decideOverweight(id,choice){
+  const msg=choice==="raise"?"Raise the sleeve to what you hold?\n\nNothing is bought or sold; your plan's size changes."
+    :"Trim back to the size you chose?\n\nThis updates your InvestWise book only. No brokerage order is placed.";
+  if(!confirm(msg))return;
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept?choice=${choice}`,_statePost(_cardState(id)));
+    const j=await r.json().catch(()=>({}));
+    if(r.status===404){alert("That decision no longer applies, so I've removed it.");HMAP={};loadToday();return;}
+    if(!r.ok){alert(j.detail||"Not applied.");return;}
+    alert(j.note||_applyMsg(j));
+    HMAP={};loadToday();
+  }catch(e){alert(e.message||e);}
 }
 async function decideRule(id,choice){
   let q=`choice=${choice}`, msg;
