@@ -1574,6 +1574,77 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
                          for i, x in enumerate(extra_rules or [])]}
 
 
+async def score_books(session, user, books: list[dict[str, float]], *,
+                      extra_sleeves: list[str] | None = None) -> dict:
+    """PR 135a: the goal's chance for each of several HYPOTHETICAL sleeve sets.
+
+    ``books`` are ``{strategy_id: sleeve_pct}`` maps; a sleeve left out is removed
+    (its room returns to the core). ``extra_sleeves`` names catalogue strategies not
+    held that some book adds. Everything is loaded once and every book is scored by
+    the light goal solve `preview` uses -- same model, same rules replay, no
+    resampling -- so the numbers compare with each other and with the goal card.
+    Read-only: nothing is stored here.
+    """
+    from app.core.offload import offload
+    from app.services.allocation_mix import current_mix
+    from app.services.intake_service import list_positions
+
+    ctx = await fi.load_context(session, user, extra_sleeves=extra_sleeves)
+    if not ctx.get("ok"):
+        return {"ok": False, "reason": ctx.get("reason") or "NO_INPUTS"}
+    rows = await list_positions(session, user)
+    mix, _nav = current_mix(rows)
+    cash_pct = float(mix.get("Cash") or 0.0) * 100.0
+    basket = await _core_basket(session, user, ctx["objective"])
+    goal = await _goal_context(session, user, rows)
+    if not goal:
+        return {"ok": False, "reason": "NO_GOAL"}
+    rules_ctx = await _rules_context(session, user, ctx["sleeves"])
+    try:
+        _hseries = {**ctx["series"], **await _holding_series(rules_ctx, ctx["series"])}
+    except Exception:  # noqa: BLE001
+        _hseries = ctx["series"]
+    from app.services import thresholds as _thr
+    from app.services.plan_service import get_plan as _gp
+    _plan_now = await _gp(session, user)
+    _thr.use(_plan_now)
+    _st = settings_of(_plan_now)
+
+    def work():
+        prep = fi.prepare(ctx["series"], sleeves=ctx["sleeves"])
+        if not prep["ok"]:
+            return {"ok": False, "reason": prep.get("reason")}
+        _attach_holding_returns(rules_ctx, prep, _hseries)
+        vs = fi.vol_scale(prep, (ctx.get("market") or {}).get("state"))
+        modelled = {a["id"] for a in prep["assets"] if a["kind"] == "sleeve"}
+        out = []
+        for b in books:
+            missing = sorted(sid for sid, pct in b.items() if pct > 0 and sid not in modelled)
+            if missing:
+                out.append({"ok": False, "reason": "NOT_MODELLED", "detail": f"no model for {', '.join(missing)}"})
+                continue
+            v = goal_solve(prep, sleeves_pct={k: float(p) for k, p in b.items() if p > 0},
+                           core_basket=basket, cash_pct=cash_pct, objective=ctx["objective"],
+                           est_kw={**ctx["est_kw"], "vol_scale": vs["scale"]},
+                           nav=goal["nav"], target=goal["target"], years=goal["years"], monthly=goal["monthly"],
+                           kelly_setting=ctx.get("kelly_fraction_setting"), sleeve_cap_pct=goal["sleeve_cap_pct"],
+                           volatility_cap_pct=goal["volatility_cap_pct"], draws=0, rules=rules_ctx,
+                           goal_roi=goal.get("roi_annual"), light=True, p_star=_st["goal_confidence"])
+            if not v.get("ok") or v.get("mode") != "goal" or "before" not in v:
+                out.append({"ok": False, "reason": v.get("reason") or v.get("outcome") or "NOT_MEASURABLE"})
+                continue
+            on = (v.get("rules") or {}).get("on") or {}
+            hl = v.get("headline") or {}
+            out.append({"ok": True, "p_goal_pct": hl.get("p_goal_pct"),
+                        "p_goal_without_rules_pct": hl.get("without_rules_pct"),
+                        "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
+                        "median": on.get("median"),
+                        "growth_cagr_pct": (v.get("before") or {}).get("growth_cagr_pct")})
+        return {"ok": True, "scores": out}
+
+    return await offload(work)
+
+
 async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | None = None,
                          guard_pct: float | None = None, extra: list[dict] | None = None) -> dict | None:
     """The user's active rules and today's prices, mapped onto his sleeves.
