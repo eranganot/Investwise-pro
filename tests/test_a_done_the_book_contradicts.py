@@ -176,5 +176,9 @@ def test_the_call_site_tells_the_two_maps_apart():
 
     src = inspect.getsource(R.build_recommendations) if hasattr(
         R, "build_recommendations") else inspect.getsource(R)
-    assert "done=(_rid_ in completed)" in src, (
-        "moved_on is called without saying whether the mark was a done")
+    # 2026-10-22: `completed` alone is no longer the answer. An id can sit in BOTH
+    # maps (an old Accept and a newer Ignore), and `resolve_marks` picks the
+    # newest -- so "was the mark I am holding a done" is `_done_wins`, not
+    # membership in `completed`. Same requirement, stated against the winner.
+    assert "done=(_rid_ in _done_wins)" in src, (
+        "moved_on is called without saying whether the WINNING mark was a done")

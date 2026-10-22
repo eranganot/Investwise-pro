@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-18 by Claude (sleeve plan wave 5: PR 136b). Last product PR: **PR 136b**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-22 by Claude (PR 137: the TQQQ card that kept coming back). Last product PR: **PR 137**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,60 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 137 — the sleeve-drift card that kept coming back (D107, D108)
+
+**Report (2026-10-22).** "It doesn't matter if I click Accept or Ignore, this card is always coming back to Today" (TQQQ sleeve drift,
+`rec_2e52d5`, banner "it asked for about 1,423 ILS when you filed it and asks for about 2,261 ILS now"). Two separate bugs, both proven.
+
+**Root cause 1 — Ignore lost to an old Accept (PROVEN, reproduced end to end on HEAD).**
+- The card had a DONE mark from 10-20 (1,423 ILS) and a newer IGNORE mark from 10-21 (2,261 ILS).
+- The two maps were merged with `{**dis_map, **done_map}`, so the done mark always won, however old.
+- `moved_on` compared today's number with the stale 1,423, saw a move over 25%, and un-muted the card. Pressing Ignore again re-filed
+  the ignore mark, which lost again.
+- Fix: `resolve_marks` keeps ONE mark per card id, the newest of its ignore and done marks (a tie goes to done). The PR 38 "done, but the
+  book contradicts it" branch is now chosen by which mark won, not by membership of the done map.
+
+**Root cause 2 — Accept did nothing (PROVEN by a live read-only dry-run of the funder).**
+- The top-up the card offered is always refused by the funder's `_drift_gate` (it would move the book away from the plan). The card never
+  asked the funder first, so Accept returned HTTP 400, no trade was made and no done mark was written. Hence the card came straight back.
+- Fix: the sleeve-drift card now previews with `load_basket(mode="fund", dry_run=True, honour_holds=True)` before it offers Accept. A
+  refusal turns the card into a Heads-up (`apply.kind` none, `meta.held_back` carries the funder's reason). A preview that errors leaves
+  the card as it was; a preview must never kill Today.
+
+**Ruled out.**
+- Card id churn: the id is sha1(category|ticker), without the amount, so it is stable.
+- The client sending the wrong state: `RECMAP` sends the card's amount and severity, as designed.
+- TTL expiry: the ignore (7 days) and done (14 days) marks were both live.
+- Core realign selling TQQQ (an early hypothesis): retracted. See BACKLOG C15, which is still open.
+
+**Tests.** `tests/test_an_ignore_is_not_overruled_by_an_old_done.py` (8, including the end-to-end reproduction);
+`tests/test_a_topup_the_funder_refuses_is_not_a_card.py` (4); `tests/test_a_done_the_book_contradicts.py` updated (source-grep string).
+Full local SQLite suite: 2,793 passed, 1 environmental failure that also fails on a clean HEAD export. Ruff clean.
+
+**Added to this PR (2026-10-22, same day): why the sleeve could not be funded at all (D109).**
+- Symptom: Plan > My mix showed the TQQQ sleeve 7.3 pts short and the core 6.7 pts over, and nothing could fix it.
+- Root cause (PROVEN: live dry-run of the funder + the ranking code). `rank_trim_candidates` orders sales by plan fit and tax only. On a book
+  sitting on its class targets every class is "at target", so tax alone decides, and a loss-making Commodities holding (UGA) ranks level with a
+  loss-making Equities one (GOOGL). The funder sold GOOGL 1,310 and UGA 951 to fund an Equities sleeve; its own drift gate (off target 1.2 -> 9.6 pts)
+  then refused the whole plan. XOM and the other core strays, which are Equities and would have been a neutral swap, were never reached.
+- Fix: `plan_funding(..., swap_first=True)`, used by `_fund_sleeve` and `fund_plan`: sales inside the class being bought go first, order inside
+  each group unchanged. Other funding callers (cards, target solver) are untouched.
+- Tests: `tests/test_a_sleeve_is_funded_by_swaps_before_rebalances.py` (4; the first reproduces the bug without the flag). Full suite 2,797 passed,
+  1 environmental failure (same as before).
+- Ruled out: the plan targets (Equities held 88.98% vs 89.29% target: not the cause), the core-realign card (it is a Heads-up for a different
+  reason: the strays are "not sold here" by design), the PR 137 mute logic.
+- Not verified live: the fixed plan has only been run against a fixture shaped like the live book. After deploy, Plan > "Fund this sleeve" should
+  preview GOOGL + XOM (+ XLE) instead of GOOGL + UGA.
+
+**Not run, on purpose.** The local Postgres job (no Postgres on this Mac; nothing here touches SQL). GitHub Actions (billing-blocked, BACKLOG O6).
+The smoke script `scripts/smoke/smoke-pr137-held-back-topup.ps1` was written without PowerShell on this Mac, so it was neither parse-checked nor run:
+run it after the merge.
+
+**Still open.** BACKLOG C15 (core realign keeps selling TQQQ right after top-ups, net -991 since 10-14: unexplained), C16 (the `fund_plan` card
+has no funder preview), C17 (the refusal alert shows only the short error).
 
 ---
 

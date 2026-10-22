@@ -231,7 +231,7 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
 4. **Priority** (`card_priority`, PR 70): 0–100 = money (0–40) + time (0–35) + rules (0–25) + idea quality.
    - ≥ 70 **Important**, ≥ 50 **Worth doing**, ≥ 30 **Nice to have**, else **Minor**.
    - `fold_alternatives` attaches "Also fills this gap".
-5. **Mute/done filter:** Ignore lasts 7 days and Done 14 days. A muted card **re-fires** if its number moves ≥ 25% or ≥ ₪100, or its
+5. **Mute/done filter:** Ignore lasts 7 days and Done 14 days. Each card has one mark, the newest of its Ignore and Done. A muted card **re-fires** if its number moves ≥ 25% or ≥ ₪100, or its
    severity rises. It then says "You marked this handled. It is back because…". Hidden cards are listed in `hidden_cards`.
 6. **Scope + contradictions:**
    - `card_scope.annotate` stamps SLEEVE / CORE / BOOK.

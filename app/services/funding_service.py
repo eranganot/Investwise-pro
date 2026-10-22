@@ -421,8 +421,18 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  prefer: set[str] | None = None,
                  allow_reserve: bool = False,
                  reserve_reason: str | None = None,
-                 name_caps: dict | None = None) -> dict:
+                 name_caps: dict | None = None,
+                 swap_first: bool = False) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
+
+    ``swap_first`` (PR 138) is for a SLEEVE top-up: every sale that stays inside
+    the class being bought (a swap, which moves no weight) is taken before any
+    sale from another class. Left to the fit-and-tax ranking, a book sitting on
+    its class targets ranks a loss-making Commodities holding level with a
+    loss-making Equities one, sells both to fund an Equities sleeve, and the
+    drift gate then refuses the whole plan. Live 2026-10-22: GOOGL then UGA,
+    refused, while XOM (Equities) sat unsold. Rank order inside each group is
+    unchanged.
 
     Returns the concrete plan — how much from cash, which holdings to trim and by
     how many shares, estimated tax, and any shortfall — so the card can state it
@@ -525,9 +535,14 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                            + sum(max(0.0, p["weight"] - cap) * nav
                                  for p in _position_rows(rows, snap))) >= min_trade_ils()
 
-        for cand in rank_trim_candidates(rows, snap, objective, cap, exclude,
-                                         book_target=book_target, prefer=prefer,
-                                         name_caps=name_caps):
+        _cands = rank_trim_candidates(rows, snap, objective, cap, exclude,
+                                      book_target=book_target, prefer=prefer,
+                                      name_caps=name_caps)
+        if swap_first and buying_class:
+            # sorted() is stable: inside each group the fit-and-tax order stands.
+            _cands = sorted(_cands, key=lambda c: 0 if (c.get("preferred")
+                                                        or c.get("asset_class") == buying_class) else 1)
+        for cand in _cands:
             if remaining_net < min_trade_ils():
                 break
             price_ils = cand["price_ils"] or 0.0

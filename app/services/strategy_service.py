@@ -872,7 +872,8 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     book_tgt = await _book_target_mix(session, user, objective)
     fund = plan_funding(rows, snap, plan, objective, cap, amount,
                         cash_ils=cash_ils, exclude=exclude,
-                        buying_class=buying_class, prefer=prefer, book_target=book_tgt)
+                        buying_class=buying_class, prefer=prefer, book_target=book_tgt,
+                        swap_first=True)
 
     # Abstain rather than half-execute: a partially funded sleeve is a position
     # nobody chose, at a size nobody chose. Judged in points of NAV, not shekels
@@ -992,7 +993,8 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
     def _fits(total_ils: float) -> dict:
         return plan_funding(rows, snap, plan, objective, cap, total_ils,
                             cash_ils=cash_ils, exclude=exclude,
-                            buying_class=_sleeve_class, book_target=book_tgt)
+                            buying_class=_sleeve_class, book_target=book_tgt,
+                            swap_first=True)
 
     # Largest first. Ties broken by strategy id so the order is deterministic --
     # a funding plan that changes between two identical previews is untrustworthy
