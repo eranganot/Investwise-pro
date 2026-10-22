@@ -68,6 +68,21 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 `tests/test_a_topup_the_funder_refuses_is_not_a_card.py` (4); `tests/test_a_done_the_book_contradicts.py` updated (source-grep string).
 Full local SQLite suite: 2,793 passed, 1 environmental failure that also fails on a clean HEAD export. Ruff clean.
 
+**Added to this PR (2026-10-22, same day): why the sleeve could not be funded at all (D109).**
+- Symptom: Plan > My mix showed the TQQQ sleeve 7.3 pts short and the core 6.7 pts over, and nothing could fix it.
+- Root cause (PROVEN: live dry-run of the funder + the ranking code). `rank_trim_candidates` orders sales by plan fit and tax only. On a book
+  sitting on its class targets every class is "at target", so tax alone decides, and a loss-making Commodities holding (UGA) ranks level with a
+  loss-making Equities one (GOOGL). The funder sold GOOGL 1,310 and UGA 951 to fund an Equities sleeve; its own drift gate (off target 1.2 -> 9.6 pts)
+  then refused the whole plan. XOM and the other core strays, which are Equities and would have been a neutral swap, were never reached.
+- Fix: `plan_funding(..., swap_first=True)`, used by `_fund_sleeve` and `fund_plan`: sales inside the class being bought go first, order inside
+  each group unchanged. Other funding callers (cards, target solver) are untouched.
+- Tests: `tests/test_a_sleeve_is_funded_by_swaps_before_rebalances.py` (4; the first reproduces the bug without the flag). Full suite 2,797 passed,
+  1 environmental failure (same as before).
+- Ruled out: the plan targets (Equities held 88.98% vs 89.29% target: not the cause), the core-realign card (it is a Heads-up for a different
+  reason: the strays are "not sold here" by design), the PR 137 mute logic.
+- Not verified live: the fixed plan has only been run against a fixture shaped like the live book. After deploy, Plan > "Fund this sleeve" should
+  preview GOOGL + XOM (+ XLE) instead of GOOGL + UGA.
+
 **Not run, on purpose.** The local Postgres job (no Postgres on this Mac; nothing here touches SQL). GitHub Actions (billing-blocked, BACKLOG O6).
 The smoke script `scripts/smoke/smoke-pr137-held-back-topup.ps1` was written without PowerShell on this Mac, so it was neither parse-checked nor run:
 run it after the merge.

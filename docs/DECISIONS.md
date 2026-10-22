@@ -284,6 +284,8 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D109 · 2026-10-22 · A sleeve top-up takes every swap inside the class it buys before any sale from another class.** *Why:* tax-only
+  ranking on a book at its class targets sold a Commodities loser to fund an Equities sleeve and the drift gate refused the plan. → PR 137
 - **D108 · 2026-10-22 · A card previews the funder before it offers Accept.** If the dry-run is refused, the card is a Heads-up
   that says why, not an Accept that returns 400. *Why:* the sleeve-drift Accept for TQQQ always failed, wrote no mark and came
   straight back. Extends 2026-10-05 "every Accept does something". → PR 137
