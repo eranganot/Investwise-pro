@@ -284,6 +284,11 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D108 · 2026-10-22 · A card previews the funder before it offers Accept.** If the dry-run is refused, the card is a Heads-up
+  that says why, not an Accept that returns 400. *Why:* the sleeve-drift Accept for TQQQ always failed, wrote no mark and came
+  straight back. Extends 2026-10-05 "every Accept does something". → PR 137
+- **D107 · 2026-10-22 · The newest action on a card wins.** One mark per card: the newer of its Ignore and Done (a tie goes to Done).
+  *Why:* an old Done used to override a newer Ignore and re-fire the card on a stale amount. → PR 137
 - **D106 · 2026-10-18 · The optimiser's card: act when it is material, say so plainly when it is not** (wave 5). A better
   book by `material_odds_pts` (5) or more -> "The best book we can measure for your goal: X% -> Y%" (HIGH), Accept sets
   the sleeves (sells nothing); an empty book -> "Your starter book", the one card an empty portfolio can have; nothing

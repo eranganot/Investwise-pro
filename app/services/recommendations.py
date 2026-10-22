@@ -509,6 +509,38 @@ def moved_on(entry, card: dict, *, done: bool = False) -> str | None:
             f"looks like it did not happen")
 
 
+def resolve_marks(dis_map: dict, done_map: dict) -> tuple[dict, set]:
+    """One mark per card id: the NEWEST of its ignore mark and its done mark.
+
+    THE DEFECT THIS ANSWERS (Eran, 2026-10-22: "it doesn't matter if I click
+    Accept or Ignore, this card always comes back"). The two maps used to be
+    merged as `{**ignored, **done}`, so a DONE mark beat an IGNORE mark for the
+    same id however old the done was. Observed on production: the TQQQ sleeve
+    card was last accepted on 10-20 for 1,423 ILS, then ignored four times on
+    10-21, and every Ignore lost -- the done mark (14-day TTL) kept being the one
+    compared against today's 2,261 ILS ask, `moved_on` fired on it, and the card
+    was un-muted out of BOTH sets. The banner quoted 1,423, the amount of an
+    Accept from two days earlier, not of the Ignore he had just pressed.
+
+    The newest action is the user's current statement about the card, so it is
+    the one compared. Returns (marks, ids whose winning mark is a DONE) -- the
+    second matters because "done" is a claim the book can contradict (PR 38) and
+    "ignored" is not, so `moved_on` must be told which one it is holding.
+    """
+    marks: dict = {}
+    done_wins: set = set()
+    for rid in set(dis_map) | set(done_map):
+        d, c = dis_map.get(rid), done_map.get(rid)
+        if d is not None and c is not None:
+            use_done = _parse_dt(_at(c)) >= _parse_dt(_at(d))   # a tie goes to done
+        else:
+            use_done = c is not None
+        marks[rid] = c if use_done else d
+        if use_done:
+            done_wins.add(rid)
+    return marks, done_wins
+
+
 def _dismiss_key(user: User) -> str:
     return f"dismissed_recs:{user.email}"
 
@@ -2617,6 +2649,61 @@ async def build_recommendations(session: AsyncSession, user: User,
                     "meta": {"ticker": _tk, "chosen_pct": round(_target_pct, 1),
                              "actual_pct": round(_actual_pct, 1), "cold_start": False},
                 })
+                # A TOP-UP THE FUNDER WOULD REFUSE IS NOT AN ACCEPT. (2026-10-22)
+                #
+                # Eran: "it doesn't matter if I click Accept or Ignore, this card
+                # always comes back." Half of that was Ignore losing to an old
+                # Accept (`resolve_marks`). The other half is this: the TQQQ
+                # sleeve card offered "Add about 2,261 of TQQQ" for days and
+                # every Accept was refused by `_drift_gate` -- funding it meant
+                # selling Commodities and Equities the plan says he holds too
+                # little of, 1.2 -> 9.6 points off target. Eight Accepts, no
+                # trade, no mark, the same card back each time, and the alert
+                # carried only the one-line error.
+                #
+                # The card never asked. `sleeve_coldstart` above already prices
+                # the button's plan in dry-run before it will offer Accept; this
+                # card did not, so it promised a trade the executor was always
+                # going to refuse -- the card-claim invariant failing at the
+                # button rather than the headline. Same function, same flags as
+                # Accept (`honour_holds=True`), so the card cannot preview one
+                # plan and Accept run another.
+                #
+                # When it would be refused the card carries NO action, so the
+                # split in `headsup.py` turns it into a one-line Heads-up that
+                # says why (PR 102: knowledge without an ask is not a card). A
+                # failed preview leaves the card exactly as it was: a preview
+                # must never cost Today a card.
+                if not _over and recs[-1]["apply"].get("kind") == "fund_sleeve":
+                    try:
+                        async with _agent_tx(session):
+                            from app.services.strategy_service import load_basket
+                            _pv = await load_basket(session, user,
+                                                    recs[-1]["apply"]["strategy_id"],
+                                                    mode="fund", dry_run=True,
+                                                    honour_holds=True)
+                    except Exception:  # noqa: BLE001 - a preview must not kill Today
+                        _pv = None
+                    if isinstance(_pv, dict) and _pv.get("ok") is False:
+                        _no = str(_pv.get("reason") or _pv.get("error") or "").strip()
+                        _held_back = recs[-1]
+                        _held_back["why"] = (_held_back["why"]
+                                             + (f" The app cannot top it up in one tap: {_no}"
+                                                if _no else ""))
+                        _held_back["action"] = (f"A top-up of about {_ils(_amount)} is held back: "
+                                                f"it would move your book away from your plan, "
+                                                f"so there is nothing to accept.")
+                        _held_back["impact"] = ("Nothing changes. Make room first (more cash, or a "
+                                                "different plan); the Plan tab's “Fund this "
+                                                "sleeve” shows the same refusal and the legs "
+                                                "behind it.")
+                        _held_back["how"] = ["The one-tap top-up is not offered while it would "
+                                             "be refused",
+                                             "Plan tab → the strategy card → Fund this "
+                                             "sleeve shows the legs and the reason",
+                                             "No brokerage order is placed either way"]
+                        _held_back["apply"] = {"kind": "none"}
+                        _held_back["meta"]["held_back"] = _no or str(_pv.get("error") or "")
                 # PR 135c (wave 4): an overweight position is a CHOICE -- trim it
                 # back, or raise the sleeve to what you hold -- with the goal
                 # model's recommendation. One card per position, as before.
@@ -2861,7 +2948,7 @@ async def build_recommendations(session: AsyncSession, user: User,
         # which is the only question that matters below.
         _dis_map = await _load_map(session, _dismiss_key(user))
         _done_map = await _load_map(session, _done_key(user))
-        _marks = {**_dis_map, **_done_map}
+        _marks, _done_wins = resolve_marks(_dis_map, _done_map)
 
         # Self-heal a deadlock before suppressing: a rule can sit latched
         # `triggered` while its card is hidden by an earlier dismissal, so the
@@ -2959,7 +3046,7 @@ async def build_recommendations(session: AsyncSession, user: User,
             # WHICH MAP THE MARK CAME FROM IS THE WHOLE QUESTION for PR 38's
             # branch: "done" is a claim about the book and can be contradicted
             # by it, "ignored" is a claim about your attention and cannot.
-            _why = moved_on(_marks.get(_rid_), _r, done=(_rid_ in completed))
+            _why = moved_on(_marks.get(_rid_), _r, done=(_rid_ in _done_wins))
             if _why:
                 _moved[_rid_] = _why
 
