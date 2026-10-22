@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-22 by Claude (PR 137: the TQQQ card that kept coming back). Last product PR: **PR 137**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-22 by Claude (PR 138: the goal note names the levers). Last product PR: **PR 138**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,27 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 138 — the "nothing to accept" goal note names the levers
+
+**Report (2026-10-22).** "I don't understand why the goals are not met and I don't get a recommendation card to fix it."
+
+**Finding (PROVEN by live reads of `/plan/frontier`, `/plan/optimizer` and Today).** Nothing was broken; the note hid the answer.
+- Goal chance 6.8% against a 70% bar. Without the protective rules it is 25.9%, but the book would halve 57.7% of the time (limit 30%).
+- The optimiser tried 10 sleeve changes and the rules retune 41 setups: none gains 5 points inside the limit (best +0.2). So no card.
+- The solve's deposit and deadline levers are null: with the rules armed no deposit or later deadline reaches the bar. The one lever it does
+  have, `rec_goal_target_book` (reach 6.4%/yr), was ignored on 10-20, so Today showed only "Nothing to accept here".
+- Correction to an earlier chat answer: the "about 606 a month" figure is the plain-history basis (`tail.before.extra_monthly_needed`), which
+  does not apply the rules. It is not a lever that works with the rules armed.
+
+**Change.** Words only. The ceiling heads-up (`book_optimizer.card`) now appends, from the stored goal solve: the reachable target and what it
+buys, the deposit or deadline lever when one exists, otherwise a plain statement that none works with the rules armed plus the history-basis
+figure. No number, card, mute or trade changes. A missing solve adds nothing and never raises.
+
+**Tests.** `tests/test_the_goal_ceiling_names_the_levers.py` (3). Full suite 2,800 passed, 1 environmental failure (scratch copy has no `.git`; passes in the repo).
+**Not run.** Local Postgres (none on this Mac; no SQL touched), Actions (O6).
 
 ---
 
