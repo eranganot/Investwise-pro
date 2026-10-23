@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 148: a 44% ceiling on 2x/3x funds). Last product PR: **PR 148**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C24: the target mix respects the ceiling). Last product PR: **C24**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,27 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## C24 — the target mix manages the 2x/3x sleeves to the ceiling; the excess is in the core (D125)
+
+**Why.** PR 148 stops every buy at `leveraged_ceiling_pct` (44), but the target mix still summed the sleeves as chosen.
+Live 10-23 (`df23a17`): planned sleeve targets TQQQ 28.4% + SOXL 23% (+ QQQ 11.6% from the vol-target sleeve's live
+split) = 51.4% in 2x/3x funds, so drift, the Plan tab and the `max_weight` caps measured against a share no buyer
+would reach.
+
+**What.** `leveraged_ceiling.cap_targets` scales the 2x/3x tickers' summed targets pro rata to the ceiling;
+`sleeve_service.all_sleeve_targets` applies it by default (`capped=False` is what you chose). Every reader sees the
+capped weights: the book target (the core is the remainder, so it gets the excess by construction), sleeve drift,
+the `max_weight` caps armed on the next sleeve change, contradictions. `book_target` reports `ceiling_cut`;
+`/plan/sleeves` reports `leveraged_ceiling` {ceiling, chosen, managed, cut}; the Plan tab sleeve card says "set to X%;
+your ceiling is 44%, so they are managed to 44% and the other N points are managed in the core", and its "not holding
+it yet" shortfall no longer counts the capped part. Shell `iw-v74`.
+
+**Verified.** 4 tests (`test_c24_the_target_mix_respects_the_ceiling.py`). Sleeve/mix/drift subset: SUBSET_RESULT. Full
+Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
+`leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
 
 ## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
 

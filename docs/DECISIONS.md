@@ -299,8 +299,8 @@
   a 2x/3x buy that does not fit and lists it as blocked, and over the ceiling offers one trim of the largest 2x/3x
   holding. Your own rule's buy card stays and says it is over. Your own Holdings > Add is never refused. *Why:* the plan's
   leveraged sleeves (40% TQQQ + 23% SOXL) are 63% of the book fully invested, and the 2x/3x bet cost the most this
-  month. Owner, 2026-10-23 ("44% (Recommended)"). *Not yet:* the book target still sizes those sleeves at 63%; parking
-  the excess in the core is a follow-up (BACKLOG C24). → PR 148
+  month. Owner, 2026-10-23 ("44% (Recommended)"). *C24:* the target mix manages the 2x/3x sleeves to the ceiling too
+  (`all_sleeve_targets` caps them pro rata; the excess is managed in the core). → PR 148, C24
 - **D123 · 2026-10-23 · Two sleeves are the same bet when what they HOLD when invested moves together.**
   A third same-bet test beside shared market and the strategies' own correlation: the correlation of each sleeve's
   risk-on basket (`weights`, rebalanced daily), measured nightly (`invested_pairs`), against the same
