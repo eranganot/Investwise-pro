@@ -2513,7 +2513,9 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
             "why": (goal_line + _breach_line(tu, cur_s, best_s) + f" {_setups_replayed(tu)}; this is the "
                     f"one with the best goal odds that keeps the chance of halving at or under "
                     f"{tu['halve_floor_pct']:g}%." + _take_profit_line(tu, ch)),
-            "action": ("Accept will " + " and ".join(steps) + ". Nothing is bought or sold; one tap re-arms them."),
+            "action": ("Accept will " + " and ".join(steps) + ". Nothing is bought or sold"
+                       # PR 140: "re-arms them" only when something is paused.
+                       + ("; one tap re-arms them." if ch["pause_rules"] else ".")),
             "impact": (f"Chance of reaching your goal {cur_s['p_goal_pct']:g}% -> {best_s['p_goal_pct']:g}%; chance "
                        f"the book halves {cur_s['p_halve_pct']:g}% -> {best_s['p_halve_pct']:g}%; median at the "
                        f"deadline {cur_s['median']:,.0f} -> {best_s['median']:,.0f}; worst 5% "

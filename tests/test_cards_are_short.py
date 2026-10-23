@@ -43,9 +43,10 @@ def test_the_body_is_the_cards_own_first_sentences():
 TUNING = {"material": True, "halve_floor_pct": 1.0,
           "current": {"guard_pct": 10.0, "stats": {"p_goal_pct": 1.0, "p_halve_pct": 0.0, "median": 31968,
                                                    "worst5_mean": 22169}},
-          "best": {"retire_sleeve_exits": True, "guard_pct": 15.0,
+          # PR 140 (D115): the retune moves the guard; it no longer pauses stops.
+          "best": {"retire_sleeve_exits": False, "guard_pct": 15.0,
                    "stats": {"p_goal_pct": 16.0, "p_halve_pct": 0.6, "median": 36055, "worst5_mean": 17061}},
-          "changes": {"pause_rule_ids": ["a", "b"], "pause_rules": ["SOXL trailing stop", "QQQ trailing stop"],
+          "changes": {"pause_rule_ids": [], "pause_rules": [],
                       "guard": {"rule_id": "g", "from_pct": 10.0, "to_pct": 15.0}}}
 ON = {"p_goal_pct": 1.0, "p_halve_pct": 0.0, "median": 31968, "worst5_mean": 22169,
       "exits_per_year": [2.8, 1.1], "take_profits_per_year": [0.9, 0.2], "pct_time_out": [62.1, 30.0],
@@ -69,11 +70,11 @@ async def test_the_goal_group_says_your_goal_once_and_each_card_its_own_claim(ow
         assert body["goal_summary"] and body["goal_summary"].startswith("Your goal:")
         protect = next(x for x in goal if x["id"].startswith("rec_goal_protect_"))
         # The plan's own example, card by card.
-        assert protect["title"] == "Retune your protection: goal odds 1% -> 16%"
+        assert protect["title"] == "Retune your protection: goal odds 1% -> 16% · halving 0% -> 0.6%"
         assert protect["summary"].startswith("After a stop fires, the app keeps SOXL and QQQ out")
         assert protect["summary"].endswith("That costs your goal 28 points.")
-        assert protect["action"] == ("Accept will pause 2 stop rules and move the drawdown guard 10% -> 15%. "
-                                     "Nothing is bought or sold; one tap re-arms them.")
+        assert protect["action"] == ("Accept will move the drawdown guard 10% -> 15%. "
+                                     "Nothing is bought or sold.")
         assert body["goal_summary_head"].startswith("Your goal: 82,692 by 2031-12-31 (30%/yr")
         assert "Your chance today: 1% with your protective rules as they work (29% without them)." \
             in body["goal_summary_head"]

@@ -77,7 +77,7 @@ refuses a stop and moves nothing (not the guard either); a take-profit pause lea
 your own pause and re-arm leave events; a stale verdict shows no card; one heads-up with Re-arm all, keyed by the paused set;
 Re-arm all through Today switches them back on. Updated for D115 (each says so): `test_protection_tuning` (3),
 `test_the_retune_searches_properly` (2), `test_every_limit_is_a_setting` (1), `test_a_stop_that_is_off_is_a_card` (1).
-FULL_SUITE_140
+Full Postgres suite on `0f83cba` (the gate): 2,840 passed, 1 skipped, 1 failed -- `test_cards_are_short` still built its card from a verdict that paused two trailing stops, which the card now (correctly) hides. Updated for D115, and the action line no longer says "one tap re-arms them" when nothing is paused. The 64 tests that build or read goal and protection cards then passed on Postgres; ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr140-protection-stays-on.ps1 -Sha <sha> -Since <deploy time>` (read-only). Against production
 on `606ebec` (field check): PASS 1, FAIL 1, SKIP 4 -- the FAIL is real and is what this PR fixes: the UGA trailing stop is off
