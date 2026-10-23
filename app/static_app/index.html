@@ -3515,7 +3515,29 @@ function goalSummary(p,f,rules){
     ${hl&&hl.without_rules_pct!=null&&offH!=null&&onH!=null&&hl.without_rules_pct>hl.p_goal_pct
       ?`<div class="mk" style="margin-top:6px">Your rules protect against a crash (chance the book halves: ${Math.round(onH*10)/10}% with them, ${Math.round(offH)}% without) and cost growth.${_costliest(rb,rules)}${
           rb.tuning&&!rb.tuning.material?` Of the ${rb.tuning.tried||(rb.tuning.candidates||[]).length} protection setups measured, this is already the best chance that keeps the chance of halving at or under your ${rb.tuning.halve_floor_pct}% limit (<a href="#" onclick="openDialsSheet();return false">change the limit</a>): removing the rest would leave a ${Math.round(offH)}% chance of halving.`
-          :" After a stop fires, the holding sits out until its price falls back below the sale price."}${_stillArmed(rules)}</div>`:""}`;
+          :" After a stop fires, the holding sits out until its price falls back below the sale price."}${_stillArmed(rules)}</div>`:""}
+    ${_goalGrid(rb.goal_grid,bar,g.deadline||p.target_date)}`;
+}
+
+// D122 (owner, 2026-10-23): keep the halving limit, revisit the goal. The solve
+// prices a grid of goals on the same rules replay as the headline; this shows it.
+function _goalGrid(gg,bar,deadline){
+  const cells=(gg&&gg.cells)||[]; if(!cells.length) return "";
+  const at=(r,y,m)=>cells.find(c=>c.roi_pct===r&&c.extra_years===y&&c.extra_monthly_ils===m);
+  const rois=[...new Set(cells.map(c=>c.roi_pct))].sort((a,b)=>b-a);
+  const cols=[[0,0,"as set"],[2,0,"+2 yrs"],[0,1000,"+₪1k/mo"],[2,1000,"both"]];
+  const yr=deadline?new Date(deadline).getFullYear():null;
+  const td=c=>{ if(!c) return `<td class="mk">—</td>`;
+    const ok=c.p_goal_pct>=bar;
+    return `<td title="${ils(c.target_ils)} · halving ${c.p_halve_pct}% (without rules: ${c.p_goal_without_rules_pct}%, halving ${c.p_halve_without_rules_pct}%)"
+      style="text-align:right;${ok?"color:var(--green);font-weight:700":""}">${c.p_goal_pct}%</td>`; };
+  return `<details style="margin-top:10px"><summary class="mk" style="cursor:pointer">Compare goals: the chance of other goals with your rules as they are</summary>
+    <table style="width:100%;margin-top:6px;font-size:13px;border-collapse:collapse">
+      <tr class="mk"><th style="text-align:left">%/yr on what you put in</th>${cols.map(x=>`<th style="text-align:right">${x[2]}</th>`).join("")}</tr>
+      ${rois.map(r=>`<tr><td>${r}%/yr</td>${cols.map(x=>td(at(r,x[0],x[1]))).join("")}</tr>`).join("")}
+    </table>
+    <div class="mk" style="margin-top:4px">Deadline ${yr||"as set"}${yr?`, or ${yr+2} with +2 yrs`:""}; +₪1k/mo is a ₪1,000 monthly deposit, which the goal grows by too. Green: at or over your ${bar}% on-track bar. Hover a cell for the amount and the halving risk. Measured on ${gg.paths} paths${gg.not_computed?`; ${gg.not_computed} cell(s) not computed tonight`:""}. Change the goal on the Plan settings. Not financial advice.</div>
+  </details>`;
 }
 
 // What you hold against the plan: each sleeve, the core, commodities and cash.

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (D122/D123: the limits). Last product PR: **D123**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (P1: compare goals). Last product PR: **P1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,40 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## P1 — compare goals: the chance of other goals with your rules as they are (D122)
+
+**Why (owner decision D122, 2026-10-23).** Keep the 30% halving limit and revisit the goal. Production's model: 30%/yr
+(₪82,692 by end-2031) is 0.2% likely with the protective rules, 18.5% without them (halving 53.9%). The solve already
+offered three levers (extra deposit, extra years, the %/yr reachable at the on-track bar); on this book with the rules
+none was found and the confident %/yr was 3.7%, which says what is out of reach but not what is in reach.
+
+**What it does.**
+- **The grid.** `frontier_service._goal_grid`, inside the nightly goal solve's rules replay, prices 20 goals:
+  %/yr 30/25/20/15/10 x the deadline as set or +2 years x no extra deposit or +₪1,000 a month. A "ROI on every shekel"
+  target is rebuilt from the money put in (`target / (1+roi)^years`) plus what the deposits grow to at that cell's ROI.
+  Each cell is replayed with the rules as they are and without them, on the same 500 paths, with its halving risk.
+  Fixed-amount goals get no grid.
+- **Time budget.** 120 s (`GRID_BUDGET_SEC`): cells past it are "not computed tonight", so the 600 s job limit is never
+  at risk. It took 20 s on the test book.
+- **On the page.** The Plan tab's goal panel gains a collapsible "Compare goals" table. Cells at or over the on-track bar
+  are green; hovering shows the amount and halving risk with and without the rules. Shell `iw-v73`.
+
+**Tests.** `tests/test_d122_the_goal_comparison.py` (4):
+- each target rebuilt from the money put in;
+- 40 replays on the same paths, standing orders kept;
+- end to end on the PR 99 fixture: the grid is present, the own-goal cell matches the headline, and an easier goal is
+  never less likely; none for a fixed amount;
+- the time budget.
+
+Full Postgres suite: **2,887 passed, 0 failed, 0 skipped**. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
+shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
+
+**Next (owner).** Read the table on the Plan tab and choose a goal; changing it is the Plan settings' existing goal edit.
+
+---
+
 ## D122 / D123 — keep the halving limit; same bet measured on what sleeves hold (P16, P14)
 
 **P16 decided (D122).** Production's model, 10-23 (`/plan/frontier`): goal 30%/yr (₪82,692 by end-2031 from ₪19,670)
@@ -66,7 +100,7 @@ suite: **2,883 passed, 0 failed, 0 skipped**. Ruff clean.
 
 *Smoke.* `scripts/smoke/smoke-d123-same-bet-on-what-they-hold.ps1`. Production before (`47e9ebe`): PASS 4 FAIL 0 SKIP 2
 (no invested correlations measured yet; every existing same-bet pair still marked). After deploy AND the next 03:50 UTC
-run: PROD_RESULT.
+run: on `793dbe9` before the 03:50 UTC run: PASS 4 FAIL 0 SKIP 2 (not measured yet; every existing same-bet pair still marked); PR 144's smoke on the same build 6/0/0; smoke-all 22/3 (Gemini credits). The measured result is owed after the 03:50 UTC run.
 
 **P14's other half: the sleeve-plan smokes on `47e9ebe`.** 134d 17/0/0, 135a 8/0/0, 135b 5/0/1, 135c 4/1/1 → 5/0/1 after
 fixing its pinned `iw-v69` check (PR 139 moved the shell to `iw-v72`; the check is now "not older than v69"), 136a 7/0/0,

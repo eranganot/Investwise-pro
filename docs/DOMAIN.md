@@ -411,3 +411,7 @@ These are tracked in [BACKLOG.md](BACKLOG.md) and sequenced in
 - **Stale comments:** `buyback_hold.py` (says kv_settings; it has been `trading_rules` since PR 83); `PlanSleeve.is_core` (says unread; it is read).
 - **The goal model doesn't simulate stops** on non-sleeve tickers (BND/GOOGL/VTI/UGA/USO). This is disclosed in the UI.
 - *Deleted in PR 113:* the legacy pipeline (`pipeline.py`, `AllocationAgent` veto, `SafetyEngine`, XAI, learning, decision feed).
+
+- **Compare goals (D122):** the nightly goal solve also prices a grid of goals (%/yr 30/25/20/15/10 x deadline as set or +2
+  years x +₪0 or +₪1,000 a month) on the same rules replay as the headline, with and without the rules, 500 paths, a
+  120 s budget (`frontier_service._goal_grid`, `rules.goal_grid`). Shown as "Compare goals" on the Plan tab.

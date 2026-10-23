@@ -649,7 +649,10 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                        "with": {"p_goal_pct": w_["p_goal_pct"], "p_halve_pct": w_["p_halve_pct"]},
                        "without": {"p_goal_pct": wo["p_goal_pct"], "p_halve_pct": wo["p_halve_pct"]},
                        "goal_pts": round(w_["p_goal_pct"] - wo["p_goal_pct"], 1)}
+        goal_grid = (None if light or goal_roi is None else
+                     _goal_grid(run, target=target, years=years, goal_roi=goal_roi, monthly=monthly))
         rules_block = {"off": r_off, "on": r_on, "rebound": r_fix,
+                       "goal_grid": goal_grid,
                        "effect_pts": round(r_on["p_goal_pct"] - r_off["p_goal_pct"], 1),
                        "fix_effect_pts": round(r_fix["p_goal_pct"] - r_on["p_goal_pct"], 1),
                        "sleeves": {sid: (rules.get("sleeves") or {}).get(sid) for sid in sleeve_ids},
@@ -1024,6 +1027,50 @@ def _fv_monthly(monthly: float, roi: float, years: float) -> float:
 
 
 PER_RULE_PATHS = 500
+
+# D122 (owner, 2026-10-23): keep the halving limit and revisit the GOAL. The grid
+# the comparison shows: the %/yr, the extra years, the extra monthly deposit.
+GRID_ROI_PCT = (30.0, 25.0, 20.0, 15.0, 10.0)
+GRID_EXTRA_YEARS = (0.0, 2.0)
+GRID_EXTRA_MONTHLY = (0.0, 1000.0)
+#: The grid must never cost the nightly solve (jobs time out at 600 s): cells past
+#: this budget are not computed tonight, and the grid says so.
+GRID_BUDGET_SEC = 120.0
+
+
+def _goal_grid(run, *, target: float, years: float, goal_roi: float, monthly: float) -> dict:
+    """D122: the odds of a range of goals, on the same rules replay the headline uses.
+
+    A "ROI on every shekel" goal is the money put in grown at the ROI to the
+    deadline, so each cell rebuilds its target from what was put in
+    (`target / (1 + goal_roi) ** years`), plus what its extra deposits grow to at
+    that cell's ROI. Each cell is replayed with the rules as they are and without
+    them, on the same paths (`PER_RULE_PATHS`), so the gap is the rules alone.
+    Pure: it only calls `run`."""
+    import time
+    put_in = target / (1.0 + goal_roi) ** years
+    cells, skipped, t0 = [], 0, time.monotonic()
+    for roi_pct in GRID_ROI_PCT:
+        r = roi_pct / 100.0
+        for ey in GRID_EXTRA_YEARS:
+            for em in GRID_EXTRA_MONTHLY:
+                if time.monotonic() - t0 > GRID_BUDGET_SEC:
+                    skipped += 1
+                    continue
+                y = years + ey
+                t_amt = put_in * (1.0 + r) ** y + _fv_monthly(em, r, y)
+                on = run(years_=y, monthly_=monthly + em, target_=t_amt, n_paths=PER_RULE_PATHS)
+                off = run(rules_on=False, years_=y, monthly_=monthly + em, target_=t_amt,
+                          n_paths=PER_RULE_PATHS)
+                cells.append({"roi_pct": roi_pct, "extra_years": ey, "extra_monthly_ils": em,
+                              "target_ils": round(t_amt, 0),
+                              "p_goal_pct": on["p_goal_pct"], "p_halve_pct": on["p_halve_pct"],
+                              "p_goal_without_rules_pct": off["p_goal_pct"],
+                              "p_halve_without_rules_pct": off["p_halve_pct"],
+                              "median_ils": on.get("median")})
+    return {"basis": "rules as they are (and without), same paths", "paths": PER_RULE_PATHS,
+            "put_in_ils": round(put_in, 0), "cells": cells, "not_computed": skipped,
+            "seconds": round(time.monotonic() - t0, 1)}
 
 
 def _replay_without(run, rules: dict, sl_specs, g_spec, sleeve_ids, drop: set, n_paths: int) -> dict:
