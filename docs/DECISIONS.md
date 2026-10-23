@@ -284,6 +284,11 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D118 · 2026-10-23 · A rule check that fails is an incident on Today, and job history outlives a deploy.**
+  The price job fails (with the reason) when the rule check fails; one book failing no longer skips the rest; Today
+  carries a HIGH heads-up when the last check failed or none has succeeded for 75 minutes; job outcomes persist in
+  `kv_settings`. *Why:* the rules are checked in one place and its failure was a log line without the error under a green
+  job; and on 10-23, four minutes after a deploy, no job could say whether it ran last night. → PR 143
 - **D117 · 2026-10-23 · Ignoring a fired stop keeps the stop on, re-armed below today.**
   Stop-loss: one ladder step (10%) under today's price, the same level Keep proposes. Trailing stop and profit-protect: the
   peak restarts at today's price, the trail width unchanged. Logged as `kept` by `ignore`; the card's "how" says so before

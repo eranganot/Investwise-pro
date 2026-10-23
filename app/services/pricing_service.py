@@ -497,11 +497,17 @@ async def _refresh_all() -> dict:
         async with Session() as session:
             res = await refresh_all_positions(session)
             # With fresh prices, evaluate trading rules and fire alerts.
+            # PR 143: the ONLY place the rules are checked. A failure here used to
+            # be one log line without the error and a job recorded green, so a
+            # stop that was never checked looked exactly like a quiet half-hour.
+            # The prices are already written; the job now fails with the reason.
+            from app.services.rules_service import evaluate_all
             try:
-                from app.services.rules_service import evaluate_all
                 res["rules"] = await evaluate_all(session)
-            except Exception:  # noqa: BLE001
-                logger.warning("rule evaluation failed", exc_info=False)
+            except Exception as exc:
+                logger.error("rule evaluation failed", exc_info=True)
+                raise RuntimeError(f"rule check failed after {res.get('updated', 0)} price(s) "
+                                   f"were refreshed: {type(exc).__name__}: {exc}") from exc
             return res
     finally:
         await engine.dispose()

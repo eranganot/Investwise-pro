@@ -1075,10 +1075,18 @@ async def evaluate_all(session: AsyncSession) -> dict:
     subjects = list((await session.scalars(
         select(TradingRule.subject).where(TradingRule.active.is_(True)).distinct())).all())
     total = 0
+    failed: list[str] = []
     for subj in subjects:
-        user = await ensure_user(session, subj)
-        await session.flush()
-        fired = await evaluate_user(session, user, notify=True)
+        # PR 143: one book that fails must not leave every later book unchecked.
+        try:
+            user = await ensure_user(session, subj)
+            await session.flush()
+            fired = await evaluate_user(session, user, notify=True)
+        except Exception as exc:  # noqa: BLE001 -- re-raised below, after the others
+            logger.error("rule check failed for %s", subj, exc_info=True)
+            failed.append(f"{subj}: {type(exc).__name__}: {exc}")
+            await session.rollback()
+            continue
         total += len(fired)
         # PR 97: a protective rule firing IS the market changing -- re-solve
         # the goal now rather than at the nightly run, so Today's goal cards
@@ -1089,6 +1097,9 @@ async def evaluate_all(session: AsyncSession) -> dict:
                 await resolve_after_rule(session, user, fired)
             except Exception:  # noqa: BLE001 -- a re-solve must never cost the rule evaluation
                 logger.warning("frontier re-solve after a rule fired failed", exc_info=False)
+    if failed:
+        raise RuntimeError(f"rule check failed for {len(failed)} of {len(subjects)} book(s): "
+                           + "; ".join(failed)[:240])
     return {"subjects": len(subjects), "triggered": total}
 
 
