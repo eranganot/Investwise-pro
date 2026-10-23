@@ -168,6 +168,9 @@ def test_two_sleeves_wanting_the_same_ticker_arm_ONE_cap_at_the_sum(look_alikes_
 def test_resizing_one_sleeve_relevels_the_shared_cap(look_alikes_allowed):
     with TestClient(m.app) as c:
         _seed(c)
+        # C24: 45% of TQQQ is over the 44% 2x/3x ceiling, which caps the target too;
+        # this test is about re-levelling a shared cap, so it runs without one.
+        assert c.put("/api/v1/plan", json={"thresholds": {"leveraged_ceiling_pct": 0}}).status_code == 200
         _apply(c, TREND, 20)
         _apply(c, VOL, 15)
         _apply(c, VOL, 25)

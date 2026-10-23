@@ -53,7 +53,10 @@ the `max_weight` caps armed on the next sleeve change, contradictions. `book_tar
 your ceiling is 44%, so they are managed to 44% and the other N points are managed in the core", and its "not holding
 it yet" shortfall no longer counts the capped part. Shell `iw-v74`.
 
-**Verified.** 4 tests (`test_c24_the_target_mix_respects_the_ceiling.py`). Sleeve/mix/drift subset: SUBSET_RESULT. Full
+**Verified.** 4 tests (`test_c24_the_target_mix_respects_the_ceiling.py`). Sleeve/mix/drift subset: 663 passed, 4 failed, every one a
+test whose sleeve put more than 44% in TQQQ (two `max_weight` re-level tests, a two-sizes test, a monkeypatched
+`all_sleeve_targets` without the new keyword); they now run their mechanics with the ceiling off and pass. Note: the
+`max_weight` caps armed on the next sleeve change follow the capped targets. Full
 Postgres suite: GATE_RESULT.
 
 **Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
