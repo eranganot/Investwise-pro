@@ -62,6 +62,21 @@ Postgres suite: GATE_RESULT.
 **Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
 `leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
 
+## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
+
+**Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,
+and it is yours. What would close the gap: lower your target return from 30%/yr to 3.7%/yr ...". The first sentence was
+written when the halving limit WAS the only lever shown (PR 136b); PR 138b added a second without touching it. Now, when
+the note names a lever, the sentence reads "Changing that limit is one lever, and it is yours."; with no lever measured
+it is unchanged. Words only.
+
+**Verified.** `test_the_note_does_not_call_the_halving_limit_the_only_lever_when_it_names_another` builds the card end to
+end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: 2,896 passed, 0 failed.
+
+**Smoke.** `smoke-pr138b-goal-note-names-levers.ps1` section 1 now fails a note that does both. Production before
+(`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy (`e2e0ea5`): **PASS 7 FAIL 0 SKIP 0**; the live note now reads "... Changing that limit is
+one lever, and it is yours. What would close the gap: lower your target return from 30%/yr to 3.7%/yr ..." (C26
+replaces that lever with the index comparison once a solve runs on its build).
 ## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
 
 **What.** `leveraged_ceiling_pct` (Card-thresholds sheet, default 44, 0 = none; owner 2026-10-23 "44% (Recommended)")
@@ -137,7 +152,10 @@ main since, so the file was taken as it was.
 
 **Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
 the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
-After deploy: PROD_RESULT.
+After deploy (`eac1df4`): **PASS 6 FAIL 0 SKIP 0**. The live heads-up now ends "What would close the gap: lower your target
+return from 30%/yr to 3.7%/yr (about 24,316 by 2031, a 65% chance). With your protective rules armed the model finds no
+deposit and no later deadline that reaches the bar; on the plain history basis ... about 591 a month more would." Read
+live, it contradicts the sentence before it ("Changing that limit is the one lever left"): fixed in PR 138c.
 
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
