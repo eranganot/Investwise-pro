@@ -910,14 +910,21 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     held_sleeve = sum(held.get(tk.upper(), 0.0) for tk in targets)
     wanted_ils = held_sleeve + amount
     achievable_ils = held_sleeve + float(fund.get("funded_ils") or 0.0)
-    chosen_pct = wanted_ils / nav * 100.0
+    # PR 148: what you chose is the sleeve BEFORE the ceiling clipped it; what is
+    # judged as a funding shortfall is against the clipped plan (the ceiling is not
+    # money the book failed to find).
+    capped_pct = wanted_ils / nav * 100.0
+    chosen_pct = (wanted_ils + _clipped) / nav * 100.0
     achievable_pct = achievable_ils / nav * 100.0
-    short_points = chosen_pct - achievable_pct
+    short_points = capped_pct - achievable_pct
+    _ceiling_txt = (f" Your 2x/3x ceiling ({_lc.ceiling_pct():g}%) already limits it to {capped_pct:.0f}%."
+                    if _clipped > 0 else "")
     if short_points >= SLEEVE_SHORTFALL_TOLERANCE_PCT:
         return {"ok": False, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                 "error": "not enough fundable money for this sleeve",
                 # Actionable, not just "no": it names the sleeve that WOULD work.
-                "reason": (f"You asked for a {chosen_pct:.0f}% sleeve (₪{wanted_ils:,.0f}). "
+                "reason": (f"You asked for a {chosen_pct:.0f}% sleeve (₪{wanted_ils + _clipped:,.0f})."
+                           f"{_ceiling_txt} "
                            f"The most this book can fund right now is {achievable_pct:.0f}% "
                            f"— ₪{fund['shortfall_ils']:,.0f} short, after spending "
                            f"₪{fund['from_cash_ils']:,.0f} of cash above your "
@@ -925,6 +932,7 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                            f"the plan says is overweight. Lower the sleeve to about "
                            f"{achievable_pct:.0f}%, or add cash."),
                 "chosen_sleeve_pct": round(chosen_pct, 1),
+                "ceiling_capped_pct": round(capped_pct, 1) if _clipped > 0 else None,
                 "achievable_sleeve_pct": round(achievable_pct, 1),
                 "buys": legs, "funding": fund,
                 "funding_summary": describe_funding(fund, _buying_class(legs))}
@@ -939,6 +947,8 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     preview = {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                "sleeve_pct": sleeve_pct, "amount_ils": amount,
                "chosen_sleeve_pct": round(chosen_pct, 1),
+               "ceiling_capped_pct": round(capped_pct, 1) if _clipped > 0 else None,
+               "clipped_by_ceiling_ils": _clipped,
                "achievable_sleeve_pct": round(achievable_pct, 1),
                "buys": legs, "funding": fund,
                "funding_summary": describe_funding(fund, _buying_class(legs)),
