@@ -263,3 +263,23 @@ def test_every_buy_path_checks_the_stop_hold():
                 if not rec and not (checks & (names | seen)):
                     bad.append(f"{path}:{fn.name}")
     assert not bad, f"buy paths with no stop-hold check: {sorted(set(bad))}"
+
+
+def test_the_held_cash_card_says_what_a_stop_hold_waits_for():
+    """PR 139.1. Production 2026-10-23: after the SOXL stop-out the card said the
+    app would not buy SOXL back "until your drawdown guard re-arms". A stop sells
+    the whole position, so the ticker has no price row, and `price_now = None`
+    fell through to the guard sentence. A card may not claim what is not true."""
+    import app.services.recommendations as rr
+    stop = {"SOXL": {"level": 82.11, "kind": "stop", "strategy_id": SOXL, "exit_rule_type": "stop_loss",
+                     "price_now": None}}
+    card = rr._held_cash_card(stop, 4027.63, 4178.0, 1500.0, nav=19669.6)
+    assert "drawdown guard" not in card["why"], card["why"]
+    assert f"until its sleeve's signal ({SOXL}) is out and back in" in card["why"]
+    assert "your stop loss sold it at 82.11" in card["why"]
+    # a stop no sleeve owns waits for you
+    loose = {"VTI": {**stop["SOXL"], "strategy_id": None}}
+    assert "until you end the hold" in rr._held_cash_card(loose, 900.0, 2000.0, 1500.0)["why"]
+    # the guard hold still says what it always said
+    guard = {"SOXL": {"level": 0.0, "until_rule": "g1", "price_now": None}}
+    assert "until your drawdown guard re-arms" in rr._held_cash_card(guard, 900.0, 2000.0, 1500.0)["why"]
