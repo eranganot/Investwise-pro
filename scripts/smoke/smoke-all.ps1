@@ -183,7 +183,11 @@ if ($null -eq $rulesNow -or $null -eq $recsNow) { Skip "need both rules and reco
   # against the server's id-based banner compares two different sets, and worked
   # only while nothing else used dimension 'rule'. The moment a suggestions card
   # did, this reported a mismatch that did not exist.
-  $ruleCards = @($recs.recommendations | Where-Object { $_.id -like 'rule_*' })
+  # A fired rule with nothing to execute (a band breach with no over-target class to
+  # sell and no spare cash) is a HEADS-UP, not a card: PR 141's smoke 10-23 read
+  # "banner 2 vs 0 cards" while both band rules sat on Today as `rule_*` heads-ups and
+  # the server's own banner listed them as carded.
+  $ruleCards = @(@($recs.recommendations) + @($recs.more_recommendations) + @(@($recs.headsups) | ForEach-Object { $_.card } | Where-Object { $_ }) | Where-Object { $_.id -like 'rule_*' } | Sort-Object id -Unique)
   Write-Host "   triggered: $(if ($trig.Count) { ($trig | ForEach-Object { $_.ticker }) -join ', ' } else { 'none' })" -ForegroundColor DarkGray
   if ($trig.Count -eq $ruleCards.Count) { Ok "banner ($($trig.Count)) matches rule cards ($($ruleCards.Count)) - no deadlock" }
   else {

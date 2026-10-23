@@ -74,7 +74,14 @@ the block gone once the SOXL hold ends; the held-cash card's places; no top-up c
 
 **Smoke.** `scripts/smoke/smoke-pr141-one-bet-one-hold.ps1`. Against production BEFORE the merge (`9d5a9f7`): **PASS 6 FAIL 3**,
 the bug itself (TQQQ funded in the preview; TQQQ offered; nothing said about the other funds). Against the locally served
-branch on migrated Postgres with a fired SOXL stop: **PASS 10 FAIL 0 SKIP 0**. Production after deploy: PROD_RESULT.
+branch on migrated Postgres with a fired SOXL stop: **PASS 10 FAIL 0 SKIP 0**. Production after deploy (`0a9d570`, serving 09:47 UTC): **PASS 9 FAIL 0 SKIP 0**. The TQQQ sleeve is no longer funded
+in the preview; the held-cash card offers VTI, QQQ, GOOGL, VXUS, BND, AGG, USO, COMT, VCIT and no 2x/3x fund.
+`smoke-all` on the same build: 21 passed, 4 failed. Three are the Gemini credits. The fourth, "banner 2 vs 0 cards", was the
+smoke's own miscount (fixed in the next PR): the VTI and QQQ band rules fired at 09:47 (the new build's start-up evaluation;
+they have fired five times since 10-08) and, with nothing to fund a buy, sit on Today as `rule_*` heads-ups, which the server's
+banner lists as carded and the check did not count. Ruled out as PR 141's doing: the held-back cash is unchanged (₪4,026 vs
+₪4,028 before; it is capped at spendable cash, which the SOXL reserve already filled), so the core share and the band targets
+it feeds did not move.
 
 **Also fixed: a test that stopped running on a date.** `test_the_endpoint_always_says_whether_it_has_a_provisional_point`
 (PR 138) never seeded history; it ran only while snapshots another test left behind (dated up to 2026-09-18) were inside
