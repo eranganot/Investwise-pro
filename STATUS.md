@@ -57,7 +57,7 @@ it yet" shortfall no longer counts the capped part. Shell `iw-v74`.
 test whose sleeve put more than 44% in TQQQ (two `max_weight` re-level tests, a two-sizes test, a monkeypatched
 `all_sleeve_targets` without the new keyword); they now run their mechanics with the ceiling off and pass. Note: the
 `max_weight` caps armed on the next sleeve change follow the capped targets. Full
-Postgres suite: GATE_RESULT.
+Postgres suite: 2,911 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
 `leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
