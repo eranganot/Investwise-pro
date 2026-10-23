@@ -176,7 +176,7 @@ reliability.
 
 ### 4.2 PR 144: tell the owner when production is broken
 
-**Value H · Effort M · Decision needed (D-1 below)**
+**Parts 1 and 2 DONE in PR 144 (D121). Part 3 waits on D-1.** **Value H · Effort M**
 
 - **Problem (proven 2026-10-08 and again this week):** CI does not block a deploy, and Actions is off until Nov 1.
   A red build is live with no one told: `5a6dfef` served while `test-postgres` was red, and `run_nav_snapshot_blocking`

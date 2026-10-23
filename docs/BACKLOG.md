@@ -88,6 +88,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C20 | ~~Ignoring a fired stop switched it off~~ (2026-10-22 review). Closed by PR 142 (D117): Ignore re-arms it below today. | `rules_service` | P | P1 | PR 142 |
 | C21 | ~~Rule-check failures were silent; job history was lost on every deploy~~ (2026-10-22 review). Closed by PR 143 (D118). | `pricing_service`, `scheduler` | P | P1 | PR 143 |
 | C22 | ~~The ledger wrote 140 of 440 trades at price 0 / ₪0~~ (2026-10-22 review). Closed by PR 147 (D120) for every new trade. **Open:** the 140 older rows are not rewritten (a production data repair, owner's call). | `ledger_service` | P | P2 | PR 147 |
+| C23 | ~~A broken build or job was silent~~ (2026-10-22 review). Closed by PR 144 (D121): boot check, job-health heads-up, app-health pushes. Open: a daily production smoke as a scheduled task (plan D-1). | `scheduler`, `push_service` | P | P1 | PR 144 |
 | C18 | **Auto re-arm for paused protective rules** (owner, 2026-10-23: heads-up first, auto re-arm later). Re-arm a paused downside rule after N days (a setting), never one already crossed (that is the PR 138 card's job). | `rules_service` | P | P2 | — |
 
 ## Security posture (verified 2026-10-08)

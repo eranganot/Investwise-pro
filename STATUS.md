@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 147.1: reprice the old ledger rows). Last product PR: **PR 147.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 144: production says when it is broken). Last product PR: **PR 144**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,44 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 144 — a broken build or background job says so, on Today and on the phone (D121)
+
+**Report (2026-10-22 review; plan §4.2; BACKLOG C23).** Nothing watched production. CI is off until 11-01 and never gated
+a deploy (Railway deploys every push); a failing job was one line on `/push/status`.
+
+**Root cause (PROVEN: live read and reproduction).**
+- **9 of 13 jobs unwatched.** Production `97ac021`, 2026-10-23 15:25 UTC: the 9 nightly jobs (`nav_snapshot`,
+  `strategy_signals`, `push_digest`, ...) have no history at all, and nothing would notice if they never ran.
+- **Buried imports are invisible until the job runs.** The `nav_snapshot` failure class (an import inside the function,
+  7 nights of 7) is invisible to import time, ruff and the suite. Reproduced by `test_a_lazy_import_that_cannot_resolve_is_found`.
+- **No heads-up was ever pushed.** `evaluate_and_notify` reads `built["recommendations"]` only, so PR 143's "rules not
+  checked" heads-up never reached the phone.
+
+**Ruled out.** A broken job today (the 4 frequent jobs: `failures: 0`); a missing package on production (the self-check
+found `pywebpush` missing only in the local venv; it is pinned in `requirements.txt` and production's push library reports OK).
+
+**Fix.**
+- **Boot check.** `app/worker/self_check.py` resolves every `from X import Y` inside a function of each job's module.
+  `scheduler.run_boot_check()` (just before the scheduler starts) records it as the job `boot_check` (persisted, PR 143)
+  and marks each job with no history `registered_at` now.
+- **Heads-up on Today.** `_job_health_headsup` puts ONE HIGH heads-up on Today naming every job that is failing, has not
+  succeeded in 26 h (or never, since registration), or a failed `boot_check`. `price_refresh` stays with PR 143's rule-check
+  heads-up.
+- **Pushes.** `evaluate_and_notify` now pushes the `rule_check` and `job_health` heads-ups, once per heads-up id per 12 h.
+
+**Tests.** `tests/test_pr144_production_says_when_it_is_broken.py` (8):
+- the buried-import reproduction;
+- a guard that runs `start_scheduler` against a recording scheduler and checks the imports of all 13 real jobs;
+- the boot-check record;
+- the heads-up's failing, stale, never-ran and broken-build cases, and its silences;
+- one push per id, with other heads-ups not pushed.
+
+Full Postgres suite: **2,879 passed, 0 failed, 0 skipped**. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr144-production-says-when-broken.ps1`. Production before the merge (`97ac021`): PASS 4
+FAIL 2, the gap itself ("no boot_check"; "no history at all for" the 9 nightly jobs). Production after deploy: PROD_RESULT.
+
+**Still open.** Plan §4.2 part 3 (a daily production smoke as a scheduled task) waits on the owner (plan D-1).
 ## PR 147.1 — the ledger repair fills the old unpriced trades from what was measured
 
 **Report.** PR 147 stopped new rows being written at price 0 / ₪0; the older ones (114 of 400 trade rows on `3b782d8`)
@@ -59,8 +97,7 @@ apply writes measured only, then estimates on request, and a second apply change
 pass. Full Postgres suite: **2,871 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-1-reprice-preview.ps1` (read-only, never POSTs the repair). Production before the
-merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy:
-PROD_RESULT. Then the owner reviews the preview and applies it; record the counts written here.
+merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy (`9d20605`): **PASS 11 FAIL 0 SKIP 0**. The preview lists 114 unpriced trades: 87 measured (71 from the row's own value, 16 from a rule event; ₪142,563) and 27 estimate (no record of the cash; ₪52,256: core_to_basket 9, trim 8, sell_position 6, buy_funded 4). Examples: SOXL stop 10-23 15.7829 @ 82.11 = ₪4,027.63 (measured), XOM buy 10-21 @ 177.89 = ₪890.91 (measured). **Owner, 2026-10-23: apply the measured rows only** (`POST .../ledger/repair {"confirm": true}`, run by the owner; record the result here).
 
 ---
 

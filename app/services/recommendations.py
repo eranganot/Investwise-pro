@@ -2178,7 +2178,9 @@ async def build_recommendations(session: AsyncSession, user: User,
     # record alone is read by no one.
     try:
         from app.worker.scheduler import job_state as _js
-        recs += _rule_check_headsup(_js(), _user_rules)
+        _state = _js()
+        recs += _rule_check_headsup(_state, _user_rules)
+        recs += _job_health_headsup(_state)          # PR 144
     except Exception:  # noqa: BLE001 - reporting must never cost Today
         logger.warning("rule-check heads-up failed", exc_info=True)
     # The FLOOR above is the plan (a cap may not sit below the planned sleeve);
@@ -3900,6 +3902,62 @@ def _rule_check_headsup(state: dict, rules: list[dict], now=None) -> list[dict]:
         "est_amount": None, "apply": {"kind": "none"},
         "meta": {"headsup_kind": "rule_check", "failed": failed,
                  "last_success": st.get("last_success"), "last_error": st.get("last_error")}}]
+
+
+JOB_STALE_HOURS = 26           # a daily job that has not succeeded in a day and a bit
+
+
+def _job_health_headsup(state: dict, now=None) -> list[dict]:
+    """PR 144 -- a build or a job that is failing, said where you look.
+
+    Railway deploys every push whether or not anything checked it, and a failing
+    job used to be one line on `/push/status`: `nav_snapshot` failed 7 nights out
+    of 7 that way. One HIGH heads-up names every job that is failing now, has not
+    succeeded in `JOB_STALE_HOURS` (or, never having run, was registered that long
+    ago), or a `boot_check` that found an import a job cannot make. `price_refresh`
+    is left to `_rule_check_headsup`, which says what its failure means.
+    """
+    from datetime import datetime, timezone
+    if not (state or {}).get("scheduler_running"):
+        return []
+    now = now or datetime.now(timezone.utc)
+    hist = (state or {}).get("history") or {}
+
+    def _ts(v):
+        try:
+            d = datetime.fromisoformat(str(v))
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        except Exception:  # noqa: BLE001
+            return None
+    bad: list[tuple[str, str]] = []
+    for jid, st in sorted(hist.items()):
+        if jid == "price_refresh":
+            continue
+        if st.get("last_ok") is False:
+            bad.append((jid, f"failing: {st.get('last_error') or 'no reason recorded'}"))
+            continue
+        if jid == "boot_check":
+            continue
+        ok_at = _ts(st.get("last_success")) or _ts(st.get("registered_at"))
+        if ok_at and (now - ok_at).total_seconds() > JOB_STALE_HOURS * 3600:
+            since = "never succeeded" if not st.get("last_success") else "last succeeded"
+            bad.append((jid, f"{since} since {ok_at.strftime('%d %b %H:%M')} UTC"))
+    if not bad:
+        return []
+    names = [j for j, _ in bad]
+    boot = "boot_check" in names
+    title = ("This build cannot run some of its own jobs" if boot else
+             f"{len(bad)} background job{'s are' if len(bad) > 1 else ' is'} not working")
+    return [{
+        "id": _rid("job_health", *names), "dimension": "system", "severity": "HIGH",
+        "title": title,
+        "action": ("The app's scheduled work (snapshots, signals, solves, digests) is not running as it "
+                   "should: " + "; ".join(f"{j} {why}" for j, why in bad)[:600]
+                   + ". Cards that depend on it may be out of date."),
+        "how": [*(f"{j}: {why}"[:200] for j, why in bad),
+                "This clears itself when the jobs succeed; nothing is bought or sold by it"],
+        "est_amount": None, "apply": {"kind": "none"},
+        "meta": {"headsup_kind": "job_health", "jobs": names}}]
 
 
 def _off_stop_and_big_move_recs(rows, snap, rules: list[dict], closes_by_ticker: dict) -> list[dict]:

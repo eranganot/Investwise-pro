@@ -156,7 +156,7 @@ a thread, wrapped by `_guarded`, which records runs/failures/last error (and `pr
 (`job_state:<id>`) and read back when the scheduler starts, so a deploy no longer erases last night's
 record. The rules are checked only inside `price_refresh`: a failing check fails that job with the
 reason (one bad book no longer skips the rest), and Today shows a HIGH heads-up when the last check
-failed or none has succeeded for 75 minutes (`_rule_check_headsup`). Times are container time (UTC on Railway).
+failed or none has succeeded for 75 minutes (`_rule_check_headsup`). Since PR 144 a `boot_check` (`app/worker/self_check.py`) resolves every import a job makes only when it runs, each job is `registered_at` boot, and `_job_health_headsup` puts one HIGH heads-up on Today for any job failing or not succeeding in 26 h; both health heads-ups are pushed. Times are container time (UTC on Railway).
 
 | Job | Schedule | What it does |
 |---|---|---|
