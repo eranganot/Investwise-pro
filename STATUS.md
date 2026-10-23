@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C18: protection comes back on). Last product PR: **C18**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 138b: the goal note names the levers). Last product PR: **PR 138b**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,25 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
+
+**What.** When the optimiser finds no sleeve change that lifts the goal chance, Today's heads-up said "Nothing to accept
+here. The goal and the halving limit are yours to set." The levers the nightly solve had measured (a target return the
+book can reach, a monthly deposit, a later deadline) appeared only as their own cards, and once one was ignored nothing on
+Today said the lever existed. The heads-up now appends them in numbers from the stored solve, or says plainly that with
+the rules armed no deposit and no later deadline reaches the bar. Words only: no number, card or trade changes.
+
+**Why it was late.** Written and tested 2026-10-22 (commit `33f6d92`, branch `pr138-goal-ceiling-names-the-levers`) but
+never opened as a PR; found on 2026-10-23 when every branch was checked against main. `book_optimizer.py` had not changed on
+main since, so the file was taken as it was.
+
+**Verified.** 3 tests (`test_the_goal_ceiling_names_the_levers.py`); related tests 244 passed; full Postgres suite:
+GATE_RESULT. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
+the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
+After deploy: PROD_RESULT.
 
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
