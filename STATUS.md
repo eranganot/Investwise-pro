@@ -101,6 +101,40 @@ merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before
 
 ---
 
+## P1 — compare goals: the chance of other goals with your rules as they are (D122)
+
+**Why (owner decision D122, 2026-10-23).** Keep the 30% halving limit and revisit the goal. Production's model: 30%/yr
+(₪82,692 by end-2031) is 0.2% likely with the protective rules, 18.5% without them (halving 53.9%). The solve already
+offered three levers (extra deposit, extra years, the %/yr reachable at the on-track bar); on this book with the rules
+none was found and the confident %/yr was 3.7%, which says what is out of reach but not what is in reach.
+
+**What it does.**
+- **The grid.** `frontier_service._goal_grid`, inside the nightly goal solve's rules replay, prices 20 goals:
+  %/yr 30/25/20/15/10 x the deadline as set or +2 years x no extra deposit or +₪1,000 a month. A "ROI on every shekel"
+  target is rebuilt from the money put in (`target / (1+roi)^years`) plus what the deposits grow to at that cell's ROI.
+  Each cell is replayed with the rules as they are and without them, on the same 500 paths, with its halving risk.
+  Fixed-amount goals get no grid.
+- **Time budget.** 120 s (`GRID_BUDGET_SEC`): cells past it are "not computed tonight", so the 600 s job limit is never
+  at risk. It took 20 s on the test book.
+- **On the page.** The Plan tab's goal panel gains a collapsible "Compare goals" table. Cells at or over the on-track bar
+  are green; hovering shows the amount and halving risk with and without the rules. Shell `iw-v73`.
+
+**Tests.** `tests/test_d122_the_goal_comparison.py` (4):
+- each target rebuilt from the money put in;
+- 40 replays on the same paths, standing orders kept;
+- end to end on the PR 99 fixture: the grid is present, the own-goal cell matches the headline, and an easier goal is
+  never less likely; none for a fixed amount;
+- the time budget.
+
+Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
+shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
+
+**Next (owner).** Read the table on the Plan tab and choose a goal; changing it is the Plan settings' existing goal edit.
+
+---
+
 ## PR 147 — every trade the ledger records carries its price and value (D120)
 
 **Report (2026-10-22 review).** Ledger rows written at price 0.00.
