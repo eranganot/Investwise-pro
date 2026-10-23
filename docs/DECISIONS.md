@@ -284,6 +284,12 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D121 · 2026-10-23 · A build or a background job that is broken says so on Today and on the phone.**
+  At boot, every scheduled job's in-function imports are resolved and recorded as the job `boot_check`; each job with no
+  history is `registered_at` boot. One HIGH heads-up names every job that is failing, has not succeeded in 26 h (or never,
+  since registration), or a failed `boot_check`. The app-health heads-ups (this one and PR 143's rule check) are pushed,
+  once per id per 12 h. *Why:* Railway deploys every push and CI is off until 11-01; `nav_snapshot` once failed 7 nights
+  of 7 unseen; and no heads-up was ever pushed (the push loop read `recommendations` only). → PR 144
 - **D120 · 2026-10-23 · Every Buy and Sell the ledger records carries its price and value; a leg without them is an error.**
   Handlers that report a single-ticker sale (`trim`, `sell_position`) or buy (`buy_funded`) now pass `price` and
   `gross_ils` / `price`; the sleeve funder records the price of what it sold; `record_leg` logs an ERROR for a Buy/Sell

@@ -143,8 +143,15 @@ def load_persisted_state() -> int:
     return n
 
 
+# PR 144: every job's entry point, so the boot self-check can resolve what each
+# job imports only when it runs.
+ENTRY_POINTS: dict = {}
+
+
 def _guarded(job_id: str, fn):
     """Wrap a job so it always records an outcome and can never wedge silently."""
+    ENTRY_POINTS[job_id] = fn
+
     def _run():
         box: dict = {}
 
@@ -378,10 +385,41 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Standing order job not scheduled.", exc_info=False)
 
+    run_boot_check()
     _scheduler.start()
     # PR 112: the hourly `market_refresh` job is gone. It ran ResearchAgent().scan()
     # and threw the result away, stamping a time nothing read (market_state.py).
     logger.info("APScheduler started (%d jobs).", len(_scheduler.get_jobs()))
+
+
+def run_boot_check() -> dict:
+    """PR 144: resolve every import each job makes only when it runs, and record
+    the answer as the job `boot_check` (persisted, shown on /push/status and, when
+    it fails, on Today). Never stops the app: a broken job is reported, not fatal."""
+    # A job with no history yet is "registered" now, so a daily job that never
+    # runs is visible after 26 h instead of looking like "no news" for ever.
+    for jid in sorted(ENTRY_POINTS):
+        with _STATE_LOCK:
+            st = JOB_STATE.setdefault(jid, {"runs": 0, "failures": 0})
+            fresh = "registered_at" not in st
+            if fresh:
+                st["registered_at"] = _now_iso()
+            snap = dict(st)
+        if fresh:
+            _persist(jid, snap)
+    try:
+        from app.worker.self_check import check_jobs
+        res = check_jobs(dict(ENTRY_POINTS))
+    except Exception as exc:  # noqa: BLE001
+        res = {"ok": False, "errors": [f"the self-check itself failed: {type(exc).__name__}: {exc}"]}
+    if res.get("ok"):
+        _record("boot_check", ok=True, result={"jobs": sorted(ENTRY_POINTS),
+                                               "modules": res.get("modules", [])})
+        logger.info("boot check: %d job(s) resolve", len(ENTRY_POINTS))
+    else:
+        _record("boot_check", ok=False, error="; ".join(res.get("errors") or [])[:300])
+        logger.error("boot check FAILED: %s", res.get("errors"))
+    return res
 
 
 def shutdown_scheduler() -> None:

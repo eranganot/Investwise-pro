@@ -399,6 +399,23 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
                 session, subject, f"{icon} {r.get('title', 'New recommendation')}",
                 r.get("action") or "Open InvestWise to review.", url="/app/", tag=sig)
             await _mark(session, subject, sig)
+        # PR 144: the app's own health is pushed too. A heads-up is not a
+        # recommendation, so this loop never saw PR 143's "rules not checked" or
+        # a failing job. Once per heads-up id (the id carries what is failing) per
+        # 12 hours.
+        for h in built.get("headsups", []):
+            if sent >= max_sends:
+                break
+            card = h.get("card") or h
+            if ((card.get("meta") or {}).get("headsup_kind")) not in ("rule_check", "job_health"):
+                continue
+            sig = f"trigger:app_health:{card.get('id')}"
+            if await _seen_within(session, subject, sig, TRIGGER_RULE_REPEAT):
+                continue
+            sent += await send_to_subject(
+                session, subject, f"\u26a0\ufe0f {card.get('title', 'Something is not working')}",
+                card.get("action") or "Open InvestWise.", url="/app/", tag=sig)
+            await _mark(session, subject, sig)
     except Exception:  # noqa: BLE001
         logger.warning("recommendation eval failed", exc_info=False)
 
