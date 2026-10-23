@@ -249,6 +249,10 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
    - `fold_alternatives` attaches "Also fills this gap".
 5. **Mute/done filter:** Ignore lasts 7 days and Done 14 days. Each card has one mark, the newest of its Ignore and Done. A muted card **re-fires** if its number moves ≥ 25% or ≥ ₪100, or its
    severity rises. It then says "You marked this handled. It is back because…". Hidden cards are listed in `hidden_cards`.
+   - **Ignore on a fired stop keeps the stop** (PR 142, D117): Ignore sells nothing, so a stop-loss re-arms one ladder step
+     (10%) below today's price and a trailing stop or profit-protect restarts its peak at today's price. Logged `kept`,
+     `action.executed.by = "ignore"`. Done, Accept and Keep are unchanged. A fall through the new level is a new firing and
+     un-mutes the card.
 6. **Scope + contradictions:**
    - `card_scope.annotate` stamps SLEEVE / CORE / BOOK.
    - `contradictions.check` suppresses the loser and says so (selling an on-target sleeve, buying and selling one class, cards exceeding the book).

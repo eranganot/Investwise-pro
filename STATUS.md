@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 141: one bet, one hold). Last product PR: **PR 141**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 142: Ignore keeps the stop). Last product PR: **PR 142**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 142 — Ignoring a fired stop keeps the stop on, re-armed below today (D117)
+
+**Report (2026-10-22 review; BACKLOG C20).** Tapping Ignore on a fired stop card left the position in the book and switched
+its stop off.
+
+**Root cause (PROVEN by reproduction: `test_ignoring_a_fired_stop_leaves_it_armed` fails on `0a9d570` with `active: False`,
+`breached_now: True`).** Ignore (`dismiss_recommendation`) calls `resolve_rule(..., "dismissed")` for a `rule_*` card, and the
+30-minute evaluation's `heal_dismissed_rules` does the same as "acknowledged". `resolve_rule` sets `active = False` on every
+`_ONE_SHOT` type, which includes stop-loss, trailing stop and profit-protect. The only thing left on Today was PR 138's
+"Your SOXL stop is switched off and the price is below it" card; ignoring that too left nothing.
+
+**Ruled out.** Keep (`keep_and_relevel` re-arms at a new level and stays on); Accept (the stop sold the position, so there is
+nothing to protect); the protection retune (PR 140 forbids it). **Not seen on production yet:** the visible rule-event log
+(200 events, back to 08-23) has no ignored stop.
+
+**Fix (owner, 2026-10-23: "Re-arm below today").** `_re_arm_ignored`, called from `resolve_rule` for `dismissed` and from the
+heal for Ignore marks only: a stop-loss moves to `keep_level` (10% under today's price, never a level already crossed); a
+trailing stop or profit-protect restarts its peak at today's price. The event is `kept` with `by: ignore`; the rule's note
+says what moved. The card's "how" now says so. A position that is gone falls through to the old resolve. Done is unchanged.
+
+**Tests.** `tests/test_pr142_ignore_keeps_the_stop.py` (3): stop-loss re-armed at 90 from 110 with the event, the note, the
+card text and no "switched off" card; a trailing stop's trail restarted from today; a later fall through the new level fires
+again and un-mutes the card. All 3 fail on `0a9d570`. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-pr142-ignore-keeps-the-stop.ps1`. Production before the merge (`0a9d570`): PASS 4 FAIL 0
+SKIP 2 (no stop has fired since PR 139's SOXL exit; nothing ignored). Local branch build on migrated Postgres, a SOXL stop
+fired, then Ignored: before PASS on the card text; after PASS 5 FAIL 0 SKIP 1 ("SOXL stop_loss on at 90: Ignored
+2026-10-23: kept SOXL; stop moved from 110 to 90"). Production after deploy: PROD_RESULT.
 
 ---
 

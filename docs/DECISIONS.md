@@ -284,6 +284,12 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D117 · 2026-10-23 · Ignoring a fired stop keeps the stop on, re-armed below today.**
+  Stop-loss: one ladder step (10%) under today's price, the same level Keep proposes. Trailing stop and profit-protect: the
+  peak restarts at today's price, the trail width unchanged. Logged as `kept` by `ignore`; the card's "how" says so before
+  you tap. *Why:* Ignore was a dismissal that `resolve_rule` turned into `active = False` for every one-shot type, so the
+  position stayed and its stop was gone (reproduced; never yet hit on production, whose visible log since 08-23 has no
+  ignored stop). Owner, 2026-10-23 ("Re-arm below today"). → PR 142
 - **D116 · 2026-10-23 · After a stop sells a 2x/3x fund, the app buys no 2x/3x fund until that hold ends.**
   Every buyer (cards, Plan buttons, sleeve funding, the core realign, the cash redeploy) reads the group from the stop hold;
   it is derived, never stored. The held-cash card offers non-blocked places only and still recommends investing part of

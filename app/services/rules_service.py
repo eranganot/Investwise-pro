@@ -564,7 +564,8 @@ async def heal_dismissed_rules(session: AsyncSession, user: User) -> list[str]:
     """
     from app.services.recommendations import (
         _at, _dismiss_key, _done_key, _load_map, _parse_dt, load_completed, load_dismissed)
-    muted = (await load_dismissed(session, user)) | (await load_completed(session, user))
+    ignored = await load_dismissed(session, user)
+    muted = ignored | (await load_completed(session, user))
     if not muted:
         return []
     marks = {**await _load_map(session, _dismiss_key(user)), **await _load_map(session, _done_key(user))}
@@ -573,6 +574,7 @@ async def heal_dismissed_rules(session: AsyncSession, user: User) -> list[str]:
                                   TradingRule.active.is_(True),
                                   TradingRule.triggered.is_(True)))).all()
     healed = []
+    _idx = None
     for r in rules:
         cid = f"rule_{str(r.id)[:8]}"
         if cid not in muted:
@@ -584,11 +586,65 @@ async def heal_dismissed_rules(session: AsyncSession, user: User) -> list[str]:
             if fired_aw > _parse_dt(dealt):
                 continue
         try:
+            if r.rule_type in _RE_ARM_ON_IGNORE and cid in ignored:
+                if _idx is None:
+                    _idx = await _positions_index(session, user)
+                if await _re_arm_ignored(session, user, r, _idx.get(str(r.ticker).upper())):
+                    healed.append(cid)
+                    continue
             await resolve_rule(session, user, str(r.id)[:8], "acknowledged")
             healed.append(cid)
         except Exception:  # noqa: BLE001 -- one rule must not stop the others
             logger.warning("could not resolve dismissed rule %s", cid, exc_info=False)
     return healed
+
+
+# PR 142 -- IGNORE KEEPS THE POSITION, SO IT KEEPS THE STOP (owner, 2026-10-23).
+#
+# Ignore on a fired stop card is a dismissal; the heal above used to resolve it
+# "acknowledged", and `resolve_rule` switches every one-shot type off. Ignore
+# sells nothing, so the position stayed and its stop was gone (reproduced:
+# `tests/test_pr142_ignore_keeps_the_stop.py`, active False with the price under
+# the level). Now Ignore re-arms below today: a stop-loss one ladder step under
+# today's price (the same `keep_level` as Keep), a trailing stop or profit-protect
+# with its peak restarted at today's price. Logged as `kept`, `by: ignore`.
+_RE_ARM_ON_IGNORE = frozenset({"stop_loss", "trailing_stop", "profit_protect"})
+
+
+async def _re_arm_ignored(session: AsyncSession, user: User, rule: TradingRule,
+                          pos: dict | None) -> bool:
+    """Re-arm a fired stop the user ignored. False (and nothing written) when the
+    position is gone or no level below today can be set; the caller then
+    resolves it as before."""
+    price = float((pos or {}).get("price") or 0.0)
+    cost = float((pos or {}).get("cost") or 0.0)
+    if price <= 0:
+        return False
+    old_level, old_peak = float(rule.level), rule.peak_price
+    unit = "%" if rule.mode == "pct" else ""
+    if rule.rule_type == "stop_loss":
+        new = keep_level(rule, price, cost)
+        if new is None or new <= 0:
+            return False
+        rule.level = new
+        still = _evaluate(rule, price, cost, float((pos or {}).get("weight_pct") or 0.0),
+                          float((pos or {}).get("value_ils") or 0.0))[0]
+        if still:
+            rule.level = old_level
+            return False
+        what = f"stop moved from {old_level:g}{unit} to {new:g}{unit}"
+    else:
+        rule.peak_price = price
+        what = f"its trail restarts from today's {price:,.2f}"
+    await record_outcome(session, user, str(rule.id), "kept",
+                         {"kind": "ignored_re_armed", "by": "ignore", "old_level": old_level,
+                          "new_level": float(rule.level), "old_peak": old_peak,
+                          "new_peak": rule.peak_price})
+    rule.triggered = False
+    rule.active = True
+    rule.note = (f"Ignored {_now().date().isoformat()}: kept {rule.ticker}; {what}.")[:160]
+    await session.commit()
+    return True
 
 
 async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = False) -> list[dict]:
@@ -951,6 +1007,12 @@ async def resolve_rule(session: AsyncSession, user: User, rule_id_or_prefix: str
     if str(outcome) == "acknowledged" and not rule.triggered:
         return True
 
+    if str(outcome) == "dismissed" and rule.rule_type in _RE_ARM_ON_IGNORE:
+        # PR 142: Ignore sells nothing, so the stop stays -- re-armed below today.
+        _pos = (await _positions_index(session, user)).get(str(rule.ticker).upper())
+        if await _re_arm_ignored(session, user, rule, _pos):
+            return True
+
     await record_outcome(session, user, str(rule.id), outcome, action)
     rule.triggered = False
     if rule.rule_type == "take_profit" and str(outcome) in _LADDER_OUTCOMES:
@@ -1163,7 +1225,12 @@ async def triggered_rule_recs(session: AsyncSession, user: User) -> list[dict]:
                     + "."),
                    _cash_landing(_cash_ils + net, _nav, _cash_target),
                    "No brokerage order is placed — mirror the trade at your broker.",
-                   "Ignore leaves the position alone and logs that you declined."]
+                   (f"Ignore keeps the position and the stop: it re-arms "
+                    f"{TAKE_PROFIT_LADDER_STEP:.0%} below today's price."
+                    if r.rule_type == "stop_loss" else
+                    "Ignore keeps the position and the stop: its trail restarts from today's price."
+                    if r.rule_type in _RE_ARM_ON_IGNORE else
+                    "Ignore leaves the position alone and logs that you declined.")]
         else:
             how = ["This is your own trading rule firing.",
                    "There's no single obvious trade here, so the app won't guess one.",
