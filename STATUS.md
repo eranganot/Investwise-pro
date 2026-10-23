@@ -56,7 +56,7 @@ in `reprice_skipped`, so the older sections' contract is unchanged. Nothing is w
 **Tests.** `tests/test_pr147_1_reprice_old_ledger_rows.py` (2): the 10-23 SOXL stop (rule event -> measured), the 10-21
 XOM buy (own value -> measured), a drift trim (estimate), an unpriceable ticker (unresolved), a clean row untouched;
 apply writes measured only, then estimates on request, and a second apply changes nothing. The 17 existing repair tests
-pass. Full Postgres suite: GATE_RESULT.
+pass. Full Postgres suite: **2,871 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-1-reprice-preview.ps1` (read-only, never POSTs the repair). Production before the
 merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy:
