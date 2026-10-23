@@ -301,6 +301,7 @@ async def preview(session: AsyncSession, user: User) -> dict:
     by_conf: dict[str, int] = {}
     for r in rows.values():
         by_conf[r["confidence"]] = by_conf.get(r["confidence"], 0) + 1
+    unpriced = await _unpriced(txs, events, voided)
     return {
         "ok": True, "read_only": True,
         "summary": {"duplicates": len(dups), "blind_sells": len(rows), **by_conf,
@@ -315,8 +316,11 @@ async def preview(session: AsyncSession, user: User) -> dict:
             for t in truncated],
         "unrecorded_rebalances": await unrecorded_rebalances(
             session, user, data, voided, set(rows), ledger_start),
-        "writes_by_default": ["duplicates -> Void", "blind sells with confidence 'measured'"],
+        "unpriced_trades": unpriced,
+        "writes_by_default": ["duplicates -> Void", "blind sells with confidence 'measured'",
+                              "unpriced trades with confidence 'measured'"],
         "writes_on_request": ["blind sells with confidence 'estimate' (include_estimates)",
+                              "unpriced trades with confidence 'estimate' (include_estimates)",
                               "unrecorded rebalances -> Adjust legs (include_rebalances)"],
     }
 
@@ -357,6 +361,23 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
                   f"was 0 shares")[:255]
         written.append({"id": r["id"], "ticker": r["ticker"], "shares": r["shares"],
                         "confidence": r["confidence"]})
+    repriced, reprice_skipped = [], []
+    for r in plan.get("unpriced_trades") or []:
+        if r["confidence"] not in ok_conf or not r.get("price") or not r.get("value_ils"):
+            reprice_skipped.append({"id": r["id"], "ticker": r["ticker"], "confidence": r["confidence"]})
+            continue
+        t = await session.get(Transaction, uuid.UUID(r["id"]))
+        if t is None or REPRICE_TAG in (t.note or ""):
+            continue
+        from app.models.tables import db_money
+        was = f"was price {float(t.price or 0):g} / value {float(t.value_ils or 0):g}"
+        if float(t.price or 0) <= 0:
+            t.price = db_money(r["price"])
+        if float(t.value_ils or 0) <= 0:
+            t.value_ils = db_money(r["value_ils"])
+        t.note = (f"{t.note or ''} | {REPRICE_TAG}: {r['confidence']} via {r['method']}; {was}")[:255]
+        repriced.append({"id": r["id"], "ticker": r["ticker"], "price": r["price"],
+                         "value_ils": r["value_ils"], "confidence": r["confidence"]})
     rebalanced = []
     if include_rebalances:
         # One Adjust per holding per rebalance step, dated AT the accept, so the
@@ -376,7 +397,82 @@ async def apply(session: AsyncSession, user: User, *, confirm: bool,
                                "confidence": a["confidence"]})
     await session.commit()
     return {"ok": True, "voided": voided, "written": written, "skipped": skipped,
+            "repriced": repriced, "reprice_skipped": reprice_skipped,
             "rebalances_written": rebalanced, "summary": plan["summary"]}
+
+
+# --------------------------------------------------------------------------- #
+# PR 147.1 -- trades recorded with price 0 and/or value 0
+# --------------------------------------------------------------------------- #
+# PR 147 found 140 of 440 production rows written at price 0 and/or ₪0 (the
+# recorder looked for `price` / `value_ils` that trims, stops, funded buys and
+# sleeve funding never reported). The trade and the cash were right; the row was
+# not. Each row is filled from what was measured at the time:
+#
+#   * VALUE -- the row's own value when it has one; else the rule event that
+#     executed it (`cash_added_ils + tax_ils`: the cash the book received, plus
+#     the tax), paired by ticker, time (3 min) and share count; else shares x the
+#     price that half hour x today's FX (an estimate: no FX history exists).
+#   * PRICE -- the market price that half hour (`_price_at`), in the ticker's own
+#     currency, so no FX is involved.
+#   * MEASURED when the value came from the row or a rule event AND the price
+#     agrees with it (value / shares / FX) within 5%; anything else is ESTIMATE
+#     and is written only on request. Never a guess: a row with no price that
+#     half hour is listed and left alone.
+REPRICE_TAG = "repriced 2026-10-23"
+
+
+async def _unpriced(txs: list, events: list, voided: set) -> list[dict]:
+    from app.core.offload import offload
+    from app.services.fx import fx_rate_with_status, price_currency
+
+    rows = [t for t in txs if t.txn_type in ("Buy", "Sell") and t.ticker and t.executed_at
+            and float(t.quantity or 0) > 1e-9 and str(t.id) not in voided
+            and (float(t.price or 0) <= 0 or float(t.value_ils or 0) <= 0)
+            and REPRICE_TAG not in (t.note or "")]
+    used: set = set()
+    out = []
+    for t in rows:
+        when, tk, q = _aware(t.executed_at), (t.ticker or "").upper(), float(t.quantity)
+        fx, _st = fx_rate_with_status(price_currency(t.market, None))
+        px, px_src = await offload(_price_at, tk, when)
+        r = {"id": str(t.id), "ticker": tk, "side": t.txn_type, "at": when.isoformat(),
+             "source": t.source, "shares": q, "price": None, "value_ils": None,
+             "price_source": px_src, "fx": round(fx, 6), "confidence": "unresolved", "method": None}
+        value, v_src = float(t.value_ils or 0), "the row's own value"
+        if value <= 0 and t.txn_type == "Sell":
+            best = None
+            for e in events:
+                exe = (e.action or {}).get("executed") or {}
+                if (e.id in used or (e.ticker or "").upper() != tk or not e.outcome_at
+                        or exe.get("kind") not in ("trim", "sell_position")):
+                    continue
+                dt = abs(_aware(e.outcome_at) - when)
+                if dt <= _EVENT_WINDOW and abs(float(exe.get("shares") or 0) - q) <= 1e-4 * max(1.0, q):
+                    if best is None or dt < best[0]:
+                        best = (dt, e, exe)
+            if best:
+                used.add(best[1].id)
+                value = float(best[2].get("cash_added_ils") or 0) + float(best[2].get("tax_ils") or 0)
+                v_src = "the rule event: cash received + tax"
+        if not px:
+            r["method"] = "no market price that half hour"
+            out.append(r)
+            continue
+        if float(t.price or 0) > 0:
+            px, px_src = float(t.price), "the row's own price"
+        r["price"], r["price_source"] = round(float(px), 6), px_src
+        if value > 0:
+            implied = value / (q * fx) if q and fx else 0
+            agree = implied > 0 and abs(float(px) / implied - 1) <= _AGREE
+            r.update(value_ils=round(value, 2), confidence="measured" if agree else "estimate",
+                     method=(f"value from {v_src}; price from {px_src}"
+                             + ("" if agree else f" (implies {implied:,.2f} at today's FX: more than 5% apart)")))
+        else:
+            r.update(value_ils=round(q * float(px) * fx, 2), confidence="estimate",
+                     method=f"value = shares x {px_src} x today's FX (no record of the cash)")
+        out.append(r)
+    return out
 
 
 
