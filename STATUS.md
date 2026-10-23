@@ -63,7 +63,7 @@ none was found and the confident %/yr was 3.7%, which says what is out of reach 
   never less likely; none for a fixed amount;
 - the time budget.
 
-Full Postgres suite: GATE_RESULT.
+Full Postgres suite: **2,887 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
 shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
@@ -100,7 +100,7 @@ suite: **2,883 passed, 0 failed, 0 skipped**. Ruff clean.
 
 *Smoke.* `scripts/smoke/smoke-d123-same-bet-on-what-they-hold.ps1`. Production before (`47e9ebe`): PASS 4 FAIL 0 SKIP 2
 (no invested correlations measured yet; every existing same-bet pair still marked). After deploy AND the next 03:50 UTC
-run: PROD_RESULT.
+run: on `793dbe9` before the 03:50 UTC run: PASS 4 FAIL 0 SKIP 2 (not measured yet; every existing same-bet pair still marked); PR 144's smoke on the same build 6/0/0; smoke-all 22/3 (Gemini credits). The measured result is owed after the 03:50 UTC run.
 
 **P14's other half: the sleeve-plan smokes on `47e9ebe`.** 134d 17/0/0, 135a 8/0/0, 135b 5/0/1, 135c 4/1/1 → 5/0/1 after
 fixing its pinned `iw-v69` check (PR 139 moved the shell to `iw-v72`; the check is now "not older than v69"), 136a 7/0/0,
