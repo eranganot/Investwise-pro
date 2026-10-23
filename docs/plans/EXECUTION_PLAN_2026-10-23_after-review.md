@@ -148,6 +148,11 @@ Useful reads:
 Effort: S < 2 h, M = half a day, L = days. Value: what it protects or gains for the owner's money or for the app's
 reliability.
 
+**Order from 2026-10-24** (owner: "As suggested", after PR 141-148, C15, C18, C24, C26, P1/P14/P16 shipped):
+C27 (in its gate) → C16 → PR 145 → P19 (quick) → P17 → C28 / C17 / C13 (small) → O6 (from 2026-11-01) → PR 146 →
+P9 → P18. Owner items: A2 and O2 (rotate the agent key and the GitHub/Railway tokens), A1 (Gemini credits), A6 (the
+pre-push hook on the Mac), D-1 (where the daily smoke's key lives).
+
 ### 4.1 PR 147.1: reprice the old ledger rows — **DONE: applied by the owner 2026-10-23 (87 repriced)**
 
 **Value M · Effort S · BACKLOG C22 · Owner approved ("If you recommend it, sure", 2026-10-23)**
@@ -287,15 +292,15 @@ again, and §1.2 point 2 becomes a pre-push habit rather than the only gate.
 deploy, the Plan tab, Holdings, the 30-min rule check, the nightly solves. Use `_tm.mark` timings and `/health`. Fix
 the slowest measured path only, and record before/after in STATUS.
 
-### 4.11 Later (owner may pick up any of these)
+### 4.11 Added to the list (owner, 2026-10-24) and later
 
-| # | Item | Value | Effort | Note |
-|---|---|---|---|---|
-| P17 | Live stock rotation (selection strategies as sleeves) | M | L | D101 |
-| P18 | Fixed-amount goals in the goal model | L for this owner | M | D105 |
-| P9 | Per-holding day attribution; an intraday "today" chart point | L-M | M | |
-| P19 | Default core mixes as settings | L | S | "every decision is a setting" |
-| C14 | Israeli inflation-indexed CGT basis | M | M | Needs an accountant's sign-off first |
+| # | Item | Value | Effort | Priority | Note |
+|---|---|---|---|---|---|
+| P19 | Default core mixes as settings | L | S | P2, a quick item after PR 145 | "every decision is a setting" |
+| P17 | Live stock rotation (selection strategies as sleeves) | M | L | P2, after P19 | D101; the one new way to beat the S&P |
+| P9 | Per-holding day attribution; an intraday "today" chart point | L-M | M | P3 | |
+| P18 | Fixed-amount goals in the goal model | L for this owner | M | P3 | D105; he uses a %/yr goal |
+| C14 | Israeli inflation-indexed CGT basis | M | M | later | Needs an accountant's sign-off first |
 
 ### 4.12 Parked or proposed to drop (owner to confirm)
 
