@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-22 by Claude (PR 137: the TQQQ card that kept coming back). Last product PR: **PR 137**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-22 by Claude (PR 138: Ignore on every card, a loud blocker, an honest chart end, no silent drops). Last product PR: **PR 138**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 138 — Ignore always works, a sleeve that cannot be funded says so loudly, the chart shows today, a stop that is off is a card (D110-D113)
+
+**Report (2026-10-22).** (1) The account chart trended up while the portfolio value fell. (2) Ignore did nothing on a sleeve-move card. (3) Wanted a bold
+notice when a sleeve cannot be funded, with the option to drop it. (4) No card appeared while SOXL fell 20% in a session.
+
+**Root causes (all PROVEN on production reads / reproduced).**
+- Chart: the series ends at the last daily snapshot (10-21, 21,122.55 ILS); the live total on the same screen includes today's SOXL -20%. Both were
+  correct; nothing said they covered different days. Fix: `provisional_point` adds ONE dashed "Today so far" point, only when the comparison is honest
+  (same holding count, no trade or money moved since the snapshot); otherwise a reason and no point.
+- Ignore: `rec_0164ed` is `persistent`. `persistent` was subtracted from the IGNORED set as well as from DONE, so every Ignore was written and then
+  discarded on the next read. Fix: `settle_mutes` — persistent only protects against Done.
+- Unfundable sleeve: PR 137 made it a quiet heads-up. Now `payload.blockers` carries a red banner built from the funder's own refusal, with two
+  choices: open the plan, or drop the sleeve (`DELETE /plan/sleeves/{id}`, sells nothing). Swiping the heads-up does not silence it.
+- No card in the drop (PROVEN from live rules): SOXL stop-loss 83.85 and TQQQ stop 65.73 were switched OFF with price below/near them, and an inactive rule
+  raises nothing; the drawdown guard (25%) was not reached (book -20.2%); no card read a one-day move. Why the stops were OFF is NOT proven (the audit
+  log holds no toggle for 5 of the 6 rules). Fix: a HIGH card "Your X stop is switched off and the price is below it", Accept = `edit_rule` re-arming
+  it (nothing is sold); and a non-actionable heads-up for a one-day move of 10% or more (setting `big_day_move_pct`). Facts only, never "sell".
+
+**Ruled out.** A stale chart cache; wrong NAV maths (the 21,122.55 figure matches the snapshot); a client bug in the Ignore button (the POST returned 200).
+
+**Not fixed / open.** Why the stops were switched off. Railway deployments failed on 2026-10-22 during a Railway builds outage ("failed to fetch snapshot"):
+platform side, not code; redeploy once Railway says builds are back.
+
+**Tests.** `test_an_ignore_works_on_a_persistent_card`, `test_a_sleeve_the_app_cannot_fund_is_a_banner`, `test_the_chart_says_where_it_stops`,
+`test_a_stop_that_is_off_is_a_card`. Smoke: `scripts/smoke/smoke-pr138-ignore-blocker-chart-stops.ps1`.
 
 ## PR 137 — the sleeve-drift card that kept coming back (D107, D108)
 

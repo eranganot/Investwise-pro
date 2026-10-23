@@ -893,19 +893,33 @@ function drawTodayReal(h){
   // NOT performance()'s benchmark_index, which is aligned to today's book
   // priced backwards and read -8.28% over a window this line did +4.11%.
   const bm=h.benchmark;
-  const _ds=[{label:"You",data:h.pct,borderColor:col,backgroundColor:col+"22",
+  // PR 138: one dashed "today so far" point after the last recorded day, drawn
+  // only when the server could stand behind it (h.provisional is null otherwise).
+  // The recorded line itself is unchanged; the benchmark is padded with a gap.
+  const prov=h.provisional||null;
+  const _labels=prov?h.dates.concat([prov.as_of]):h.dates;
+  const _pad=a=>prov?a.concat([null]):a;
+  const _ds=[{label:"You",data:_pad(h.pct),borderColor:col,backgroundColor:col+"22",
               fill:true,pointRadius:0,tension:.12,borderWidth:2,spanGaps:false}];
   if(bm&&bm.pct&&bm.pct.length===h.dates.length){
-    _ds.push({label:bm.ticker||"SPY",data:bm.pct,borderColor:"#8b97a8",
+    _ds.push({label:bm.ticker||"SPY",data:_pad(bm.pct),borderColor:"#8b97a8",
               borderDash:[4,3],fill:false,pointRadius:0,tension:.12,
               borderWidth:1.5,spanGaps:false});
   }
-  drawChart("ch_today","line",{labels:h.dates,datasets:_ds},{
+  if(prov){
+    const _lastIdx=h.dates.length-1, _arr=_labels.map(()=>null);
+    _arr[_lastIdx]=h.pct[_lastIdx]; _arr[_lastIdx+1]=prov.pct;
+    _ds.push({label:"Today so far",data:_arr,borderColor:prov.pct>=h.pct[_lastIdx]?"#22c55e":"#ef4444",
+              borderDash:[2,3],fill:false,pointRadius:ctxPt=>ctxPt.dataIndex===_lastIdx+1?4:0,
+              tension:0,borderWidth:2,spanGaps:false});
+  }
+  drawChart("ch_today","line",{labels:_labels,datasets:_ds},{
     plugins:{legend:{display:_ds.length>1,
                      labels:{color:"#8b97a8",boxWidth:10,usePointStyle:true}},
-             tooltip:{callbacks:{title:c=>h.dates[c[0].dataIndex],
+             tooltip:{callbacks:{title:c=>_labels[c[0].dataIndex],
                label:c=>`${c.dataset.label}: ${c.parsed.y>=0?"+":""}${r2(c.parsed.y)}%`+
-                        (c.datasetIndex===0&&h.nav_ils?`  (${h.nav_ils[c.dataIndex]} ILS)`:"")}}},
+                        (c.datasetIndex===0&&h.nav_ils&&h.nav_ils[c.dataIndex]!=null?`  (${h.nav_ils[c.dataIndex]} ILS)`:"")+
+                        (c.dataset.label==="Today so far"&&prov?`  (${prov.nav_ils} ILS, live prices)`:"")}}},
     scales:{x:{ticks:{color:"#8b97a8",maxRotation:0,autoSkip:true,maxTicksLimit:6,
                       callback:function(v,i){const d=this.getLabelForValue(v);
                         if(!d)return"";const p=String(d).split("-");
@@ -928,6 +942,10 @@ function drawTodayReal(h){
   const unexplained=h.unexplained_flows||[];
   cap.innerHTML=`<b class="${chg>=0?'ok':'bad'}">${chg>=0?"+":""}${chg}%</b> over ${h.dates.length} recorded days `+
     `(${h.window.start} to ${h.window.end})`+
+    (prov
+      ? `<div style="margin-top:2px"><b class="${prov.pct>=0?'ok':'bad'}">Today so far: ${prov.pct>=0?"+":""}${r2(prov.pct)}%</b>
+         <span class="mk">(dashed, live prices against ${prov.since}'s close, not yet recorded)</span></div>`
+      : "")+
     (Math.abs(flow)>0.5
       ? `<div style="margin-top:2px">Your value moved <b>${simple>=0?"+":""}${simple}%</b>, but
          <b>${flow>=0?"+":""}${flow} ILS</b> of that was money you moved in or out. The
@@ -1058,10 +1076,13 @@ async function loadToday(){
     // "show them" used to call the bulk restores, which erased every mark and
     // put every card back live -- accept-able twice -- with no sign of what
     // it had been. Looking is now read-only; Restore is per card.
-    $("recs").innerHTML=(recs.length?withGoalSummary(recs,r.goal_summary,r.goal_summary_head):emptyRecs(hidden,done,hiddenCards))
+    BLOCKERS=r.blockers||[];
+    const _blockIds=new Set(BLOCKERS.map(b=>b.id));
+    $("recs").innerHTML=blockerBanner(BLOCKERS)
+      + (recs.length?withGoalSummary(recs,r.goal_summary,r.goal_summary_head):emptyRecs(hidden,done,hiddenCards))
       + (more.length?(MORE_HTML=withGoalSummary(more,recs.some(o=>o.dimension==="goal")?null:r.goal_summary,r.goal_summary_head),moreNote(more)):"")
       + (recs.length?historyNote(hiddenCards,hidden,done):"") + degradedNote(degraded)
-      + headsupList(r.headsups||[])
+      + headsupList((r.headsups||[]).filter(h=>!_blockIds.has(h.id)))
       + reviewTable(r.holding_review||[],all.concat(more));
     setTimeout(_fillRuleImpacts,300);
   }catch(e){$("recs").innerHTML=`<div class="card bad">${e}</div>`;}
@@ -1456,6 +1477,37 @@ function actBtn(o){
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true,this)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
+}
+// PR 138: "you can't act on this" is not a heads-up. Bold, red, top of Today, not
+// dismissible -- it ends when the sleeve becomes fundable or is dropped.
+let BLOCKERS=[];
+function blockerBanner(bs){
+  if(!bs||!bs.length) return "";
+  return bs.map((b,i)=>`<div class="card" role="alert" style="border:2px solid #f87171;background:rgba(248,113,113,.10);margin-bottom:12px">
+    <div style="font-size:12px;font-weight:700;letter-spacing:.06em;color:#f87171">\u26D4 ACTION BLOCKED</div>
+    <div style="font-size:17px;font-weight:800;margin:4px 0">${esc(b.title)}</div>
+    <div style="margin:6px 0">${esc(b.line)}</div>
+    ${b.reason?`<div class="mk" style="margin:6px 0">Why: ${esc(b.reason)}</div>`:""}
+    <div class="mk" style="margin:6px 0">Until you change the plan or drop the sleeve, no card can fix this drift.</div>
+    <div class="acts" style="margin-top:10px">${(b.choices||[]).map((c,j)=>
+      `<button class="${c.kind==="drop_sleeve"?"acc":"ghost"}" onclick="blockerAct(${i},${j},this)">${esc(c.label)}</button>`).join("")}</div>
+    <div class="mk" id="blk${i}" style="margin-top:6px"></div></div>`).join("");
+}
+async function blockerAct(i,j,btn){
+  const b=BLOCKERS[i], c=b&&(b.choices||[])[j]; if(!c) return;
+  if(c.kind==="open_plan"){ show("plan"); try{planTab("mix");}catch(e){} return; }
+  if(c.kind==="drop_sleeve"){
+    if(!confirm(c.confirm||"Drop this sleeve?")) return;
+    const out=$("blk"+i); if(btn) btn.disabled=true; if(out) out.textContent="Dropping the sleeve\u2026";
+    try{
+      const resp=await fetch(`/api/v1/plan/sleeves/${encodeURIComponent(c.strategy_id)}`,{method:"DELETE"});
+      if(resp.status===401){location.href="/login";return;}
+      const r=await resp.json();
+      if(!resp.ok||!r.ok){ if(out) out.textContent="Couldn't drop it: "+(r.error||resp.status); if(btn) btn.disabled=false; return; }
+      if(out) out.textContent="\u2713 Sleeve dropped. Nothing was sold or bought.";
+      setTimeout(()=>{try{loadToday();}catch(e){}},600);
+    }catch(e){ if(out) out.textContent=String(e); if(btn) btn.disabled=false; }
+  }
 }
 // PR 102: knowledge without an ask. One line each, collapsed; swipe left (or x)
 // to dismiss for good; no "Mark as done" because there is nothing to do.
