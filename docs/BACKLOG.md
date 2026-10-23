@@ -89,6 +89,8 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C21 | ~~Rule-check failures were silent; job history was lost on every deploy~~ (2026-10-22 review). Closed by PR 143 (D118). | `pricing_service`, `scheduler` | P | P1 | PR 143 |
 | C22 | ~~The ledger wrote 140 of 440 trades at price 0 / ₪0~~ (2026-10-22 review). Closed by PR 147 (D120) for every new trade. **Open:** the 140 older rows are not rewritten (a production data repair, owner's call). | `ledger_service` | P | P2 | PR 147 |
 | C23 | ~~A broken build or job was silent~~ (2026-10-22 review). Closed by PR 144 (D121): boot check, job-health heads-up, app-health pushes. Open: a daily production smoke as a scheduled task (plan D-1). | `scheduler`, `push_service` | P | P1 | PR 144 |
+| C24 | **The book target still sizes the 2x/3x sleeves past the ceiling.** PR 148 stops every buy at 44%, but the target mix (40% TQQQ + 23% SOXL) still says 63%, so the Plan tab and drift measure against a share no buyer will reach. Cap geared sleeves at the ceiling in the book target and park the excess in the core (D125). | `sleeve_service`, `book target` | P | P2 | — |
+| C25 | ~~No ceiling on the 2x/3x share of the book~~ (2026-10-22 review). Closed by PR 148 (D125): `leveraged_ceiling_pct` 44; planners clip, executors refuse, the writer backstops, Today filters and offers a trim when over. | `leveraged_ceiling` | P | P1 | PR 148 |
 | C18 | **Auto re-arm for paused protective rules** (owner, 2026-10-23: heads-up first, auto re-arm later). Re-arm a paused downside rule after N days (a setting), never one already crossed (that is the PR 138 card's job). | `rules_service` | P | P2 | — |
 
 ## Security posture (verified 2026-10-08)

@@ -215,6 +215,9 @@ def plan_dict(plan, stats: dict, goal: dict | None = None) -> dict:
     base["thresholds_effective_card_floor_ils"] = round(_thr.card_floor_ils(float(nav or 0.0)), 2)
     base["thresholds_spec"] = {k: {"label": v[0], "detail": v[1], "min": v[2], "max": v[3]}
                                for k, v in _thr.SPEC.items()}
+    # PR 148: which funds `leveraged_ceiling_pct` counts (the 2x/3x set, not -1x).
+    from app.services.leveraged_ceiling import geared as _geared
+    base["leveraged_funds"] = sorted(_geared())
     return base
 
 

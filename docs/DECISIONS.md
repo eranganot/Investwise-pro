@@ -284,6 +284,16 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D125 · 2026-10-23 · No app buy takes the 2x/3x funds past 44% of the book.**
+  `leveraged_ceiling_pct` (a goal setting on the Card-thresholds sheet, default 44, 0 = none) caps the share of the book
+  in 2x/3x funds (`strategy_profile.GEARED`: the leveraged set without the -1x PSQ/SH). Planners clip their 2x/3x legs
+  to the headroom (Fund my sleeves shares one headroom across sleeves); executors refuse before their first sale
+  (`leveraged_ceiling.assert_within`, netting 2x/3x sold in the same trade); the book writer is the backstop; Today drops
+  a 2x/3x buy that does not fit and lists it as blocked, and over the ceiling offers one trim of the largest 2x/3x
+  holding. Your own rule's buy card stays and says it is over. Your own Holdings > Add is never refused. *Why:* the plan's
+  leveraged sleeves (40% TQQQ + 23% SOXL) are 63% of the book fully invested, and the 2x/3x bet cost the most this
+  month. Owner, 2026-10-23 ("44% (Recommended)"). *Not yet:* the book target still sizes those sleeves at 63%; parking
+  the excess in the core is a follow-up (BACKLOG C24). → PR 148
 - **D123 · 2026-10-23 · Two sleeves are the same bet when what they HOLD when invested moves together.**
   A third same-bet test beside shared market and the strategies' own correlation: the correlation of each sleeve's
   risk-on basket (`weights`, rebalanced daily), measured nightly (`invested_pairs`), against the same
