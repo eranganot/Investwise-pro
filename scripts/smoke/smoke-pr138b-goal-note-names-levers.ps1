@@ -4,6 +4,7 @@
 #
 #   1  the optimiser ceiling heads-up (when Today shows one) names a lever: a lower target
 #      return, a monthly deposit, a later deadline, or says none works with the rules armed
+#      and (PR 138c) does not then call the halving limit the only lever
 #   2  its action names the target, the deadline and the deposits as the owner's to set
 #   3  NOT CHANGED: it still quotes what the optimiser tried; it is still a heads-up (no Accept)
 #
@@ -29,6 +30,9 @@ foreach ($h in $heads) {
     if ($why -match "target return from|a month|deadline out by|no deposit and no later deadline") { Ok "names a lever" }
     elseif (-not $lv) { Skip "the stored solve has no levers to name" }
     else { Bad "the solve measured levers and the note names none" }
+    # PR 138c: a note that names a lever must not call the halving limit the only one.
+    if ($why -match "What would close the gap" -and $why -match "the one lever left") { Bad "says 'the one lever left' and then names another (PR 138c)" }
+    elseif ($why -match "What would close the gap") { Ok "no 'one lever left' beside a named lever" }
 }
 
 Sec "2  the action says whose levers they are"

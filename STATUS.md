@@ -50,7 +50,8 @@ history paths (same re-centred drift, seed and blocks, deposits, deadline, bar; 
 `below_benchmark` / `benchmark_line` are the one test and the one sentence: below the index, no target card and no
 "aim for N%/yr" in the goal cards' why, and the optimiser note says the book is not beating the index instead of
 offering a lower target; at or above it, the target lever stands and says the book is ahead. A solve stored before
-this build has no `benchmark`, and nothing changes until the next one.
+this build has no `benchmark`, and nothing changes until the next one. Merged with PR 138c: its "one lever" wording now
+switches only when the note names a lever ("What would close the gap"), not on the index sentence alone.
 
 **Verified.** 5 tests (`test_c26_the_goal_is_held_against_the_index.py`): the solve's benchmark, seeded and paired;
 no comparison without an index column; the sentence both ways; Today's target card suppressed below the index and
@@ -59,6 +60,73 @@ Postgres suite: 2,900 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
 benchmark on the stored solve: the build before). After deploy AND a solve on the new build: PROD_RESULT.
+## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
+
+**Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,
+and it is yours. What would close the gap: lower your target return from 30%/yr to 3.7%/yr ...". The first sentence was
+written when the halving limit WAS the only lever shown (PR 136b); PR 138b added a second without touching it. Now, when
+the note names a lever, the sentence reads "Changing that limit is one lever, and it is yours."; with no lever measured
+it is unchanged. Words only.
+
+**Verified.** `test_the_note_does_not_call_the_halving_limit_the_only_lever_when_it_names_another` builds the card end to
+end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: 2,896 passed, 0 failed.
+
+**Smoke.** `smoke-pr138b-goal-note-names-levers.ps1` section 1 now fails a note that does both. Production before
+(`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy: PROD_RESULT.
+## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
+
+**What.** `leveraged_ceiling_pct` (Card-thresholds sheet, default 44, 0 = none; owner 2026-10-23 "44% (Recommended)")
+caps the share of the book in 2x/3x funds (`strategy_profile.GEARED`, without the -1x PSQ/SH). New module
+`app/services/leveraged_ceiling.py` holds the one arithmetic (headroom = ceiling x NAV - 2x/3x held):
+- **Planners clip.** `_fund_sleeve` and `fund_plan` (one headroom shared by every sleeve, spent down in order) scale
+  their 2x/3x legs to the headroom; a sleeve with nothing left is `held_back` with `refused: LEVERAGED_CEILING`; the
+  preview's message names what the ceiling left unbought. Replacing the book with a basket over the ceiling is refused.
+- **Executors refuse before the first sale** (`assert_within`, netting 2x/3x sold in the same trade): funded sleeve,
+  buy_funded, fee swap; the cash card skips a leg that does not fit (like a stop hold).
+- **The writer backstops.** `buy_into_book` refuses an app buy that crosses the ceiling; `recording=True` (your
+  Holdings > Add) never is. An executor that checked passes `ceiling_checked=True`: mid-trade its sales are off the book
+  and their proceeds not yet in cash, so NAV measured in the writer is low by the sale (found by
+  `test_fund_my_sleeves_stops_the_2x_3x_part_at_the_ceiling`: the backstop refused a clipped plan at "67.8%").
+- **Today.** A 2x/3x buy that does not fit is dropped and listed under hidden cards as `blocked` with the reason; a
+  cash card's 2x/3x legs are clipped; your own rule's card stays and says it is over. Over the ceiling, one HIGH card
+  trims the largest 2x/3x holding by the excess (`apply: trim`). `OverCeiling` is a `HeldBack`, so Accept returns a 400.
+- `GET /plan` lists `leveraged_funds` (what the ceiling counts).
+
+**Not done (C24).** The book target still sizes the sleeves at 40% + 23%; the Plan tab and drift measure against a share
+no buyer will reach.
+
+**Live state before the merge:** 2x/3x funds are 17.5% of the book (TQQQ ₪3,467 of ₪19,820), so nothing changes on
+Today today; the ceiling bites when the TQQQ/SOXL sleeves are funded again.
+
+**Verified.** 11 tests in `test_pr148_leveraged_ceiling.py` (arithmetic, Today filter, trim card, writer, sleeve funding
+end to end, an AST guard that every app `buy_into_book` caller checks the ceiling). Two existing funding tests had
+geared books: they now run with the ceiling off for the mechanics they test, and the 64% test also asserts the default
+stops at 44.0%. Settings count 34 -> 35. Sleeve/funding subset 605 passed before those two were updated. Full Postgres
+suite: 2,902 passed, 1 failed: `test_p0_safety::test_an_unfundable_sleeve_abstains_with_a_reason` read
+`chosen_sleeve_pct` 44 for a 90% sleeve -- the funder measured "what you chose" after the ceiling clipped it, so the
+refusal said "You asked for a 44% sleeve". Fixed: chosen is before the clip, the shortfall is judged against the
+clipped plan (`ceiling_capped_pct`), and the reason names the ceiling. After the fix: that test and the sleeve/funding
+subset 622 passed.
+
+**Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
+the build before). After deploy: PROD_RESULT.
+
+## C18.1 — an automatic re-arm records the price it re-armed at
+
+**Root cause (observed).** After C18 deployed, `smoke-all` section 7 failed "no trigger_price": it reads the newest rule
+event, and the newest was C18's UGA re-arm (`rules_service.auto_rearm`, written with `trigger_price=None`). Ruled out: a
+firing without a quote (the newest *firing*, SMH, carries 523.35); a provider fault (every firing since has a price). Two
+faults: the event dropped a price it had in hand (the trail's new start), and the smoke treated a switch on/off as a firing,
+so a manual pause or resume would have failed it the same way.
+
+**Fix.** The re-arm event carries today's price. `smoke-all` checks the newest event that is a firing (not paused/resumed).
+Test: `test_c18_...::test_a_stop_off_for_longer_than_the_setting_comes_back_on` asserts the price. Full Postgres suite:
+2,892 passed, 0 failed. Ruff clean.
+
+**Smoke.** `smoke-c18-switched-off-protection-comes-back.ps1` section 3 now requires a price on re-arms after
+`-C181Since` (a NOTE before it). `smoke-all` against production with the fixed check: 22 passed, 3 failed (Gemini credits).
+After deploy (`df23a17`): **PASS 5 FAIL 0 SKIP 1** (UGA's re-arm predates C18.1, so its missing price is a NOTE);
+`smoke-all` **22 passed, 3 failed** (Gemini credits only; "no trigger_price" gone).
 
 ## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
 
@@ -77,7 +145,10 @@ main since, so the file was taken as it was.
 
 **Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
 the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
-After deploy: PROD_RESULT.
+After deploy (`eac1df4`): **PASS 6 FAIL 0 SKIP 0**. The live heads-up now ends "What would close the gap: lower your target
+return from 30%/yr to 3.7%/yr (about 24,316 by 2031, a 65% chance). With your protective rules armed the model finds no
+deposit and no later deadline that reaches the bar; on the plain history basis ... about 591 a month more would." Read
+live, it contradicts the sentence before it ("Changing that limit is the one lever left"): fixed in PR 138c.
 
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
@@ -108,7 +179,7 @@ back a stop the owner forgot.
 Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
-`rearm_after_days`: the build before). After deploy: PROD_RESULT.
+`rearm_after_days`: the build before). After deploy (`302e279`): **PASS 5 FAIL 0 SKIP 1**: the UGA trailing stop, off since 10-20 14:21 UTC, re-armed at the 18:20 UTC check (trail restarts from today); no downside rule off past 3 days; the SKIP is honest (no switched-off rule is crossed). `smoke-all` 21/4: the Gemini 3, plus "no trigger_price" -- the newest event was this re-arm, written with no price. Fixed in C18.1.
 
 **Also today (owner items, plan §3).**
 - **PR 147.1 repair applied by the owner** (20:45 Israel time): 87 measured rows repriced, 27 estimates left as chosen.

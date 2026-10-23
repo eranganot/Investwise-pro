@@ -91,3 +91,36 @@ async def test_the_goal_note_names_the_index_instead_of_a_lower_target(monkeypat
     t = await bo._lever_sentence(None, None, {"on_track_pct": 65.0})
     assert "lower your target" not in t
     assert "18.2%/yr" in t and "not beating it" in t and "with your protective rules armed" in t
+
+
+async def test_with_only_the_index_line_the_halving_limit_is_still_the_one_lever(monkeypatch):
+    """PR 138c's swap must not fire on the index sentence alone (it names no lever)."""
+    from app.services import book_optimizer as bo
+    from app.services import sleeve_service as sv
+    from types import SimpleNamespace
+    d = {"goal": {"roi_pct": 30, "deadline": "2031-12-31"},
+         "levers": {"roi_at_confidence_pct": 3.7, "amount_at_confidence": 24316,
+                    "extra_monthly_ils": 500, "deadline_extra_years": None}, "benchmark": BM_ABOVE}
+
+    async def _latest(session, user):
+        return SimpleNamespace(detail=d)
+    res = {"ok": True, "held": {}, "steps": [], "candidates_tried": 12, "on_track_pct": 65.0,
+           "halve_limit_pct": 30.0, "after": {"p_goal_pct": 0.3},
+           "before": {"p_goal_pct": 0.2, "p_goal_without_rules_pct": 21.3, "p_halve_without_rules_pct": 57.2}}
+
+    async def _load(session, user):
+        return res
+
+    async def _none(session, user):
+        return []
+    monkeypatch.setattr(fs, "latest", _latest)
+    monkeypatch.setattr(bo, "load", _load)
+    monkeypatch.setattr(sv, "list_sleeves", _none)
+    [c] = await bo.card(None, None)                    # a deposit lever: "one lever"
+    assert "not beating it" in c["why"] and "add about 500 a month" in c["why"]
+    assert "Changing that limit is one lever" in c["why"]
+    d["levers"]["extra_monthly_ils"] = None
+    d["tail"] = {"before": {"extra_monthly_needed": None}}
+    [c] = await bo.card(None, None)
+    assert "not beating it" in c["why"] and "What would close the gap" not in c["why"]
+    assert "Changing that limit is the one lever left" in c["why"]

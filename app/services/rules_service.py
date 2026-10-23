@@ -654,7 +654,9 @@ async def auto_rearm(session: AsyncSession, user: User, idx: dict, nav: float) -
         r.active = True
         r.triggered = False
         session.add(RuleEvent(subject=user.email, rule_id=str(r.id), ticker=r.ticker,
-                              rule_type=r.rule_type, trigger_price=None, target_price=None,
+                              # C18.1: the price it was re-armed at (the trail's new start).
+                              rule_type=r.rule_type, trigger_price=(float(pos["price"]) if pos.get("price") else None),
+                              target_price=None,
                               title=(f"Re-armed automatically: {r.ticker} {r.rule_type.replace('_', ' ')} "
                                      f"(off {days:g}+ days)")[:200],
                               outcome="resumed", outcome_at=now,
