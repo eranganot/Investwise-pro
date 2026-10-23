@@ -64,7 +64,7 @@ back a stop the owner forgot.
 - 0 = never;
 - the setting is on the sheet.
 
-Full Postgres suite: GATE_RESULT.
+Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
 `rearm_after_days`: the build before). After deploy: PROD_RESULT.
