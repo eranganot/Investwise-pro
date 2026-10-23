@@ -70,7 +70,7 @@ your own Holdings > Add (`recording=True`) still records a 2x/3x purchase.
 
 **Tests.** `tests/test_pr141_one_bet_one_hold.py` (8): the group and what is outside it; the refusal text; load-basket and
 Fund-my-sleeves on the TQQQ sleeve after a SOXL stop; a card buy and the writer backstop refused, a manual entry recorded,
-the block gone once the SOXL hold ends; the held-cash card's places; no top-up card. Ruff clean. Full Postgres suite: GATE_RESULT.
+the block gone once the SOXL hold ends; the held-cash card's places; no top-up card. Ruff clean. Full Postgres suite: **2,851 passed, 0 skipped, 0 failed**.
 
 **Smoke.** `scripts/smoke/smoke-pr141-one-bet-one-hold.ps1`. Against production BEFORE the merge (`9d5a9f7`): **PASS 6 FAIL 3**,
 the bug itself (TQQQ funded in the preview; TQQQ offered; nothing said about the other funds). Against the locally served
