@@ -4,12 +4,12 @@
 #
 #   1  the setting is on the plan (Card-thresholds sheet): rearm_after_days, default 3
 #   2  no downside rule has been off longer than the setting (+1 h for the 30-min check), unless it is crossed
-#   3  every automatic re-arm left a rule event by "auto" with its reason
+#   3  every automatic re-arm left a rule event by "auto" with its reason and (C18.1) its price
 #   4  NOT CHANGED: a crossed rule that is off is still off (PR 138's card), and still listed
 #
 # READ-ONLY. ASCII ONLY.
 
-param([string]$Sha, [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
+param([string]$Sha, [string]$BaseUrl = "https://investwise-pro-production.up.railway.app", [string]$C181Since = "2026-10-23T18:40:00Z")
 . "$PSScriptRoot\_smoke-common.ps1"
 Start-Smoke "C18"
 $haveKey = [bool]$script:ApiHeaders['x-agent-key']
@@ -55,6 +55,10 @@ if ($auto.Count -eq 0) { Skip "no automatic re-arm yet" }
 foreach ($e in $auto) {
     if ($e.action.off_since -and $e.action.after_days) { Ok ("{0} {1} re-armed at {2} (off since {3})" -f $e.ticker, $e.rule_type, $e.outcome_at, $e.action.off_since) }
     else { Bad ("{0} {1} re-armed with no reason recorded" -f $e.ticker, $e.rule_type) }
+    # C18.1: the event records the price it re-armed at. Re-arms before C18.1 deployed have none.
+    if ($e.trigger_price) { Ok ("{0} re-armed at price {1}" -f $e.ticker, $e.trigger_price) }
+    elseif ((Utc $e.outcome_at) -lt (Utc $C181Since)) { Note ("{0}: re-armed before C18.1, no price recorded" -f $e.ticker) }
+    else { Bad ("{0} re-armed with no price recorded" -f $e.ticker) }
 }
 
 Sec "4  not changed: a crossed rule stays off"

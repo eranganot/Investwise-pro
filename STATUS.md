@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C18: protection comes back on). Last product PR: **C18**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C18.1: a re-arm records its price). Last product PR: **C18.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,22 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## C18.1 — an automatic re-arm records the price it re-armed at
+
+**Root cause (observed).** After C18 deployed, `smoke-all` section 7 failed "no trigger_price": it reads the newest rule
+event, and the newest was C18's UGA re-arm (`rules_service.auto_rearm`, written with `trigger_price=None`). Ruled out: a
+firing without a quote (the newest *firing*, SMH, carries 523.35); a provider fault (every firing since has a price). Two
+faults: the event dropped a price it had in hand (the trail's new start), and the smoke treated a switch on/off as a firing,
+so a manual pause or resume would have failed it the same way.
+
+**Fix.** The re-arm event carries today's price. `smoke-all` checks the newest event that is a firing (not paused/resumed).
+Test: `test_c18_...::test_a_stop_off_for_longer_than_the_setting_comes_back_on` asserts the price. Full Postgres suite:
+GATE_RESULT.
+
+**Smoke.** `smoke-c18-switched-off-protection-comes-back.ps1` section 3 now requires a price on re-arms after
+`-C181Since` (a NOTE before it). `smoke-all` against production with the fixed check: 22 passed, 3 failed (Gemini credits).
+After deploy: PROD_RESULT.
+
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
 **Why (owner, 2026-10-23: heads-up first, auto re-arm later; "3 days").** On 10-22 about twenty stops were found off
@@ -67,7 +83,7 @@ back a stop the owner forgot.
 Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
-`rearm_after_days`: the build before). After deploy: PROD_RESULT.
+`rearm_after_days`: the build before). After deploy (`302e279`): **PASS 5 FAIL 0 SKIP 1**: the UGA trailing stop, off since 10-20 14:21 UTC, re-armed at the 18:20 UTC check (trail restarts from today); no downside rule off past 3 days; the SKIP is honest (no switched-off rule is crossed). `smoke-all` 21/4: the Gemini 3, plus "no trigger_price" -- the newest event was this re-arm, written with no price. Fixed in C18.1.
 
 **Also today (owner items, plan §3).**
 - **PR 147.1 repair applied by the owner** (20:45 Israel time): 87 measured rows repriced, 27 estimates left as chosen.
