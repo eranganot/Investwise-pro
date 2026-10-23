@@ -1908,7 +1908,9 @@ async def build_recommendations(session: AsyncSession, user: User,
                                           if k in ("sells_ils", "sleeve_trim_ils",
                                                    "sleeve_trim_from_ils",   # C15: from where
                                                    "cash_used_ils", "buys_ils",
-                                                   "tax_ils", "shortfall_ils")}},
+                                                   "tax_ils", "shortfall_ils",
+                                                   # C27: how much a stop hold blocks
+                                                   "sleeve_short_ils", "sleeve_short_blocked_ils")}},
                     })
                     recs[-1]["audit_trail"] = audit_for("allocation", raw_data={
                         "core_strategy_id": _core_id,
@@ -7288,6 +7290,21 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     # A basket leg is never deferred: that is core money doing its job.
     deferred: list[dict] = []
     unfunded_ils = 0.0
+    # C27 (owner, 2026-10-23: "into the core"). Only a gap the app may BUY has
+    # first claim. A ticker under a stop hold (PR 139; with PR 141 every 2x/3x
+    # fund once one is stopped) cannot be bought, and `book_target` already gives
+    # its share to the core -- reserving core money for it froze both: live
+    # 10-23, ₪3,510 of off-basket holdings kept for SOXL/TQQQ while the QQQ and
+    # SMH bands fired with "nothing to execute".
+    from app.services import buyback_hold as _bh27
+    _blocked27 = set(_bh27.stop_held(await _bh27.load(session, user)))
+    blocked_ils = 0.0
+    for s in (occ.get("sleeves") or []):
+        _tbt = s.get("target_by_ticker") or {}
+        _hbt = s.get("held_by_ticker_ils") or {}
+        for _tk, _w in _tbt.items():
+            if _tk.upper() in _blocked27:
+                blocked_ils += max(0.0, float(_w) * nav - float(_hbt.get(_tk, 0.0)))
     for s in (occ.get("sleeves") or []):
         # Same key mistake as the loop above, and it is why PR 60 shipped with
         # the deferral silently dead: unfunded_ils came to 0.00 on a book with a
@@ -7298,6 +7315,8 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         gap = float(s.get("target_pct") or 0.0) - float(s.get("held_pct") or 0.0) * 100.0
         if gap > 0:
             unfunded_ils += gap / 100.0 * nav
+    _short_all = unfunded_ils
+    unfunded_ils = max(0.0, unfunded_ils - blocked_ils)
     if unfunded_ils >= core_realign.MIN_LEG_ILS:
         for tk in sorted(held):
             if tk in {t.upper() for t in basket}:
@@ -7328,6 +7347,9 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
     out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}
     out["sleeve_trim_from_ils"] = {t: round(v, 2) for t, v in sorted(trim_from.items())}
+    # C27: the sleeve shortfall, and the part of it a stop hold blocks (not reserved).
+    out["sleeve_short_ils"] = round(_short_all, 2)
+    out["sleeve_short_blocked_ils"] = round(min(blocked_ils, _short_all), 2)
     return out
 
 

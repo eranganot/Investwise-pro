@@ -335,6 +335,9 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
             # C15: what this sleeve holds of each ticker (shared tickers split as
             # above), so a trim can come from THIS sleeve's holdings only.
             "held_by_ticker_ils": {tk: round(v, 2) for tk, v in sorted(by_tk.items()) if v > 0},
+            # C27: what this sleeve wants of each ticker (share of NAV), so a reader
+            # can tell which part of a gap the app may actually buy.
+            "target_by_ticker": {tk: round(w, 6) for tk, w in sorted(targets.items())},
             "held_pct": held_pct,
             # BOTH SIDES IN PERCENT. This read `target_pct - held_pct`, and
             # those are not the same unit: `target_pct` is 0-100 (33.09 means

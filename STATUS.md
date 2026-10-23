@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C26: the goal vs the index). Last product PR: **C26**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C27: a blocked sleeve no longer freezes the core). Last product PR: **C27**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,38 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## C27 — money a stop-held sleeve cannot use is no longer frozen out of the core (D127)
+
+**Reported** (owner, 2026-10-23 23:50): "Currently I have two triggered rules but no recommendation on how to act."
+
+**Root cause (observed on `332deff`).** The two rules are rebalance bands on QQQ and SMH, both shown as heads-ups with
+`apply: none` ("the plan has nothing over target to fund it and no cash above the floor").
+- The SOXL stop (10-23 05:45) left a stop hold that, since PR 141, blocks every 2x/3x fund. `book_target` gives the
+  share the blocked sleeves cannot use to the core: core 37% -> 58% of the book (`core_pct` 0.5793; planned sleeve
+  targets TQQQ 28.4 / SOXL 23 / QQQ 11.6, of which only QQQ and TQQQ's held 17.4% remain as sleeve targets).
+- The core (Diversified Global Growth) is 25% QQQ and 15% SMH, so their plan targets rose from 7.2% / 3.9% (the values
+  in the rules' notes) to 26.1% / 8.7%; QQQ (11.6%) and SMH (4.3%) fell below the bands without moving.
+- `_core_plan`'s PR 60 deferral reserved every off-basket holding (GOOGL ₪1,752, XOM ₪922, XLE ₪475, BND ₪314, BIL ₪41,
+  UGL ₪6) because "your sleeves are about ₪6,728 short". That ₪6,728 is the SOXL sleeve (23 points, ~₪4,550) plus the
+  TQQQ part of the vol-target sleeve (~₪2,180): exactly the purchases the stop hold refuses. So the core card could
+  only spend ₪455 of cash on QQQ, and the bands, measuring cash above the floor, had nothing.
+- **Ruled out:** a price move (QQQ and SMH unchanged; the targets moved); a failed job (`degraded` empty); the PR 148
+  ceiling (2x/3x at 17.4%, under 44%); muted cards (the hidden list holds neither band).
+- **Why silent:** each card was right by its own inputs; the two disagreed about where the blocked money belongs.
+
+**Fix.** The deferral subtracts the part of each sleeve's gap that sits on a stop-held ticker
+(`sleeve_occupancy` now emits `target_by_ticker`); the core card reports `sleeve_short_ils` and
+`sleeve_short_blocked_ils`. Owner decision (D127): "Into the core". With the live book that lets the core card sell the
+off-basket names and buy the basket (QQQ, SMH, ...), each leg and its tax shown before Accept.
+
+**Verified.** `test_c27_a_blocked_sleeve_does_not_freeze_the_core.py`: the live shape (a fired SOXL stop on two 2x/3x
+sleeves, GOOGL off-basket, Diversified Global Growth core) reserves GOOGL on `332deff` and sells it with the fix; with
+no hold an unfunded sleeve keeps first claim. Core/card/sleeve subset 438 passed. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-c27-blocked-sleeve-frees-the-core.ps1`. Production before (`332deff`): **PASS 3 FAIL 3**,
+the gap itself (no blocked figure; holdings reserved with nothing buyable; QQQ and SMH bands with nothing to execute).
+After deploy: PROD_RESULT. Left: C28, the band notes still quote the target from when they were armed.
 
 ## C26 — the goal is held against a US stock index fund (D126)
 
