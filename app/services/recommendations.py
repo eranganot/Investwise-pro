@@ -415,6 +415,79 @@ _SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 _DONE_SETTLE_DAYS = 3
 
 
+def _sleeve_name(strategy_id: str | None) -> str:
+    if not strategy_id:
+        return ""
+    try:
+        from app.services.strategy_catalog import CATALOG
+        for c in CATALOG:
+            if c.get("id") == strategy_id:
+                return str(c.get("name") or "")
+    except Exception:  # noqa: BLE001 -- a name is decoration, never a reason to fail
+        pass
+    return ""
+
+
+def sleeve_blockers(headsups: list[dict]) -> list[dict]:
+    """Notices that must not be quiet: a sleeve the app cannot top up.
+
+    Built only from what the funder's own preview said (`meta.blocker`), so the
+    banner can never claim more than the refusal does. `choices` are the two things
+    the user can actually do; neither moves money (DELETE /plan/sleeves/{id} stops
+    steering toward the sleeve and sells nothing).
+    """
+    out: list[dict] = []
+    for h in headsups or []:
+        card = h.get("card") or {}
+        b = (card.get("meta") or {}).get("blocker")
+        if not b:
+            continue
+        sid = b.get("strategy_id")
+        name = _sleeve_name(sid)
+        tk = b.get("ticker") or ""
+        label = f"{name} ({tk})" if name else tk
+        out.append({
+            "id": h.get("id"), "kind": "sleeve_unfundable", "severity": "HIGH",
+            "title": f"You can't act on the {label} sleeve",
+            "line": (f"{tk} is {b.get('actual_pct'):.0f}% of the book against the {b.get('chosen_pct'):.0f}% "
+                     f"you chose, and the app cannot top it up: buying about {b.get('amount_ils'):,.0f} ILS "
+                     f"would move your book away from your plan."),
+            "reason": b.get("reason") or "",
+            "strategy_id": sid, "ticker": tk, "sleeve_name": name,
+            "amount_ils": b.get("amount_ils"),
+            "choices": [
+                {"kind": "open_plan", "label": "Open my plan"},
+                *([{"kind": "drop_sleeve", "label": "Drop this sleeve",
+                    "strategy_id": sid,
+                    "confirm": (f"Stop running the {label} sleeve?\n\nNothing is sold and nothing is bought. "
+                                f"The app stops steering your book toward this sleeve.")}] if sid else []),
+            ],
+        })
+    return out
+
+
+def settle_mutes(dismissed: set, completed: set, *, refired: set, persistent: set,
+                 stale_high: set, moved: set) -> tuple[set, set]:
+    """Which marks still hide a card, after every reason a mute can lapse.
+
+    PR 138 (2026-10-22). `persistent` marks a card that describes a STANDING
+    condition it cannot itself resolve, so filing it as DONE says something
+    untrue and must not bury it. That protection is for the DONE set only.
+
+    It used to be subtracted from the ignored set as well, which made Ignore a
+    button that returned 200, wrote its mark, and changed nothing on screen --
+    observed live on the "Safer, lower chance" sleeve-move card (rec_0164ed):
+    `POST .../dismiss -> 200`, card still on Today, not listed as hidden. Ignore
+    is a statement about the user's attention, not about the book, so no
+    property of the card may override it. The only things that un-mute an
+    ignored card are a re-fired rule, a card that moved on (amount / severity),
+    and the TTL.
+    """
+    dismissed = set(dismissed) - set(refired) - set(moved)
+    completed = set(completed) - set(refired) - set(stale_high) - set(persistent) - set(moved)
+    return dismissed, completed
+
+
 def moved_on(entry, card: dict, *, done: bool = False) -> str | None:
     """Why this card's mute no longer applies, or None if it still does.
 
@@ -2067,6 +2140,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                 if _hs:
                     _c, _w = await _decision_recommendation(session, user, _hs[0]["strategy_id"], _t)
                     _sleeve_notes[_t] = f"Sleeve holding: its own rule decides. {_w}"
+        recs += _off_stop_and_big_move_recs(rows, snap, _user_rules, _cl)
         _trig = getattr(plan, "cash_redeploy_at_ils", None) if plan is not None else None
         _review, _rcards = _holding_review_recs(
             rows, snap, _cl, _meas, _sleeve_notes, _cash_ils,
@@ -2704,6 +2778,18 @@ async def build_recommendations(session: AsyncSession, user: User,
                                              "No brokerage order is placed either way"]
                         _held_back["apply"] = {"kind": "none"}
                         _held_back["meta"]["held_back"] = _no or str(_pv.get("error") or "")
+                        # PR 138: a one-line Heads-up in a collapsed list is too quiet
+                        # for "you cannot act on this sleeve". Eran, 2026-10-22: "I
+                        # want a bold and strong notification that I can't act on this
+                        # sleeve and I need to drop this sleeve." The structured facts
+                        # ride on the card; `sleeve_blockers` turns them into the
+                        # banner at the top of Today.
+                        _sid_b = recs[-1]["apply"].get("strategy_id") if isinstance(recs[-1].get("apply"), dict) else None
+                        _held_back["meta"]["blocker"] = {
+                            "ticker": _tk, "amount_ils": round(float(_amount), 2),
+                            "chosen_pct": round(_target_pct, 1), "actual_pct": round(_actual_pct, 1),
+                            "reason": _no or str(_pv.get("error") or ""),
+                            "strategy_id": (_wanted_by.get(_tk) or [None])[0]}
                 # PR 135c (wave 4): an overweight position is a CHOICE -- trim it
                 # back, or raise the sleeve to what you hold -- with the goal
                 # model's recommendation. One card per position, as before.
@@ -3050,8 +3136,9 @@ async def build_recommendations(session: AsyncSession, user: User,
             if _why:
                 _moved[_rid_] = _why
 
-        dismissed = dismissed - _refired - _persistent - set(_moved)
-        completed = completed - _refired - _stale_high - _persistent - set(_moved)
+        dismissed, completed = settle_mutes(
+            dismissed, completed, refired=_refired, persistent=_persistent,
+            stale_high=_stale_high, moved=set(_moved))
 
         # A CARD THAT COMES BACK MUST SAY WHY IT CAME BACK. Reappearing without
         # explanation reads as the app having forgotten you dealt with it, which
@@ -3189,6 +3276,11 @@ async def build_recommendations(session: AsyncSession, user: User,
         _hu_gone = await _hu.dismissed(session, user)
     except Exception:  # noqa: BLE001 -- a store hiccup shows them, never hides cards
         _hu_gone = set()
+    # PR 138: a refusal the user must act on is not dismissible knowledge. It is
+    # read off the heads-ups BEFORE the dismissed ones are removed, so swiping the
+    # one-liner away cannot silence it; it ends when the sleeve becomes fundable or
+    # is dropped (the card is then simply not generated).
+    blockers = sleeve_blockers(headsups)
     headsups = [h for h in headsups if h["id"] not in _hu_gone]
 
     rule_banner = {"triggered": [], "carded": [], "blocked": [], "healed": [],
@@ -3254,6 +3346,7 @@ async def build_recommendations(session: AsyncSession, user: User,
             # PR 102: knowledge without an ask -- bottom of Today, above the
             # Holding review (D2), collapsed.
             "headsups": headsups, "headsups_dropped": _dropped,
+            "blockers": blockers,
             # PR 103: "Your goal", said once above the goal cards.
             "goal_summary": next((r["goal_summary"] for r in recs if r.get("goal_summary")), None),
             "goal_summary_head": next((r["goal_summary_head"] for r in recs if r.get("goal_summary_head")), None),
@@ -3710,6 +3803,85 @@ def _float_or_none(v):
     except (TypeError, ValueError):
         return None
     return x if x > 0 else None
+
+
+#: One-day move, in percent, at which a holding earns a line of its own.
+_BIG_DAY_MOVE_PCT = 10.0
+
+
+def _off_stop_and_big_move_recs(rows, snap, rules: list[dict], closes_by_ticker: dict) -> list[dict]:
+    """2026-10-22 -- "why was there no card while my portfolio dropped?"
+
+    Read live: SOXL fell 20% in a session and the app said nothing, because
+    (a) its stop-loss was switched OFF while the price sat below it -- an
+    inactive rule never raised a card -- and (b) no card looked at a single
+    day's move at all.
+
+    Facts only; nothing here says sell or keep.
+      * a stop-loss / trailing stop that is OFF and whose condition is TRUE now
+        -> one card whose Accept switches it back on (`edit_rule`, which re-arms);
+      * a holding that moved `_BIG_DAY_MOVE_PCT`% or more in a day -> a heads-up
+        (`apply: none`, so it is split into Heads-up, never an Accept that does
+        nothing).
+    """
+    out: list[dict] = []
+    nav = float(snap.get("nav") or 0.0)
+    weights = snap.get("exposure_ticker") or {}
+    seen: set[str] = set()
+    for r in rules or []:
+        if r.get("active") or r.get("rule_type") not in ("stop_loss", "trailing_stop"):
+            continue
+        if not r.get("breached_now") or not r.get("ticker") or not r.get("id"):
+            continue
+        tk = str(r["ticker"]).upper()
+        if tk in seen:
+            continue
+        seen.add(tk)
+        price = r.get("current_price")
+        target = r.get("target") if r.get("target") is not None else r.get("level")
+        try:
+            price_s = f"{float(price):,.2f}"
+            target_s = f"{float(target):,.2f}"
+        except (TypeError, ValueError):
+            continue
+        value = round(float(weights.get(tk, 0.0)) * nav, 2)
+        out.append({
+            "id": _rid("stop_off", tk), "dimension": "holding", "severity": "HIGH",
+            "title": f"Your {tk} stop is switched off and the price is below it",
+            "action": (f"You set a stop on {tk} at {target_s}. The price is {price_s}, so it "
+                       f"would have fired -- but the rule is OFF, so the app has stayed silent. "
+                       f"Switching it on makes it act on its next check: it will raise its "
+                       f"sell card for {tk} (about {_ils(value)}). Nothing is sold by switching it on."),
+            "how": [f"Accept switches the {tk} stop back on",
+                    "Ignore leaves it off -- the app will not warn you about this price again until it changes"],
+            "est_amount": value,
+            "apply": {"kind": "edit_rule", "target_rule_id": str(r["id"])},
+            "meta": {"ticker": tk, "rule_id": str(r["id"]), "price": float(price),
+                     "stop_level": float(target), "rule_active": False}})
+    for tk, cl in sorted((closes_by_ticker or {}).items()):
+        held = [p for p in rows if (p.ticker or "").upper() == tk]
+        if not held or len(cl) < 2:
+            continue
+        price = float(held[0].current_price or 0.0)
+        if price <= 0 or not cl[-1] or not cl[-2]:
+            continue
+        move = (price / float(cl[-1]) - 1.0) * 100.0
+        if abs(move) < 0.5:
+            move = (float(cl[-1]) / float(cl[-2]) - 1.0) * 100.0
+        if abs(move) < float(_setting("big_day_move_pct", _BIG_DAY_MOVE_PCT)):
+            continue
+        w = float(weights.get(held[0].ticker, 0.0)) * 100.0
+        up = move > 0
+        out.append({
+            "id": _rid("big_day", tk), "dimension": "holding", "severity": "MEDIUM",
+            "title": f"{tk} {'rose' if up else 'fell'} {abs(move):.0f}% in a day",
+            "action": (f"{tk} is {w:.1f}% of your book and moved {move:+.1f}% against its last close. "
+                       "This is a heads-up with no action attached: the app is not telling you to "
+                       "sell or to keep it."),
+            "how": ["Check whether your stop and plan still say what you want for it"],
+            "est_amount": round(abs(move), 1), "apply": {"kind": "none"},
+            "meta": {"ticker": tk, "day_move_pct": round(move, 2), "weight_pct": round(w, 2)}})
+    return out
 
 
 def _profit_recs(rows, snap, rules: list[dict], targets: dict | None = None) -> list[dict]:

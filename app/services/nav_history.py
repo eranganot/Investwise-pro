@@ -639,6 +639,51 @@ async def record_health_for(session, user) -> dict:
     return {"ok": True, "score": round(_score)}
 
 
+def provisional_point(points: list[dict], twr: dict, *, live_nav: float, live_positions: int,
+                      today: str, flows: list[dict] | None, traded) -> tuple[dict | None, str | None]:
+    """Today-so-far, as ONE extra point at the end of the line. (PR 138)
+
+    The recorded series ends at the last snapshot, so the line can rise on the
+    last recorded days while the live total on the same screen is already lower.
+    Observed 2026-10-22: the chart's last point was 10-21 at 21,122.55 (-9.9%)
+    while the live book read 19,675 after a -20% day in SOXL. Both were right;
+    nothing on the screen said the chart stops yesterday.
+
+    This returns a clearly-provisional point -- live prices against the last
+    snapshot -- only when that comparison is an honest one:
+
+      * the last snapshot is from an earlier day (today's own is already a point);
+      * the book has the same number of holdings (a different count is a change
+        of shape this arithmetic cannot separate from the market);
+      * no trade and no deposit/withdrawal since that snapshot;
+      * the series does not end in a hole.
+
+    Otherwise it returns a reason instead, and the chart draws nothing extra: a
+    gap is honest, an invented number is not. It is never written to the database.
+    """
+    if not points or not twr.get("pct"):
+        return None, "no recorded series"
+    last = points[-1]
+    last_day = str(last["as_of"])
+    if last_day >= today:
+        return None, "today is already recorded"
+    if twr["pct"][-1] is None:
+        return None, "the last recorded day could not be measured"
+    if int(live_positions) != int(last.get("positions") or 0):
+        return None, "the number of holdings changed since the last snapshot"
+    if abs(net_flow_between(flows or [], last_day, today)) >= 0.005:
+        return None, "money moved in or out since the last snapshot"
+    if traded(last_day, today):
+        return None, "a trade was recorded since the last snapshot"
+    base = float(last.get("nav_ils") or 0.0)
+    if base <= 0 or float(live_nav or 0.0) <= 0:
+        return None, "no usable value"
+    pct = round(((1.0 + float(twr["pct"][-1]) / 100.0) * (float(live_nav) / base) - 1.0) * 100.0, 4)
+    return {"as_of": today, "nav_ils": round(float(live_nav), 2), "pct": pct,
+            "since": last_day, "basis": "live prices against the last snapshot",
+            "label": "today so far"}, None
+
+
 async def series_for(session, user, *, range_key: str = "1M") -> dict:
     """The recorded history, as a time-weighted percentage series."""
     from sqlalchemy import select
@@ -738,6 +783,20 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
     twr = time_weighted(points, flows, window_return=window_return,
                         window_reason=window_reason, traded=traded)
 
+    # PR 138: today-so-far, labelled, never stored. A failure here costs the
+    # chart its extra point and nothing else.
+    provisional, provisional_reason = None, "not computed"
+    try:
+        from app.services.intake_service import list_positions
+        from app.services.strategy_service import _snapshot
+        _rows = await list_positions(session, user)
+        provisional, provisional_reason = provisional_point(
+            points, twr, live_nav=float(_snapshot(_rows).get("nav") or 0.0),
+            live_positions=len(_rows), today=datetime.now(timezone.utc).date().isoformat(),
+            flows=flows, traded=traded)
+    except Exception:  # noqa: BLE001 -- the recorded line stands without it
+        logger.warning("nav history: provisional point unavailable", exc_info=False)
+
     # The benchmark, over the same dates and the same measured steps. Its own
     # closes -- never `performance()`'s `benchmark_index`, which is aligned to a
     # DIFFERENT portfolio series. See `benchmark_series`.
@@ -797,6 +856,8 @@ async def series_for(session, user, *, range_key: str = "1M") -> dict:
         # the chart then draws one line rather than a second one it cannot
         # stand behind.
         "benchmark": benchmark,
+        # Today so far (PR 138): one provisional point, or null with the reason.
+        "provisional": provisional, "provisional_reason": provisional_reason,
         "gaps": gaps(points),
         "engine_version": SNAPSHOT_VERSION,
         "window": {"start": twr["dates"][0], "end": twr["dates"][-1],

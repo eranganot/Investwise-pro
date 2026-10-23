@@ -284,6 +284,13 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D113 · 2026-10-22 · A protective stop that is OFF while its condition is true is a card; a big one-day move is only a heads-up.** Accept
+  re-arms the stop (nothing is sold). The text states facts and never says sell or keep. → PR 138
+- **D112 · 2026-10-22 · The chart's last point may be a labelled provisional one**, only when live value versus the last snapshot is a fair
+  comparison; otherwise it says why and draws nothing. → PR 138
+- **D111 · 2026-10-22 · A sleeve the funder refuses is a red blocker on Today** with two choices (open the plan / drop the sleeve; dropping sells nothing),
+  and swiping the heads-up does not hide it. → PR 138
+- **D110 · 2026-10-22 · Ignore is never overruled by a card property.** `persistent` protects a card from Done only. → PR 138
 - **D109 · 2026-10-22 · A sleeve top-up takes every swap inside the class it buys before any sale from another class.** *Why:* tax-only
   ranking on a book at its class targets sold a Commodities loser to fund an Equities sleeve and the drift gate refused the plan. → PR 137
 - **D108 · 2026-10-22 · A card previews the funder before it offers Accept.** If the dry-run is refused, the card is a Heads-up

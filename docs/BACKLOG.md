@@ -78,6 +78,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
 | C15 | Core realign (`core_to_basket`, rec_f6f017) keeps selling TQQQ right after sleeve top-ups (net TQQQ ledger -991 since 10-14). Cause unexplained; `trim_sleeves` leg is sized from sleeve overshoot. | `core_realign` | I | P2 | — |
+| C16b | Why were the SOXL, TQQQ and QQQ stop-losses switched OFF? The audit log has no toggle for 5 of 6 rules (PR 138 root cause 4, unproven). Check what writes `active=false` (evaluator retire path, sleeve apply, re-arm on fill). | `rules_service` | I | P2 | — |
 | C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |
 
