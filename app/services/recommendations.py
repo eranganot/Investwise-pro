@@ -2173,6 +2173,13 @@ async def build_recommendations(session: AsyncSession, user: User,
         logger.warning("holding review failed", exc_info=True)
         degraded.append("holding_review")
     _tm.mark("holding_review")
+    # PR 143: a rule check that failed, or has not run, is on Today -- the job
+    # record alone is read by no one.
+    try:
+        from app.worker.scheduler import job_state as _js
+        recs += _rule_check_headsup(_js(), _user_rules)
+    except Exception:  # noqa: BLE001 - reporting must never cost Today
+        logger.warning("rule-check heads-up failed", exc_info=True)
     # The FLOOR above is the plan (a cap may not sit below the planned sleeve);
     # the SHARE the cash card sizes buys against honours a take-profit hold.
     if _holds_active and _sleeve_share:
@@ -3845,6 +3852,53 @@ def _protection_off_headsup(rules: list[dict], *, carded: set[str]) -> list[dict
         "est_amount": None, "apply": {"kind": "none"},
         "headsup_act": {"label": f"Re-arm all {n}", "apply": {"kind": "rearm_rules", "rule_ids": ids}},
         "meta": {"headsup_kind": "protection_off", "rule_ids": ids}}]
+
+
+RULE_CHECK_STALE_MIN = 75      # the check runs every 30 minutes; two missed runs is news
+
+
+def _rule_check_headsup(state: dict, rules: list[dict], now=None) -> list[dict]:
+    """PR 143 -- your rules were not checked, said where you look.
+
+    The rules are checked only inside the 30-minute price job. Its failures used to
+    be a log line and a green job; now the job fails with the reason, and this
+    turns that record into one heads-up: the last check failed, or none has
+    succeeded for `RULE_CHECK_STALE_MIN` minutes. Only while the scheduler runs
+    and you have an armed rule -- with nothing armed there is nothing to miss.
+    """
+    from datetime import datetime, timezone
+    if not (state or {}).get("scheduler_running"):
+        return []
+    if not any(r.get("active") and r.get("rule_type") != "buy_back" for r in rules or []):
+        return []
+    st = ((state or {}).get("history") or {}).get("price_refresh") or {}
+    now = now or datetime.now(timezone.utc)
+
+    def _ts(v):
+        try:
+            d = datetime.fromisoformat(str(v))
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        except Exception:  # noqa: BLE001
+            return None
+    ok_at = _ts(st.get("last_success"))
+    stale = ok_at is None or (now - ok_at).total_seconds() > RULE_CHECK_STALE_MIN * 60
+    failed = st.get("last_ok") is False
+    if not (failed or stale):
+        return []
+    since = (f"since {ok_at.strftime('%d %b %H:%M')} UTC" if ok_at else "since the app last restarted")
+    why = (f"The last check failed: {st.get('last_error')}" if failed and st.get("last_error")
+           else "No check has completed in that time.")
+    return [{
+        "id": _rid("rule_check", "failed" if failed else "stale", ok_at.isoformat() if ok_at else "none"),
+        "dimension": "rule", "severity": "HIGH",
+        "title": f"Your trading rules have not been checked {since}",
+        "action": (f"Stops, bands and take-profits are checked every 30 minutes. {why} Until a check "
+                   f"succeeds, a rule that should fire will not -- check your stops by hand."),
+        "how": ["The app retries every 30 minutes; this goes away when a check succeeds",
+                "Nothing is bought or sold by this notice"],
+        "est_amount": None, "apply": {"kind": "none"},
+        "meta": {"headsup_kind": "rule_check", "failed": failed,
+                 "last_success": st.get("last_success"), "last_error": st.get("last_error")}}]
 
 
 def _off_stop_and_big_move_recs(rows, snap, rules: list[dict], closes_by_ticker: dict) -> list[dict]:

@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 142: Ignore keeps the stop). Last product PR: **PR 142**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 143: a failed rule check is loud). Last product PR: **PR 143**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,45 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 143 — a rule check that fails says so; job history survives a deploy (D118)
+
+**Report (2026-10-22 review; BACKLOG C21).** Rule-evaluation failures were silent, and the scheduler's record of each job
+was lost on every restart.
+
+**Root cause (PROVEN: live read and reproduction; all four new tests fail on `1984d6f`).**
+- The rules are checked in ONE place, inside the 30-minute `price_refresh` job (`pricing_service._refresh_all`), behind
+  `except Exception: logger.warning("rule evaluation failed", exc_info=False)`. A failing check left the job `last_ok:
+  true` with no `rules` key and a log line without the error. Reproduced: the job did not raise and was recorded green.
+- `rules_service.evaluate_all` looped over books with no guard: the first exception ended the loop, leaving every later
+  book unchecked (reproduced).
+- `scheduler.JOB_STATE` is memory only. Read on production at 11:05 UTC, four minutes after the PR 142 deploy: every job
+  `runs: 1`, the nightly jobs (`nav_snapshot`, `strategy_signals`, `push_digest`, ...) no history at all. The app deploys
+  several times a day, so "did the 06:15 signal job run?" could not be answered from the app.
+- Nothing user-facing read job state: only `/push/status`.
+
+**Ruled out.** A broken check on production today (the 11:01 run carries `rules: {subjects: 1, triggered: 0}`); another
+caller of the rule check (`push_evaluate` sends notifications only; `strategy_signals` steps holds and targets).
+
+**Fix.**
+- `_refresh_all` re-raises as `RuntimeError("rule check failed after N price(s) were refreshed: ...")`, logged with the
+  traceback; prices are already written. `_guarded` records the failure with its reason.
+- `evaluate_all` guards each book, rolls back, carries on, and raises at the end naming how many failed.
+- `scheduler._record` also writes `kv_settings job_state:<id>` (a throwaway NullPool engine on its own thread; a write
+  failure is logged and never fails the job), keeps `previous_run`, and `start_scheduler` reloads them first.
+- `_rule_check_headsup`: a HIGH heads-up on Today, "Your trading rules have not been checked since ...", when the last
+  check failed (with its error) or none has succeeded for 75 minutes, while the scheduler runs and a rule is armed.
+
+**Tests.** `tests/test_pr143_a_failed_rule_check_is_loud.py` (6): the job fails; the failure is recorded with its reason;
+one bad book does not skip the next; history reloads after a simulated restart and the next run continues it; the
+heads-up's three states and its silences; Today carries it. Full Postgres suite: **2,859 passed, 1 failed, 0 skipped**. The failure was an artefact of editing `scheduler.py` (adding `previous_run`) while the run had it loaded: `test_the_scheduler_primes_the_price_refresh_through_the_guarded_path` reads `start_scheduler`'s source by line number and got the neighbouring function. Every test that touches the scheduler, the price job or the rule check (115, the PR 143 file included) re-run on the final code: all pass. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr143-rule-check-is-loud.ps1`. Production before the merge (`1984d6f`, `-Since` 11:00):
+PASS 4 FAIL 0 SKIP 2 (the history skip is the bug: nothing from before 11:01 survived). Local build with the scheduler on
+migrated Postgres, restarted twice: PASS 5 FAIL 0 SKIP 1 ("3 job(s) remember a run from before" the restart; `runs: 2`).
+Production after deploy: PROD_RESULT. Section 3 can only pass from the deploy AFTER this one.
+
+---
+
 ## PR 142 — Ignoring a fired stop keeps the stop on, re-armed below today (D117)
 
 **Report (2026-10-22 review; BACKLOG C20).** Tapping Ignore on a fired stop card left the position in the book and switched
@@ -65,7 +104,7 @@ again and un-mutes the card. All 3 fail on `0a9d570`. Full Postgres suite: **2,8
 **Smoke.** `scripts/smoke/smoke-pr142-ignore-keeps-the-stop.ps1`. Production before the merge (`0a9d570`): PASS 4 FAIL 0
 SKIP 2 (no stop has fired since PR 139's SOXL exit; nothing ignored). Local branch build on migrated Postgres, a SOXL stop
 fired, then Ignored: before PASS on the card text; after PASS 5 FAIL 0 SKIP 1 ("SOXL stop_loss on at 90: Ignored
-2026-10-23: kept SOXL; stop moved from 110 to 90"). Production after deploy: PROD_RESULT.
+2026-10-23: kept SOXL; stop moved from 110 to 90"). Production after deploy (`1984d6f`): **PASS 4 FAIL 0 SKIP 2**. The two SKIPs are honest: no stop has fired since the deploy, so there is no card to read and nothing ignored yet; the SOXL stop hold and the one switched-off rule (on the heads-up) are as before. `smoke-all`: 22 passed, 3 failed (the Gemini credits only; the banner check now counts heads-ups).
 
 ---
 

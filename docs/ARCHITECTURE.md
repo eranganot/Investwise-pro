@@ -151,8 +151,12 @@ Related: [DATA_MODEL.md](DATA_MODEL.md) · [API.md](API.md) · [DOMAIN.md](DOMAI
 ## 7. Background work
 
 APScheduler `BackgroundScheduler` (`app/worker/scheduler.py`) runs in-process. Each job runs in
-a thread, wrapped by `_guarded`, which records runs/failures/last error in an in-memory `JOB_STATE`
-exposed at `/api/v1/push/status`. Times are container time (UTC on Railway).
+a thread, wrapped by `_guarded`, which records runs/failures/last error (and `previous_run`) in
+`JOB_STATE`, exposed at `/api/v1/push/status`. Since PR 143 every outcome is also written to `kv_settings`
+(`job_state:<id>`) and read back when the scheduler starts, so a deploy no longer erases last night's
+record. The rules are checked only inside `price_refresh`: a failing check fails that job with the
+reason (one bad book no longer skips the rest), and Today shows a HIGH heads-up when the last check
+failed or none has succeeded for 75 minutes (`_rule_check_headsup`). Times are container time (UTC on Railway).
 
 | Job | Schedule | What it does |
 |---|---|---|
@@ -202,9 +206,11 @@ before debugging Today:
 | `last_price_refresh` / `last_price_source` | Price freshness / effective source |
 | `pxbase:{subject}:{ticker}` | Price-move push baselines |
 | `caps_to_bands_done:*`, `plan_sleeves_backfilled_v1`, `plan_core_backfilled_v1` | One-shot migration flags |
+| `job_state:{job id}` | Each scheduled job's last outcome (PR 143), reloaded at boot |
 
 In-process caches: the war-room payload (10 min per book, `WAR_ROOM_CACHE_TTL_SEC`; tests set 0), the
-futures snapshot (5 min), the provider tiers above, and `JOB_STATE`. All of them are lost on restart.
+futures snapshot (5 min) and the provider tiers above. All of them are lost on restart (`JOB_STATE` is
+not: PR 143 persists it).
 
 ## 9. Legacy subsystems (being removed)
 

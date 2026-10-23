@@ -40,6 +40,8 @@ def _record(job_id: str, *, ok: bool, result=None, error: str | None = None) -> 
     with _STATE_LOCK:
         st = JOB_STATE.setdefault(job_id, {"runs": 0, "failures": 0})
         st["runs"] += 1
+        if st.get("last_run"):
+            st["previous_run"] = st["last_run"]     # PR 143: shows history crossed a restart
         st["last_run"] = _now_iso()
         st["last_ok"] = ok
         if ok:
@@ -48,6 +50,97 @@ def _record(job_id: str, *, ok: bool, result=None, error: str | None = None) -> 
         else:
             st["failures"] += 1
             st["last_error"] = (error or "")[:300]
+            st["last_failure"] = st["last_run"]
+        snap = dict(st)
+    _persist(job_id, snap)
+
+
+# PR 143 -- JOB HISTORY SURVIVES A DEPLOY. `JOB_STATE` was memory only: read on
+# production 2026-10-23 11:05 UTC, four minutes after a deploy, every job showed
+# `runs: 1` and the nightly ones no history at all, so whether the 06:15 signal job
+# or the 22:10 snapshot ran could not be told from the app -- and the app deploys
+# several times a day. Each outcome is now also written to `kv_settings`
+# (`job_state:<id>`) and read back when the scheduler starts.
+_KV_PREFIX = "job_state:"
+
+
+def _off_loop(fn, timeout: float = 15.0):
+    """Run the coroutine function `fn` with asyncio.run on a fresh thread: the
+    callers include FastAPI's startup hook, whose thread already has a loop."""
+    import asyncio
+    box: dict = {}
+
+    def _t():
+        try:
+            box["v"] = asyncio.run(fn())
+        except Exception as exc:  # noqa: BLE001
+            box["e"] = exc
+    t = threading.Thread(target=_t, daemon=True, name="job-state")
+    t.start()
+    t.join(timeout)
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+async def _with_session(work):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
+    eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(eng, expire_on_commit=False)() as s:
+            return await work(s)
+    finally:
+        await eng.dispose()
+
+
+def _persist(job_id: str, st: dict) -> None:
+    import json
+
+    async def work(s):
+        from app.models.tables import KVSetting
+        key = (_KV_PREFIX + job_id)[:80]
+        row = await s.get(KVSetting, key)
+        val = json.dumps(st, default=str)
+        if row is None:
+            s.add(KVSetting(key=key, value=val))
+        else:
+            row.value = val
+        await s.commit()
+    try:
+        _off_loop(lambda: _with_session(work))
+    except Exception:  # noqa: BLE001 - recording must never fail the job; it says so in the log
+        logger.warning("could not persist job state for %s", job_id, exc_info=True)
+
+
+def load_persisted_state() -> int:
+    """Read every persisted job outcome into JOB_STATE. Returns how many."""
+    import json
+
+    async def work(s):
+        from sqlalchemy import select
+
+        from app.models.tables import KVSetting
+        return list((await s.execute(select(KVSetting).where(
+            KVSetting.key.like(_KV_PREFIX + "%")))).scalars().all())
+    try:
+        rows = _off_loop(lambda: _with_session(work)) or []
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read persisted job state", exc_info=True)
+        return 0
+    n = 0
+    with _STATE_LOCK:
+        for r in rows:
+            try:
+                st = json.loads(r.value)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(st, dict):
+                JOB_STATE[r.key[len(_KV_PREFIX):]] = st
+                n += 1
+    return n
 
 
 def _guarded(job_id: str, fn):
@@ -98,6 +191,7 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("APScheduler not installed; scheduler disabled.")
         return
+    load_persisted_state()          # PR 143: last night's outcomes, not an empty page
     # A generous default grace: better a late digest than a silently dropped one.
     _scheduler = BackgroundScheduler(
         daemon=True,
