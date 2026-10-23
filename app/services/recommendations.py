@@ -4592,7 +4592,11 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
     """
     from app.services import funding_service as _fund
     mix, target = mix or {}, target or {}
-    tks = sorted(holds)
+    # PR 141: `holds` includes the 2x/3x funds a stop on one of them blocks
+    # (`via`). They are not holds of their own -- nothing was sold, and "Buy
+    # back" must not buy them -- but they are not a place to put the money either.
+    tks = sorted(t for t, h in holds.items() if not (h or {}).get("via"))
+    _via = sorted(t for t, h in holds.items() if (h or {}).get("via"))
     each = round(reserved_ils / len(tks), 2)
 
     def _lvl(tk):
@@ -4616,9 +4620,12 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
             return f"{tk} until it trades below {_lvl(tk):,.2f} (now {float(_now(tk)):,.2f})"
         return f"{tk} until your drawdown guard re-arms"
     waits = "; ".join(_wait(tk) for tk in tks)
+    if _via:
+        _src = sorted({str(holds[t].get("via")) for t in _via})
+        waits += f"; and, while the {', '.join(_src)} hold lasts, any other 2x/3x fund"
 
     # ---- where else, and why -------------------------------------------------
-    held_set = {t.upper() for t in tks}
+    held_set = {t.upper() for t in holds}      # PR 141: blocked funds are not a destination
     dests: list[dict] = []
     for leg in (under_legs or []):
         tk = str(leg.get("ticker") or "").upper()
