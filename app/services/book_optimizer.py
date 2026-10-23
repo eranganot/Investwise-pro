@@ -338,6 +338,11 @@ async def card(session, user) -> list[dict]:
     if float(b["p_goal_pct"]) < float(r.get("on_track_pct") or 70.0):
         best = a.get("p_goal_pct") if a.get("p_goal_pct") is not None else b["p_goal_pct"]
         levers_txt = await _lever_sentence(session, user, r)
+        if levers_txt:
+            # PR 138c: seen live 2026-10-23 -- "Changing that limit is the one lever left"
+            # followed by "What would close the gap: lower your target return ...".
+            price = price.replace("Changing that limit is the one lever left, and it is yours.",
+                                  "Changing that limit is one lever, and it is yours.")
         return [{
             "id": _rid("optimizer_ceiling", round(float(best))),
             "dimension": "goal", "severity": "LOW",
