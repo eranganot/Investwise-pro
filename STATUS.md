@@ -98,7 +98,10 @@ clipped plan (`ceiling_capped_pct`), and the reason names the ceiling. After the
 subset 622 passed.
 
 **Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
-the build before). After deploy: PROD_RESULT.
+the build before). After deploy (`09976c4`): **PASS 8 FAIL 0 SKIP 0**: the setting reads 44 and counts 18 funds (the
+2x/3x set, including the -3x SQQQ; PSQ/SH excluded); 2x/3x funds under the ceiling, no trim card; Fund my sleeves
+(dry run) buys 0 ILS of 2x/3x against a ₪5,257 headroom (SOXL's stop hold blocks the group, PR 141); no Today buy
+past the headroom; PR 141's smoke 6/0/1. `smoke-all` 22/3 (Gemini credits).
 
 ## C18.1 — an automatic re-arm records the price it re-armed at
 
