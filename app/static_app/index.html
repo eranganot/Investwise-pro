@@ -3077,13 +3077,19 @@ function sleevePanel(){
     :(allocHeld==null)?`Your sleeves — ${alloc}% of the book`
     :(Math.abs(+allocHeld-+alloc)<0.5)?`Your sleeves — ${alloc}% of the book`
     :`Your sleeves — ${allocHeld}% held against a ${alloc}% target`;
-  const shortfall=(alloc!=null&&allocHeld!=null&&(+alloc-+allocHeld)>=0.5)
+  // C24: the 2x/3x part above the leveraged ceiling is managed in the core, so it is
+  // not a shortfall a strategy has yet to fill.
+  const LC=MYSLEEVES&&MYSLEEVES.leveraged_ceiling, lcCut=LC?Math.max(0,(+LC.chosen_pct||0)-(+LC.managed_pct||0)):0;
+  const gap=(alloc!=null&&allocHeld!=null)?(+alloc-+allocHeld-lcCut):0;
+  const shortfall=(alloc!=null&&allocHeld!=null&&gap>=0.5)
     ? `<div class="mk" style="margin-top:4px;color:var(--warn,#e5b857)">
-         ${(+alloc-+allocHeld).toFixed(1)} points of your book are set to a strategy that is not holding it yet.
+         ${gap.toFixed(1)} points of your book are set to a strategy that is not holding it yet.
        </div>` : "";
+  const lcNote=(LC&&lcCut>=0.05)
+    ? `<div class="mk" style="margin-top:4px">Your 2x/3x funds are set to ${(+LC.chosen_pct).toFixed(1)}% of the book; your ceiling is ${LC.ceiling_pct}%, so they are managed to ${(+LC.managed_pct).toFixed(1)}% and the other ${lcCut.toFixed(1)} points are managed in the core. The ceiling is on the Card-thresholds sheet.</div>` : "";
   return `<div class="card" style="margin-bottom:10px;border-left:3px solid var(--blue)">
       <div class="nm">${heading}</div>
-      ${shortfall}
+      ${shortfall}${lcNote}
       <div style="margin:6px 0">${rows}</div>
       ${coreRow(core)}
       <div class="acts" style="margin-top:8px">

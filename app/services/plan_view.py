@@ -309,8 +309,21 @@ async def sleeves_view(session, user) -> dict:
         _held_pairs = await div.held_clashes(session, user)
     except Exception:  # noqa: BLE001 -- the sleeve table must still render
         logger.warning("same-bet check unavailable for the sleeves view", exc_info=True)
+    # C24 (D125): what the 2x/3x sleeves are set to, and what they are managed to.
+    _lev = None
+    try:
+        from app.services import leveraged_ceiling as _lc
+        _raw = await sv.all_sleeve_targets(session, user, capped=False)
+        _capd, _cut = _lc.cap_targets(_raw)
+        _lev = {"ceiling_pct": _lc.ceiling_pct(),
+                "chosen_pct": round(100.0 * sum(v for k, v in _raw.items() if _lc.is_geared(k)), 2),
+                "managed_pct": round(100.0 * sum(v for k, v in _capd.items() if _lc.is_geared(k)), 2),
+                "cut_pct": {k: round(100.0 * v, 2) for k, v in _cut.items()}}
+    except Exception:  # noqa: BLE001 -- the sleeve table must still render
+        logger.warning("leveraged ceiling unavailable for the sleeves view", exc_info=True)
     return {
         "sleeves": _sleeves,
+        "leveraged_ceiling": _lev,
         "same_bet": _same,
         "held_same_bets": _held_pairs,
         "commodities_pct": round(_comm, 4),

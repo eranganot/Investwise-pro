@@ -162,7 +162,7 @@ async def test_the_plan_is_where_the_reserve_is_configured(monkeypatch):
 
     import app.services.book_target as bt_mod
 
-    async def _targets(session, user):
+    async def _targets(session, user, **kw):
         return SLEEVES
 
     async def _core_id(session, user):

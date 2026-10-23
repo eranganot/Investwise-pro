@@ -126,6 +126,27 @@ def _bind():
 _bind()
 
 
+# ---- The plan (C24) -----------------------------------------------------------
+
+def cap_targets(targets: dict[str, float]) -> tuple[dict[str, float], dict[str, float]]:
+    """Sleeve targets ({ticker: share of NAV}) with the 2x/3x ones scaled down, pro rata,
+    to the ceiling. Returns (capped, cut per ticker). What is cut is not re-assigned
+    here: the core is the remainder of the sleeves (`book_target.compose`), so the
+    excess lands in the core by construction."""
+    c = ceiling_pct()
+    g = {k: float(v or 0.0) for k, v in (targets or {}).items() if is_geared(k) and float(v or 0.0) > 0}
+    tot = sum(g.values())
+    if c <= 0 or tot <= c / 100.0 + 1e-9:
+        return dict(targets or {}), {}
+    f = (c / 100.0) / tot
+    out = dict(targets)
+    cut = {}
+    for k, v in g.items():
+        out[k] = v * f
+        cut[k.upper()] = round(v - v * f, 6)
+    return out, cut
+
+
 # ---- Today -------------------------------------------------------------------
 
 _BUY_KINDS = ("buy_funded", "buy")
