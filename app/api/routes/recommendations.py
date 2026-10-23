@@ -52,8 +52,17 @@ async def accept_recommendation(rec_id: str, state: CardState | None = None,
     `choice` (and, for "keep", an optional `level`) answer a decision card --
     a trading rule that fights a sleeve target. Other cards ignore both.
     """
-    result = await apply_recommendation(session, user, rec_id, choice=choice, level=level,
-                                        alloc=alloc)
+    from app.services import buyback_hold as _bh
+    try:
+        result = await apply_recommendation(session, user, rec_id, choice=choice, level=level,
+                                            alloc=alloc)
+    except _bh.HeldBack as exc:
+        # PR 139: a buy of a ticker under a stop hold. Every executor checks
+        # before its first write (`assert_buyable`), so nothing was written;
+        # the rollback discards only what the session had pending. 400, and
+        # the card is NOT marked done -- same as any other refusal.
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     if result is None:
         raise HTTPException(status_code=404, detail="Recommendation not found (it may have changed).")
     # A decision that was not taken is not done. Marking the card complete here

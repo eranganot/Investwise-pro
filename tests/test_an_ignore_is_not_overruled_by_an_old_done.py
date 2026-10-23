@@ -92,22 +92,33 @@ def _write_done_mark(rid, amount, severity, at):
     import asyncio
     import json
 
-    from app.core.database import AsyncSessionLocal
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.core.config import get_settings
     from app.models.tables import KVSetting
     from app.services.recommendations import _done_key
     from app.services.feed_service import ensure_superadmin
 
     async def _go():
-        async with AsyncSessionLocal() as s:
-            user = await ensure_superadmin(s)
-            row = await s.get(KVSetting, _done_key(user))
-            m = json.loads(row.value) if row and row.value else {}
-            m[rid] = {"at": at, "amount": amount, "severity": severity}
-            if row:
-                row.value = json.dumps(m)
-            else:
-                s.add(KVSetting(key=_done_key(user), value=json.dumps(m)))
-            await s.commit()
+        # A throwaway NullPool engine in THIS loop (CLAUDE.md, cross-loop
+        # sessions). The shared `AsyncSessionLocal` belongs to the TestClient's
+        # loop: SQLite tolerated it, Postgres raised "attached to a different
+        # loop" here and crashed the whole full-suite run (found in PR 139).
+        eng = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        try:
+            async with async_sessionmaker(eng, expire_on_commit=False)() as s:
+                user = await ensure_superadmin(s)
+                row = await s.get(KVSetting, _done_key(user))
+                m = json.loads(row.value) if row and row.value else {}
+                m[rid] = {"at": at, "amount": amount, "severity": severity}
+                if row:
+                    row.value = json.dumps(m)
+                else:
+                    s.add(KVSetting(key=_done_key(user), value=json.dumps(m)))
+                await s.commit()
+        finally:
+            await eng.dispose()
 
     asyncio.run(_go())
 

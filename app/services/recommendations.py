@@ -6281,26 +6281,6 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                                choice: str | None = None,
                                level: float | None = None,
                                alloc: str | None = None) -> dict | None:
-    """Accept, refused cleanly when it would buy a ticker under a stop hold (PR 139).
-
-    Every executor checks its buys before its first write (`assert_buyable`), so
-    a HeldBack here means nothing was written; the rollback only discards what
-    the session had pending. `ok: False` makes the route answer 400 and leaves
-    the card NOT done, the same as any other refusal.
-    """
-    from app.services import buyback_hold as _bh
-    try:
-        return await _apply_recommendation(session, user, rec_id, choice=choice,
-                                           level=level, alloc=alloc)
-    except _bh.HeldBack as exc:
-        await session.rollback()
-        return {"ok": False, "applied": "none", "refused": "STOP_HOLD", "error": str(exc)}
-
-
-async def _apply_recommendation(session: AsyncSession, user: User, rec_id: str,
-                                choice: str | None = None,
-                                level: float | None = None,
-                                alloc: str | None = None) -> dict | None:
     """Accept = apply the recommendation to holdings/plan immediately.
 
     Sales don't just delete holdings — the net-of-tax proceeds are credited to a

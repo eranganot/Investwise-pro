@@ -65,7 +65,7 @@ a Today card as the buyer on 10-14 / 10-19 (the audit shows the Plan-screen rout
 - Every buyer honours it: `_fund_sleeve` / `fund_plan` drop the ticker and say why (status `held_back`, `refused: STOP_HOLD`);
   each card executor calls `assert_buyable` BEFORE its first write (position writers commit as they go, so a later refusal
   would leave half a trade); redeploy-cash skips the leg; replace-book refuses; `buy_into_book` refuses as a backstop unless
-  `recording=True` (your own Holdings > Add, a record of a broker trade). Accept turns a refusal into 400, card not done.
+  `recording=True` (your own Holdings > Add, a record of a broker trade). The Accept route turns a refusal into 400, card not done (the wrapper lives in the route so `apply_recommendation` keeps its source, which two tests read).
 - `buy_back` is an ENTRY type (cause 4). A stop hold is never quoted (no price matters).
 - Holdings > Rules: "Stop hold · until the sleeve re-enters"; ending one asks a confirm that names the stop and its price. `sw.js` iw-v71.
 
