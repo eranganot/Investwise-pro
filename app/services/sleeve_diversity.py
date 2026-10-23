@@ -18,6 +18,11 @@ Two sleeves are THE SAME BET when either test trips:
    `sleeve_correlation_limit` (default 0.80). Different tickers that move as one
    -- semis beside the Nasdaq -- are caught here, not by the map.
 
+3. **Holding the same thing (D123, owner 2026-10-23).** The correlation of what each
+   sleeve holds when invested (its risk-on basket, rebalanced daily), at or over the
+   same limit. A trend rule's time in cash dilutes test 2; it does not change what
+   the sleeve is when it matters.
+
 Correlations are measured by `refresh_correlations` (nightly, or on demand) and
 stored in `kv_settings`; a request only ever READS them, so adding a sleeve never
 waits on ten years of prices. A pair not yet measured is judged on test 1 alone,
@@ -176,6 +181,7 @@ def same_bet(a_id: str, b_id: str, corr: dict | None = None) -> dict | None:
     lim_overlap, lim_corr = _limits()
     ov, markets = overlap_pct(a, b)
     rho = ((corr or {}).get("pairs") or {}).get(pair_key(a_id, b_id))
+    held_rho = ((corr or {}).get("invested_pairs") or {}).get(pair_key(a_id, b_id))
     why = []
     if ov >= lim_overlap - 1e-9:
         why.append(f"both are bets on {', '.join(markets)} ({ov:g}% of the smaller one, "
@@ -183,10 +189,16 @@ def same_bet(a_id: str, b_id: str, corr: dict | None = None) -> dict | None:
     if rho is not None and float(rho) >= lim_corr - 1e-9:
         why.append(f"they move together (correlation {float(rho):.2f} over ten years, "
                    f"your limit is {lim_corr:.2f})")
+    if held_rho is not None and float(held_rho) >= lim_corr - 1e-9 and not (
+            rho is not None and float(rho) >= lim_corr - 1e-9):
+        # D123: test 3 -- what they hold when invested moves as one.
+        why.append(f"what they hold when invested moves together (correlation {float(held_rho):.2f}, "
+                   f"your limit is {lim_corr:.2f})")
     if not why:
         return None
     return {"strategy_id": b_id, "name": _name(b_id), "overlap_pct": ov, "markets": markets,
             "correlation": (round(float(rho), 3) if rho is not None else None),
+            "invested_correlation": (round(float(held_rho), 3) if held_rho is not None else None),
             "why": "; ".join(why)}
 
 
@@ -257,6 +269,35 @@ def correlation(ra: tuple[list[str], np.ndarray], rb: tuple[list[str], np.ndarra
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def invested_returns(series: dict, spec: dict) -> tuple[list[str], np.ndarray] | None:
+    """D123 (owner, 2026-10-23): what the sleeve HOLDS when it is invested -- its
+    risk-on basket (`weights`), rebalanced daily -- as a daily return series.
+
+    The strategy's own return (`daily_returns`) is diluted by its time in cash: the
+    SOXL trend sleeve and the TQQQ vol-target sleeve measured 0.78 there, while
+    SOXL and TQQQ themselves moved 0.95 over the month to 10-22 and fell together
+    on 8 of 8 sessions SOXL dropped more than 3%. On the day a stop fires, that is
+    the number that matters."""
+    w = {str(k).upper(): float(v or 0.0) for k, v in (spec.get("weights") or {}).items()
+         if float(v or 0.0) > 0 and market_of(str(k)) != CASH}
+    tot = sum(w.values())
+    if tot <= 0 or any(t not in series for t in w):
+        return None
+    from app.engines.strategy_backtest import align
+    dates, px = align({t: series[t] for t in w})
+    if not dates or len(dates) < 260:
+        return None
+    r = np.zeros(len(dates))
+    for i in range(1, len(dates)):
+        acc = 0.0
+        for tk, wt in w.items():
+            p0, p1 = float(px[tk][i - 1]), float(px[tk][i])
+            if p0 > 0 and np.isfinite(p0) and np.isfinite(p1):
+                acc += (wt / tot) * (p1 / p0 - 1.0)
+        r[i] = acc
+    return list(dates), r
+
+
 def measure_blocking(ids: list[str], fetch=None) -> dict:
     """Every pair's correlation for `ids`. Blocking: fetches price history."""
     from app.engines.strategy_backtest import tickers_needed
@@ -269,7 +310,9 @@ def measure_blocking(ids: list[str], fetch=None) -> dict:
         need |= set(tickers_needed(s))
     series, missing = fetch(sorted(need))
     rets = {i: daily_returns(series, s) for i, s in specs.items()}
+    held = {i: invested_returns(series, s) for i, s in specs.items()}
     pairs: dict[str, float] = {}
+    invested: dict[str, float] = {}
     unmeasured: list[str] = []
     keys = sorted(specs)
     for n, a in enumerate(keys):
@@ -279,8 +322,12 @@ def measure_blocking(ids: list[str], fetch=None) -> dict:
                 unmeasured.append(pair_key(a, b))
             else:
                 pairs[pair_key(a, b)] = round(rho, 4)
+            hr = (correlation(held[a], held[b]) if held.get(a) and held.get(b) else None)
+            if hr is not None:
+                invested[pair_key(a, b)] = round(hr, 4)
     return {"as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "pairs": pairs, "unmeasured": unmeasured, "missing_tickers": sorted(missing or [])}
+            "pairs": pairs, "invested_pairs": invested, "unmeasured": unmeasured,
+            "missing_tickers": sorted(missing or [])}
 
 
 async def load_correlations(session) -> dict:

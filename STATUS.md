@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 144: production says when it is broken). Last product PR: **PR 144**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (D122/D123: the limits). Last product PR: **D123**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,42 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## D122 / D123 — keep the halving limit; same bet measured on what sleeves hold (P16, P14)
+
+**P16 decided (D122).** Production's model, 10-23 (`/plan/frontier`): goal 30%/yr (₪82,692 by end-2031 from ₪19,670)
+**0.2%** with the protective rules (halving 0%), **18.5%** without them (halving 53.9%); required 31.9%/yr against the
+book's expected 15.6%/yr at 43% volatility; outcome OUT_OF_REACH. Owner: keep the 30% halving limit and revisit the goal
+(P1, next).
+
+**P14: same bet on what the sleeves hold (D123).**
+
+*Root cause (PROVEN: production matrix and PR 141's measurement).* `same_bet` had two tests: shared market (SOXL maps to
+"US semiconductors", TQQQ to "Nasdaq-100", so 0% overlap) and the correlation of the strategies' own daily returns
+(0.7804 for SOXL-trend vs TQQQ vol-target, under the 0.80 limit). The trend sleeve's time in cash dilutes the second,
+while SOXL and TQQQ moved 0.95.
+
+*Fix.*
+- `sleeve_diversity.invested_returns` gives each sleeve's risk-on basket (cash legs excluded) as a daily return series,
+  rebalanced daily. `measure_blocking` stores `invested_pairs` beside `pairs`.
+- `same_bet` gets test 3 ("what they hold when invested moves together"), against the same limit.
+- `/strategies/correlations` shows `invested_correlation`.
+- A matrix stored before this (no `invested_pairs`) behaves exactly as before, until the 03:50 UTC job re-measures.
+- *Effect on the live book once measured:* the Plan tab marks the two sleeves as one bet; adding a same-bet sleeve is
+  refused; sleeve moves and the optimiser stop pairing them. Nothing is removed.
+
+*Tests.* `tests/test_d123_same_bet_on_what_they_hold.py` (4). All 81 same-bet / diversity tests pass. Full Postgres
+suite: GATE_RESULT.
+
+*Smoke.* `scripts/smoke/smoke-d123-same-bet-on-what-they-hold.ps1`. Production before (`47e9ebe`): PASS 4 FAIL 0 SKIP 2
+(no invested correlations measured yet; every existing same-bet pair still marked). After deploy AND the next 03:50 UTC
+run: PROD_RESULT.
+
+**P14's other half: the sleeve-plan smokes on `47e9ebe`.** 134d 17/0/0, 135a 8/0/0, 135b 5/0/1, 135c 4/1/1 → 5/0/1 after
+fixing its pinned `iw-v69` check (PR 139 moved the shell to `iw-v72`; the check is now "not older than v69"), 136a 7/0/0,
+136b 6/0/0. (`smoke-sleeve-plan-all.ps1` calls Windows `powershell`; on the Mac run each with `pwsh`.)
 
 ---
 
