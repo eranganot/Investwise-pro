@@ -236,7 +236,10 @@ def describe(plan: dict) -> list[str]:
             verb = "Sell all" if leg.get("full_exit") else "Trim"
             out.append(f"{verb} {leg['ticker']} — about {amt} ({leg['why']})")
         elif leg["action"] == "trim_sleeves":
-            out.append(f"Trim your sleeves back to the sizes you set — about {amt}")
+            frm = sorted((plan.get("sleeve_trim_from_ils") or {}).items(), key=lambda kv: -kv[1])
+            out.append(f"Trim your sleeves back to the sizes you set — about {amt}"
+                       + (" (from " + ", ".join(t for t, _v in frm) + ", the sleeves that are over)"
+                          if frm else ""))
         else:
             want = leg.get("wanted_ils")
             tail = (f" of the {f'₪{round(want):,}'} it needs"

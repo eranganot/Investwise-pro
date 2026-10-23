@@ -77,7 +77,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C12 | `broker_sync.py:33` raw price fallback; `intake_service` whole-dict `meta` assignments | V7 | — | P3 | 112 (broker deleted) |
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
-| C15 | Core realign (`core_to_basket`, rec_f6f017) keeps selling TQQQ right after sleeve top-ups (net TQQQ ledger -991 since 10-14). Cause unexplained; `trim_sleeves` leg is sized from sleeve overshoot. | `core_realign` | I | P2 | — |
+| C15 | ~~Core realign keeps selling TQQQ right after sleeve top-ups~~. Closed (D119): the trim was sold pro-rata across every sleeve, short ones included; now only over-size sleeves, from their own holdings, never a basket ticker. | `core_realign` | P | P2 | C15 |
 | C16b | ~~Why were the stops OFF?~~ Closed by PR 140: the protection card's all-or-nothing `retire_sleeve_exits` paused every stop on the book; it is gone, Accept refuses a stop, and every pause now writes a rule event. | `frontier_service` | I | P1 | PR 140 |
 | C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |

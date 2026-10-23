@@ -312,7 +312,8 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
     counted: set[str] = set()
     for s, targets in zip(sleeves, per_sleeve):
         _sig = (live or {}).get(s.strategy_id) or {}
-        held_ils = sum(held.get(tk, 0.0) * _share(tk, w) for tk, w in targets.items())
+        by_tk = {tk: held.get(tk, 0.0) * _share(tk, w) for tk, w in targets.items()}
+        held_ils = sum(by_tk.values())
         counted |= set(targets)
         shared_with = {tk: sorted(o.strategy_id for o, t in zip(sleeves, per_sleeve)
                                   if o is not s and tk in t)
@@ -331,6 +332,9 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
             "following_signal": bool(_sig.get("target")),
             "signal_as_of": _sig.get("as_of") or None,
             "held_ils": round(held_ils, 2),
+            # C15: what this sleeve holds of each ticker (shared tickers split as
+            # above), so a trim can come from THIS sleeve's holdings only.
+            "held_by_ticker_ils": {tk: round(v, 2) for tk, v in sorted(by_tk.items()) if v > 0},
             "held_pct": held_pct,
             # BOTH SIDES IN PERCENT. This read `target_pct - held_pct`, and
             # those are not the same unit: `target_pct` is 0-100 (33.09 means

@@ -284,6 +284,12 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D119 · 2026-10-23 · The core realign may trim a sleeve only by its own overshoot, and never a ticker its basket holds.**
+  The trim is split per sleeve that is over its size, across that sleeve's holdings (`held_by_ticker_ils`), and the card
+  names the tickers. A sleeve under its size is never a source; a sleeve ticker the core basket also holds is not sold to
+  be bought back. *Why:* the trim was sized from the over-size sleeves and sold pro-rata across EVERY sleeve holding;
+  production 10-19 .. 10-21 shows 17 core sales that "Fund my sleeves" bought back within minutes (SOXL, TQQQ, UGL, QQQ,
+  BIL) and five accepts that sold and bought QQQ at once. → C15
 - **D118 · 2026-10-23 · A rule check that fails is an incident on Today, and job history outlives a deploy.**
   The price job fails (with the reason) when the rule check fails; one book failing no longer skips the rest; Today
   carries a HIGH heads-up when the last check failed or none has succeeded for 75 minutes; job outcomes persist in
