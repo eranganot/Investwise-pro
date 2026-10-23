@@ -28,12 +28,14 @@ def test_the_best_goal_odds_under_the_halving_floor_wins():
                                                                        "take_profit SOXL (+13%)"]}},
              "guard": {"rule_id": "g1"}}
     t = fs._tune_protection(run, sl, guard, rules, ["soxl"], np.zeros((10, 1)), 1, table[(False, 10.0)])
-    assert t["material"] and t["best"]["retire_sleeve_exits"] and t["best"]["guard_pct"] == 15.0  # 20% halves 2.9% > the 1% limit (PR 97)
-    assert t["changes"]["pause_rule_ids"] == ["r1", "r2"]
-    assert t["changes"]["pause_rules"] == ["trailing_stop SOXL (20%)"]          # take-profits stay
-    assert t["changes"]["guard"] == {"rule_id": "g1", "from_pct": 10.0, "to_pct": 15.0}
+    # PR 140 (D115): the (True, ...) rows -- every exit retired -- are never even
+    # tried, however good their odds. Under the 1% limit the best of what may
+    # move is the 20% guard (0.7%, halving 0.1%), and no stop is paused.
+    assert not any(c["retire_sleeve_exits"] for c in t["candidates"])
+    assert t["best"]["guard_pct"] == 20.0 and not t["best"]["retire_sleeve_exits"]
+    assert not (t["changes"] or {}).get("pause_rule_ids")
     # a setup that halves too often never wins, however good its odds
-    table[(True, 20.0)] = _stats(40.0, 9.0)
+    table[(False, 20.0)] = _stats(40.0, 9.0)
     t2 = fs._tune_protection(run, sl, guard, rules, ["soxl"], np.zeros((10, 1)), 1, table[(False, 10.0)])
     assert t2["best"]["guard_pct"] == 15.0
 
@@ -55,7 +57,9 @@ def test_goal_solve_carries_a_tuning_that_respects_the_floor():
                       cash_pct=4.0, objective="Grow", est_kw=EST_KW, nav=10_000, target=30_000, years=5.0,
                       draws=0, rules=rules)
     tu = v["rules"]["tuning"]
-    assert tu and len(tu["candidates"]) == tu["tried"] >= 23       # PR 121: the wider grid
+    # PR 121's wider grid, less the setups that retired every exit (PR 140, D115).
+    assert tu and len(tu["candidates"]) == tu["tried"] >= 21
+    assert not any(c["retire_sleeve_exits"] for c in tu["candidates"])
     if tu["best"]:
         assert tu["best"]["stats"]["p_halve_pct"] <= fs.HALVE_FLOOR_PCT
 
@@ -100,20 +104,22 @@ async def test_accept_pauses_the_rules_and_moves_the_guard(own_session):
                 "off": {**_stats(32.9, 39.6), "exits_per_year": [0.0], "pct_time_out": [0.0]},
                 "rebound": {**_stats(0.9, 0.0), "exits_per_year": [1.0], "pct_time_out": [27.0]},
                 "effect_pts": -32.4, "fix_effect_pts": 0.4, "sleeves": {"btm_qqq_hold": {}},
+                # PR 140 (D115): the retune moves the guard; it no longer pauses the stop.
                 "tuning": {"material": True, "halve_floor_pct": 1.0,   # PR 104c: the plan's limit
                            "current": {"guard_pct": 10.0, "stats": st0},
-                           "best": {"retire_sleeve_exits": True, "guard_pct": 15.0, "stats": st1},
-                           "changes": {"pause_rule_ids": [a], "pause_rules": ["trailing_stop QQQ (10%)"],
+                           "best": {"retire_sleeve_exits": False, "guard_pct": 15.0, "stats": st1},
+                           "changes": {"pause_rule_ids": [], "pause_rules": [],
                                        "guard": {"rule_id": g, "from_pct": 10.0, "to_pct": 15.0}}}}))
             card = next((x for x in _cards(c) if x["id"].startswith("rec_goal_protect_")), None)
             assert card is not None, [x["title"] for x in _cards(c)]
             # PR 103: the title carries the claim; halving moved to a chip.
-            assert card["title"] == "Retune your protection: goal odds 0.5% -> 22.7%"
+            # PR 140: goal odds and halving side by side in the title.
+            assert card["title"] == "Retune your protection: goal odds 0.5% -> 22.7% · halving 0% -> 0.8%"
             assert {"label": "halving", "before": "0%", "after": "0.8%"} in card["chips"]
             assert card["apply"]["kind"] == fs.RULES_CARD_KIND
             r = c.post(f"/api/v1/recommendations/{card['id']}/accept").json()
             assert r.get("applied") == fs.RULES_CARD_KIND, r
-            assert await _rule(own_session, a) == (False, 10.0)          # paused, not deleted
+            assert await _rule(own_session, a) == (True, 10.0)           # PR 140: the stop stays on
             assert await _rule(own_session, g) == (True, 15.0)           # guard re-levelled
     finally:
         await _delete(own_session, a, g)
@@ -126,7 +132,8 @@ async def test_a_moved_rule_set_is_refused_untouched(own_session):
     try:
         async with own_session() as s:
             user = await ensure_superadmin(s)
-            out = await fs.apply_rules_tuning(s, user, {"pause_rule_ids": [a],
+            # PR 140: no stop in the list (a card may not pause one); the guard moved.
+            out = await fs.apply_rules_tuning(s, user, {"pause_rule_ids": [],
                                                        "guard": {"rule_id": g, "from_pct": 12.0, "to_pct": 15.0}})
         assert out["refused"] == "RULES_CHANGED"
         assert await _rule(own_session, a) == (True, 10.0)              # nothing was touched

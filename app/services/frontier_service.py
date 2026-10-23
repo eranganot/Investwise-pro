@@ -980,6 +980,11 @@ RETUNE_SCREEN_PATHS = 250
 RETUNE_FINALISTS = 3
 RETUNE_MAX_SETUPS = 120
 RULES_CARD_KIND = "frontier_rules"
+# PR 140 (D115): the rules a card may never switch off -- every rule that sells
+# on the way DOWN. Take-profits (sell into strength) and the guard's dials stay
+# movable. You can still pause any rule yourself on Holdings > Rules.
+DOWNSIDE_RULE_TYPES = frozenset({"stop_loss", "trailing_stop", "profit_protect", "trend_break",
+                                 "drawdown_guard"})
 
 
 def _guard_spec(lvl, g_spec, guard_col, fraction_pct=None, gap_pts=None) -> dict | None:
@@ -1091,9 +1096,16 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
                      floor: float = HALVE_FLOOR_PCT) -> dict | None:
     from app.services import thresholds
     from app.services.advanced_rules import derisk_fraction, rearm_gap_pts
-    has_exits = any(s.get("trail") for s in sl_specs)
+    # PR 140 (D115, owner 2026-10-23): the retune NEVER switches off a stop-loss
+    # or trailing stop. Its `retire_sleeve_exits` switch was all-or-nothing over
+    # every replay column -- the 3x sleeves and every held ticker with a rule --
+    # and a goal far above what the book can earn scores any exit as pure cost:
+    # on 10-23 the model read 0.3% goal chance with the rules, 21% without, and
+    # 55.7% chance of halving without. Accepted four times (10-06 .. 10-20), each
+    # time it paused the stops the falling market then needed. The search keeps
+    # the dials it may move: the drawdown guard and the take-profits.
     tp_sids = [_spec_id(s, sleeve_ids) for s in sl_specs if s.get("tp_ratio")]
-    if not has_exits and not g_spec and not tp_sids:
+    if not g_spec and not tp_sids:
         return None
     cur_guard = round(g_spec["level"] * 100, 2) if g_spec else None
     cur_frac = round(float((g_spec or {}).get("fraction", derisk_fraction())) * 100, 2)
@@ -1115,7 +1127,7 @@ def _tune_protection(run, sl_specs, g_spec, rules, sleeve_ids, unit_daily, k, r_
         else:
             guards += [(lvl, f, gp) for f in fracs for gp in gaps]
     tp_opts = [()] + ([tuple(tp_sids)] if tp_sids else []) + ([(x,) for x in tp_sids] if len(tp_sids) > 1 else [])
-    structs = [(r, tp) for r in ((False, True) if has_exits else (False,)) for tp in tp_opts]
+    structs = [(False, tp) for tp in tp_opts]          # PR 140: exits are never retired
     cur_key = (structs[0], guards[0])
 
     def cand(key):
@@ -2470,7 +2482,12 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
 
     # PR 96: retune the protective rules for the goal, under a halving floor.
     tu = (v.get("rules") or {}).get("tuning") or {}
-    if tu.get("material") and tu.get("changes"):
+    # PR 140 (D115): a verdict solved before PR 140 may still propose retiring
+    # the exits. The card never offers that; the next solve (04:10, or the one a
+    # rule change triggers) proposes only what may be moved.
+    _stale = bool((tu.get("best") or {}).get("retire_sleeve_exits")) or any(
+        not str(d).startswith("take_profit") for d in ((tu.get("changes") or {}).get("pause_rules") or []))
+    if tu.get("material") and tu.get("changes") and not _stale:
         ch, cur_s, best_s = tu["changes"], tu["current"]["stats"], tu["best"]["stats"]
         steps = []
         n_tp = sum(1 for d in ch["pause_rules"] if d.startswith("take_profit"))
@@ -2486,10 +2503,13 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         steps += _guard_settings_steps(ch.get("guard_settings"))
         cards.append({
             "id": "rec_goal_protect_book", "dimension": "goal", "severity": "HIGH",
-            "title": (f"Bring your crash risk inside your limit: halving {cur_s['p_halve_pct']:g}% -> "
-                      f"{best_s['p_halve_pct']:g}%" if tu.get("breach") else
-                      f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
-                      f"{best_s['p_goal_pct']:g}%"),
+            # PR 140 (owner, 2026-10-23): both numbers, side by side, in the title.
+            "title": ((f"Bring your crash risk inside your limit: halving {cur_s['p_halve_pct']:g}% -> "
+                       f"{best_s['p_halve_pct']:g}% · goal odds {cur_s['p_goal_pct']:g}% -> "
+                       f"{best_s['p_goal_pct']:g}%") if tu.get("breach") else
+                      (f"Retune your protection: goal odds {cur_s['p_goal_pct']:g}% -> "
+                       f"{best_s['p_goal_pct']:g}% · halving {cur_s['p_halve_pct']:g}% -> "
+                       f"{best_s['p_halve_pct']:g}%")),
             "why": (goal_line + _breach_line(tu, cur_s, best_s) + f" {_setups_replayed(tu)}; this is the "
                     f"one with the best goal odds that keeps the chance of halving at or under "
                     f"{tu['halve_floor_pct']:g}%." + _take_profit_line(tu, ch)),
@@ -2857,6 +2877,15 @@ async def apply_rules_tuning(session, user, spec: dict) -> dict:
             return {"ok": False, "refused": "RULES_CHANGED",
                     "error": "a rule this card would pause has changed since it was measured - nothing was changed."}
         rules.append(r)
+    # PR 140 (D115): a card never switches off downside protection. A spec built
+    # from a verdict solved before PR 140 may still name a stop: refused whole,
+    # before anything moves, so the guard is not re-levelled on half a change.
+    _downside = [r for r in rules if r.rule_type in DOWNSIDE_RULE_TYPES]
+    if _downside:
+        return {"ok": False, "refused": "STOPS_STAY_ON",
+                "error": ("this card would switch off "
+                          + ", ".join(f"{r.ticker} {r.rule_type.replace('_', ' ')}" for r in _downside)
+                          + " - the app no longer switches off a stop for you. Nothing was changed.")}
     gd = spec.get("guard") or None
     guard_rule = None
     if gd and gd.get("rule_id"):
@@ -2876,8 +2905,21 @@ async def apply_rules_tuning(session, user, spec: dict) -> dict:
             return {"ok": False, "refused": "RULES_CHANGED",
                     "error": "your drawdown guard's settings have changed since this was measured - nothing was changed."}
     paused = []
+    from datetime import datetime, timezone
+
+    from app.models.tables import RuleEvent
+    _today = datetime.now(timezone.utc)
     for r in rules:
         r.active = False
+        # PR 140: a pause leaves a trace. Before this, the card set the flag and
+        # nothing else, so "who switched my stops off?" (BACKLOG C16b) had no
+        # answer in the database: the list existed only in one HTTP response.
+        r.note = f"Paused by 'Retune your protection' on {_today:%Y-%m-%d}"[:160]
+        session.add(RuleEvent(subject=user.email, rule_id=str(r.id), ticker=r.ticker,
+                              rule_type=r.rule_type, trigger_price=None, target_price=None,
+                              title=f"Paused by 'Retune your protection': {r.ticker} {r.rule_type.replace('_', ' ')}"[:200],
+                              outcome="paused", outcome_at=_today,
+                              action={"by": "card", "card": "rec_goal_protect_book", "level": float(r.level)}))
         paused.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type, "level": float(r.level)})
     await session.commit()
     guard_out = None

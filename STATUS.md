@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 139: a stop-out is not bought back). Last product PR: **PR 139**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 140: the protection card never switches off a stop). Last product PR: **PR 140**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,56 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 140 — the protection card never switches off a stop; paused protection is on Today (D115)
+
+**Report (2026-10-22 review, gap G1; BACKLOG C16b).** "Retune your protection" was accepted on 10-06, 10-10, 10-11 and 10-20.
+Three times a paused stop was re-armed and fired within minutes, already breached (SOXL 10-12 13:40 -> 13:42, 10-16 19:42 ->
+19:46, 10-22 20:08 -> 20:22). On 10-22 the owner re-armed about twenty rules by hand across SOXL, TQQQ, QQQ, VTI, VXUS, XLE,
+COMT, UGA and USO.
+
+**Root cause (PROVEN: reproduced on HEAD `606ebec` by the first two tests of `tests/test_pr140_protection_stays_on.py`,
+before they were inverted).**
+1. `_tune_protection` had ONE exit switch, `retire_sleeve_exits`, applied to every replay column -- the sleeves and, since
+   PR 123, every held ticker with a rule. With a goal far above what the book can earn, the model scores every exit as
+   pure cost: on 10-23 production read 0.3% goal chance with the rules, 21% without (55.7% chance of halving without).
+   Whenever retiring was inside the halving limit, the card paused every stop on the book at once. This was the design
+   (D60, PR 96/121), not a slip: `test_the_best_goal_odds_under_the_halving_floor_wins` asserted it.
+2. `apply_rules_tuning` set `active = False` and wrote no rule event and no note. The list of what it paused existed only
+   in the Accept's HTTP response (`_record_apply` writes trades only; the done mark keeps the amount), so "who switched my
+   stops off?" had no answer in the database.
+
+**Ruled out.** The other writers of `active = False` for the 10-22 SOXL stop `c89d8251`: the orphan retire (SOXL held
+throughout), the sleeve-cap retire (touches `max_weight` only), the sleeve-removal retire (the rule carries no strategy
+stamp, and no sleeve was removed after it was made); a toggle (the audit log has none for it before 10-22 20:08).
+
+**Fix (owner decisions, 2026-10-23).**
+- The retune never proposes switching off a stop-loss, trailing stop, profit-protect, trend break or the guard
+  (`DOWNSIDE_RULE_TYPES`). It still moves the guard's level, sell size and re-arm gap, and may pause take-profits.
+- `apply_rules_tuning` refuses a spec that names one (`STOPS_STAY_ON`) before anything moves; a verdict solved before this
+  PR that still proposes it shows no card (the next solve replaces it).
+- Every pause writes a `paused` rule event and a note ("Paused by 'Retune your protection' on <date>"); `toggle_rule`
+  writes `paused` / `resumed` events too (`action.by` = card or you). History labels: Paused, Re-armed, Kept. `sw.js` iw-v72.
+- One heads-up lists every downside rule that is off and not already crossed (a crossed one has PR 138's HIGH card), with
+  one act, "Re-arm all" (`rearm_rules`, each re-arm through `toggle_rule`). Its id is the paused set, so Ignore never hides a
+  later pause. Auto re-arm: BACKLOG C18.
+- The card's title gives goal odds and halving side by side.
+
+**Tests.** `tests/test_pr140_protection_stays_on.py` (7): the retune never proposes pausing a stop even at +20 points; Accept
+refuses a stop and moves nothing (not the guard either); a take-profit pause leaves an event naming the card and a note;
+your own pause and re-arm leave events; a stale verdict shows no card; one heads-up with Re-arm all, keyed by the paused set;
+Re-arm all through Today switches them back on. Updated for D115 (each says so): `test_protection_tuning` (3),
+`test_the_retune_searches_properly` (2), `test_every_limit_is_a_setting` (1), `test_a_stop_that_is_off_is_a_card` (1).
+FULL_SUITE_140
+
+**Smoke.** `scripts/smoke/smoke-pr140-protection-stays-on.ps1 -Sha <sha> -Since <deploy time>` (read-only). Against production
+on `606ebec` (field check): PASS 1, FAIL 1, SKIP 4 -- the FAIL is real and is what this PR fixes: the UGA trailing stop is off
+and nothing on Today says so. Against this build served locally on a migrated Postgres, after pausing a VTI stop, an XLE
+trailing stop and a SOXL take-profit by hand: **PASS 7, FAIL 0, SKIP 2** (no protection card: that needs a goal solve on live
+history). Beyond the smoke, Re-arm all on that heads-up switched the two downside rules on, left the take-profit off, wrote
+two `resumed` events, and the heads-up cleared.
 
 ---
 
@@ -86,8 +136,13 @@ reads an ISO `Z` time as local (+03:00 on the owner's Mac), which silently dropp
 one pausing writer in its life per the audit log, the protection card Accept at 10-20 14:21:50. Strong by elimination only:
 `apply_rules_tuning` writes `active=False` and no event, so nothing records what it paused. PR 140.
 
-**Not verified live.** Production still serves `ae46931`. After deploy: run the smoke with `-Since` the deploy time; the open
-SOXL stop card (`c89d8251`), if accepted, must leave a stop hold. Not run: GitHub Actions (free-plan minutes, back on the 1st).
+**Verified live (2026-10-23).** Merged as #51 (`606ebec`), Railway deployed 05:26 UTC. Smokes on production with
+`-Sha 606ebec`: PR 137 PASS 5 / SKIP 1 (no sleeve top-up on Today), PR 138 PASS 6, PR 139 PASS 2 / SKIP 3 until a stop
+exited. The owner accepted the open SOXL stop card (`c89d8251`) at 05:45 UTC: its executed detail carries a stop hold
+(82.11, `btm_trend_soxl`, signal not out), and the PR 139 smoke with `-Since 2026-10-23T05:26:00Z` then read **PASS 6,
+FAIL 0, SKIP 0**. A dry run of "Fund my sleeves" on production marks `btm_trend_soxl` `held_back` with the stop named; SOXL
+stays at 0. `smoke-all.ps1`: PASS 22, FAIL 3 -- all three are Gemini "AI credits are exhausted" (billing, not code). That
+script calls `POST /rules/evaluate` despite its read-only header (it triggered nothing); fix in PR 145.
 
 ---
 

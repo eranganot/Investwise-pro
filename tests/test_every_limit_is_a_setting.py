@@ -31,8 +31,8 @@ def test_the_retune_honours_the_limit_it_is_given():
     import numpy as np
 
     from tests.test_protection_tuning import _stats
-    table = {(False, 10.0): _stats(0.5, 0.0), (False, 15.0): _stats(0.6, 0.0), (False, 20.0): _stats(0.7, 0.1),
-             (True, 10.0): _stats(19.9, 0.6), (True, 15.0): _stats(22.7, 0.8), (True, 20.0): _stats(24.7, 2.9)}
+    # PR 140: only setups that keep the exits; the 20% guard halves 2.9% of the time.
+    table = {(False, 10.0): _stats(0.5, 0.0), (False, 15.0): _stats(0.6, 0.8), (False, 20.0): _stats(0.7, 2.9)}
 
     def run(sl=None, gd="same", **kw):
         retire = sl is not None and sl[0].get("trail") is None
