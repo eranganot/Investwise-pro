@@ -34,6 +34,12 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D127 · 2026-10-23 · Money a stop-held sleeve cannot use goes to the core, and is not reserved for that sleeve.**
+  The core card's "an unfunded sleeve has first claim" deferral (PR 60) counts only the part of a sleeve's gap the app
+  may buy: a ticker under a stop hold (with PR 141, every 2x/3x fund once one is stopped) is left out. `book_target`
+  already gives that share to the core; the deferral now agrees with it. *Why:* owner, 2026-10-23, "Currently I have two
+  triggered rules but no recommendation on how to act"; offered "into the core / park in cash / keep", chose "Into the
+  core". → C27
 - **D124 · 2026-10-23 · Switched-off protection re-arms itself after 3 days, never one already crossed.**
   A stop-loss, trailing stop, profit-protect, trend break or drawdown guard that has been off `rearm_after_days` (a
   Card-thresholds setting, default 3; 0 = never) is switched back on by the 30-minute rule check, logged `resumed` by
