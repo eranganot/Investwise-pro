@@ -284,6 +284,12 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D120 · 2026-10-23 · Every Buy and Sell the ledger records carries its price and value; a leg without them is an error.**
+  Handlers that report a single-ticker sale (`trim`, `sell_position`) or buy (`buy_funded`) now pass `price` and
+  `gross_ils` / `price`; the sleeve funder records the price of what it sold; `record_leg` logs an ERROR for a Buy/Sell
+  with a quantity and no price or value (still written: the share count matters). Older rows are not rewritten here.
+  *Why:* 140 of 440 production rows had price 0 and/or ₪0, every stop and trim among them, and Holdings showed no "last
+  buy" for XOM. The money was right throughout (`cash_added_ils`); the record was not. → PR 147
 - **D119 · 2026-10-23 · The core realign may trim a sleeve only by its own overshoot, and never a ticker its basket holds.**
   The trim is split per sleeve that is over its size, across that sleeve's holdings (`held_by_ticker_ils`), and the card
   names the tickers. A sleeve under its size is never a source; a sleeve ticker the core basket also holds is not sold to

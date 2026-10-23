@@ -1220,6 +1220,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
         raised += max(0.0, gross - tax)
         tax_total += tax
         sold.append({"ticker": p.ticker, "shares": round(shares, 6),
+                     "price": float(p.current_price or 0),          # PR 147: was not recorded
                      "value_ils": round(gross, 2), "tax_ils": round(tax, 2),
                      "reason": leg.get("reason")})
     await session.flush()
