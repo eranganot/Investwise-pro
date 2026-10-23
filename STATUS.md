@@ -48,10 +48,29 @@ so a manual pause or resume would have failed it the same way.
 
 **Fix.** The re-arm event carries today's price. `smoke-all` checks the newest event that is a firing (not paused/resumed).
 Test: `test_c18_...::test_a_stop_off_for_longer_than_the_setting_comes_back_on` asserts the price. Full Postgres suite:
-GATE_RESULT.
+2,892 passed, 0 failed. Ruff clean.
 
 **Smoke.** `smoke-c18-switched-off-protection-comes-back.ps1` section 3 now requires a price on re-arms after
 `-C181Since` (a NOTE before it). `smoke-all` against production with the fixed check: 22 passed, 3 failed (Gemini credits).
+After deploy: PROD_RESULT.
+
+## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
+
+**What.** When the optimiser finds no sleeve change that lifts the goal chance, Today's heads-up said "Nothing to accept
+here. The goal and the halving limit are yours to set." The levers the nightly solve had measured (a target return the
+book can reach, a monthly deposit, a later deadline) appeared only as their own cards, and once one was ignored nothing on
+Today said the lever existed. The heads-up now appends them in numbers from the stored solve, or says plainly that with
+the rules armed no deposit and no later deadline reaches the bar. Words only: no number, card or trade changes.
+
+**Why it was late.** Written and tested 2026-10-22 (commit `33f6d92`, branch `pr138-goal-ceiling-names-the-levers`) but
+never opened as a PR; found on 2026-10-23 when every branch was checked against main. `book_optimizer.py` had not changed on
+main since, so the file was taken as it was.
+
+**Verified.** 3 tests (`test_the_goal_ceiling_names_the_levers.py`); related tests 244 passed; full Postgres suite:
+2,895 passed, 0 failed. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
+the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
 After deploy: PROD_RESULT.
 
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
