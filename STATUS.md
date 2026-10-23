@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 138b: the goal note names the levers). Last product PR: **PR 138b**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 138c: one lever, not the only one). Last product PR: **PR 138c**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,20 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
+
+**Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,
+and it is yours. What would close the gap: lower your target return from 30%/yr to 3.7%/yr ...". The first sentence was
+written when the halving limit WAS the only lever shown (PR 136b); PR 138b added a second without touching it. Now, when
+the note names a lever, the sentence reads "Changing that limit is one lever, and it is yours."; with no lever measured
+it is unchanged. Words only.
+
+**Verified.** `test_the_note_does_not_call_the_halving_limit_the_only_lever_when_it_names_another` builds the card end to
+end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `smoke-pr138b-goal-note-names-levers.ps1` section 1 now fails a note that does both. Production before
+(`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy: PROD_RESULT.
+
 ## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
 
 **What.** When the optimiser finds no sleeve change that lifts the goal chance, Today's heads-up said "Nothing to accept
@@ -55,7 +69,10 @@ main since, so the file was taken as it was.
 
 **Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
 the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
-After deploy: PROD_RESULT.
+After deploy (`eac1df4`): **PASS 6 FAIL 0 SKIP 0**. The live heads-up now ends "What would close the gap: lower your target
+return from 30%/yr to 3.7%/yr (about 24,316 by 2031, a 65% chance). With your protective rules armed the model finds no
+deposit and no later deadline that reaches the bar; on the plain history basis ... about 591 a month more would." Read
+live, it contradicts the sentence before it ("Changing that limit is the one lever left"): fixed in PR 138c.
 
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
