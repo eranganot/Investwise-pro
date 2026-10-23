@@ -55,7 +55,7 @@ this build has no `benchmark`, and nothing changes until the next one.
 **Verified.** 5 tests (`test_c26_the_goal_is_held_against_the_index.py`): the solve's benchmark, seeded and paired;
 no comparison without an index column; the sentence both ways; Today's target card suppressed below the index and
 offered above it (end to end through `/recommendations`); the note. Goal/frontier/optimiser subset: 180 passed. Full
-Postgres suite: GATE_RESULT.
+Postgres suite: 2,900 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
 benchmark on the stored solve: the build before). After deploy AND a solve on the new build: PROD_RESULT.
