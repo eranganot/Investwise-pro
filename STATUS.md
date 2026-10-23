@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 139.1: the held-cash card's stop-hold wording). Last product PR: **PR 140**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 141: one bet, one hold). Last product PR: **PR 141**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,57 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 141 — a stop on one 2x/3x fund holds every 2x/3x fund (D116)
+
+**Report (2026-10-22 review, gaps G3 and G6; BACKLOG C19).** On 10-23, after the owner accepted the SOXL stop-loss (sold at
+82.11; PR 139 recorded the stop hold), the production Fund-my-sleeves dry run showed SOXL `held_back` and funded the
+`btm_vol_target_tqqq` sleeve with the same money. The held-cash card ("₪4,028 of your cash is waiting for SOXL") listed
+TQQQ first among the places to invest it. The daily drift / cold-start card kept asking to top up the bet the stop had closed.
+
+**Root cause (PROVEN: live payloads above, and four of the new tests fail on `9d5a9f7`: load-basket bought 38.59 TQQQ; the
+card offered TQQQ and UPRO; the cold-start card asked to fund the TQQQ sleeve).** A stop hold covered exactly one ticker.
+Nothing treated SOXL and TQQQ as one bet: the same-bet test compares the strategies' signals (0.78, under the 0.80 limit),
+while their daily returns over the month before correlated 0.95 and fell together on 8 of the 8 sessions SOXL dropped
+more than 3%.
+
+**Ruled out.** A buyer ignoring the PR 139 hold (every buyer honoured it for SOXL itself; the dry run said so); a
+correlation-limit bug (0.78 is what the signals measure; the limit is doing what it was built for, which is not this).
+
+**Fix (owner, 2026-10-23: "any 2x/3x fund"; "elsewhere, non-blocked only").**
+- `strategy_profile.GEARED` = the leveraged set without the -1x PSQ and SH.
+- `buyback_hold.with_group`: a stop hold on a geared fund adds every other geared fund, with `via` (the stopped ticker) and
+  the same hold rule id. Derived on every read, never stored; ending the SOXL hold ends the block. `stop_held` and `active`
+  both return the group, so every buyer that already honoured holds (card executors, the `buy_into_book` backstop, sleeve
+  funding, load-basket, replace-book, the cash redeploy, the core realign, the book target) now honours it with no new call
+  site. Refusals say "TQQQ is a 2x/3x fund, and your trailing stop sold SOXL (also 2x/3x) at 82.11 ...".
+- `_held_cash_card`: still waits for SOXL only ("Buy back" buys only SOXL); offers no blocked fund as a place; says the other
+  2x/3x funds wait too. Still recommends investing part of it when that is the better pick.
+- A blocked sleeve gets no top-up or cold-start card, so no daily drift push (G6).
+
+**Not changed.** A stop on a plain fund (VTI) holds only that fund; a take-profit (price) hold on a geared fund holds only it;
+your own Holdings > Add (`recording=True`) still records a 2x/3x purchase.
+
+**Tests.** `tests/test_pr141_one_bet_one_hold.py` (8): the group and what is outside it; the refusal text; load-basket and
+Fund-my-sleeves on the TQQQ sleeve after a SOXL stop; a card buy and the writer backstop refused, a manual entry recorded,
+the block gone once the SOXL hold ends; the held-cash card's places; no top-up card. Ruff clean. Full Postgres suite: **2,851 passed, 0 skipped, 0 failed**.
+
+**Smoke.** `scripts/smoke/smoke-pr141-one-bet-one-hold.ps1`. Against production BEFORE the merge (`9d5a9f7`): **PASS 6 FAIL 3**,
+the bug itself (TQQQ funded in the preview; TQQQ offered; nothing said about the other funds). Against the locally served
+branch on migrated Postgres with a fired SOXL stop: **PASS 10 FAIL 0 SKIP 0**. Production after deploy: PROD_RESULT.
+
+**Also fixed: a test that stopped running on a date.** `test_the_endpoint_always_says_whether_it_has_a_provisional_point`
+(PR 138) never seeded history; it ran only while snapshots another test left behind (dated up to 2026-09-18) were inside
+the 1M window. On 2026-10-23 they fell out, it skipped, and the suite's skip guard failed the gate (also on `main`: the
+same skip run alone on `9d5a9f7`). It now seeds three recent days of its own and removes them after.
+
+**Also verified.** PR 139.1 (`9d5a9f7`) on production: `smoke-all` 22 passed, 3 failed; section 8 now passes; the 3 failures
+are the Gemini credit balance (billing, owner).
+
+**Still open.** C15 (the core realign selling TQQQ after sleeve top-ups) is next, separately: with TQQQ blocked while the
+SOXL hold lasts, it cannot be reproduced on the live book today.
 
 ---
 

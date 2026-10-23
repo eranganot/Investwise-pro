@@ -102,6 +102,11 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
   - Every buyer honours it: card executors call `buyback_hold.assert_buyable` before their first write (writers commit as
     they go); `_fund_sleeve` / `fund_plan` drop the ticker; `buy_into_book` refuses it as a backstop unless `recording=True`
     (your own Holdings > Add). `tests/test_a_stop_out_is_not_bought_back.py` walks app/ and fails on a buy path with no check.
+  - **One bet, one hold** (PR 141, D116): a stop hold on a 2x/3x fund (`strategy_profile.GEARED`: the leveraged set
+    without the -1x PSQ and SH) blocks EVERY 2x/3x fund. `buyback_hold.with_group` derives the extra entries on each read
+    (`via` = the stopped ticker, same hold rule id), so `stop_held` and `active` both return them and every buyer above
+    honours them; ending the source hold ends the block. The held-cash card still names only the real hold (and "Buy back"
+    buys only it) but offers no blocked fund as a place for the money; a blocked sleeve gets no top-up or cold-start card.
   - `buy_back` is an ENTRY type: a hold exists for a ticker you no longer hold, so it is never purged or hidden as an orphan.
 - **Standing orders**: monthly deposits credited by the hourly job (a contribution plus cash). They feed the goal.
 

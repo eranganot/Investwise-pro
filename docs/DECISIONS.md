@@ -284,6 +284,14 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D116 · 2026-10-23 · After a stop sells a 2x/3x fund, the app buys no 2x/3x fund until that hold ends.**
+  Every buyer (cards, Plan buttons, sleeve funding, the core realign, the cash redeploy) reads the group from the stop hold;
+  it is derived, never stored. The held-cash card offers non-blocked places only and still recommends investing part of
+  the reserve. -1x funds (PSQ, SH) are inverse, not geared, and are not in the group. A stop on a plain fund still holds
+  only that fund. *Why:* 10-23, minutes after the SOXL stop-out, sleeve funding funded the TQQQ sleeve and the held-cash
+  card put TQQQ first: the same bet on the day it matters (0.95 daily-return correlation over the month before; down
+  together on 8 of 8 sessions SOXL fell more than 3%), while the strategies' signals measure 0.78 and pass the 0.80
+  same-bet limit. Owner, 2026-10-23 ("any 2x/3x fund"; "elsewhere, non-blocked only"). → PR 141
 - **D115 · 2026-10-23 · The protection card never switches off a stop; paused protection is always on Today.**
   The retune may move the drawdown guard and pause take-profits, never a stop-loss, trailing stop, profit-protect, trend
   break or the guard itself (`DOWNSIDE_RULE_TYPES`); Accept refuses a spec that names one. Every pause and re-arm (card or

@@ -44,6 +44,14 @@ _LEVERAGED = {"TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA",
               "QLD", "TMF", "FAS", "CURE", "ERX", "LABU", "DRN",
               # PR 134d: the hedges' geared and -1x legs (a -1x fund is geared too).
               "SSO", "UBT", "UGL", "PSQ", "SH"}
+# PR 141 -- THE 2x/3x FUNDS: one bet, as far as a stop-out is concerned. After a
+# stop sells one of them, none of them is bought (`buyback_hold.with_group`).
+# Measured 10-22: a trailing stop sold SOXL and the same morning the app's
+# sleeve funding and held-cash card both proposed TQQQ; over the month before,
+# the two had a 0.95 daily-return correlation and fell together on 8 of the 8
+# sessions SOXL dropped more than 3%. PSQ and SH are -1x: inverse, not geared,
+# so they are not in this group.
+GEARED = frozenset(_LEVERAGED - {"PSQ", "SH"})
 _BROAD = {"VTI", "VT", "ITOT", "VOO"}
 _INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG", "EFA"}
 _SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB", "VNQ"}

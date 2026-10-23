@@ -226,12 +226,42 @@ def active(holds: dict[str, dict], rows) -> dict[str, dict]:
         # PR 139: a stop hold is never ended by a price (see STOP above).
         if is_stop(h) or now is None or now >= float(h.get("level") or 0):
             out[tk] = {**h, "price_now": now}
+    out = with_group(out)       # PR 141: every buyer that reads holds reads the group
+    for tk, h in out.items():
+        if h.get("via"):
+            out[tk] = {**h, "price_now": px.get(tk)}
+    return out
+
+
+def with_group(holds: dict[str, dict]) -> dict[str, dict]:
+    """PR 141 (D116): a stop hold on a 2x/3x fund holds EVERY 2x/3x fund.
+
+    10-22: a trailing stop sold SOXL; the same morning Fund-my-sleeves funded the
+    TQQQ sleeve and the held-cash card put TQQQ first among the places to invest
+    the reserve. The two are one bet on the day a stop fires (0.95 daily-return
+    correlation over the month before; together down on 8 of 8 sessions SOXL fell
+    more than 3%), so "do not buy back SOXL" was a promise the app kept for one
+    ticker and broke for the bet.
+
+    Each added entry carries `via` (the ticker whose stop holds it) and that
+    hold's rule id: ending the SOXL hold ends the block. Nothing is stored; the
+    group is derived on every read, so it can never outlive its source.
+    """
+    from app.services.strategy_profile import GEARED
+    src = sorted(tk for tk, h in holds.items() if is_stop(h) and not h.get("via") and tk in GEARED)
+    if not src:
+        return holds
+    out = dict(holds)
+    for tk in sorted(GEARED):
+        if tk not in out:
+            out[tk] = {**holds[src[0]], "via": src[0], "price_now": None}
     return out
 
 
 def stop_held(holds: dict[str, dict]) -> dict[str, dict]:
-    """Only the stop holds. These bind EVERY buyer, the Plan screen included."""
-    return {tk: h for tk, h in holds.items() if is_stop(h)}
+    """Only the stop holds, and the 2x/3x funds they block (PR 141). These bind
+    EVERY buyer, the Plan screen included."""
+    return with_group({tk: h for tk, h in holds.items() if is_stop(h)})
 
 
 def refusal(ticker: str, h: dict) -> str:
@@ -239,6 +269,10 @@ def refusal(ticker: str, h: dict) -> str:
     what = str(h.get("exit_rule_type") or "stop").replace("_", " ")
     tail = (f"until {h['strategy_id']}'s signal is out and back in" if h.get("strategy_id")
             else "until you end the hold")
+    if h.get("via"):
+        return (f"{ticker} is a 2x/3x fund, and your {what} sold {h['via']} (also 2x/3x) at "
+                f"{float(h.get('level') or 0):,.2f}: the app will not buy any 2x/3x fund {tail}. "
+                f"End the {h['via']} hold on Holdings > Rules to buy it now.")
     return (f"{ticker} is on hold since your {what} sold it at {float(h.get('level') or 0):,.2f}: "
             f"the app will not buy it back {tail}. End the hold on Holdings > Rules to buy it now.")
 

@@ -70,18 +70,44 @@ def test_it_never_writes_anything():
     assert pts == [LAST] and twr == TWR
 
 
-def test_the_endpoint_always_says_whether_it_has_a_provisional_point():
-    """Through the API: the key is always present, a point or a reason."""
-    import os
+def test_the_endpoint_always_says_whether_it_has_a_provisional_point(own_session):
+    """Through the API: the key is always present, a point or a reason.
 
-    os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    Seeds its own three days (the series needs `MIN_POINTS_FOR_SERIES`). It used
+    to rely on snapshots another test left behind, dated up to 2026-09-18, and so
+    skipped -- an unregistered skip, a failed suite -- once the 1M window moved
+    past them on 2026-10-23.
+    """
+    import asyncio
+    import datetime as _dt
+    from decimal import Decimal
+
     from fastapi.testclient import TestClient
 
     import app.main as m
+    from app.models.tables import NavSnapshot
+    from app.services.feed_service import SUPERADMIN_EMAIL
 
-    with TestClient(m.app) as c:
-        body = c.get("/api/v1/portfolio/nav-history?range=1M").json()
-    if not body.get("ok"):
-        pytest.skip("this test book has too little recorded history for a series")
-    assert "provisional" in body and "provisional_reason" in body
-    assert body["provisional"] is None or body["provisional_reason"] is None
+    today = _dt.date.today()
+    days = [(today - _dt.timedelta(days=k)).isoformat() for k in (4, 3, 2)]
+
+    async def _seed(add):
+        from sqlalchemy import delete
+        async with own_session() as s:
+            await s.execute(delete(NavSnapshot).where(NavSnapshot.subject == SUPERADMIN_EMAIL,
+                                                      NavSnapshot.as_of.in_(days)))
+            if add:
+                for i, d in enumerate(days):
+                    s.add(NavSnapshot(subject=SUPERADMIN_EMAIL, as_of=d,
+                                      nav_ils=Decimal(str(20000 + 100 * i)), cash_ils=Decimal("0"),
+                                      invested_ils=Decimal("20000"), positions=3))
+            await s.commit()
+    try:
+        with TestClient(m.app) as c:
+            asyncio.run(_seed(True))
+            body = c.get("/api/v1/portfolio/nav-history?range=1M").json()
+        assert body.get("ok"), body
+        assert "provisional" in body and "provisional_reason" in body
+        assert body["provisional"] is None or body["provisional_reason"] is None
+    finally:
+        asyncio.run(_seed(False))
