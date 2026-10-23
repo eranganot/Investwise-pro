@@ -47,7 +47,7 @@ the note names a lever, the sentence reads "Changing that limit is one lever, an
 it is unchanged. Words only.
 
 **Verified.** `test_the_note_does_not_call_the_halving_limit_the_only_lever_when_it_names_another` builds the card end to
-end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: GATE_RESULT.
+end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: 2,896 passed, 0 failed.
 
 **Smoke.** `smoke-pr138b-goal-note-names-levers.ps1` section 1 now fails a note that does both. Production before
 (`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy: PROD_RESULT.
