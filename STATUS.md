@@ -68,7 +68,7 @@ caller of the rule check (`push_evaluate` sends notifications only; `strategy_si
 
 **Tests.** `tests/test_pr143_a_failed_rule_check_is_loud.py` (6): the job fails; the failure is recorded with its reason;
 one bad book does not skip the next; history reloads after a simulated restart and the next run continues it; the
-heads-up's three states and its silences; Today carries it. Full Postgres suite: GATE_RESULT.
+heads-up's three states and its silences; Today carries it. Full Postgres suite: **2,859 passed, 1 failed, 0 skipped**. The failure was an artefact of editing `scheduler.py` (adding `previous_run`) while the run had it loaded: `test_the_scheduler_primes_the_price_refresh_through_the_guarded_path` reads `start_scheduler`'s source by line number and got the neighbouring function. Every test that touches the scheduler, the price job or the rule check (115, the PR 143 file included) re-run on the final code: all pass. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr143-rule-check-is-loud.ps1`. Production before the merge (`1984d6f`, `-Since` 11:00):
 PASS 4 FAIL 0 SKIP 2 (the history skip is the bug: nothing from before 11:01 survived). Local build with the scheduler on
