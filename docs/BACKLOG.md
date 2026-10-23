@@ -82,6 +82,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |
 | C19 | ~~A stop on SOXL did not stop the app buying TQQQ~~ (2026-10-22 review G3/G6). Closed by PR 141 (D116): a stop hold on a 2x/3x fund blocks every 2x/3x fund for every buyer; the held-cash card offers non-blocked places only; a blocked sleeve gets no top-up card (so no daily drift push). | `buyback_hold` | P | P1 | PR 141 |
+| C20 | ~~Ignoring a fired stop switched it off~~ (2026-10-22 review). Closed by PR 142 (D117): Ignore re-arms it below today. | `rules_service` | P | P1 | PR 142 |
 | C18 | **Auto re-arm for paused protective rules** (owner, 2026-10-23: heads-up first, auto re-arm later). Re-arm a paused downside rule after N days (a setting), never one already crossed (that is the PR 138 card's job). | `rules_service` | P | P2 | — |
 
 ## Security posture (verified 2026-10-08)
