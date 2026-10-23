@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 147: the ledger says what it sold). Last product PR: **PR 147**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (plan v4). Last product PR: **PR 147**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -66,8 +66,7 @@ Owner's call; BACKLOG C22.
 reported as one ticker each record a price and value; a leg without them is logged. Full Postgres suite: **2,869 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-the-ledger-says-what-it-sold.ps1`. Production before the merge (`99258a9`, `-Since`
-10-20): **FAIL 20**, every trim, stop, funded buy and sleeve-funding sale since 10-20 (the bug). Production after deploy:
-PROD_RESULT (section 1 needs a trade after the deploy to read).
+10-20): **FAIL 20**, every trim, stop, funded buy and sleeve-funding sale since 10-20 (the bug). Production after deploy (`3b782d8`): **PASS 3 FAIL 0 SKIP 2**: no trade yet since the deploy (section 1 waits for one); 114 of 400 older trade rows still lack a price or value (PR 147.1 repairs them); smoke-all 22/3 (Gemini credits).
 
 ---
 
