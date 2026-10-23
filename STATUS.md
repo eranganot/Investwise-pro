@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 138c: one lever, not the only one). Last product PR: **PR 138c**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C26: the goal vs the index). Last product PR: **C26**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,28 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## C26 — the goal is held against a US stock index fund (D126)
+
+**Why.** Owner, 2026-10-23, reading PR 138b's live note ("lower your target return from 30%/yr to 3.7%/yr"): with
+beat-the-market sleeves the bar is the S&P, so a 3.7%/yr target is no answer and the card gets ignored. The same 3.7%
+was on the actionable "Set a target this book can reach" card, whose Accept would have set the target to it.
+
+**What.** `frontier_service.goal_solve` measures `_benchmark_tail`: a 100% VTI book (`us_equity`) on the solve's own
+history paths (same re-centred drift, seed and blocks, deposits, deadline, bar; no cash, no rules). Stored as
+`benchmark` {amount, return at the bar, median, odds, halving, and the book's own history-basis amount beside it}.
+`below_benchmark` / `benchmark_line` are the one test and the one sentence: below the index, no target card and no
+"aim for N%/yr" in the goal cards' why, and the optimiser note says the book is not beating the index instead of
+offering a lower target; at or above it, the target lever stands and says the book is ahead. A solve stored before
+this build has no `benchmark`, and nothing changes until the next one. Merged with PR 138c: its "one lever" wording now
+switches only when the note names a lever ("What would close the gap"), not on the index sentence alone.
+
+**Verified.** 5 tests (`test_c26_the_goal_is_held_against_the_index.py`): the solve's benchmark, seeded and paired;
+no comparison without an index column; the sentence both ways; Today's target card suppressed below the index and
+offered above it (end to end through `/recommendations`); the note. Goal/frontier/optimiser subset: 180 passed. Full
+Postgres suite: 2,900 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
+benchmark on the stored solve: the build before). After deploy AND a solve on the new build: PROD_RESULT.
 ## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
 
 **Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,

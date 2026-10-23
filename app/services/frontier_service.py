@@ -429,6 +429,49 @@ def _goal_mix(points: list, *, p_star: float):
     return best, False
 
 
+#: C26: the index fund the goal is held against. `us_equity` is VTI, the app's US
+#: market proxy (CLASS_PROXIES); it tracks the S&P 500 closely.
+BENCHMARK_ID = "us_equity"
+
+
+def _benchmark_tail(daily, ids, *, years, nav, target, monthly, p_star, book_tail) -> dict | None:
+    """What an all-index-fund book reaches on the solve's own paths (C26). Pure."""
+    if BENCHMARK_ID not in ids:
+        return None
+    w = np.zeros(len(ids))
+    w[ids.index(BENCHMARK_ID)] = 1.0
+    try:
+        st = paths.goal_stats(paths.simulate(daily @ w, years=years), nav=nav, target=target,
+                              monthly=monthly, p_star=p_star)
+    except ValueError:
+        return None
+    label = fi.CLASS_PROXIES[BENCHMARK_ID]
+    return {"id": BENCHMARK_ID, "ticker": label.get("assumption_ticker"), "label": "a US stock index fund",
+            "basis": "history, no rules, no cash", "p_goal_pct": st["p_goal_pct"], "median": st["median"],
+            "p_halve_pct": st["p_halve_pct"], "amount_at_confidence": st["amount_at_confidence"],
+            "book_amount_at_confidence_history": (book_tail or {}).get("amount_at_confidence")}
+
+
+def below_benchmark(bm: dict | None, lv: dict | None) -> bool:
+    """C26: the book's confident return is under the index fund's at the same bar."""
+    b, x = (bm or {}).get("roi_at_confidence_pct"), (lv or {}).get("roi_at_confidence_pct")
+    return b is not None and x is not None and float(x) < float(b)
+
+
+def benchmark_line(bm: dict | None, lv: dict | None, *, star, sized_words: str = "") -> str:
+    """The sentence that holds the book against the index fund (C26); "" without one."""
+    b, x = (bm or {}).get("roi_at_confidence_pct"), (lv or {}).get("roi_at_confidence_pct")
+    if b is None or x is None:
+        return ""
+    who = f"{bm.get('label') or 'an index fund'} ({bm.get('ticker')})" if bm.get("ticker") else (bm.get("label") or "an index fund")
+    if float(x) < float(b):
+        return (f"At your {star:g}% bar this book reaches {float(x):g}%/yr{sized_words}; {who} on the same history "
+                f"reaches {float(b):g}%/yr. A target below the index is not offered: at the confidence you ask for, "
+                f"this book is not beating it.")
+    return (f"At your {star:g}% bar this book reaches {float(x):g}%/yr{sized_words}, ahead of {who} on the same "
+            f"history ({float(b):g}%/yr).")
+
+
 def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[str, float],
                cash_pct: float, objective: str, est_kw: dict, nav: float,
                target: float | None, years: float | None, monthly: float = 0.0,
@@ -808,9 +851,17 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
                 and base["growth_cagr_pct"] < goal_roi * 100:
             levers["money_time_note"] = {"roi_pct": round(goal_roi * 100, 2),
                                          "expected_cagr_pct": base["growth_cagr_pct"]}
+    # ---- C26: the same question for a plain US stock index fund ---------
+    # Owner, 2026-10-23: with beat-the-market sleeves the bar is the S&P, so no
+    # lever may offer a target below what an index fund reaches. Same history,
+    # same re-centred drift, same seed (so the same blocks), same deposits,
+    # deadline and confidence bar; the fund holds no cash and runs no rules.
+    benchmark = _benchmark_tail(daily, ids, years=years, nav=nav, target=target, monthly=monthly,
+                                p_star=p_star, book_tail=tail_base)
     for m in (before, after):
         m.pop("volatility", None)
     return {"ok": True, "mode": "goal", "outcome": outcome, "material": bool(material),
+            "benchmark": benchmark,
             "objective": objective, "p_star": p_star,
             "kelly_ceiling": round(ceiling, 4),
             "kelly_source": "plan" if kelly_setting is not None else "goal (cap 1.0x)",
@@ -1484,6 +1535,12 @@ async def compute_for(session, user, *, source: str = "on_demand",
         amt = (out.get("levers") or {}).get("amount_at_confidence")
         if amt:
             out["levers"]["roi_at_confidence_pct"] = _roi_for_amount(goal, float(amt))
+        bm = out.get("benchmark")
+        if bm and bm.get("amount_at_confidence"):
+            bm["roi_at_confidence_pct"] = _roi_for_amount(goal, float(bm["amount_at_confidence"]))
+            if bm.get("book_amount_at_confidence_history"):
+                bm["book_roi_at_confidence_history_pct"] = _roi_for_amount(
+                    goal, float(bm["book_amount_at_confidence_history"]))
         out["goal"]["deadline"] = goal.get("deadline")
         out["goal"]["roi_pct"] = goal.get("roi_pct")
         out["goal"]["target_date_raw"] = goal.get("target_date_raw")
@@ -2643,6 +2700,10 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
             alt.append(f"add {lv['extra_monthly_ils']:,}/month")
         # PR 99.1: a target at or below zero is not a goal to offer.
         reachable_roi = lv.get("roi_at_confidence_pct") is not None and lv["roi_at_confidence_pct"] > 0
+        # C26: never a target below what an index fund reaches at the same bar.
+        bm_line = benchmark_line(v.get("benchmark"), lv, star=star, sized_words=sized_words)
+        if below_benchmark(v.get("benchmark"), lv):
+            reachable_roi = False
         if reachable_roi:
             alt.append(f"aim for {lv['roi_at_confidence_pct']:g}%/yr")
         if lv.get("deadline_extra_years"):
@@ -2660,7 +2721,7 @@ async def _goal_cards(session, user, rows, row) -> list[dict]:
         sized = {"after_retune": " Sized on your book after 'Retune your protection'.",
                  "rules_as_they_are": " Sized on your protective rules as they are."}.get(lv.get("sized_on"), "")
         common_why = (goal_line + " " + head + (f" Ways to close it: {others}." if others else "")
-                      + f"{sized} Solved {when}.")
+                      + (f" {bm_line}" if bm_line else "") + f"{sized} Solved {when}.")
         if lv.get("extra_monthly_ils"):
             new_total = round(float(g.get("monthly") or 0) + float(lv["extra_monthly_ils"]), 2)
             cards.append({
