@@ -235,6 +235,17 @@ if ($null -eq $recs -or $null -eq $port) { Skip "need recommendations + portfoli
   Write-Host ("   cash {0:N2} = {1:P1} of NAV | {2} floor {3:P0} | spendable {4:N2}" -f `
       $port.cash_ils, $cashPct, $plan.objective, $floorPct, $spendable) -ForegroundColor DarkGray
 
+  # PR 139.1: cash a buy-back or stop hold keeps back is NOT idle. The app shows
+  # it on its own card ("... of your cash is waiting for X"), and the redeploy
+  # card rightly leaves it alone. Without this the check failed on 2026-10-23
+  # with ~4,000 reserved for SOXL after its stop-out.
+  $heldCash = @(@($recs.recommendations) + @($recs.more_recommendations) | Where-Object { $_.apply.kind -eq 'held_cash' })
+  $reserved = 0.0; foreach ($hc in $heldCash) { $reserved += [double]$hc.apply.reserved_ils }
+  if ($reserved -gt 0) {
+    Write-Host ("   {0:N2} of it is held back for {1} (its own card); spendable after that {2:N2}" -f `
+        $reserved, (($heldCash | ForEach-Object { $_.apply.tickers -join ',' }) -join ', '), ($spendable - $reserved)) -ForegroundColor DarkGray
+    $spendable = $spendable - $reserved
+  }
   $card = @($recs.recommendations | Where-Object { $_.apply.kind -eq 'redeploy_cash' })[0]
   if ($null -eq $card) {
     if ($spendable -lt 250) {

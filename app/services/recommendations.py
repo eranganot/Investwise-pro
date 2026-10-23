@@ -4601,11 +4601,21 @@ def _held_cash_card(holds: dict, reserved_ils: float, cash_ils: float,
     def _now(tk):
         return (holds.get(tk) or {}).get("price_now")
     names = ", ".join(tks)
-    waits = "; ".join(
-        (f"{tk} until it trades below {_lvl(tk):,.2f} (now {float(_now(tk)):,.2f})"
-         if _lvl(tk) > 0 and _now(tk) is not None else
-         f"{tk} until your drawdown guard re-arms")
-        for tk in tks)
+    def _wait(tk):
+        h = holds.get(tk) or {}
+        # PR 139.1: a STOP hold first. A stop sells the whole position, so the
+        # ticker has no price row (`price_now` is None) and fell through to the
+        # guard sentence: production 10-23 said SOXL waited "until your drawdown
+        # guard re-arms" when it waits for its sleeve's re-entry.
+        if h.get("kind") == "stop":
+            what = str(h.get("exit_rule_type") or "stop").replace("_", " ")
+            return (f"{tk} until its sleeve's signal ({h['strategy_id']}) is out and back in "
+                    f"(your {what} sold it at {_lvl(tk):,.2f})" if h.get("strategy_id") else
+                    f"{tk} until you end the hold (your {what} sold it at {_lvl(tk):,.2f})")
+        if _lvl(tk) > 0 and _now(tk) is not None:
+            return f"{tk} until it trades below {_lvl(tk):,.2f} (now {float(_now(tk)):,.2f})"
+        return f"{tk} until your drawdown guard re-arms"
+    waits = "; ".join(_wait(tk) for tk in tks)
 
     # ---- where else, and why -------------------------------------------------
     held_set = {t.upper() for t in tks}

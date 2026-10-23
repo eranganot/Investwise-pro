@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 140: the protection card never switches off a stop). Last product PR: **PR 140**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 139.1: the held-cash card's stop-hold wording). Last product PR: **PR 140**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,34 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 139.1 — the held-cash card says what a stop hold waits for
+
+**Report (2026-10-23, found by the production smoke after PR 140 deployed).** After the SOXL stop-out (05:45 UTC) Today showed
+"₪4,028 of your cash is waiting for SOXL" with the reason "the app agreed not to buy back SOXL until your drawdown guard
+re-arms". SOXL waits for its sleeve's re-entry; no guard was involved. A card may not claim what is not true.
+
+**Root cause (PROVEN: production payload, and the new test fails on `9a8e85b` with that exact sentence).**
+`_held_cash_card` chose its wording from the price only: a hold with a level AND a current price "waits until it trades
+below"; anything else "waits until your drawdown guard re-arms". A stop sells the whole position, so the ticker has no price
+row (`price_now = None`) and every stop hold read as a guard hold.
+
+**Ruled out.** A hold of the wrong kind (the stored row is `kind: stop`, `strategy_id: btm_trend_soxl`, level 82.11); the
+"Buy back" option silently buying nothing under PR 139's check (it releases the hold before it buys).
+
+**Fix.** Stop holds first: "until its sleeve's signal (btm_trend_soxl) is out and back in (your stop loss sold it at
+82.11)", or "until you end the hold" when no sleeve owns the ticker. The other two sentences are unchanged.
+
+**Also: `smoke-all.ps1` section 8.** It reported "no redeploy card despite 3,588 spendable above the floor". The ~₪4,028 is
+reserved for SOXL and has its own card; the redeploy card rightly leaves it alone. The check now subtracts held cash.
+
+**Tests.** `test_the_held_cash_card_says_what_a_stop_hold_waits_for` (stop with and without a sleeve; the guard sentence
+unchanged). Every test that touches held cash, plus `test_every_card_can_be_acted_on`, on Postgres: 64 passed. Full Postgres suite: **2,842 passed, 1 skipped, 0 failed**.
+
+**Still open, for PR 141 (G3).** The same card RECOMMENDS investing the SOXL stop-out money elsewhere, TQQQ first (another 3x
+fund, correlation 0.83 with SOXL's sleeve).
 
 ---
 
@@ -85,6 +113,11 @@ and nothing on Today says so. Against this build served locally on a migrated Po
 trailing stop and a SOXL take-profit by hand: **PASS 7, FAIL 0, SKIP 2** (no protection card: that needs a goal solve on live
 history). Beyond the smoke, Re-arm all on that heads-up switched the two downside rules on, left the take-profit off, wrote
 two `resumed` events, and the heads-up cleared.
+
+**Verified live (2026-10-23).** Merged as #52 (`9a8e85b`), live 06:33 UTC. Smoke with `-Sha 9a8e85b -Since 06:33Z`: **PASS 4,
+FAIL 0, SKIP 3** -- the UGA trailing stop that was off is now on the "1 protective rule is switched off" heads-up with Re-arm
+all; no protection card on Today; no pause since the deploy. `smoke-all.ps1`: PASS 21, FAIL 4 -- three Gemini credit failures
+(billing) and one false FAIL from the script's cash check, fixed in PR 139.1.
 
 ---
 
