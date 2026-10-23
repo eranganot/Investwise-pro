@@ -1685,7 +1685,11 @@ const _OUTCOME={
   executed:{t:"✅ Executed",c:"var(--green)"},
   dismissed:{t:"🚫 Ignored",c:"var(--mut)"},
   acknowledged:{t:"👍 Marked done",c:"var(--mut)"},
-  triggered:{t:"⏳ Awaiting your call",c:"var(--amber)"}
+  triggered:{t:"⏳ Awaiting your call",c:"var(--amber)"},
+  kept:{t:"↔️ Kept, rule moved",c:"var(--mut)"},
+  // PR 140: who switched a rule off, and when.
+  paused:{t:"⏸ Paused",c:"var(--amber)"},
+  resumed:{t:"▶ Re-armed",c:"var(--green)"}
 };
 async function loadRuleEvents(){
   const box=$("ruleEvents"); if(!box) return;

@@ -30,7 +30,12 @@ def test_an_off_crossed_stop_is_an_actionable_card():
 
 def test_no_card_when_the_stop_is_on_or_not_crossed():
     assert gen(ROWS, SNAP, [_rule(active=True)], {}) == []
-    assert gen(ROWS, SNAP, [_rule(breached_now=False)], {}) == []
+    # PR 140: off but not crossed is no CARD -- it is listed on the one
+    # "protective rules are switched off" heads-up instead (Accept does nothing;
+    # its act re-arms them).
+    off = gen(ROWS, SNAP, [_rule(breached_now=False)], {})
+    assert [c["meta"].get("headsup_kind") for c in off] == ["protection_off"]
+    assert off[0]["apply"] == {"kind": "none"} and off[0]["headsup_act"]["apply"]["kind"] == "rearm_rules"
     assert gen(ROWS, SNAP, [_rule(rule_type="take_profit")], {}) == []
 
 

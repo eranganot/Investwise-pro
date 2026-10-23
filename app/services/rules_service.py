@@ -1694,5 +1694,13 @@ async def toggle_rule(session: AsyncSession, user: User, rule_id: str) -> bool:
     r.active = not r.active
     if r.active:
         r.triggered = False  # re-arm
+    # PR 140: every pause and resume leaves a rule event, so the history says who
+    # switched a rule off and when (the card writes "by: card"; this is you).
+    session.add(RuleEvent(subject=user.email, rule_id=str(r.id), ticker=r.ticker,
+                          rule_type=r.rule_type, trigger_price=None, target_price=None,
+                          title=(f"{'Resumed' if r.active else 'Paused'} by you: "
+                                 f"{r.ticker} {r.rule_type.replace('_', ' ')}")[:200],
+                          outcome="resumed" if r.active else "paused", outcome_at=_now(),
+                          action={"by": "you", "level": float(r.level or 0)}))
     await session.commit()
     return True

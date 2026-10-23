@@ -72,8 +72,9 @@ def test_the_grid_is_wide_capped_and_finalists_are_re_measured_in_full():
         return _stats(10.0, 0.5)
     sl = [{"col": 0, "trail": 0.2, "tp_ratio": 1.1}]
     t = _tune(run, sl, {"sleeves": {}, "guard": {}}, r_on=_stats(10.0, 0.5))
-    # 4 structures (exits x take-profit) + 4 levels x 2 sizes x 2 gaps, minus today's counted twice
-    assert t["tried"] == len(t["candidates"]) >= 4 + 16 - 1
+    # 2 structures (take-profit on / paused; exits are never retired, PR 140)
+    # + 4 levels x 2 sizes x 2 gaps, minus today's counted twice
+    assert t["tried"] == len(t["candidates"]) >= 2 + 16 - 1
     assert t["tried"] <= fs.RETUNE_MAX_SETUPS
     assert calls.count(fs.RETUNE_SCREEN_PATHS) == t["tried"]
     assert calls.count(None) == fs.RETUNE_FINALISTS             # the finalists, on every path
@@ -248,7 +249,9 @@ async def test_the_breach_card_reaches_today_and_accept_arms_the_guard(own_sessi
                                        "guard": {"rule_id": None, "from_pct": None, "to_pct": 20.0}}}}))
             card = next((x for x in _cards(c) if x["id"].startswith("rec_goal_protect_")), None)
             assert card is not None, [x["title"] for x in _cards(c)]
-            assert card["title"] == "Bring your crash risk inside your limit: halving 68.3% -> 0.8%"  # the plan's limit: 1%
+            # the plan's limit: 1%. PR 140: the goal odds sit beside it in the title.
+            assert card["title"] == ("Bring your crash risk inside your limit: halving 68.3% -> 0.8% · "
+                                     "goal odds 30.9% -> 18.9%")
             assert "above your 1% limit" in card["why"] and "costs 12 points of goal odds" in card["why"]
             assert "30.9% -> 18.9%" in card["impact"]                   # the cost is on the card, not hidden
             r = c.post(f"/api/v1/recommendations/{card['id']}/accept").json()

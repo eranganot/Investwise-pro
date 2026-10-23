@@ -144,7 +144,7 @@
 - **D58 · 2026-10-05 (PR 92/93) · The ROI goal is the objective; the frontier and Kelly are tools.** On track = ≥ 70%, on both the model and fat-tailed
   history. The goal picks the risk, capped at 1.0× Kelly. **Supersedes PR 91's ½-Kelly default** (it lowered the goal odds).
 - **D59 · 2026-10-05 (PR 95) · Return confidence defaults to "blended":** Black-Litterman with τ = 0.2 (the prior is worth 5 years); the shrunk estimate is shown as a stress line.
-- **D60 · 2026-10-05 (PR 96/97) · The crash-risk limit is a 1% chance of a 50% peak-to-trough fall.** The protection card can pause stops / set the guard to 15%.
+- **D60 · 2026-10-05 (PR 96/97) · The crash-risk limit is a 1% chance of a 50% peak-to-trough fall.** The protection card can pause stops / set the guard to 15%. *(Pausing stops superseded by D115.)*
   Volatility is regime-weighted recent vol. Re-solve when a protective rule fires.
 - **D61 · 2026-10-05 (PR 101) · Backtest history is dividend-adjusted (total return).** *On closes alone, BND looked like −1.8%/yr instead of +1.25%, producing a false "Sell all BND" card.*
 - **D62 · 2026-10-05 (PR 99) · Goal cards compute the goal after Accept;** the deposit and deadline levers were removed (they raised the goal).
@@ -284,6 +284,13 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D115 · 2026-10-23 · The protection card never switches off a stop; paused protection is always on Today.**
+  The retune may move the drawdown guard and pause take-profits, never a stop-loss, trailing stop, profit-protect, trend
+  break or the guard itself (`DOWNSIDE_RULE_TYPES`); Accept refuses a spec that names one. Every pause and re-arm (card or
+  you) writes a rule event. Every downside rule that is off sits on ONE heads-up with "Re-arm all". The card's title gives
+  goal odds and halving side by side. Auto re-arm: backlog. *Why:* the card's all-or-nothing switch paused every stop on
+  the book four times (10-06 .. 10-20) because a goal out of reach scores any exit as cost; three paused stops fired late,
+  already breached. Supersedes the stop half of D60. Owner, 2026-10-23. → PR 140
 - **D114 · 2026-10-23 · A stop-out holds its ticker against every buyer until the sleeve's own signal goes out and comes back in.**
   Stop-loss, trailing stop, profit-protect and trend-break exits record a `buy_back` row of kind `stop`. No price ends it.
   It binds Today's cards AND the Plan buttons (unlike D-PR75's take-profit hold, which the Plan may override). A ticker no

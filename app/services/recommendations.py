@@ -69,6 +69,8 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # PR 81: a tuning card edits a rule; the one-time card
                      # converts caps into rebalance bands.
                      "edit_rule", "caps_to_bands",
+                     # PR 140: switch paused downside rules back on.
+                     "rearm_rules",
                      # PR 83: cash a buy-back hold is keeping back -- a choice.
                      "held_cash",
                      # PR 135b (wave 4): set the sleeve sizes a scored move proposes.
@@ -3809,6 +3811,42 @@ def _float_or_none(v):
 _BIG_DAY_MOVE_PCT = 10.0
 
 
+def _protection_off_headsup(rules: list[dict], *, carded: set[str]) -> list[dict]:
+    """PR 140 (owner, 2026-10-23): every downside rule that is switched off, in
+    ONE heads-up with one act -- "Re-arm all".
+
+    Read live on 10-22: about twenty stops and trailing stops across SOXL, TQQQ,
+    QQQ, VTI, VXUS, XLE, COMT, UGA and USO were off, switched off by the
+    protection card, and nothing on Today said so; they were found only when a
+    stop that should have fired was silent. A stop that is off AND crossed
+    already has its own HIGH card (`stop_off`, PR 138) and is left out here.
+
+    The id is the paused SET, so Ignore hides this list only: a rule paused
+    later brings a new heads-up. Auto re-arm is on the BACKLOG (owner's choice).
+    """
+    from app.services.frontier_service import DOWNSIDE_RULE_TYPES
+    off = [r for r in rules or []
+           if not r.get("active") and r.get("rule_type") in DOWNSIDE_RULE_TYPES and r.get("id")
+           and str(r["id"]) not in carded and not r.get("breached_now")]
+    if not off:
+        return []
+    off.sort(key=lambda r: (str(r.get("ticker") or ""), str(r.get("rule_type") or "")))
+    ids = [str(r["id"]) for r in off]
+    names = [f"{r.get('ticker')} {str(r.get('rule_type')).replace('_', ' ')}" for r in off]
+    n = len(off)
+    return [{
+        "id": _rid("protection_off", *ids), "dimension": "rule", "severity": "MEDIUM",
+        "title": f"{n} protective rule{'s are' if n > 1 else ' is'} switched off",
+        "action": (f"{n} rule{'s' if n > 1 else ''} that sell on the way down "
+                   f"{'are' if n > 1 else 'is'} off, so {'they' if n > 1 else 'it'} will not fire: "
+                   + ", ".join(names) + "."),
+        "how": [*(f"Off: {x}" for x in names),
+                "Re-arm all switches them back on; nothing is sold by re-arming"],
+        "est_amount": None, "apply": {"kind": "none"},
+        "headsup_act": {"label": f"Re-arm all {n}", "apply": {"kind": "rearm_rules", "rule_ids": ids}},
+        "meta": {"headsup_kind": "protection_off", "rule_ids": ids}}]
+
+
 def _off_stop_and_big_move_recs(rows, snap, rules: list[dict], closes_by_ticker: dict) -> list[dict]:
     """2026-10-22 -- "why was there no card while my portfolio dropped?"
 
@@ -3858,6 +3896,7 @@ def _off_stop_and_big_move_recs(rows, snap, rules: list[dict], closes_by_ticker:
             "apply": {"kind": "edit_rule", "target_rule_id": str(r["id"])},
             "meta": {"ticker": tk, "rule_id": str(r["id"]), "price": float(price),
                      "stop_level": float(target), "rule_active": False}})
+    out += _protection_off_headsup(rules, carded={str(c["meta"]["rule_id"]) for c in out})
     for tk, cl in sorted((closes_by_ticker or {}).items()):
         held = [p for p in rows if (p.ticker or "").upper() == tk]
         if not held or len(cl) < 2:
@@ -6509,6 +6548,18 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                                    level=spec.get("level"), params=spec.get("params"),
                                    force=True)
         detail = {"rule_edited": detail}
+    elif kind == "rearm_rules":
+        # PR 140: "Re-arm all" on the protection-off heads-up. Each rule goes
+        # through `toggle_rule`, so each re-arm leaves its own "resumed" event.
+        from app.services.rules_service import list_rules, toggle_rule
+        still_off = {str(r["id"]) for r in await list_rules(session, user) if not r.get("active")}
+        ids = [str(x) for x in spec.get("rule_ids") or [] if str(x) in still_off]
+        if not ids:
+            return {"ok": False, "applied": "none", "title": rec["title"],
+                    "error": "every rule on this list is already on - nothing was changed."}
+        for rid in ids:
+            await toggle_rule(session, user, rid)
+        detail = {"rules_rearmed": ids, "note": f"Re-armed {len(ids)} rule(s). Nothing was sold."}
     elif kind == "caps_to_bands":
         from app.services.advanced_rules import apply_caps_to_bands
         detail = await apply_caps_to_bands(session, user, spec)

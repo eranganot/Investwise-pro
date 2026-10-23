@@ -116,8 +116,11 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
   - picks risk, capped at 1.0× Kelly (the Kelly dial is an optional ceiling)
   - proposes the core (PR 94)
   - **replays the protective rules on the goal's paths** (PR 95), tuning them if they cost too many odds points (PR 96).
-    PR 121: the retune crosses the sleeve exits, each sleeve's take-profits, and the guard's level × sell size × re-arm
-    gap. It screens on 250 paths in two passes, capped at 120 setups, and re-measures the best 3 on every path. The card
+    PR 121: the retune crosses each sleeve's take-profits and the guard's level × sell size × re-arm gap. PR 140 (D115)
+    removed the sleeve-exit switch: the retune never pauses a stop-loss, trailing stop, profit-protect or trend break,
+    `apply_rules_tuning` refuses a spec that names one (`STOPS_STAY_ON`), and a verdict still proposing one shows no card.
+    Each pause writes a `paused` rule event (`action.by` = card or you); downside rules that are off sit on one
+    "N protective rules are switched off" heads-up whose act is `rearm_rules`. It screens on 250 paths in two passes, capped at 120 setups, and re-measures the best 3 on every path. The card
     and the Plan sentence say how many setups were measured, and mention take-profits only when they were.
     PR 123 (D85): a held stock with a sale rule is its own column in the replay (its history, re-centred on the
     core's drift), and every rule's effect is measured by switching it off alone on 500 paths

@@ -78,9 +78,10 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
 | C15 | Core realign (`core_to_basket`, rec_f6f017) keeps selling TQQQ right after sleeve top-ups (net TQQQ ledger -991 since 10-14). Cause unexplained; `trim_sleeves` leg is sized from sleeve overshoot. | `core_realign` | I | P2 | — |
-| C16b | Why were the SOXL, TQQQ and QQQ stop-losses switched OFF? Narrowed 2026-10-23 (PR 139 review): SOXL stop `c89d8251` (made ~10-19, unstamped, SOXL held throughout) had ONE pausing writer in its life per the audit log, the `rec_goal_protect_book` Accept at 10-20 14:21:50. Strong by elimination, not observed: `apply_rules_tuning` sets `active=False` and records no event, so the card leaves no trace of what it paused. Fix that trail and the card itself in PR 140. | `frontier_service` | I | P1 | PR 140 |
+| C16b | ~~Why were the stops OFF?~~ Closed by PR 140: the protection card's all-or-nothing `retire_sleeve_exits` paused every stop on the book; it is gone, Accept refuses a stop, and every pause now writes a rule event. | `frontier_service` | I | P1 | PR 140 |
 | C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |
+| C18 | **Auto re-arm for paused protective rules** (owner, 2026-10-23: heads-up first, auto re-arm later). Re-arm a paused downside rule after N days (a setting), never one already crossed (that is the PR 138 card's job). | `rules_service` | P | P2 | — |
 
 ## Security posture (verified 2026-10-08)
 
