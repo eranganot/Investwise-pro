@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (plan v4). Last product PR: **PR 147**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 147.1: reprice the old ledger rows). Last product PR: **PR 147.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 147.1 — the ledger repair fills the old unpriced trades from what was measured
+
+**Report.** PR 147 stopped new rows being written at price 0 / ₪0; the older ones (114 of 400 trade rows on `3b782d8`)
+stayed. Owner, 2026-10-23: repair them if recommended (BACKLOG C22).
+
+**What it does.** `ledger_repair.preview` gains `unpriced_trades`: every Buy/Sell with a quantity and price 0 and/or
+value 0 that is not voided or already repriced. Each row's VALUE comes from the row itself, else from the rule event that
+executed it (`cash_added_ils + tax_ils`, paired by ticker, +/-3 minutes and share count, each event used once), else
+shares x the price that half hour x today's FX. Its PRICE comes from the market that half hour (`_price_at`: the 30-min
+bar, else the day's close), in the ticker's own currency. MEASURED when the value came from the row or a rule event AND
+the price agrees with it within 5%; otherwise ESTIMATE; no price that half hour = UNRESOLVED (listed, never written).
+`apply(confirm=True)` writes MEASURED rows (`include_estimates` adds ESTIMATE), fills only the missing field, appends
+`repriced 2026-10-23: <confidence> via <method>; was price X / value Y` to the note, and is idempotent. Skips are reported
+in `reprice_skipped`, so the older sections' contract is unchanged. Nothing is written by the preview; the owner applies.
+
+**Tests.** `tests/test_pr147_1_reprice_old_ledger_rows.py` (2): the 10-23 SOXL stop (rule event -> measured), the 10-21
+XOM buy (own value -> measured), a drift trim (estimate), an unpriceable ticker (unresolved), a clean row untouched;
+apply writes measured only, then estimates on request, and a second apply changes nothing. The 17 existing repair tests
+pass. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-pr147-1-reprice-preview.ps1` (read-only, never POSTs the repair). Production before the
+merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy:
+PROD_RESULT. Then the owner reviews the preview and applies it; record the counts written here.
 
 ---
 
