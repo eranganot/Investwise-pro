@@ -476,6 +476,12 @@ def test_s_the_real_book_reaches_its_64_percent_target():
         # all this funding test reads.
         c.post(f"/api/v1/strategies/{'btm_trend_tqqq'}/apply?sleeve_pct=38.4")
         c.post(f"/api/v1/strategies/{SOXL}/apply?sleeve_pct=25.6")
+        # PR 148 (D125): with the default 44% ceiling, both 2x/3x sleeves stop there.
+        capped = c.post("/api/v1/plan/sleeves/fund?dry_run=true").json()
+        assert capped["resulting_sleeve_pct"] == pytest.approx(44.0, abs=0.5), capped["resulting_sleeve_pct"]
+        assert "ceiling" in capped["message"]
+        # Without a ceiling, the funding mechanics this test is about reach the 64%.
+        assert c.put("/api/v1/plan", json={"thresholds": {"leveraged_ceiling_pct": 0}}).status_code == 200
         res = c.post("/api/v1/plan/sleeves/fund?dry_run=true").json()
 
     rows = {x["strategy_id"]: x for x in res["sleeves"]}

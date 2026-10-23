@@ -3000,6 +3000,22 @@ async def build_recommendations(session: AsyncSession, user: User,
             _kept.append(r)
         recs = _kept
 
+    # PR 148: the 2x/3x ceiling. Buys that do not fit are dropped (and listed);
+    # a share already over it gets one trim card.
+    try:
+        from app.services import leveraged_ceiling as _lc
+        from app.services.funding_service import MIN_TRADE_ILS as _MIN_LC
+        _lc_held = _lc._held_from_rows(rows)
+        recs, _lc_hidden = _lc.filter_cards(recs, float(nav or 0.0), _lc_held, min_trade=_MIN_LC)
+        _ceiling_hidden = _lc_hidden
+        _lc_card = _lc.over_ceiling_card(rows, float(nav or 0.0), _lc_held, min_trade=_MIN_LC, rid=_rid)
+        if _lc_card:
+            recs.append(_lc_card)
+    except Exception:  # noqa: BLE001 -- the executors still refuse; Today must not break
+        logger.warning("leveraged ceiling pass failed", exc_info=True)
+        degraded.append("leveraged_ceiling")
+        _ceiling_hidden = []
+
     # Independent agents can contradict each other; reconcile before display.
     recs = _reconcile(recs, market)
 
@@ -3250,6 +3266,10 @@ async def build_recommendations(session: AsyncSession, user: User,
     # A CARD THE CONTRADICTION PASS HID IS LISTED, NOT LOST. It goes into the
     # same history list as ignored and done cards, badged "blocked", with the
     # reason -- so "why is there no card about X" has an answer on screen.
+    for _c in _ceiling_hidden:                      # PR 148: same list, same badge
+        _hidden_cards.append({"id": _c.get("id"), "title": _c.get("title"), "severity": None,
+                              "dimension": None, "how": "blocked", "hidden_at": None,
+                              "est_amount": None, "reason": _c.get("reason")})
     for _c in contradictions:
         if _c.get("suppressed") and _c.get("card"):
             _hidden_cards.append({
@@ -6965,6 +6985,7 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
     from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     from app.services import buyback_hold as _bh
+    from app.services import leveraged_ceiling as _lc
     cash = await get_cash(session, user)
     _stops = _bh.stop_held(await _bh.load(session, user))   # PR 139
 
@@ -6982,6 +7003,11 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
             continue
         if amount > cash:
             skipped.append({"ticker": tk, "reason": "not enough cash left"})
+            continue
+        try:                                   # PR 148: a cash buy skips the leg, like a stop hold
+            await _lc.assert_within(session, user, {tk: amount})
+        except _lc.OverCeiling as e:
+            skipped.append({"ticker": tk, "reason": str(e)})
             continue
         try:
             q = await _offload(guarded_quote, tk)
@@ -7006,7 +7032,7 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
         # only fires on a leg for a ticker you do not already own.
         is_new = await buy_into_book(
             session, user, ticker=tk, market=getattr(q, "market", None) or "NASDAQ",
-            price=price, shares=shares, depth=3)
+            price=price, shares=shares, depth=3, ceiling_checked=True)   # PR 148: checked per leg above
         cash = round(cash - amount, 2)
         bought.append({"ticker": tk, "shares": shares, "amount_ils": round(amount, 2),
                        "price": price, "new_position": is_new})
@@ -7046,6 +7072,19 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     ticker = (spec.get("ticker") or "").upper()
     from app.services import buyback_hold as _bh   # PR 139: before anything is sold
     await _bh.assert_buyable(session, user, [ticker])
+    from app.services import leveraged_ceiling as _lc   # PR 148: same place, same reason
+    if _lc.is_geared(ticker):
+        from app.services.fx import position_value_ils as _pv
+        _rows0 = {(p.ticker or "").upper(): p for p in await list_positions(session, user)}
+        _sells = {}
+        for _lg in spec.get("sells") or []:
+            _p = _rows0.get((_lg.get("ticker") or "").upper())
+            if _p is not None and float(_p.quantity or 0) > 0:
+                _sells[_p.ticker.upper()] = (_pv(_p) * min(float(_lg.get("shares") or 0), float(_p.quantity))
+                                             / float(_p.quantity))
+        _cash0 = float(getattr(_rows0.get("CASH"), "quantity", 0) or 0)
+        _est = min(float(spec.get("from_cash_ils") or 0.0), max(0.0, _cash0)) + sum(_sells.values())
+        await _lc.assert_within(session, user, {ticker: _est}, sells=_sells)
     try:
         q = await _offload(guarded_quote, ticker)
         # THE 100x TRAP, at the boundary that buys. `to_major_units` says "use at
@@ -7109,7 +7148,7 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     # Blend, never overwrite. This used to call `upsert_positions`, which SETS
     # quantity -- so "Swap into SCHD" on a book already holding SCHD replaced the
     # whole position with just the shares bought and deleted the rest.
-    await buy_into_book(session, user, ticker=ticker, market=mk, price=price,
+    await buy_into_book(session, user, ceiling_checked=True, ticker=ticker, market=mk, price=price,
                         shares=qty, asset_class=spec.get("asset_class"))
     await session.commit()
     # Cash pays only its share; sale proceeds went straight into the buy.
@@ -7493,6 +7532,9 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
         return {"swapped": False}
     from app.services import buyback_hold as _bh   # PR 139: before the sale
     await _bh.assert_buyable(session, user, [buy_tk])
+    from app.services import leveraged_ceiling as _lc   # PR 148: a swap's buy is the sale's value
+    from app.services.fx import position_value_ils as _pv
+    await _lc.assert_within(session, user, {str(buy_tk).upper(): _pv(p)}, sells={str(sell_tk).upper(): _pv(p)})
     try:
         q = await _offload(guarded_quote, buy_tk)
         price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")
@@ -7511,7 +7553,7 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     mk = p.market if p.market in {m.value for m in Market} else "NYSE"
     # Blend if the cheaper fund is already held -- a fee swap into something you
     # own must add to it, not replace it.
-    await buy_into_book(session, user, ticker=buy_tk.upper(), market=mk, price=price,
+    await buy_into_book(session, user, ceiling_checked=True, ticker=buy_tk.upper(), market=mk, price=price,
                         shares=qty, asset_class=spec.get("asset_class"))
     await session.commit()
     return {"swapped": True, "sold": [sell_tk], "bought": buy_tk.upper(),

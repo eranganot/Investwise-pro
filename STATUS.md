@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C18.1: a re-arm records its price). Last product PR: **C18.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 148: a 44% ceiling on 2x/3x funds). Last product PR: **PR 148**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,44 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
+
+**What.** `leveraged_ceiling_pct` (Card-thresholds sheet, default 44, 0 = none; owner 2026-10-23 "44% (Recommended)")
+caps the share of the book in 2x/3x funds (`strategy_profile.GEARED`, without the -1x PSQ/SH). New module
+`app/services/leveraged_ceiling.py` holds the one arithmetic (headroom = ceiling x NAV - 2x/3x held):
+- **Planners clip.** `_fund_sleeve` and `fund_plan` (one headroom shared by every sleeve, spent down in order) scale
+  their 2x/3x legs to the headroom; a sleeve with nothing left is `held_back` with `refused: LEVERAGED_CEILING`; the
+  preview's message names what the ceiling left unbought. Replacing the book with a basket over the ceiling is refused.
+- **Executors refuse before the first sale** (`assert_within`, netting 2x/3x sold in the same trade): funded sleeve,
+  buy_funded, fee swap; the cash card skips a leg that does not fit (like a stop hold).
+- **The writer backstops.** `buy_into_book` refuses an app buy that crosses the ceiling; `recording=True` (your
+  Holdings > Add) never is. An executor that checked passes `ceiling_checked=True`: mid-trade its sales are off the book
+  and their proceeds not yet in cash, so NAV measured in the writer is low by the sale (found by
+  `test_fund_my_sleeves_stops_the_2x_3x_part_at_the_ceiling`: the backstop refused a clipped plan at "67.8%").
+- **Today.** A 2x/3x buy that does not fit is dropped and listed under hidden cards as `blocked` with the reason; a
+  cash card's 2x/3x legs are clipped; your own rule's card stays and says it is over. Over the ceiling, one HIGH card
+  trims the largest 2x/3x holding by the excess (`apply: trim`). `OverCeiling` is a `HeldBack`, so Accept returns a 400.
+- `GET /plan` lists `leveraged_funds` (what the ceiling counts).
+
+**Not done (C24).** The book target still sizes the sleeves at 40% + 23%; the Plan tab and drift measure against a share
+no buyer will reach.
+
+**Live state before the merge:** 2x/3x funds are 17.5% of the book (TQQQ ₪3,467 of ₪19,820), so nothing changes on
+Today today; the ceiling bites when the TQQQ/SOXL sleeves are funded again.
+
+**Verified.** 11 tests in `test_pr148_leveraged_ceiling.py` (arithmetic, Today filter, trim card, writer, sleeve funding
+end to end, an AST guard that every app `buy_into_book` caller checks the ceiling). Two existing funding tests had
+geared books: they now run with the ceiling off for the mechanics they test, and the 64% test also asserts the default
+stops at 44.0%. Settings count 34 -> 35. Sleeve/funding subset 605 passed before those two were updated. Full Postgres
+suite: 2,902 passed, 1 failed: `test_p0_safety::test_an_unfundable_sleeve_abstains_with_a_reason` read
+`chosen_sleeve_pct` 44 for a 90% sleeve -- the funder measured "what you chose" after the ceiling clipped it, so the
+refusal said "You asked for a 44% sleeve". Fixed: chosen is before the clip, the shortfall is judged against the
+clipped plan (`ceiling_capped_pct`), and the reason names the ceiling. After the fix: that test and the sleeve/funding
+subset 622 passed.
+
+**Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
+the build before). After deploy: PROD_RESULT.
+
 ## C18.1 — an automatic re-arm records the price it re-armed at
 
 **Root cause (observed).** After C18 deployed, `smoke-all` section 7 failed "no trigger_price": it reads the newest rule
@@ -52,7 +90,8 @@ Test: `test_c18_...::test_a_stop_off_for_longer_than_the_setting_comes_back_on` 
 
 **Smoke.** `smoke-c18-switched-off-protection-comes-back.ps1` section 3 now requires a price on re-arms after
 `-C181Since` (a NOTE before it). `smoke-all` against production with the fixed check: 22 passed, 3 failed (Gemini credits).
-After deploy: PROD_RESULT.
+After deploy (`df23a17`): **PASS 5 FAIL 0 SKIP 1** (UGA's re-arm predates C18.1, so its missing price is a NOTE);
+`smoke-all` **22 passed, 3 failed** (Gemini credits only; "no trigger_price" gone).
 
 ## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
 

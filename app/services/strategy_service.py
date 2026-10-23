@@ -849,7 +849,16 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     held = _held_ils(rows, snap)
 
     legs = _legs_for(targets, nav, held, total=total)
+    # PR 148: the 2x/3x legs fit under the leveraged ceiling, or are cut to it.
+    from app.services import leveraged_ceiling as _lc
+    legs, _clipped = _lc.clip_legs(legs, _lc.headroom_ils(nav, held), min_leg=min_trade_ils())
     amount = round(sum(x["buy_ils"] for x in legs), 2)
+    if amount < min_trade_ils() and _clipped > 0:
+        return {"ok": False, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
+                "refused": "LEVERAGED_CEILING", "clipped_by_ceiling_ils": _clipped,
+                "error": "your 2x/3x funds are at your ceiling",
+                "reason": (f"Your 2x/3x funds are {_lc.share_pct(nav, held):.1f}% of the book; your ceiling "
+                           f"is {_lc.ceiling_pct():g}%, so this sleeve's 2x/3x part is not bought.")}
     if amount < min_trade_ils():
         return {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                 "nothing_to_do": True, "buys": [], "funding": None,
@@ -901,14 +910,21 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     held_sleeve = sum(held.get(tk.upper(), 0.0) for tk in targets)
     wanted_ils = held_sleeve + amount
     achievable_ils = held_sleeve + float(fund.get("funded_ils") or 0.0)
-    chosen_pct = wanted_ils / nav * 100.0
+    # PR 148: what you chose is the sleeve BEFORE the ceiling clipped it; what is
+    # judged as a funding shortfall is against the clipped plan (the ceiling is not
+    # money the book failed to find).
+    capped_pct = wanted_ils / nav * 100.0
+    chosen_pct = (wanted_ils + _clipped) / nav * 100.0
     achievable_pct = achievable_ils / nav * 100.0
-    short_points = chosen_pct - achievable_pct
+    short_points = capped_pct - achievable_pct
+    _ceiling_txt = (f" Your 2x/3x ceiling ({_lc.ceiling_pct():g}%) already limits it to {capped_pct:.0f}%."
+                    if _clipped > 0 else "")
     if short_points >= SLEEVE_SHORTFALL_TOLERANCE_PCT:
         return {"ok": False, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                 "error": "not enough fundable money for this sleeve",
                 # Actionable, not just "no": it names the sleeve that WOULD work.
-                "reason": (f"You asked for a {chosen_pct:.0f}% sleeve (₪{wanted_ils:,.0f}). "
+                "reason": (f"You asked for a {chosen_pct:.0f}% sleeve (₪{wanted_ils + _clipped:,.0f})."
+                           f"{_ceiling_txt} "
                            f"The most this book can fund right now is {achievable_pct:.0f}% "
                            f"— ₪{fund['shortfall_ils']:,.0f} short, after spending "
                            f"₪{fund['from_cash_ils']:,.0f} of cash above your "
@@ -916,6 +932,7 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                            f"the plan says is overweight. Lower the sleeve to about "
                            f"{achievable_pct:.0f}%, or add cash."),
                 "chosen_sleeve_pct": round(chosen_pct, 1),
+                "ceiling_capped_pct": round(capped_pct, 1) if _clipped > 0 else None,
                 "achievable_sleeve_pct": round(achievable_pct, 1),
                 "buys": legs, "funding": fund,
                 "funding_summary": describe_funding(fund, _buying_class(legs))}
@@ -930,6 +947,8 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
     preview = {"ok": True, "mode": FUND, "strategy_id": strategy_id, "nav": round(nav, 2),
                "sleeve_pct": sleeve_pct, "amount_ils": amount,
                "chosen_sleeve_pct": round(chosen_pct, 1),
+               "ceiling_capped_pct": round(capped_pct, 1) if _clipped > 0 else None,
+               "clipped_by_ceiling_ils": _clipped,
                "achievable_sleeve_pct": round(achievable_pct, 1),
                "buys": legs, "funding": fund,
                "funding_summary": describe_funding(fund, _buying_class(legs)),
@@ -1024,6 +1043,8 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
 
     out: list[dict] = []
     running = 0.0
+    from app.services import leveraged_ceiling as _lc
+    _room = _lc.headroom_ils(nav, held)
     for row in ordered:
         sid = row.strategy_id
         pct = float(row.sleeve_pct or 0.0)
@@ -1046,7 +1067,20 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
                         "reason": "this strategy's basket is the core itself — nothing to fund"})
             continue
         legs = _legs_for(targets, nav, held)
+        # PR 148: one 2x/3x headroom shared by every sleeve in this plan, spent down
+        # as each sleeve's 2x/3x legs take it.
+        legs, _clipped = _lc.clip_legs(legs, _room, min_leg=min_trade_ils())
+        if _room is not None:
+            _room = max(0.0, _room - sum(x["buy_ils"] for x in legs if _lc.is_geared(x["ticker"])))
+        if _clipped > 0:
+            entry = {**entry, "clipped_by_ceiling_ils": _clipped}
         amount = round(sum(x["buy_ils"] for x in legs), 2)
+        if amount < min_trade_ils() and _clipped > 0:
+            out.append({**entry, "status": "held_back", "amount_ils": 0.0, "buys": [],
+                        "refused": "LEVERAGED_CEILING",
+                        "reason": (f"Your 2x/3x funds are {_lc.share_pct(nav, held):.1f}% of the book; "
+                                   f"your ceiling is {_lc.ceiling_pct():g}%, so this sleeve is not bought.")})
+            continue
         if amount < min_trade_ils():
             # Two different situations wore one label until C4.
             #
@@ -1147,6 +1181,9 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
             f"{intended_pct:g}% you chose."
             + (f" Not funded: {', '.join(skipped)}." if skipped else "")
             + "".join(f" {x['reason']}" for x in held_back)
+            + "".join(f" {x['name']}: ₪{x['clipped_by_ceiling_ils']:,.0f} of 2x/3x left unbought by "
+                      f"your {_lc.ceiling_pct():g}% ceiling." for x in out
+                      if x.get("clipped_by_ceiling_ils") and x["status"] != "held_back")
             + (f" As close as a whole lot allows: {', '.join(lot_bound)} — the remaining"
                f" gap is smaller than the minimum trade, so it will stay there."
                if lot_bound else "")
@@ -1197,6 +1234,11 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
     """Sell the named legs, then buy the sleeve. Nothing else is touched."""
     from app.services import buyback_hold as _bh   # PR 139: before the first sale
     await _bh.assert_buyable(session, user, [lg.get("ticker") for lg in legs])
+    from app.services import leveraged_ceiling as _lc   # PR 148: before the first sale
+    await _lc.assert_within(session, user, {str(lg.get("ticker") or "").upper(): float(lg.get("buy_ils") or 0.0)
+                                            for lg in legs},
+                            sells={str(x.get("ticker") or "").upper(): float(x.get("value_ils") or x.get("gross_ils") or 0.0)
+                                   for x in (fund.get("sells") or [])})
     rows = await list_positions(session, user)
     by_ticker = {(p.ticker or "").upper(): p for p in rows}
     sold, raised, tax_total = [], 0.0, 0.0
@@ -1253,7 +1295,7 @@ async def _execute_funded_sleeve(session: AsyncSession, user: User,
             skipped.append({"ticker": tk, "reason": "no live price"})
             continue
         shares = spend / price_ils
-        is_new = await buy_into_book(session, user, ticker=tk,
+        is_new = await buy_into_book(session, user, ceiling_checked=True, ticker=tk,
                                      market=getattr(q, "market", None) or "NASDAQ",
                                      price=price, shares=shares, depth=3)
         budget = round(budget - spend, 2)
@@ -1334,6 +1376,17 @@ async def _replace_book(session: AsyncSession, user: User, strategy_id: str, s: 
                 "refused": "STOP_HOLD", "held_back": _hit,
                 "error": "this basket holds a ticker a stop sold",
                 "reason": _bh.refusal(_hit[0], _stops[_hit[0]])}
+
+    # PR 148: same reason, same place. Replacing the book makes it the basket, so the
+    # basket's 2x/3x weight IS the share afterwards.
+    from app.services import leveraged_ceiling as _lc
+    _gw = 100.0 * sum(float(w) for t, w in s["basket"] if _lc.is_geared(t)) / (sum(float(w) for _t, w in s["basket"]) or 1.0)
+    if _lc.ceiling_pct() > 0 and _gw > _lc.ceiling_pct() + _lc.TOLERANCE_PTS:
+        return {"ok": False, "mode": REPLACE, "strategy_id": strategy_id,
+                "refused": "LEVERAGED_CEILING",
+                "error": "this basket is over your 2x/3x ceiling",
+                "reason": (f"This basket is {_gw:.0f}% 2x/3x funds; your ceiling is {_lc.ceiling_pct():g}%. "
+                           f"Change the ceiling on the Card-thresholds sheet to replace the book with it.")}
 
     rows = await list_positions(session, user)
     snap = _snapshot(rows)

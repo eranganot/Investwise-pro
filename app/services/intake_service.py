@@ -157,7 +157,7 @@ def _intake_meta(existing: dict | None, incoming: dict, market: str | None) -> d
 async def buy_into_book(
     session: AsyncSession, user: User, *, ticker: str, market: str, price: float,
     shares: float, asset_class: str | None = None, depth: int = 1,
-    recording: bool = False,
+    recording: bool = False, ceiling_checked: bool = False,
 ) -> bool:
     """Add `shares` of `ticker` at `price` (native currency) to the user's book.
 
@@ -198,6 +198,22 @@ async def buy_into_book(
             raise _bh.HeldBack(_bh.refusal(tk, _h))
 
     rows = await list_positions(session, user)
+    if not recording and not ceiling_checked:
+        # PR 148 BACKSTOP, same shape: no app buy takes the 2x/3x share past the
+        # ceiling, even from a buyer that forgot to clip its plan. Executors check
+        # BEFORE their first sale (`leveraged_ceiling.assert_within`); this is the
+        # net for the one that did not. An executor that checked passes
+        # `ceiling_checked=True`: mid-trade its sales are off the book and their
+        # proceeds not yet in cash, so NAV measured here is too low by the sale.
+        from app.services import leveraged_ceiling as _lc
+        if _lc.is_geared(tk):
+            from app.services.fx import book_nav_ils, fx_rate, price_currency
+            nav = book_nav_ils(rows)
+            held = _lc._held_from_rows(rows)
+            room = _lc.headroom_ils(nav, held)
+            buy_ils = float(shares) * float(price) * float(fx_rate(price_currency(market, None)) or 1.0)
+            if room is not None and buy_ils > room + _lc.TOLERANCE_PTS / 100.0 * nav:
+                raise _lc.OverCeiling(_lc.refusal(tk, _lc.share_pct(nav, held), buy_ils, nav))
     existing = next((p for p in rows if (p.ticker or "").upper() == tk), None)
     if existing is not None:
         # Blend the basis so gain/loss stays honest after topping up.
