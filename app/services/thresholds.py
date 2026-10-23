@@ -51,6 +51,11 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
                                "The re-arm gaps compared when the app looks for better protection.", 0.5, 50.0),
     # PR 115 (D-d, owner 2026-10-11: "all of them become editable"). Each default
     # still lives beside the code that uses it.
+    # C18 (owner, 2026-10-23): switched-off protection comes back on by itself.
+    "rearm_after_days": ("Re-arm switched-off protection after (days)",
+                         "A stop, trailing stop, profit-protect, trend break or drawdown guard that has been off "
+                         "this long is switched back on -- never one whose price is already past it. 0 = never.",
+                         0.0, 60.0),
     "concentration_cap_pct": ("Largest single holding (% of the book)",
                               "No buy takes one name past this; a holding above it gets a trim card. "
                               "Default follows your risk tolerance.", 5.0, 100.0),
@@ -127,7 +132,9 @@ def defaults(plan=None) -> dict:
     from app.services.advanced_rules import DERISK_FRACTION, REARM_GAP_PTS
     from app.services.plan_service import RISK_CAPS
     _row = RISK_CAPS.get(getattr(plan, "risk_tolerance", None) or "Medium", RISK_CAPS["Medium"])
-    return {"concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
+    from app.services.rules_service import REARM_AFTER_DAYS
+    return {"rearm_after_days": REARM_AFTER_DAYS,
+            "concentration_cap_pct": round(_row["concentration_cap"] * 100.0, 2),
             "sleeve_drift_band_pts": rec.SLEEVE_DRIFT_BAND_PCT,
             "optimizer_min_step_pts": bopt.MIN_STEP_PTS,
             "book_effect_ratio_gain": bfx.RATIO_GAIN,
