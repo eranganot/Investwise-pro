@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (P1: compare goals). Last product PR: **P1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C18: protection comes back on). Last product PR: **C18**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,47 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## C18 — switched-off protection comes back on by itself after 3 days (D124)
+
+**Why (owner, 2026-10-23: heads-up first, auto re-arm later; "3 days").** On 10-22 about twenty stops were found off
+only when one that should have fired stayed silent. PR 140 lists switched-off protection on one heads-up; nothing brought
+back a stop the owner forgot.
+
+**What it does.** `rules_service.auto_rearm`, run by every 30-minute rule check (`evaluate_user`, after the heal):
+- **Which rules.** Every stop-loss, trailing stop, profit-protect, trend break and drawdown guard that is OFF on a held
+  position.
+- **How long it has been off.** From its newest `paused` event (PR 140 onward), else its last update.
+- **When it comes back.** Once off longer than `rearm_after_days` (Card-thresholds sheet, default 3; 0 = never), it is
+  switched back on. It writes a `resumed` event by `auto` (with `off_since`, `after_days`) and a note.
+- **Never one already crossed.** Its condition true now stays off: PR 138's card, never an instant sale. A trailing stop
+  restarts its trail from today's price before that test (D117's rule).
+
+**Live effect on the first check after deploy.** The one switched-off rule on the book, the UGA 17% trailing stop
+(`c2abb90a`; no pause event since PR 140, so its last update decides), re-arms with its trail from today's price
+(144.89 on 10-23, so a stop near 120.3).
+
+**Tests.** `tests/test_c18_switched_off_protection_comes_back.py` (5):
+- off 4 days re-arms (event by `auto`); off 1 day does not;
+- a crossed stop stays off;
+- a trailing stop paused after a fall re-arms with its trail from today;
+- 0 = never;
+- the setting is on the sheet.
+
+Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
+`rearm_after_days`: the build before). After deploy: PROD_RESULT.
+
+**Also today (owner items, plan §3).**
+- **PR 147.1 repair applied by the owner** (20:45 Israel time): 87 measured rows repriced, 27 estimates left as chosen.
+  Production after: 27 of 400 trade rows lack a price or value (was 114). XOM's "last buy" shows (177.89, 10-21). The
+  10-23 SOXL stop reads 82.11 / ₪4,027.63 with its provenance in the note.
+- **A3:** backups confirmed. **A5:** the orphan redis volume deleted.
+- **A6:** the pre-push hook is installed in the cloud sandbox clone (self-test refuses a rewrite of main). The owner's Mac
+  installer was given.
 
 ---
 

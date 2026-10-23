@@ -599,6 +599,74 @@ async def heal_dismissed_rules(session: AsyncSession, user: User) -> list[str]:
     return healed
 
 
+# C18 -- SWITCHED-OFF PROTECTION COMES BACK ON BY ITSELF (owner, 2026-10-23: "heads-up
+# first, auto re-arm later"; 3 days). On 10-22 about twenty stops were found off only
+# when one that should have fired stayed silent. PR 140 put them on a heads-up; this
+# re-arms any downside rule off for `rearm_after_days` (a setting; 0 = never), never
+# one whose condition is already true -- that is PR 138's "switched off and the price
+# is below it" card, and re-arming it would be an instant sale nobody chose.
+REARM_AFTER_DAYS = 3.0
+_REARM_TYPES = frozenset({"stop_loss", "trailing_stop", "profit_protect", "trend_break", "drawdown_guard"})
+
+
+async def auto_rearm(session: AsyncSession, user: User, idx: dict, nav: float) -> list[str]:
+    from datetime import timedelta
+
+    from app.services import thresholds
+    days = float(thresholds.get("rearm_after_days", REARM_AFTER_DAYS) or 0.0)
+    if days <= 0:
+        return []
+    off = list((await session.scalars(select(TradingRule).where(
+        TradingRule.subject == user.email, TradingRule.active.is_(False),
+        TradingRule.rule_type.in_(_REARM_TYPES)))).all())
+    if not off:
+        return []
+    from app.services import advanced_rules as _adv
+    if any(r.rule_type in _adv.ADV_TYPES for r in off):
+        await _adv.augment(session, user, idx, nav, off)
+    now = _now()
+    done: list[str] = []
+    for r in off:
+        pos = idx.get(str(r.ticker).upper())
+        if pos is None:
+            continue                      # nothing held: purge / orphan rules decide
+        paused = await session.scalar(
+            select(RuleEvent.outcome_at).where(RuleEvent.subject == user.email,
+                                               RuleEvent.rule_id == str(r.id),
+                                               RuleEvent.outcome == "paused")
+            .order_by(RuleEvent.outcome_at.desc()).limit(1))
+        since = paused or getattr(r, "updated_at", None)
+        if since is None:
+            continue
+        since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        if now - since < timedelta(days=days):
+            continue
+        old_peak = r.peak_price
+        if r.rule_type == "trailing_stop" and pos.get("price"):
+            # A trail restarts from today (as Ignore does, D117): measured against
+            # the high from before the pause it would read as crossed for ever.
+            r.peak_price = float(pos["price"])
+        hit = _evaluate(r, pos.get("price") or 0.0, pos.get("cost") or 0.0,
+                        pos.get("weight_pct") or 0.0, pos.get("value_ils") or 0.0, pos=pos)[0]
+        if hit:
+            r.peak_price = old_peak
+            continue                      # crossed: PR 138's card, never an instant sale
+        r.active = True
+        r.triggered = False
+        session.add(RuleEvent(subject=user.email, rule_id=str(r.id), ticker=r.ticker,
+                              rule_type=r.rule_type, trigger_price=None, target_price=None,
+                              title=(f"Re-armed automatically: {r.ticker} {r.rule_type.replace('_', ' ')} "
+                                     f"(off {days:g}+ days)")[:200],
+                              outcome="resumed", outcome_at=now,
+                              action={"by": "auto", "level": float(r.level or 0),
+                                      "off_since": since.isoformat(), "after_days": days}))
+        r.note = (f"Re-armed automatically on {now.date().isoformat()} after {days:g} days off.")[:160]
+        done.append(str(r.id))
+    if done:
+        await session.commit()
+    return done
+
+
 # PR 142 -- IGNORE KEEPS THE POSITION, SO IT KEEPS THE STOP (owner, 2026-10-23).
 #
 # Ignore on a fired stop card is a dismissal; the heal above used to resolve it
@@ -662,6 +730,7 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     await purge_orphan_rules(session, user, idx)
     # PR 109: moved here from the Today build, so a read never writes a rule.
     await heal_dismissed_rules(session, user)
+    await auto_rearm(session, user, idx, _nav)          # C18
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()

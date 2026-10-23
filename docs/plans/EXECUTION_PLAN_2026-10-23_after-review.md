@@ -148,7 +148,7 @@ Useful reads:
 Effort: S < 2 h, M = half a day, L = days. Value: what it protects or gains for the owner's money or for the app's
 reliability.
 
-### 4.1 PR 147.1: reprice the old ledger rows (IN PROGRESS)
+### 4.1 PR 147.1: reprice the old ledger rows — **DONE: applied by the owner 2026-10-23 (87 repriced)**
 
 **Value M · Effort S · BACKLOG C22 · Owner approved ("If you recommend it, sure", 2026-10-23)**
 
@@ -234,7 +234,7 @@ reliability.
 - **Smoke:** the setting reads back; no card on Today buys a geared fund past the ceiling; Fund-my-sleeves (dry run)
   respects it.
 
-### 4.5 C18: auto re-arm paused protection
+### 4.5 C18: auto re-arm paused protection — **BUILT (D124)**
 
 **Value M · Effort S-M · Decision needed (D-5: after how many days? suggest 3)**
 
@@ -308,11 +308,11 @@ the slowest measured path only, and record before/after in STATUS.
 
 | # | Decision | Needed by | Options / recommendation |
 |---|---|---|---|
-| D-1 | A daily production smoke as a scheduled task? Time? | §4.2 part 3 | Recommend yes, 08:30 Israel time, message on FAIL only |
+| D-1 | A daily production smoke as a scheduled task? Time? | §4.2 part 3 | **Decided: yes, 08:30 Israel time, message on FAIL only.** Open: where the agent key lives for a scheduled run (not in the task text) |
 | D-2 | The halving limit (P16) | §4.3 | **Decided D122:** keep 30%, revisit the goal (P1: goal comparison) |
 | D-3 | Same-bet test: lower to 0.75, or measure on underlying returns | §4.3 | **Decided D123:** on what sleeves hold |
-| D-4 | The leveraged ceiling value | §4.4 | Suggested ~44% |
-| D-5 | Auto re-arm after N days | §4.5 | Suggest 3 |
+| D-4 | The leveraged ceiling value | §4.4 | **Decided: 44%** |
+| D-5 | Auto re-arm after N days | §4.5 | **Decided D124: 3** |
 | D-6 | Drop P10, void V1/V2 | §4.12 | Recommend drop/void |
 
 ---

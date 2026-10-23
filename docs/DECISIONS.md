@@ -34,6 +34,13 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D124 · 2026-10-23 · Switched-off protection re-arms itself after 3 days, never one already crossed.**
+  A stop-loss, trailing stop, profit-protect, trend break or drawdown guard that has been off `rearm_after_days` (a
+  Card-thresholds setting, default 3; 0 = never) is switched back on by the 30-minute rule check, logged `resumed` by
+  `auto`. One whose condition is true right now stays off (PR 138's card: re-arming it would be an instant sale). A
+  trailing stop restarts its trail from today (as Ignore does, D117). *Why:* on 10-22 about twenty stops were found off
+  only when one that should have fired stayed silent; PR 140's heads-up shows them, nothing brought back one the owner
+  forgot. Owner, 2026-10-23 ("3 days"). → C18
 - **D12 · 2026-08-13 · A book is a core + N sleeves (`plan_sleeves`), funded on one budget; sleeves are enforced by a max-weight cap.** → `archive/plans/BEAT_MARKET_NEXT_PLAN.md`
 - **D13 · 2026-08-14 · Target solver (Phase T):** maximise excess CAGR over a benchmark under a hard drawdown ceiling. Never conflate the two
   benchmarks. Blend by simulating, never by averaging headlines. The solver is a constraint the agents read, not an agent. **Abstaining is a
