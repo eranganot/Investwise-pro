@@ -218,7 +218,10 @@ if ($null -eq $events) { Skip "events unreachable (NOT a pass)" } elseif ($event
   Ok "$($events.Count) firing(s) logged"
   $res = @($events | Where-Object { $_.outcome -ne 'triggered' })
   if ($res.Count -gt 0) { Ok "outcomes stamped: $(($res | ForEach-Object { $_.outcome } | Select-Object -Unique) -join ', ')" } else { Skip "nothing acted on yet" }
-  if ($events[0].trigger_price) { Ok "grounded in a real quote ($($events[0].ticker) @ $($events[0].trigger_price))" } else { Bad "no trigger_price" } }
+  # C18.1: a switch on/off (paused/resumed) is not a firing; the newest FIRING must carry its quote.
+  $fired = @($events | Where-Object { $_.outcome -notin @('paused', 'resumed') })
+  if ($fired.Count -eq 0) { Skip "no firing in the last 50 events" }
+  elseif ($fired[0].trigger_price) { Ok "grounded in a real quote ($($fired[0].ticker) @ $($fired[0].trigger_price))" } else { Bad "no trigger_price" } }
 
 # ---------- PHASE 7 + 9: redeploy card ----------
 Sec "8. Idle cash redeployment (phases 7 + 9)"
