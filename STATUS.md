@@ -73,7 +73,7 @@ heads-up's three states and its silences; Today carries it. Full Postgres suite:
 **Smoke.** `scripts/smoke/smoke-pr143-rule-check-is-loud.ps1`. Production before the merge (`1984d6f`, `-Since` 11:00):
 PASS 4 FAIL 0 SKIP 2 (the history skip is the bug: nothing from before 11:01 survived). Local build with the scheduler on
 migrated Postgres, restarted twice: PASS 5 FAIL 0 SKIP 1 ("3 job(s) remember a run from before" the restart; `runs: 2`).
-Production after deploy: PROD_RESULT. Section 3 can only pass from the deploy AFTER this one.
+Production after deploy (`abd4d39`, 11:37 UTC): **PASS 4 FAIL 0 SKIP 2**: the 11:37 rule check ran and is recorded (1 book, 0 triggered); no 'not checked' heads-up; nothing failing. The history SKIP is expected on this deploy (nothing was persisted before it) and must PASS on the next one. `smoke-all`: 22 passed, 3 failed (Gemini credits).
 
 ---
 
