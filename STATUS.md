@@ -62,7 +62,7 @@ while SOXL and TQQQ moved 0.95.
   refused; sleeve moves and the optimiser stop pairing them. Nothing is removed.
 
 *Tests.* `tests/test_d123_same_bet_on_what_they_hold.py` (4). All 81 same-bet / diversity tests pass. Full Postgres
-suite: GATE_RESULT.
+suite: **2,883 passed, 0 failed, 0 skipped**. Ruff clean.
 
 *Smoke.* `scripts/smoke/smoke-d123-same-bet-on-what-they-hold.ps1`. Production before (`47e9ebe`): PASS 4 FAIL 0 SKIP 2
 (no invested correlations measured yet; every existing same-bet pair still marked). After deploy AND the next 03:50 UTC
