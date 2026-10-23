@@ -67,7 +67,11 @@ Today today; the ceiling bites when the TQQQ/SOXL sleeves are funded again.
 end to end, an AST guard that every app `buy_into_book` caller checks the ceiling). Two existing funding tests had
 geared books: they now run with the ceiling off for the mechanics they test, and the 64% test also asserts the default
 stops at 44.0%. Settings count 34 -> 35. Sleeve/funding subset 605 passed before those two were updated. Full Postgres
-suite: GATE_RESULT.
+suite: 2,902 passed, 1 failed: `test_p0_safety::test_an_unfundable_sleeve_abstains_with_a_reason` read
+`chosen_sleeve_pct` 44 for a 90% sleeve -- the funder measured "what you chose" after the ceiling clipped it, so the
+refusal said "You asked for a 44% sleeve". Fixed: chosen is before the clip, the shortfall is judged against the
+clipped plan (`ceiling_capped_pct`), and the reason names the ceiling. After the fix: that test and the sleeve/funding
+subset 622 passed.
 
 **Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
 the build before). After deploy: PROD_RESULT.
