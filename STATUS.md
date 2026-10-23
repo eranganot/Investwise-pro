@@ -64,7 +64,7 @@ are over)") and carries it in `meta.plan`.
 
 **Tests.** `tests/test_c15_the_core_trims_only_what_is_over.py` (4): a short sleeve is not sold, the over one is; a basket
 ticker is not sold to be bought back; the trim never takes a sleeve below its size; the card names the sources. The 124
-core / occupancy / realign tests pass. Full Postgres suite: GATE_RESULT.
+core / occupancy / realign tests pass. Full Postgres suite: **2,864 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-c15-core-trims-only-what-is-over.ps1`. Production before the merge (`abd4d39`, no
 `-Since`): the whole visible ledger shows the bug as NOTEs, 17 bought-back core sales and 5 same-ticker accepts. Production
