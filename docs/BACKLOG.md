@@ -57,15 +57,15 @@
 | P6 | Israeli index funds on TASE. | Provider can't price numeric symbols | Parked |
 | P7 | B1: what `/plan` shows for volatility (store in-market vol nightly; match windows). | STATUS backlog B1 | Parked |
 | P8 | B-margin-A (cash research: any name may replace a top-up), B-sells-trend (sell on trend alone), B-review-ratio (revisit the measured-edge bar). | STATUS backlog | Parked |
-| P9 | V8 P3: per-holding day attribution on the NAV card; intraday "today" point on the chart. | `archive/plans/EXECUTION_PLAN_2026-09-14_v8.md` | ? |
+| P9 | V8 P3: per-holding day attribution on the NAV card; intraday "today" point on the chart. | `archive/plans/EXECUTION_PLAN_2026-09-14_v8.md` | P3 (owner, 2026-10-24) |
 | P10 | Promote engines to agents ("Tier 4") + a synthesising "Chief" agent (decided 2026-08-30, not started). Or drop it. | [AGENTS.md](AGENTS.md) | ? |
 | P12 | **"Best trend right now" commodity pick** (owner, 2026-10-11, D80): a way to catch the strongest commodity trend when the core basket is the default. Today `commodity_buys_core_only = 0` falls back to the plan-blind screen leader; a real design would size it as a separate, labelled bet. | D80 | Parked |
 | P13 | **Revisit the stock universe for the Beat the Market stock strategies** (plan D6): 44 US names is thin for a top-10 ranking. Expand to the ~100 largest S&P names if MH1 or H1 pass the gate. | `plans/BEAT_MARKET_EXPANSION_2026-10-13.md` | Later |
 | P14 | ~~Sleeve plan follow-ups~~. Closed 2026-10-23: the six sleeve-plan smokes run on `47e9ebe` (134d 17/0/0, 135a 8/0/0, 135b 5/0/1, 135c 5/0/1 after fixing its pinned `iw-v69` check, 136a 7/0/0, 136b 6/0/0); same-bet now also measured on what sleeves hold (D123). | sleeve plan | Done |
 | P16 | ~~The halving limit~~. Decided 2026-10-23 (D122): keep 30%; revisit the goal instead (P1). | STATUS PR 136a | Done |
-| P17 | **Live stock rotation** -- hold and rotate a selection strategy's monthly picks, so Explore-only strategies (Quality Momentum 5) can be added as sleeves. | D101 | P2 |
-| P18 | **Fixed-amount goals in the goal model.** Only a %/yr goal gets odds, sleeve moves, the optimiser and a starter book; a plan with an amount and no yearly ROI gets none. | D105 | P2 |
-| P19 | **Objective default core mixes as settings** (used only when no core is chosen; code constants today -- "every decision is a setting"). | owner, 2026-10-18 | P3 |
+| P17 | **Live stock rotation** -- hold and rotate a selection strategy's monthly picks, so Explore-only strategies (Quality Momentum 5) can be added as sleeves. | D101 | P2 (owner, 2026-10-24: after C16 and PR 145) |
+| P18 | **Fixed-amount goals in the goal model.** Only a %/yr goal gets odds, sleeve moves, the optimiser and a starter book; a plan with an amount and no yearly ROI gets none. | D105 | P3 (owner, 2026-10-24) |
+| P19 | **Objective default core mixes as settings** (used only when no core is chosen; code constants today -- "every decision is a setting"). | owner, 2026-10-18 | P2 (owner, 2026-10-24: a quick item) |
 | P15 | **Single-stock short selling.** The book, funding and backtest engine are long-only end to end; it needs negative quantities, margin, borrow fees and forced exits through every layer, and the research in the sleeve plan finds the edge mostly gone after fees. Inverse-ETF legs (PSQ/SH) are the in-plan route. | sleeve plan, research | Parked |
 | P11 | The objective tilt for the screener (`OBJECTIVE_WEIGHTS` is empty and `OWNER_REVIEWED = False`). | AGENTS.md | ? |
 
