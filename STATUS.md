@@ -63,7 +63,7 @@ a quantity and no price or value.
 Owner's call; BACKLOG C22.
 
 **Tests.** `tests/test_pr147_the_ledger_says_what_it_sold.py` (5): a stop sale, a cap trim, sleeve funding and a funded buy
-reported as one ticker each record a price and value; a leg without them is logged. Full Postgres suite: GATE_RESULT.
+reported as one ticker each record a price and value; a leg without them is logged. Full Postgres suite: **2,869 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-the-ledger-says-what-it-sold.ps1`. Production before the merge (`99258a9`, `-Since`
 10-20): **FAIL 20**, every trim, stop, funded buy and sleeve-funding sale since 10-20 (the bug). Production after deploy:
