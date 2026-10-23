@@ -20,7 +20,7 @@ wins**: fix the page in the same PR.
 | Production, deploy, health, secrets, runbook, incidents | [OPERATIONS.md](OPERATIONS.md) · [ROTATION.md](ROTATION.md) |
 | Why things are the way they are | [DECISIONS.md](DECISIONS.md) |
 | How we got here; incidents that became rules | [HISTORY.md](HISTORY.md) |
-| **What's open / next** | [BACKLOG.md](BACKLOG.md) · active plan: [plans/EXECUTION_PLAN_2026-10-08_hardening.md](plans/EXECUTION_PLAN_2026-10-08_hardening.md) |
+| **What's open / next** | [BACKLOG.md](BACKLOG.md) · active plan: [plans/EXECUTION_PLAN_2026-10-23_after-review.md](plans/EXECUTION_PLAN_2026-10-23_after-review.md) (previous: [2026-10-08 hardening](plans/EXECUTION_PLAN_2026-10-08_hardening.md), complete) |
 | Words | [GLOSSARY.md](GLOSSARY.md) |
 | Design explorations | [design/](design/) |
 | Old plans, reviews, status (verbatim) | [archive/](archive/README.md) |

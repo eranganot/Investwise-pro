@@ -4,7 +4,10 @@
 > and a full code review done for the docs overhaul. It replaces the "Next", "Backlog" and "Ops actions" tables that
 > used to sit at the top of STATUS.md (archived verbatim in `archive/status/STATUS-HISTORY-to-PR87.md`, with their evidence).
 >
-> **Active plan:** [`plans/EXECUTION_PLAN_2026-10-08_hardening.md`](plans/EXECUTION_PLAN_2026-10-08_hardening.md)
+> **Active plan (2026-10-23):** [`plans/EXECUTION_PLAN_2026-10-23_after-review.md`](plans/EXECUTION_PLAN_2026-10-23_after-review.md)
+> -- the prioritised order of everything below, with approach, tests, smoke and the decisions each item needs.
+>
+> **Previous plan (complete):** [`plans/EXECUTION_PLAN_2026-10-08_hardening.md`](plans/EXECUTION_PLAN_2026-10-08_hardening.md)
 > (PR 105–119) sequences the rows below. Every C/S/L row was re-investigated on 2026-10-08 and is now PROVEN or
 > INFERRED with a reproducing probe ([`plans/evidence-2026-10-08/`](plans/evidence-2026-10-08/)). The **PR** column says
 > which PR closes each row. Plans v2.2 and frontier are complete.

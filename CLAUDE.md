@@ -9,6 +9,7 @@ Personal investing dashboard / wealth system. Python, branch `main`. This is the
 
 ## How to work in this repo
 - **Read `STATUS.md` first** (and `docs/BACKLOG.md` for what's open); update after shipping or at session end.
+- **The active plan is `docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`** -- its §0 says how to start a session, §1 the gate and smoke rules, §4 the order of work.
 - The sandbox **can** run git here directly — commit, merge, push, and watch CI. Always run the suite locally before pushing: keep it green.
 - Use `app-bug-triage` for production issues and `ship-it` for the verify-after-deploy habit (CI is the gate here rather than Railway logs).
 
