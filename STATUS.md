@@ -68,7 +68,7 @@ core / occupancy / realign tests pass. Full Postgres suite: **2,864 passed, 0 fa
 
 **Smoke.** `scripts/smoke/smoke-c15-core-trims-only-what-is-over.ps1`. Production before the merge (`abd4d39`, no
 `-Since`): the whole visible ledger shows the bug as NOTEs, 17 bought-back core sales and 5 same-ticker accepts. Production
-after deploy (with `-Since`): PROD_RESULT.
+after deploy (`99258a9`, `-Since` 12:13 UTC): **PASS 3 FAIL 0 SKIP 3**. The SKIPs are honest: the core card trims no sleeve today (they are ₪6,672 short) and nothing has been accepted since the deploy; the card still offers its buy (QQQ). `smoke-all`: 22 passed, 3 failed (Gemini credits).
 
 ---
 
@@ -107,7 +107,7 @@ heads-up's three states and its silences; Today carries it. Full Postgres suite:
 **Smoke.** `scripts/smoke/smoke-pr143-rule-check-is-loud.ps1`. Production before the merge (`1984d6f`, `-Since` 11:00):
 PASS 4 FAIL 0 SKIP 2 (the history skip is the bug: nothing from before 11:01 survived). Local build with the scheduler on
 migrated Postgres, restarted twice: PASS 5 FAIL 0 SKIP 1 ("3 job(s) remember a run from before" the restart; `runs: 2`).
-Production after deploy (`abd4d39`, 11:37 UTC): **PASS 4 FAIL 0 SKIP 2**: the 11:37 rule check ran and is recorded (1 book, 0 triggered); no 'not checked' heads-up; nothing failing. The history SKIP is expected on this deploy (nothing was persisted before it) and must PASS on the next one. `smoke-all`: 22 passed, 3 failed (Gemini credits).
+Production after deploy (`abd4d39`, 11:37 UTC): **PASS 4 FAIL 0 SKIP 2**: the 11:37 rule check ran and is recorded (1 book, 0 triggered); no 'not checked' heads-up; nothing failing. The history SKIP is expected on this deploy (nothing was persisted before it) and must PASS on the next one. **It did:** on the C15 deploy (`99258a9`), PASS 5 FAIL 0 SKIP 1, "3 job(s) remember a run from before 12:13 UTC: standing_orders, futures_warm, price_refresh". `smoke-all`: 22 passed, 3 failed (Gemini credits).
 
 ---
 
