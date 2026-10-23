@@ -51,7 +51,7 @@ never opened as a PR; found on 2026-10-23 when every branch was checked against 
 main since, so the file was taken as it was.
 
 **Verified.** 3 tests (`test_the_goal_ceiling_names_the_levers.py`); related tests 244 passed; full Postgres suite:
-GATE_RESULT. Ruff clean.
+2,895 passed, 0 failed. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
 the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
