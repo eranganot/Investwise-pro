@@ -208,7 +208,8 @@ async def _evaluate_one(session: AsyncSession, user: User, sid: str) -> dict:
         session.add(StrategySignalState(subject=user.email, strategy_id=sid,
                                         target=target, as_of=res["as_of"]))
         await session.commit()
-        return {**res, "flipped": False, "first_run": True}
+        return {**res, "flipped": False, "first_run": True,
+                "holds_released": await _step_stop_holds(session, user, sid, target)}
 
     changed = target != (row.target or {})
     if changed:
@@ -219,7 +220,20 @@ async def _evaluate_one(session: AsyncSession, user: User, sid: str) -> dict:
     row.as_of = res["as_of"]
     await session.commit()
     return {**res, "flipped": changed, "pending": row.flipped_at is not None,
-            "previous_target": row.previous_target or {}}
+            "previous_target": row.previous_target or {},
+            "holds_released": await _step_stop_holds(session, user, sid, target)}
+
+
+async def _step_stop_holds(session: AsyncSession, user: User, sid: str, target: dict) -> list[str]:
+    """PR 139: a stop hold on a ticker this sleeve owns ends at the sleeve's next
+    re-entry after it went out. Raises on failure: a hold that silently never
+    releases is a sleeve that silently never refills, and the job records it."""
+    from app.services import buyback_hold as bh
+    gone = await bh.step_signal(session, user, sid, target)
+    await session.commit()
+    if gone:
+        logger.info("stop hold released by %s re-entry: %s", sid, ", ".join(gone))
+    return gone
 
 
 async def peek_user(session: AsyncSession, user: User) -> dict:

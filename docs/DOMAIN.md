@@ -95,6 +95,14 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
   - While the price is ≥ the sale price, the hold is active: buyers treat the sleeve as met and the proceeds stay reserved in cash.
   - The first close below the sale price releases it for good.
   - Holds are `trading_rules` rows of type `buy_back`. The reserve is pre-committed in the funding ledger, so no other card spends it.
+- **Stop holds** (PR 139, D114): a protective exit (stop-loss, trailing stop, profit-protect, trend break) records a
+  `buy_back` row with `params.kind = "stop"` and the owning sleeve.
+  - No price ends it. The 06:15 signal job marks it `signal_out` when the sleeve's target for the ticker goes to zero, and
+    ends it at the next reading that is in. No signal reading yet counts as NOT out.
+  - Every buyer honours it: card executors call `buyback_hold.assert_buyable` before their first write (writers commit as
+    they go); `_fund_sleeve` / `fund_plan` drop the ticker; `buy_into_book` refuses it as a backstop unless `recording=True`
+    (your own Holdings > Add). `tests/test_a_stop_out_is_not_bought_back.py` walks app/ and fails on a buy path with no check.
+  - `buy_back` is an ENTRY type: a hold exists for a ticker you no longer hold, so it is never purged or hidden as an orphan.
 - **Standing orders**: monthly deposits credited by the hourly job (a contribution plus cash). They feed the goal.
 
 ### 3.5 The goal (PR 74, 92–99)

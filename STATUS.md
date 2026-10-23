@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-22 by Claude (PR 138: Ignore on every card, a loud blocker, an honest chart end, no silent drops). Last product PR: **PR 138**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. Gate: local SQLite + local Postgres + ruff, then a GitHub PR whose CI must be green before merge._
+_Last updated: 2026-10-23 by Claude (PR 139: a stop-out is not bought back). Last product PR: **PR 139**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,59 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 139 — a stop-out is not bought back by the app (D114)
+
+**Report (2026-10-22 review, gap G2).** SOXL was stopped out twice and re-bought by the app both times. Production ledger and rule
+events: 10-12 trailing stop sold 19.68 at 130.43; 10-14 "Fund this sleeve" bought 8.75 at 127.57; 10-15 sleeve funding bought 8.46
+at 110.54; 10-16 trailing stop sold 16.97 at 93.96; 10-19 sleeve funding bought 6.81 at 98.65 (above that sale); 10-22 SOXL 82.11.
+
+**Root causes (PROVEN: reproduced on HEAD `156e29c` by `tests/test_a_stop_out_is_not_bought_back.py`, and seen live).**
+1. A stop-loss / trailing-stop exit is a `sell_position` with no hold flag (`rules_service.execution_plan`), so the sale recorded
+   nothing. Live: the 10-12 and 10-16 exits' executed detail has no `buyback_hold`; no `buy_back` rule existed after either.
+2. The only hold (PR 75, take-profits) ends the moment the price is below the sale price: in a falling market, at once.
+3. The Plan buttons (`load-basket`, `/plan/sleeves/fund`) run the funder with `honour_holds=False` by design (PR 75), and those
+   are the buys that happened (audit: `/strategies/btm_trend_soxl/load-basket` and `/plan/sleeves/fund` before each re-buy).
+4. Found while fixing: a `buy_back` row on a ticker you no longer hold was an "orphaned exit" to the evaluator, so it was
+   deleted by `purge_orphan_rules` and hidden by the list. Any hold after a FULL exit vanished on the next evaluation.
+
+**Ruled out.** A hold that existed and was released early (no `buy_back` row and no `buyback_hold` in either exit's detail);
+a Today card as the buyer on 10-14 / 10-19 (the audit shows the Plan-screen routes at those minutes); a price-feed fault
+(the fills match the day's closes).
+
+**Fix.**
+- `buyback_hold`: a STOP kind. No price ends it. `record_stop` names the owning sleeve (from its catalogue weights, so a sleeve
+  that is out still owns its ticker); the 06:15 signal job (`step_signal`) marks it out when the sleeve's target for the ticker
+  is zero and ends it at the next "in". No signal reading yet counts as NOT out. A later take-profit never downgrades it.
+- Protective exits (stop-loss, trailing stop, profit-protect, trend break) record one on Accept.
+- Every buyer honours it: `_fund_sleeve` / `fund_plan` drop the ticker and say why (status `held_back`, `refused: STOP_HOLD`);
+  each card executor calls `assert_buyable` BEFORE its first write (position writers commit as they go, so a later refusal
+  would leave half a trade); redeploy-cash skips the leg; replace-book refuses; `buy_into_book` refuses as a backstop unless
+  `recording=True` (your own Holdings > Add, a record of a broker trade). The Accept route turns a refusal into 400, card not done (the wrapper lives in the route so `apply_recommendation` keeps its source, which two tests read).
+- `buy_back` is an ENTRY type (cause 4). A stop hold is never quoted (no price matters).
+- Holdings > Rules: "Stop hold · until the sleeve re-enters"; ending one asks a confirm that names the stop and its price. `sw.js` iw-v71.
+
+**Tests.** `tests/test_a_stop_out_is_not_bought_back.py` (9): the three reproductions (no hold, Plan re-buys, a lower price ends
+it); the hold names its sleeve and ends only on out-then-in, unknown is not out; a funded-buy card refuses with nothing sold;
+your own add is exempt; ending the hold lets the Plan fund it; a later take-profit keeps the stop hold; an AST guard that every
+`buy_into_book` caller in app/ checks the hold (mutation-tested: removing the fee-swap check fails it). Full suite on `f769e40`, Python 3.12: **Postgres 2,834 passed, 1 skipped, 0 failed** (the gate); SQLite 2,832 passed, 1 skipped, 2 failed, both `test_the_pins_are_installable_and_installed` from the sandbox's newer pywebpush / py-vapid (22 / 22 pass with the pinned versions). Ruff clean on app and tests. The first full run found two things, both fixed here: a regression of mine (two tests read `apply_recommendation`'s source; the HeldBack wrapper now lives in the Accept route), and a pre-existing Postgres crash in PR 137's `test_an_ignore_is_not_overruled_by_an_old_done` (the shared session borrowed inside `asyncio.run()`; it failed the same way on `156e29c`), now a NullPool engine in its own loop.
+
+**Smoke.** `scripts/smoke/smoke-pr139-stop-out-hold.ps1 -Sha <sha> -Since <deploy time>` (read-only). Production can't serve it yet
+(Railway outage), so it was run twice: against production on `ae46931` to prove every field it reads exists (PASS 1, FAIL 0,
+SKIP 3: no hold on the book yet; it lists the 10-12, 10-16 and 09-14 SOXL exits as "no hold (expected before PR 139)"); and
+against this build served locally on a migrated database, after a SOXL stop fired and was accepted: **PASS 6, FAIL 0, SKIP 0**.
+On that local book, beyond the smoke: the SOXL top-up card left Today, "Fund this sleeve" and "Fund my sleeves" refused with
+the stop named, SOXL stayed at 0; after ending the hold, the sleeve funded (7.99 SOXL). Smoke fix found on the way: PowerShell
+reads an ISO `Z` time as local (+03:00 on the owner's Mac), which silently dropped the newest exits; times are now compared in UTC.
+
+**C16b narrowed, not closed.** Why the stops were OFF: SOXL stop `c89d8251` (made ~10-19, unstamped, SOXL held throughout) had
+one pausing writer in its life per the audit log, the protection card Accept at 10-20 14:21:50. Strong by elimination only:
+`apply_rules_tuning` writes `active=False` and no event, so nothing records what it paused. PR 140.
+
+**Not verified live.** Production still serves `ae46931`. After deploy: run the smoke with `-Since` the deploy time; the open
+SOXL stop card (`c89d8251`), if accepted, must leave a stop hold. Not run: GitHub Actions (free-plan minutes, back on the 1st).
 
 ---
 

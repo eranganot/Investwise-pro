@@ -284,6 +284,13 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D114 · 2026-10-23 · A stop-out holds its ticker against every buyer until the sleeve's own signal goes out and comes back in.**
+  Stop-loss, trailing stop, profit-protect and trend-break exits record a `buy_back` row of kind `stop`. No price ends it.
+  It binds Today's cards AND the Plan buttons (unlike D-PR75's take-profit hold, which the Plan may override). A ticker no
+  sleeve owns is held until you end it on Holdings > Rules, which asks a confirm naming the stop. Your own "add a
+  holding" is a record of a broker trade and is never blocked. *Why:* SOXL was stopped out 10-12 and 10-16 and re-bought
+  by sleeve funding within days both times, the second time above its own sale price. Owner: "start working on 139",
+  2026-10-23. → PR 139
 - **D113 · 2026-10-22 · A protective stop that is OFF while its condition is true is a card; a big one-day move is only a heads-up.** Accept
   re-arms the stop (nothing is sold). The text states facts and never says sell or keep. → PR 138
 - **D112 · 2026-10-22 · The chart's last point may be a labelled provisional one**, only when live value versus the last snapshot is a fair

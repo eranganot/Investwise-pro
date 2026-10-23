@@ -5687,6 +5687,8 @@ async def _rebalance_to(session, user, rows, objective: str) -> dict:
     target = (await _book_target(session, user, objective))["target"]
     total_before = book_nav_ils(rows)
     plan = _rebalance_plan(rows, target)
+    from app.services import buyback_hold as _bh   # PR 139: before the first sale
+    await _bh.assert_buyable(session, user, [b["ticker"] for b in plan["buys"] if b["shares"] > 0])
     # BY ROW, NEVER BY TICKER. The plan sizes each ROW; a ticker can have two
     # (two accounts). Keyed by ticker, the first review of this PR sold one
     # row's leg out of the other, drove it negative, and `delete_position`
@@ -6412,7 +6414,18 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                       "cash_added_ils": round(credited, 2), "tax_ils": round(res["tax"], 2),
                       "full_exit": res["full_exit"],
                       "broker_note": "Tracked book updated — no brokerage order was placed."}
-            if spec.get("hold_after_sale") and res["shares"] > 0:
+            from app.services import buyback_hold as _bh
+            if spec.get("rule_type") in _bh.PROTECTIVE_EXITS and res["shares"] > 0:
+                # PR 139: a protective exit holds the ticker against every buyer
+                # until its sleeve's signal is out and back in (or you end it).
+                # Measured: two SOXL stop-outs re-bought by sleeve funding within
+                # days, 10-12 .. 10-19, the second above its own sale price.
+                detail["buyback_hold"] = await _bh.record_stop(
+                    session, user, ticker=spec["ticker"], sold_price=res["price"],
+                    shares=res["shares"], exit_rule_type=str(spec["rule_type"]),
+                    rule_id=spec.get("rule_id"))
+                await session.commit()
+            elif spec.get("hold_after_sale") and res["shares"] > 0:
                 from app.services import buyback_hold as _bh
                 detail["buyback_hold"] = await _bh.record(
                     session, user, ticker=spec["ticker"], sold_price=res["price"],
@@ -6762,12 +6775,21 @@ async def _apply_redeploy_cash(session: AsyncSession, user: User, spec: dict) ->
     from app.services.fx import quote_in_ils
     from app.services.intake_service import buy_into_book, get_cash, set_cash
 
+    from app.services import buyback_hold as _bh
     cash = await get_cash(session, user)
+    _stops = _bh.stop_held(await _bh.load(session, user))   # PR 139
 
     bought, skipped = [], []
     for leg in (spec.get("legs") or []):
         tk, amount = leg.get("ticker"), float(leg.get("amount_ils") or 0)
         if not tk or amount <= 0:
+            continue
+        if str(tk).upper() in _stops:
+            # A cash-only buy: skipping the leg leaves its money in cash, so the
+            # rest of the card still runs. Measured: 10-14 05:32 this card bought
+            # 14.09 TQQQ (3,415 ILS) while the book was being re-levered.
+            skipped.append({"ticker": tk, "reason": _bh.refusal(str(tk).upper(),
+                                                                _stops[str(tk).upper()])})
             continue
         if amount > cash:
             skipped.append({"ticker": tk, "reason": "not enough cash left"})
@@ -6833,6 +6855,8 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     from app.services.intake_service import buy_into_book, get_cash, set_cash
 
     ticker = (spec.get("ticker") or "").upper()
+    from app.services import buyback_hold as _bh   # PR 139: before anything is sold
+    await _bh.assert_buyable(session, user, [ticker])
     try:
         q = await _offload(guarded_quote, ticker)
         # THE 100x TRAP, at the boundary that buys. `to_major_units` says "use at
@@ -7093,6 +7117,8 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
                          or "There is nothing to realign in your core right now.")}
 
     buys = [leg for leg in plan["legs"] if leg["action"] == "buy"]
+    from app.services import buyback_hold as _bh   # PR 139: before the first sale
+    await _bh.assert_buyable(session, user, [leg["ticker"] for leg in buys])
     priced: dict[str, tuple[float, str]] = {}
     for leg in buys:
         tk = leg["ticker"]
@@ -7257,6 +7283,8 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     p = by_ticker.get(sell_tk)
     if not p or not buy_tk:
         return {"swapped": False}
+    from app.services import buyback_hold as _bh   # PR 139: before the sale
+    await _bh.assert_buyable(session, user, [buy_tk])
     try:
         q = await _offload(guarded_quote, buy_tk)
         price, ccy = float(q.price), (getattr(q, "currency", None) or "USD")

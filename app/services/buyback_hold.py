@@ -81,12 +81,41 @@ async def _migrate_kv(session: AsyncSession, user: User) -> None:
     await session.commit()
 
 
+# PR 139 -- A STOP-OUT IS NOT BOUGHT BACK BY THE APP.
+#
+# Measured on production, 2026-10-12 .. 10-22: SOXL was stopped out at 130.43,
+# re-bought by sleeve funding at 127.57 and 110.54, stopped out again at 93.96,
+# re-bought at 98.65 -- above that sale -- and was 82.11 on 10-22. Neither exit
+# recorded a hold, and the one hold that existed (above) ends the moment the
+# price is below the sale, which in a falling market is at once.
+#
+# A STOP hold has no price that ends it. It ends when the sleeve that owns the
+# ticker has a signal that went OUT after the exit and then came back IN (the
+# strategy's own re-entry, measured by the 06:15 job), or when you end it on
+# Holdings > Rules. A ticker no sleeve owns has no signal, so only you end it.
+STOP = "stop"
+PROTECTIVE_EXITS = frozenset({"stop_loss", "trailing_stop", "profit_protect", "trend_break"})
+SIGNAL_OFF = 0.005   # a target weight at or under this is "out" (`rules_service._signal_side`)
+
+
+def is_stop(h: dict | None) -> bool:
+    return bool(h) and h.get("kind") == STOP
+
+
 def _params_of(v: dict) -> dict:
-    return {k: v.get(k) for k in ("shares", "strategy_id", "rule_id", "until_rule", "at")
+    return {k: v.get(k) for k in ("shares", "strategy_id", "rule_id", "until_rule", "at",
+                                  "kind", "exit_rule_type", "signal_out", "signal_out_at")
             if v.get(k) is not None}
 
 
 def _note_for(tk: str, v: dict) -> str:
+    if is_stop(v):
+        what = str(v.get("exit_rule_type") or "stop").replace("_", " ")
+        if v.get("strategy_id"):
+            return (f"Holds {tk} after your {what} sold it at {float(v.get('level') or 0):,.2f}: "
+                    f"no re-buy until {v['strategy_id']}'s signal is out and back in")[:160]
+        return (f"Holds {tk} after your {what} sold it at {float(v.get('level') or 0):,.2f}: "
+                f"no re-buy until you end this hold")[:160]
     if v.get("until_rule"):
         return f"Holds {tk} re-buys until your drawdown guard re-arms"
     return f"Holds {tk} re-buys until it trades below {float(v.get('level') or 0):,.2f}"
@@ -131,6 +160,11 @@ async def record(session: AsyncSession, user: User, *, ticker: str, sold_price: 
     data = await load(session, user)
     tk = ticker.upper()
     prev = data.get(tk)
+    if is_stop(prev):
+        # PR 139: a later sale never turns a stop hold back into a price hold.
+        data[tk] = {**prev, "shares": round(float(prev.get("shares") or 0) + float(shares), 6)}
+        await _save(session, user, data)
+        return data[tk]
     level = float(sold_price)
     if until_rule:
         # PR 81 -- a drawdown de-risk holds until the BOOK recovers, not until
@@ -189,9 +223,113 @@ def active(holds: dict[str, dict], rows) -> dict[str, dict]:
     out = {}
     for tk, h in holds.items():
         now = px.get(tk)
-        if now is None or now >= float(h.get("level") or 0):
+        # PR 139: a stop hold is never ended by a price (see STOP above).
+        if is_stop(h) or now is None or now >= float(h.get("level") or 0):
             out[tk] = {**h, "price_now": now}
     return out
+
+
+def stop_held(holds: dict[str, dict]) -> dict[str, dict]:
+    """Only the stop holds. These bind EVERY buyer, the Plan screen included."""
+    return {tk: h for tk, h in holds.items() if is_stop(h)}
+
+
+def refusal(ticker: str, h: dict) -> str:
+    """One sentence a refused buy shows, naming the stop."""
+    what = str(h.get("exit_rule_type") or "stop").replace("_", " ")
+    tail = (f"until {h['strategy_id']}'s signal is out and back in" if h.get("strategy_id")
+            else "until you end the hold")
+    return (f"{ticker} is on hold since your {what} sold it at {float(h.get('level') or 0):,.2f}: "
+            f"the app will not buy it back {tail}. End the hold on Holdings > Rules to buy it now.")
+
+
+class HeldBack(Exception):
+    """A buy reached the book writer for a ticker under a stop hold."""
+
+
+async def assert_buyable(session: AsyncSession, user: User, tickers) -> None:
+    """Raise HeldBack if any of `tickers` is under a stop hold.
+
+    Called by each executor BEFORE its first write: position writers commit as
+    they go, so a refusal raised after a sale would leave the sale done and the
+    buy refused. Raised here, nothing has been written and Accept answers
+    "nothing was changed".
+    """
+    want = {str(t).upper() for t in (tickers or []) if t}
+    if not want:
+        return
+    held = stop_held(await load(session, user))
+    for tk in sorted(want & set(held)):
+        raise HeldBack(refusal(tk, held[tk]))
+
+
+async def record_stop(session: AsyncSession, user: User, *, ticker: str, sold_price: float,
+                      shares: float, exit_rule_type: str, rule_id: str | None) -> dict:
+    """Hold a ticker a protective rule just sold.
+
+    The owning sleeve is the one whose CATALOGUE weights hold the ticker (not its
+    live target: a trend sleeve that is out holds its base, and would look like
+    no owner at exactly the moment it matters). If that sleeve's signal is
+    already out, the hold starts as out, so the next re-entry releases it.
+    """
+    from app.services import strategy_catalog
+    from app.services.sleeve_service import list_sleeves, live_sleeve_targets
+    tk = ticker.upper()
+    owner = None
+    for s in await list_sleeves(session, user):
+        w = (strategy_catalog.get(s.strategy_id) or {}).get("weights") or {}
+        if tk in {k.upper() for k in w}:
+            owner = s.strategy_id
+            break
+    out_now = False
+    if owner:
+        # NO READING IS NOT "OUT". With no stored signal for the sleeve yet, an
+        # unknown target read as weight 0 would mark the hold out, and the first
+        # reading of "in" would end it the next morning -- re-entry without the
+        # signal ever having left. Only a measured target can say "out".
+        row = (await live_sleeve_targets(session, user)).get(owner)
+        if row is not None:
+            tgt = row.get("target") or {}
+            out_now = float({k.upper(): v for k, v in tgt.items()}.get(tk, 0.0) or 0.0) <= SIGNAL_OFF
+    data = await load(session, user)
+    prev = data.get(tk) or {}
+    now = datetime.now(timezone.utc).isoformat()
+    data[tk] = {"level": round(float(sold_price), 6), "kind": STOP,
+                "shares": round(float(shares) + float(prev.get("shares") or 0), 6),
+                "strategy_id": owner, "rule_id": rule_id, "exit_rule_type": exit_rule_type,
+                "signal_out": bool(out_now), **({"signal_out_at": now} if out_now else {}),
+                "at": now}
+    await _save(session, user, data)
+    return data[tk]
+
+
+async def step_signal(session: AsyncSession, user: User, strategy_id: str,
+                      target: dict) -> list[str]:
+    """Advance the stop holds a sleeve owns with today's signal. Returns released tickers.
+
+    Out (weight at or under SIGNAL_OFF) marks the hold; in, after an out, ends it.
+    Called by the 06:15 signal job after it stores the target, so a release is a
+    measured re-entry, never a guess between evaluations.
+    """
+    holds = await load(session, user)
+    tgt = {k.upper(): float(v or 0.0) for k, v in (target or {}).items()}
+    changed, gone = False, []
+    for tk, h in list(holds.items()):
+        if not is_stop(h) or h.get("strategy_id") != strategy_id:
+            continue
+        w = tgt.get(tk, 0.0)
+        if w <= SIGNAL_OFF:
+            if not h.get("signal_out"):
+                holds[tk] = {**h, "signal_out": True,
+                             "signal_out_at": datetime.now(timezone.utc).isoformat()}
+                changed = True
+        elif h.get("signal_out"):
+            holds.pop(tk)
+            gone.append(tk)
+            changed = True
+    if changed:
+        await _save(session, user, holds)
+    return gone
 
 
 async def release_retreated(session: AsyncSession, user: User, rows) -> list[str]:

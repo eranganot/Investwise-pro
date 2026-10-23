@@ -14,6 +14,7 @@ Terms as this codebase uses them. Where the code name differs from the screen na
 | **Book** | Everything the user holds, including cash, as tracked by InvestWise. | `positions` |
 | **Book target** | The single target mix for the whole book: sleeves + core + 10% Commodities + cash reserve = 1.0. | `book_target.py` |
 | **Buy-back hold** | After a take-profit sale, the proceeds stay reserved until the price falls back below the sale price. | `buyback_hold.py`, rule type `buy_back` |
+| **Stop hold** | After a stop sells a holding, the app will not buy it back until its sleeve's signal goes out and comes back in, or you end the hold. | `buyback_hold.py`, `buy_back` with `kind: stop` |
 | **Card** | One sized, funded, explained proposal on Today. | `build_recommendations` |
 | **Card threshold** | A user-editable number that gates cards (minimum trade, band, gain line…). | `thresholds.py`, `plans.thresholds` |
 | **Cash floor (hard)** | Absolute minimum cash (default ₪150). Only a card with a `reserve_reason` may go below the soft target, and never below this. | setting `cash_floor_ils` |
