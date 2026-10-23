@@ -59,7 +59,7 @@ row (`price_now = None`) and every stop hold read as a guard hold.
 reserved for SOXL and has its own card; the redeploy card rightly leaves it alone. The check now subtracts held cash.
 
 **Tests.** `test_the_held_cash_card_says_what_a_stop_hold_waits_for` (stop with and without a sleeve; the guard sentence
-unchanged). Every test that touches held cash, plus `test_every_card_can_be_acted_on`, on Postgres: 64 passed.
+unchanged). Every test that touches held cash, plus `test_every_card_can_be_acted_on`, on Postgres: 64 passed. Full Postgres suite: **2,842 passed, 1 skipped, 0 failed**.
 
 **Still open, for PR 141 (G3).** The same card RECOMMENDS investing the SOXL stop-out money elsewhere, TQQQ first (another 3x
 fund, correlation 0.83 with SOXL's sleeve).
