@@ -76,6 +76,42 @@ subset 622 passed.
 **Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
 the build before). After deploy: PROD_RESULT.
 
+## C18.1 — an automatic re-arm records the price it re-armed at
+
+**Root cause (observed).** After C18 deployed, `smoke-all` section 7 failed "no trigger_price": it reads the newest rule
+event, and the newest was C18's UGA re-arm (`rules_service.auto_rearm`, written with `trigger_price=None`). Ruled out: a
+firing without a quote (the newest *firing*, SMH, carries 523.35); a provider fault (every firing since has a price). Two
+faults: the event dropped a price it had in hand (the trail's new start), and the smoke treated a switch on/off as a firing,
+so a manual pause or resume would have failed it the same way.
+
+**Fix.** The re-arm event carries today's price. `smoke-all` checks the newest event that is a firing (not paused/resumed).
+Test: `test_c18_...::test_a_stop_off_for_longer_than_the_setting_comes_back_on` asserts the price. Full Postgres suite:
+2,892 passed, 0 failed. Ruff clean.
+
+**Smoke.** `smoke-c18-switched-off-protection-comes-back.ps1` section 3 now requires a price on re-arms after
+`-C181Since` (a NOTE before it). `smoke-all` against production with the fixed check: 22 passed, 3 failed (Gemini credits).
+After deploy (`df23a17`): **PASS 5 FAIL 0 SKIP 1** (UGA's re-arm predates C18.1, so its missing price is a NOTE);
+`smoke-all` **22 passed, 3 failed** (Gemini credits only; "no trigger_price" gone).
+
+## PR 138b — the goal "nothing to accept" heads-up names what would close the gap
+
+**What.** When the optimiser finds no sleeve change that lifts the goal chance, Today's heads-up said "Nothing to accept
+here. The goal and the halving limit are yours to set." The levers the nightly solve had measured (a target return the
+book can reach, a monthly deposit, a later deadline) appeared only as their own cards, and once one was ignored nothing on
+Today said the lever existed. The heads-up now appends them in numbers from the stored solve, or says plainly that with
+the rules armed no deposit and no later deadline reaches the bar. Words only: no number, card or trade changes.
+
+**Why it was late.** Written and tested 2026-10-22 (commit `33f6d92`, branch `pr138-goal-ceiling-names-the-levers`) but
+never opened as a PR; found on 2026-10-23 when every branch was checked against main. `book_optimizer.py` had not changed on
+main since, so the file was taken as it was.
+
+**Verified.** 3 tests (`test_the_goal_ceiling_names_the_levers.py`); related tests 244 passed; full Postgres suite:
+2,895 passed, 0 failed. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr138b-goal-note-names-levers.ps1`. Production before (`d9c18a5`): **PASS 4 FAIL 2 SKIP 0**,
+the gap itself: the solve measured levers (target 3.7%/yr, ₪24,316) and the note names none; the action is the old text.
+After deploy: PROD_RESULT.
+
 ## C18 — switched-off protection comes back on by itself after 3 days (D124)
 
 **Why (owner, 2026-10-23: heads-up first, auto re-arm later; "3 days").** On 10-22 about twenty stops were found off
@@ -105,7 +141,7 @@ back a stop the owner forgot.
 Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
-`rearm_after_days`: the build before). After deploy: PROD_RESULT.
+`rearm_after_days`: the build before). After deploy (`302e279`): **PASS 5 FAIL 0 SKIP 1**: the UGA trailing stop, off since 10-20 14:21 UTC, re-armed at the 18:20 UTC check (trail restarts from today); no downside rule off past 3 days; the SKIP is honest (no switched-off rule is crossed). `smoke-all` 21/4: the Gemini 3, plus "no trigger_price" -- the newest event was this re-arm, written with no price. Fixed in C18.1.
 
 **Also today (owner items, plan §3).**
 - **PR 147.1 repair applied by the owner** (20:45 Israel time): 87 measured rows repriced, 27 estimates left as chosen.

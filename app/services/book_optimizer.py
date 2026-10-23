@@ -227,6 +227,48 @@ def _p(x) -> str:
     return f"{float(x):g}%" if x is not None else "?"
 
 
+async def _lever_sentence(session, user, r: dict) -> str:
+    """What would close the gap, in numbers, from the stored goal solve (PR 138).
+
+    The ceiling note used to say only that nothing could be accepted. The levers the
+    solve measured -- a target the book can reach, a deposit, a later deadline -- were
+    on Today only as separate cards, and a card that was ignored left the owner with no
+    sign that the lever existed. Words only: this changes no number and no card."""
+    try:
+        from app.services.frontier_service import latest
+        row = await latest(session, user)
+        d = (row.detail or {}) if row is not None else {}
+    except Exception:  # noqa: BLE001 - a note must not break Today
+        return ""
+    lv, g = d.get("levers") or {}, d.get("goal") or {}
+    if not lv:
+        return ""
+    bar = _p(r.get("on_track_pct"))
+    parts = []
+    if lv.get("roi_at_confidence_pct") is not None and g.get("roi_pct") is not None \
+            and float(lv["roi_at_confidence_pct"]) < float(g["roi_pct"]) and lv.get("amount_at_confidence"):
+        parts.append(f"lower your target return from {_p(g['roi_pct'])}/yr to {_p(lv['roi_at_confidence_pct'])}/yr "
+                     f"(about {float(lv['amount_at_confidence']):,.0f} by {str(g.get('deadline') or '')[:4]}, "
+                     f"a {bar} chance)")
+    need = ((d.get("tail") or {}).get("before") or {}).get("extra_monthly_needed")
+    if lv.get("extra_monthly_ils"):
+        parts.append(f"add about {float(lv['extra_monthly_ils']):,.0f} a month")
+    elif lv.get("deadline_extra_years"):
+        parts.append(f"move the deadline out by about {float(lv['deadline_extra_years']):g} years")
+    if not (lv.get("extra_monthly_ils") or lv.get("deadline_extra_years")):
+        tail = ("With your protective rules armed the model finds no deposit and no later deadline that reaches "
+                "the bar" + (f"; on the plain history basis, which ignores the rules, about {float(need):,.0f} a month "
+                             "more would" if need else "") + ".")
+    else:
+        tail = ""
+    out = ""
+    if parts:
+        out += " What would close the gap: " + "; or ".join(parts) + "."
+    if tail:
+        out += " " + tail
+    return out
+
+
 async def card(session, user) -> list[dict]:
     """"The best book we can measure for your goal", from the stored result.
 
@@ -295,6 +337,7 @@ async def card(session, user) -> list[dict]:
         }]
     if float(b["p_goal_pct"]) < float(r.get("on_track_pct") or 70.0):
         best = a.get("p_goal_pct") if a.get("p_goal_pct") is not None else b["p_goal_pct"]
+        levers_txt = await _lever_sentence(session, user, r)
         return [{
             "id": _rid("optimizer_ceiling", round(float(best))),
             "dimension": "goal", "severity": "LOW",
@@ -302,8 +345,8 @@ async def card(session, user) -> list[dict]:
             "why": (f"The optimiser tried {r.get('candidates_tried', 0)} changes -- adding or removing strategies "
                     f"from the catalogue, sized by your goal model, with your rules as armed -- and none raises the "
                     f"chance by {_material():g} points or more within your halving limit. Your goal chance "
-                    f"is {_p(b['p_goal_pct'])}; your on-track bar is {_p(r.get('on_track_pct'))}." + price),
-            "action": "Nothing to accept here. The goal and the halving limit are yours to set on the Plan tab.",
+                    f"is {_p(b['p_goal_pct'])}; your on-track bar is {_p(r.get('on_track_pct'))}." + price + levers_txt),
+            "action": "Nothing to accept here. The target, the deadline, the deposits and the halving limit are yours to set on the Plan tab.",
             "impact": "This is what the measurements say, not a recommendation to trade.",
             "how": ["Plan tab -> your goal and its limits", "Holdings -> Rules for the protective rules"],
             "meta": {"optimizer": True, "ceiling": True, "before": b, "after": a, "as_of": r.get("as_of")},
