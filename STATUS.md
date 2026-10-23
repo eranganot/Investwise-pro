@@ -65,7 +65,7 @@ again and un-mutes the card. All 3 fail on `0a9d570`. Full Postgres suite: **2,8
 **Smoke.** `scripts/smoke/smoke-pr142-ignore-keeps-the-stop.ps1`. Production before the merge (`0a9d570`): PASS 4 FAIL 0
 SKIP 2 (no stop has fired since PR 139's SOXL exit; nothing ignored). Local branch build on migrated Postgres, a SOXL stop
 fired, then Ignored: before PASS on the card text; after PASS 5 FAIL 0 SKIP 1 ("SOXL stop_loss on at 90: Ignored
-2026-10-23: kept SOXL; stop moved from 110 to 90"). Production after deploy: PROD_RESULT.
+2026-10-23: kept SOXL; stop moved from 110 to 90"). Production after deploy (`1984d6f`): **PASS 4 FAIL 0 SKIP 2**. The two SKIPs are honest: no stop has fired since the deploy, so there is no card to read and nothing ignored yet; the SOXL stop hold and the one switched-off rule (on the heads-up) are as before. `smoke-all`: 22 passed, 3 failed (the Gemini credits only; the banner check now counts heads-ups).
 
 ---
 
