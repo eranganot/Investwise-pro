@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (D122/D123: the limits). Last product PR: **D123**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (P1: compare goals). Last product PR: **P1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,40 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## P1 — compare goals: the chance of other goals with your rules as they are (D122)
+
+**Why (owner decision D122, 2026-10-23).** Keep the 30% halving limit and revisit the goal. Production's model: 30%/yr
+(₪82,692 by end-2031) is 0.2% likely with the protective rules, 18.5% without them (halving 53.9%). The solve already
+offered three levers (extra deposit, extra years, the %/yr reachable at the on-track bar); on this book with the rules
+none was found and the confident %/yr was 3.7%, which says what is out of reach but not what is in reach.
+
+**What it does.**
+- **The grid.** `frontier_service._goal_grid`, inside the nightly goal solve's rules replay, prices 20 goals:
+  %/yr 30/25/20/15/10 x the deadline as set or +2 years x no extra deposit or +₪1,000 a month. A "ROI on every shekel"
+  target is rebuilt from the money put in (`target / (1+roi)^years`) plus what the deposits grow to at that cell's ROI.
+  Each cell is replayed with the rules as they are and without them, on the same 500 paths, with its halving risk.
+  Fixed-amount goals get no grid.
+- **Time budget.** 120 s (`GRID_BUDGET_SEC`): cells past it are "not computed tonight", so the 600 s job limit is never
+  at risk. It took 20 s on the test book.
+- **On the page.** The Plan tab's goal panel gains a collapsible "Compare goals" table. Cells at or over the on-track bar
+  are green; hovering shows the amount and halving risk with and without the rules. Shell `iw-v73`.
+
+**Tests.** `tests/test_d122_the_goal_comparison.py` (4):
+- each target rebuilt from the money put in;
+- 40 replays on the same paths, standing orders kept;
+- end to end on the PR 99 fixture: the grid is present, the own-goal cell matches the headline, and an easier goal is
+  never less likely; none for a fixed amount;
+- the time budget.
+
+Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
+shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
+
+**Next (owner).** Read the table on the Plan tab and choose a goal; changing it is the Plan settings' existing goal edit.
 
 ---
 
@@ -134,40 +168,6 @@ pass. Full Postgres suite: **2,871 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-1-reprice-preview.ps1` (read-only, never POSTs the repair). Production before the
 merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy (`9d20605`): **PASS 11 FAIL 0 SKIP 0**. The preview lists 114 unpriced trades: 87 measured (71 from the row's own value, 16 from a rule event; ₪142,563) and 27 estimate (no record of the cash; ₪52,256: core_to_basket 9, trim 8, sell_position 6, buy_funded 4). Examples: SOXL stop 10-23 15.7829 @ 82.11 = ₪4,027.63 (measured), XOM buy 10-21 @ 177.89 = ₪890.91 (measured). **Owner, 2026-10-23: apply the measured rows only** (`POST .../ledger/repair {"confirm": true}`, run by the owner; record the result here).
-
----
-
-## P1 — compare goals: the chance of other goals with your rules as they are (D122)
-
-**Why (owner decision D122, 2026-10-23).** Keep the 30% halving limit and revisit the goal. Production's model: 30%/yr
-(₪82,692 by end-2031) is 0.2% likely with the protective rules, 18.5% without them (halving 53.9%). The solve already
-offered three levers (extra deposit, extra years, the %/yr reachable at the on-track bar); on this book with the rules
-none was found and the confident %/yr was 3.7%, which says what is out of reach but not what is in reach.
-
-**What it does.**
-- **The grid.** `frontier_service._goal_grid`, inside the nightly goal solve's rules replay, prices 20 goals:
-  %/yr 30/25/20/15/10 x the deadline as set or +2 years x no extra deposit or +₪1,000 a month. A "ROI on every shekel"
-  target is rebuilt from the money put in (`target / (1+roi)^years`) plus what the deposits grow to at that cell's ROI.
-  Each cell is replayed with the rules as they are and without them, on the same 500 paths, with its halving risk.
-  Fixed-amount goals get no grid.
-- **Time budget.** 120 s (`GRID_BUDGET_SEC`): cells past it are "not computed tonight", so the 600 s job limit is never
-  at risk. It took 20 s on the test book.
-- **On the page.** The Plan tab's goal panel gains a collapsible "Compare goals" table. Cells at or over the on-track bar
-  are green; hovering shows the amount and halving risk with and without the rules. Shell `iw-v73`.
-
-**Tests.** `tests/test_d122_the_goal_comparison.py` (4):
-- each target rebuilt from the money put in;
-- 40 replays on the same paths, standing orders kept;
-- end to end on the PR 99 fixture: the grid is present, the own-goal cell matches the headline, and an easier goal is
-  never less likely; none for a fixed amount;
-- the time budget.
-
-Full Postgres suite: GATE_RESULT.
-
-**Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
-shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
-
-**Next (owner).** Read the table on the Plan tab and choose a goal; changing it is the Plan settings' existing goal edit.
 
 ---
 
