@@ -291,6 +291,16 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D126 · 2026-10-23 · The goal is held against a US stock index fund; no lever offers a target below it.**
+  The nightly goal solve also runs a 100% VTI book (`us_equity`, the app's US-market proxy; it tracks the S&P 500
+  closely) on its own history paths: same re-centred drift, seed, deposits, deadline and confidence bar, no cash and no
+  rules. Stored as `benchmark` with its return at the bar. When the book's confident return is below the index's, the
+  "Set a target this book can reach" card and the "lower your target" lever are not offered; the goal cards and the
+  optimiser note say "At your N% bar this book reaches X%/yr ...; a US stock index fund (VTI) on the same history
+  reaches Y%/yr ... this book is not beating it." Above it, the target lever is offered as before and says it is ahead.
+  *Why:* owner, 2026-10-23: "once I choose the beat the market strategies the goal is to get higher return than the
+  s&p so a return of 3.7/yr would not be good enough". Live 10-23: median 15.6%/yr, volatility 43%, 3.7%/yr at the 65%
+  bar with the rules armed. → C26
 - **D125 · 2026-10-23 · No app buy takes the 2x/3x funds past 44% of the book.**
   `leveraged_ceiling_pct` (a goal setting on the Card-thresholds sheet, default 44, 0 = none) caps the share of the book
   in 2x/3x funds (`strategy_profile.GEARED`: the leveraged set without the -1x PSQ/SH). Planners clip their 2x/3x legs

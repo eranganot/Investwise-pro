@@ -62,6 +62,29 @@ Postgres suite: 2,911 passed, 0 failed.
 **Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
 `leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
 
+## C26 — the goal is held against a US stock index fund (D126)
+
+**Why.** Owner, 2026-10-23, reading PR 138b's live note ("lower your target return from 30%/yr to 3.7%/yr"): with
+beat-the-market sleeves the bar is the S&P, so a 3.7%/yr target is no answer and the card gets ignored. The same 3.7%
+was on the actionable "Set a target this book can reach" card, whose Accept would have set the target to it.
+
+**What.** `frontier_service.goal_solve` measures `_benchmark_tail`: a 100% VTI book (`us_equity`) on the solve's own
+history paths (same re-centred drift, seed and blocks, deposits, deadline, bar; no cash, no rules). Stored as
+`benchmark` {amount, return at the bar, median, odds, halving, and the book's own history-basis amount beside it}.
+`below_benchmark` / `benchmark_line` are the one test and the one sentence: below the index, no target card and no
+"aim for N%/yr" in the goal cards' why, and the optimiser note says the book is not beating the index instead of
+offering a lower target; at or above it, the target lever stands and says the book is ahead. A solve stored before
+this build has no `benchmark`, and nothing changes until the next one. Merged with PR 138c: its "one lever" wording now
+switches only when the note names a lever ("What would close the gap"), not on the index sentence alone.
+
+**Verified.** 5 tests (`test_c26_the_goal_is_held_against_the_index.py`): the solve's benchmark, seeded and paired;
+no comparison without an index column; the sentence both ways; Today's target card suppressed below the index and
+offered above it (end to end through `/recommendations`); the note. Goal/frontier/optimiser subset: 180 passed. Full
+Postgres suite: 2,900 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
+benchmark on the stored solve: the build before). After deploy (`332deff`): **PASS 2 FAIL 0 SKIP 1** -- the stored solve (13:43 UTC)
+predates the build; the measured result is owed after the 04:10 UTC solve. PR 138b's smoke on the same build 7/0/0.
 ## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
 
 **Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,

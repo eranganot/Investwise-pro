@@ -245,7 +245,13 @@ async def _lever_sentence(session, user, r: dict) -> str:
         return ""
     bar = _p(r.get("on_track_pct"))
     parts = []
-    if lv.get("roi_at_confidence_pct") is not None and g.get("roi_pct") is not None \
+    from app.services.frontier_service import below_benchmark, benchmark_line
+    bm = d.get("benchmark")
+    # C26 (owner, 2026-10-23): with beat-the-market sleeves the bar is the index; a
+    # target below it is not a lever. The note says how the book compares instead.
+    bench_txt = benchmark_line(bm, lv, star=float(r.get("on_track_pct") or 70.0),
+                               sized_words=" with your protective rules armed")
+    if not below_benchmark(bm, lv) and lv.get("roi_at_confidence_pct") is not None and g.get("roi_pct") is not None \
             and float(lv["roi_at_confidence_pct"]) < float(g["roi_pct"]) and lv.get("amount_at_confidence"):
         parts.append(f"lower your target return from {_p(g['roi_pct'])}/yr to {_p(lv['roi_at_confidence_pct'])}/yr "
                      f"(about {float(lv['amount_at_confidence']):,.0f} by {str(g.get('deadline') or '')[:4]}, "
@@ -261,7 +267,7 @@ async def _lever_sentence(session, user, r: dict) -> str:
                              "more would" if need else "") + ".")
     else:
         tail = ""
-    out = ""
+    out = f" {bench_txt}" if bench_txt else ""
     if parts:
         out += " What would close the gap: " + "; or ".join(parts) + "."
     if tail:
@@ -338,7 +344,9 @@ async def card(session, user) -> list[dict]:
     if float(b["p_goal_pct"]) < float(r.get("on_track_pct") or 70.0):
         best = a.get("p_goal_pct") if a.get("p_goal_pct") is not None else b["p_goal_pct"]
         levers_txt = await _lever_sentence(session, user, r)
-        if levers_txt:
+        # C26: the note can now carry only the index comparison, which names no
+        # lever; the halving limit is still the only one then.
+        if "What would close the gap" in levers_txt:
             # PR 138c: seen live 2026-10-23 -- "Changing that limit is the one lever left"
             # followed by "What would close the gap: lower your target return ...".
             price = price.replace("Changing that limit is the one lever left, and it is yours.",
