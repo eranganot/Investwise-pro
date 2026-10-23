@@ -284,6 +284,18 @@
   result (protection retune, core choice). An empty book starts all core and is scored on a nominal amount (a %/yr goal
   is scale-free). The goal model supports only %/yr goals; a plan without a yearly ROI target has no optimiser.
   Nightly (05:10) and on demand. → PR 136a (card: PR 136b)
+- **D123 · 2026-10-23 · Two sleeves are the same bet when what they HOLD when invested moves together.**
+  A third same-bet test beside shared market and the strategies' own correlation: the correlation of each sleeve's
+  risk-on basket (`weights`, rebalanced daily), measured nightly (`invested_pairs`), against the same
+  `sleeve_correlation_limit` (0.80). *Why:* SOXL-trend vs TQQQ vol-target measured 0.78 on strategy returns (diluted by
+  the trend sleeve's time in cash) while SOXL and TQQQ moved 0.95 and fell together on 8 of 8 big SOXL down days.
+  Owner, 2026-10-23 ("On daily returns"). Existing sleeves are not removed; the Plan tab marks the pair and adding a same
+  bet is refused. → P14
+- **D122 · 2026-10-23 · Keep the 30% halving limit; revisit the goal instead of loosening protection.**
+  Production's model on 10-23: goal (30%/yr, ₪82,692 by end-2031) 0.2% likely with the protective rules, halving 0%;
+  without them 18.5% and halving 53.9%. Required growth 31.9%/yr vs the book's expected 15.6%/yr at 43% volatility.
+  Raising the limit trades a 1-in-2 halving risk for odds still under 1 in 5. Next: a goal comparison (lower %/yr,
+  later date, monthly deposit) so the owner can pick a reachable goal (P1). Owner, 2026-10-23. → P16
 - **D121 · 2026-10-23 · A build or a background job that is broken says so on Today and on the phone.**
   At boot, every scheduled job's in-function imports are resolved and recorded as the job `boot_check`; each job with no
   history is `registered_at` boot. One HIGH heads-up names every job that is failing, has not succeeded in 26 h (or never,

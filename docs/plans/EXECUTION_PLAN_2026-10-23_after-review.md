@@ -201,7 +201,7 @@ reliability.
   - NOT CHANGED: PR 143's rule-check heads-up still behaves.
 - **Done when:** a deliberately broken local build shows the heads-up, and production shows `boot_check` ok.
 
-### 4.3 P16 + P14: the limits that cap the goal chance (owner decisions, then S each)
+### 4.3 P16 + P14: the limits that cap the goal chance — **DECIDED (D122, D123); P14 built; next: the goal comparison (P1)**
 
 **Value H · Effort S (after decisions)**
 
@@ -309,8 +309,8 @@ the slowest measured path only, and record before/after in STATUS.
 | # | Decision | Needed by | Options / recommendation |
 |---|---|---|---|
 | D-1 | A daily production smoke as a scheduled task? Time? | §4.2 part 3 | Recommend yes, 08:30 Israel time, message on FAIL only |
-| D-2 | The halving limit (P16) | §4.3 | Show the frontier at 30/40/50% first |
-| D-3 | Same-bet test: lower to 0.75, or measure on underlying returns | §4.3 | Recommend: on returns |
+| D-2 | The halving limit (P16) | §4.3 | **Decided D122:** keep 30%, revisit the goal (P1: goal comparison) |
+| D-3 | Same-bet test: lower to 0.75, or measure on underlying returns | §4.3 | **Decided D123:** on what sleeves hold |
 | D-4 | The leveraged ceiling value | §4.4 | Suggested ~44% |
 | D-5 | Auto re-arm after N days | §4.5 | Suggest 3 |
 | D-6 | Drop P10, void V1/V2 | §4.12 | Recommend drop/void |

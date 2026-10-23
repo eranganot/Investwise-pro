@@ -38,7 +38,8 @@ else {
 
 Sec "3  nothing else changed"
 try { $sw = Invoke-WebRequest -Uri "$BaseUrl/app/sw.js" -UseBasicParsing -TimeoutSec 30
-      if ($sw.Content -match "iw-v69") { Ok "shell iw-v69" } else { Bad "sw.js is not iw-v69" } } catch { Bad "/app/sw.js unreachable" }
+      # iw-v69 shipped with PR 135c; later PRs bump it (PR 139: iw-v72). The check is "not older".
+      if ($sw.Content -match "iw-v(\d+)" -and [int]$Matches[1] -ge 69) { Ok ("shell iw-v{0} (PR 135c shipped iw-v69)" -f $Matches[1]) } else { Bad "sw.js is older than iw-v69" } } catch { Bad "/app/sw.js unreachable" }
 try { Invoke-RestMethod -Uri "$BaseUrl/api/v1/recommendations" -TimeoutSec 60 | Out-Null; Bad "/recommendations answered without a key" }
 catch { $code = 0; try { $code = [int]$_.Exception.Response.StatusCode } catch {}; if ($code -eq 401) { Ok "/recommendations needs a key (401)" } else { Bad "/recommendations answered $code" } }
 
