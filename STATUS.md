@@ -70,7 +70,7 @@ found `pywebpush` missing only in the local venv; it is pinned in `requirements.
 - the heads-up's failing, stale, never-ran and broken-build cases, and its silences;
 - one push per id, with other heads-ups not pushed.
 
-Full Postgres suite: GATE_RESULT.
+Full Postgres suite: **2,879 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr144-production-says-when-broken.ps1`. Production before the merge (`97ac021`): PASS 4
 FAIL 2, the gap itself ("no boot_check"; "no history at all for" the 9 nightly jobs). Production after deploy: PROD_RESULT.
@@ -97,8 +97,7 @@ apply writes measured only, then estimates on request, and a second apply change
 pass. Full Postgres suite: **2,871 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr147-1-reprice-preview.ps1` (read-only, never POSTs the repair). Production before the
-merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy:
-PROD_RESULT. Then the owner reviews the preview and applies it; record the counts written here.
+merge (`97ac021`): PASS 3 FAIL 1, "no unpriced_trades section" (the build before this one). Production after deploy (`9d20605`): **PASS 11 FAIL 0 SKIP 0**. The preview lists 114 unpriced trades: 87 measured (71 from the row's own value, 16 from a rule event; ₪142,563) and 27 estimate (no record of the cash; ₪52,256: core_to_basket 9, trim 8, sell_position 6, buy_funded 4). Examples: SOXL stop 10-23 15.7829 @ 82.11 = ₪4,027.63 (measured), XOM buy 10-21 @ 177.89 = ₪890.91 (measured). **Owner, 2026-10-23: apply the measured rows only** (`POST .../ledger/repair {"confirm": true}`, run by the owner; record the result here).
 
 ---
 
