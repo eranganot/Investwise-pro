@@ -72,7 +72,7 @@ a Today card as the buyer on 10-14 / 10-19 (the audit shows the Plan-screen rout
 **Tests.** `tests/test_a_stop_out_is_not_bought_back.py` (9): the three reproductions (no hold, Plan re-buys, a lower price ends
 it); the hold names its sleeve and ends only on out-then-in, unknown is not out; a funded-buy card refuses with nothing sold;
 your own add is exempt; ending the hold lets the Plan fund it; a later take-profit keeps the stop hold; an AST guard that every
-`buy_into_book` caller in app/ checks the hold (mutation-tested: removing the fee-swap check fails it). FULL_SUITE_RESULT
+`buy_into_book` caller in app/ checks the hold (mutation-tested: removing the fee-swap check fails it). Full suite on `f769e40`, Python 3.12: **Postgres 2,834 passed, 1 skipped, 0 failed** (the gate); SQLite 2,832 passed, 1 skipped, 2 failed, both `test_the_pins_are_installable_and_installed` from the sandbox's newer pywebpush / py-vapid (22 / 22 pass with the pinned versions). Ruff clean on app and tests. The first full run found two things, both fixed here: a regression of mine (two tests read `apply_recommendation`'s source; the HeldBack wrapper now lives in the Accept route), and a pre-existing Postgres crash in PR 137's `test_an_ignore_is_not_overruled_by_an_old_done` (the shared session borrowed inside `asyncio.run()`; it failed the same way on `156e29c`), now a NullPool engine in its own loop.
 
 **Smoke.** `scripts/smoke/smoke-pr139-stop-out-hold.ps1 -Sha <sha> -Since <deploy time>` (read-only). Production can't serve it yet
 (Railway outage), so it was run twice: against production on `ae46931` to prove every field it reads exists (PASS 1, FAIL 0,
