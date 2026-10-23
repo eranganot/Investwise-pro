@@ -176,4 +176,7 @@ def test_a_dismissed_rule_is_resolved_by_the_evaluator():
     async def heal(s):
         return await heal_dismissed_rules(s, await ensure_superadmin(s))
     assert _db(heal) == [cid]
-    assert {r[0]: r[4] for r in _rows()[0]}[ids["V"]] is False   # a spent stop, by your hand
+    # PR 142 (D117): Ignore keeps the position, so it keeps the stop -- still on,
+    # re-armed one step below today's 100 (it used to be switched off here).
+    v = {r[0]: r for r in _rows()[0]}[ids["V"]]
+    assert v[4] is True and v[3] == 90.0, v

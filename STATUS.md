@@ -60,7 +60,7 @@ says what moved. The card's "how" now says so. A position that is gone falls thr
 
 **Tests.** `tests/test_pr142_ignore_keeps_the_stop.py` (3): stop-loss re-armed at 90 from 110 with the event, the note, the
 card text and no "switched off" card; a trailing stop's trail restarted from today; a later fall through the new level fires
-again and un-mutes the card. All 3 fail on `0a9d570`. Full Postgres suite: GATE_RESULT.
+again and un-mutes the card. All 3 fail on `0a9d570`. Full Postgres suite: **2,853 passed, 1 failed, 0 skipped**. The one failure was PR 109's `test_a_dismissed_rule_is_resolved_by_the_evaluator`, whose last line asserted the old behaviour (a dismissed stop ends up off); it now asserts D117 (on, re-armed at 90), and the file passes 5/5. The app code was unchanged between the run and the fix, so the suite was not re-run.
 
 **Smoke.** `scripts/smoke/smoke-pr142-ignore-keeps-the-stop.ps1`. Production before the merge (`0a9d570`): PASS 4 FAIL 0
 SKIP 2 (no stop has fired since PR 139's SOXL exit; nothing ignored). Local branch build on migrated Postgres, a SOXL stop
