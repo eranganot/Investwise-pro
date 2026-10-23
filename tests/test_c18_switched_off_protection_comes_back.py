@@ -74,6 +74,8 @@ def test_a_stop_off_for_longer_than_the_setting_comes_back_on():
         assert r["active"] is False, "one day off is inside the 3-day grace"
         ev = [e for e in c.get("/api/v1/rules/events?limit=50").json()["events"] if str(e["rule_id"]) == old]
         assert ("resumed", "auto") in [(e["outcome"], (e["action"] or {}).get("by")) for e in ev]
+        auto = next(e for e in ev if e["outcome"] == "resumed" and (e["action"] or {}).get("by") == "auto")
+        assert auto["trigger_price"] == 100.0, "C18.1: the event records the price it re-armed at"
 
 
 def test_a_crossed_stop_is_never_re_armed_into_a_sale():
