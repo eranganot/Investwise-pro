@@ -73,7 +73,7 @@ found `pywebpush` missing only in the local venv; it is pinned in `requirements.
 Full Postgres suite: **2,879 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr144-production-says-when-broken.ps1`. Production before the merge (`97ac021`): PASS 4
-FAIL 2, the gap itself ("no boot_check"; "no history at all for" the 9 nightly jobs). Production after deploy: PROD_RESULT.
+FAIL 2, the gap itself ("no boot_check"; "no history at all for" the 9 nightly jobs). Production after deploy (`47e9ebe`): **PASS 6 FAIL 0 SKIP 0**: boot_check ok, 13 jobs resolve; every job has a run or a registered_at; no job-health heads-up with every job healthy; the rule-check heads-up unchanged. `smoke-all`: 22 passed, 3 failed (Gemini credits).
 
 **Still open.** Plan §4.2 part 3 (a daily production smoke as a scheduled task) waits on the owner (plan D-1).
 ## PR 147.1 — the ledger repair fills the old unpriced trades from what was measured
