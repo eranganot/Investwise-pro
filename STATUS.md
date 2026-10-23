@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (P1: compare goals). Last product PR: **P1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 148: a 44% ceiling on 2x/3x funds). Last product PR: **PR 148**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,81 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
+
+**What.** `leveraged_ceiling_pct` (Card-thresholds sheet, default 44, 0 = none; owner 2026-10-23 "44% (Recommended)")
+caps the share of the book in 2x/3x funds (`strategy_profile.GEARED`, without the -1x PSQ/SH). New module
+`app/services/leveraged_ceiling.py` holds the one arithmetic (headroom = ceiling x NAV - 2x/3x held):
+- **Planners clip.** `_fund_sleeve` and `fund_plan` (one headroom shared by every sleeve, spent down in order) scale
+  their 2x/3x legs to the headroom; a sleeve with nothing left is `held_back` with `refused: LEVERAGED_CEILING`; the
+  preview's message names what the ceiling left unbought. Replacing the book with a basket over the ceiling is refused.
+- **Executors refuse before the first sale** (`assert_within`, netting 2x/3x sold in the same trade): funded sleeve,
+  buy_funded, fee swap; the cash card skips a leg that does not fit (like a stop hold).
+- **The writer backstops.** `buy_into_book` refuses an app buy that crosses the ceiling; `recording=True` (your
+  Holdings > Add) never is. An executor that checked passes `ceiling_checked=True`: mid-trade its sales are off the book
+  and their proceeds not yet in cash, so NAV measured in the writer is low by the sale (found by
+  `test_fund_my_sleeves_stops_the_2x_3x_part_at_the_ceiling`: the backstop refused a clipped plan at "67.8%").
+- **Today.** A 2x/3x buy that does not fit is dropped and listed under hidden cards as `blocked` with the reason; a
+  cash card's 2x/3x legs are clipped; your own rule's card stays and says it is over. Over the ceiling, one HIGH card
+  trims the largest 2x/3x holding by the excess (`apply: trim`). `OverCeiling` is a `HeldBack`, so Accept returns a 400.
+- `GET /plan` lists `leveraged_funds` (what the ceiling counts).
+
+**Not done (C24).** The book target still sizes the sleeves at 40% + 23%; the Plan tab and drift measure against a share
+no buyer will reach.
+
+**Live state before the merge:** 2x/3x funds are 17.5% of the book (TQQQ ₪3,467 of ₪19,820), so nothing changes on
+Today today; the ceiling bites when the TQQQ/SOXL sleeves are funded again.
+
+**Verified.** 11 tests in `test_pr148_leveraged_ceiling.py` (arithmetic, Today filter, trim card, writer, sleeve funding
+end to end, an AST guard that every app `buy_into_book` caller checks the ceiling). Two existing funding tests had
+geared books: they now run with the ceiling off for the mechanics they test, and the 64% test also asserts the default
+stops at 44.0%. Settings count 34 -> 35. Sleeve/funding subset 605 passed before those two were updated. Full Postgres
+suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
+the build before). After deploy: PROD_RESULT.
+
+## C18 — switched-off protection comes back on by itself after 3 days (D124)
+
+**Why (owner, 2026-10-23: heads-up first, auto re-arm later; "3 days").** On 10-22 about twenty stops were found off
+only when one that should have fired stayed silent. PR 140 lists switched-off protection on one heads-up; nothing brought
+back a stop the owner forgot.
+
+**What it does.** `rules_service.auto_rearm`, run by every 30-minute rule check (`evaluate_user`, after the heal):
+- **Which rules.** Every stop-loss, trailing stop, profit-protect, trend break and drawdown guard that is OFF on a held
+  position.
+- **How long it has been off.** From its newest `paused` event (PR 140 onward), else its last update.
+- **When it comes back.** Once off longer than `rearm_after_days` (Card-thresholds sheet, default 3; 0 = never), it is
+  switched back on. It writes a `resumed` event by `auto` (with `off_since`, `after_days`) and a note.
+- **Never one already crossed.** Its condition true now stays off: PR 138's card, never an instant sale. A trailing stop
+  restarts its trail from today's price before that test (D117's rule).
+
+**Live effect on the first check after deploy.** The one switched-off rule on the book, the UGA 17% trailing stop
+(`c2abb90a`; no pause event since PR 140, so its last update decides), re-arms with its trail from today's price
+(144.89 on 10-23, so a stop near 120.3).
+
+**Tests.** `tests/test_c18_switched_off_protection_comes_back.py` (5):
+- off 4 days re-arms (event by `auto`); off 1 day does not;
+- a crossed stop stays off;
+- a trailing stop paused after a fall re-arms with its trail from today;
+- 0 = never;
+- the setting is on the sheet.
+
+Full Postgres suite: 2,890 passed, 2 failed -- both the settings-count assertion in `test_every_decision_is_a_setting.py` (33 -> 34: this PR adds `rearm_after_days`); bumped, both pass. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-c18-switched-off-protection-comes-back.ps1`. Production before (`d9c18a5`): FAIL 1 (no
+`rearm_after_days`: the build before). After deploy: PROD_RESULT.
+
+**Also today (owner items, plan §3).**
+- **PR 147.1 repair applied by the owner** (20:45 Israel time): 87 measured rows repriced, 27 estimates left as chosen.
+  Production after: 27 of 400 trade rows lack a price or value (was 114). XOM's "last buy" shows (177.89, 10-21). The
+  10-23 SOXL stop reads 82.11 / ₪4,027.63 with its provenance in the note.
+- **A3:** backups confirmed. **A5:** the orphan redis volume deleted.
+- **A6:** the pre-push hook is installed in the cloud sandbox clone (self-test refuses a rewrite of main). The owner's Mac
+  installer was given.
 
 ---
 

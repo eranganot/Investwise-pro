@@ -43,9 +43,9 @@
 |---|---|---|---|
 | O6 | **GitHub Actions is not running** -- every job refused since 2026-10-13 10:40 UTC (the last green run was PR 127's branch at 10:25). Cause: the Free plan's Actions minutes ran out (owner, 2026-10-23); they reset on 2026-11-01. Each merge cost ~46 minutes (two runs of ~23: SQLite ~10, Postgres ~10, lint <1). Until then every PR is gated on full local SQLite + Postgres runs on Python 3.12, ruff, and its smoke against a locally served build. After the reset: run CI on push to main only, or drop the duplicate SQLite job, to halve the minutes. | Open | P1 | **Revisit the goal (D122).** The comparison is built (P1 PR: "Compare goals" on the Plan tab, priced nightly). Open: the owner reads it and picks a goal. | plan v4 §4.3, D122 | P1 (owner) |
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
-| O3 | **Database backups and a restore procedure.** Nothing in the repo describes them; the Railway CLI can't show backup status. | Confirmed gap 10-08. Check the Railway dashboard → Postgres → Backups (plan W0-1) | P1 |
-| R2 | Orphan `redis-volume` (150 MB, attached to nothing) in the Railway project | Plan W0-2 | P3 |
-| O4 | Install the `pre-push` hook on every machine (the branch-protection substitute) | Check with `ops-check.ps1` | P2 |
+| O3 | ~~Database backups and a restore procedure~~ | Owner confirmed 2026-10-23 (plan A3) | Done |
+| R2 | ~~Orphan `redis-volume`~~ | Owner deleted it 2026-10-23 (plan A5) | Done |
+| O4 | Install the `pre-push` hook on every machine | Installed in the cloud sandbox clone 2026-10-23 (self-test: a rewrite of main is refused); the owner's Mac: `~/iw-install-hook.sh` given 2026-10-23 | P2 |
 | O5 | Rotate the Postgres password | Parked deliberately: only for a reason (D40) | Parked |
 
 ## Product (owner decisions)
@@ -87,11 +87,11 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C19 | ~~A stop on SOXL did not stop the app buying TQQQ~~ (2026-10-22 review G3/G6). Closed by PR 141 (D116): a stop hold on a 2x/3x fund blocks every 2x/3x fund for every buyer; the held-cash card offers non-blocked places only; a blocked sleeve gets no top-up card (so no daily drift push). | `buyback_hold` | P | P1 | PR 141 |
 | C20 | ~~Ignoring a fired stop switched it off~~ (2026-10-22 review). Closed by PR 142 (D117): Ignore re-arms it below today. | `rules_service` | P | P1 | PR 142 |
 | C21 | ~~Rule-check failures were silent; job history was lost on every deploy~~ (2026-10-22 review). Closed by PR 143 (D118). | `pricing_service`, `scheduler` | P | P1 | PR 143 |
-| C22 | ~~The ledger wrote 140 of 440 trades at price 0 / ₪0~~ (2026-10-22 review). Closed by PR 147 (D120) for every new trade. **Open:** the 140 older rows are not rewritten (a production data repair, owner's call). | `ledger_service` | P | P2 | PR 147 |
+| C22 | ~~The ledger wrote 140 of 440 trades at price 0 / ₪0~~. New trades fixed by PR 147; the owner applied PR 147.1's repair 2026-10-23 (87 measured rows repriced; 27 estimates left as they are, by choice). | `ledger_service` | P | P2 | PR 147 / 147.1 |
 | C23 | ~~A broken build or job was silent~~ (2026-10-22 review). Closed by PR 144 (D121): boot check, job-health heads-up, app-health pushes. Open: a daily production smoke as a scheduled task (plan D-1). | `scheduler`, `push_service` | P | P1 | PR 144 |
 | C24 | **The book target still sizes the 2x/3x sleeves past the ceiling.** PR 148 stops every buy at 44%, but the target mix (40% TQQQ + 23% SOXL) still says 63%, so the Plan tab and drift measure against a share no buyer will reach. Cap geared sleeves at the ceiling in the book target and park the excess in the core (D125). | `sleeve_service`, `book target` | P | P2 | — |
 | C25 | ~~No ceiling on the 2x/3x share of the book~~ (2026-10-22 review). Closed by PR 148 (D125): `leveraged_ceiling_pct` 44; planners clip, executors refuse, the writer backstops, Today filters and offers a trim when over. | `leveraged_ceiling` | P | P1 | PR 148 |
-| C18 | **Auto re-arm for paused protective rules** (owner, 2026-10-23: heads-up first, auto re-arm later). Re-arm a paused downside rule after N days (a setting), never one already crossed (that is the PR 138 card's job). | `rules_service` | P | P2 | — |
+| C18 | ~~Auto re-arm for paused protective rules~~. Closed (D124): after `rearm_after_days` (3), never one already crossed. | `rules_service` | P | P2 | C18 |
 
 ## Security posture (verified 2026-10-08)
 

@@ -157,6 +157,9 @@ def test_a_sleeve_that_does_not_fit_is_skipped_whole_never_part_funded():
 def test_a_skipped_sleeve_does_not_block_the_ones_that_fit():
     with TestClient(m.app) as c:
         _seed_mostly_in_a_sleeve(c, cash=0)
+        # PR 148: this book is already past the 44% 2x/3x ceiling, which would hold
+        # the trend sleeve back for a different reason; this test is about funding.
+        assert c.put("/api/v1/plan", json={"thresholds": {"leveraged_ceiling_pct": 0}}).status_code == 200
         _apply(c, FACTOR, 35)        # cannot fit
         _apply(c, TREND, 5)          # comfortably can, out of V
         res = _fund(c)
