@@ -64,7 +64,7 @@ off-basket names and buy the basket (QQQ, SMH, ...), each leg and its tax shown 
 
 **Verified.** `test_c27_a_blocked_sleeve_does_not_freeze_the_core.py`: the live shape (a fired SOXL stop on two 2x/3x
 sleeves, GOOGL off-basket, Diversified Global Growth core) reserves GOOGL on `332deff` and sells it with the fix; with
-no hold an unfunded sleeve keeps first claim. Core/card/sleeve subset 438 passed. Full Postgres suite: GATE_RESULT.
+no hold an unfunded sleeve keeps first claim. Core/card/sleeve subset 438 passed. Full Postgres suite: 2,919 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c27-blocked-sleeve-frees-the-core.ps1`. Production before (`332deff`): **PASS 3 FAIL 3**,
 the gap itself (no blocked figure; holdings reserved with nothing buyable; QQQ and SMH bands with nothing to execute).
@@ -91,7 +91,8 @@ test whose sleeve put more than 44% in TQQQ (two `max_weight` re-level tests, a 
 Postgres suite: 2,911 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
-`leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
+`leveraged_ceiling`: the build before). After deploy (`1f2c790`): **PASS 8 FAIL 0 SKIP 0**: 2x/3x managed at the ceiling; `ceiling_cut` 0.074
+(TQQQ 0.041, SOXL 0.033) = chosen - managed; target sums to 1.0; shell iw-v74; only 2x/3x cut. PR 148's smoke 8/0/0.
 
 ## C26 — the goal is held against a US stock index fund (D126)
 
