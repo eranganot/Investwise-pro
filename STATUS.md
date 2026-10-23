@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 143: a failed rule check is loud). Last product PR: **PR 143**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C15: the core trims only what is over). Last product PR: **C15**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,40 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## C15 — the core realign trims only sleeves that are over, and never a basket ticker (D119)
+
+**Report (BACKLOG C15).** The core realign (`core_to_basket`, rec_2d1727 / rec_f6f017) kept selling TQQQ right after sleeve
+top-ups bought it.
+
+**Root cause (PROVEN: production ledger and reproduction; two of the new tests fail on `abd4d39`).** `_core_plan` sizes
+the "trim sleeves" leg from `sleeve_occupancy`, adding up only the sleeves ABOVE their size; `_apply_core_to_basket` then
+sold that amount "pro-rata across the sleeve holdings" -- every sleeve, including those under their size. "Fund my
+sleeves" then refilled them. The ledger, 10-19 .. 10-21: 17 core sales bought back by `sleeve_fund` within minutes (TQQQ
+10-19 21:11 sold 8.44 -> 21:14 bought 9.68; 10-20 03:59 sold 5.60 + 2.56 + 4.80 + 2.38 -> 04:01 bought 6.48; 10-21 05:12
+sold 1.37 -> 05:15 bought 6.54; SOXL, UGL, QQQ and BIL the same way), and five accepts that sold and bought QQQ in the same
+moment (QQQ is both a sleeve holding and in the Diversified Global Growth basket; 10-20 03:59 sold 1,358, bought 2,311).
+On 10-20 04:00-04:01 the card was accepted four times, churning each time. Reproduced: SOXL 60 shares against a 20% sleeve,
+TQQQ 10 against 25%; one accept sold 5.71 TQQQ.
+
+**Ruled out.** The drift trims (`trim`, rec_2e52d5: their zero-price rows are PR 147); `rebalance_to_objective` (its own
+card, which bought TQQQ); a hold (none existed on TQQQ before 10-23). **Today:** the card trims no sleeve (they are
+₪6,672 short), and PR 141 blocks TQQQ buys while the SOXL hold lasts, so the churn could not repeat this week.
+
+**Fix.** `sleeve_occupancy` reports each sleeve's `held_by_ticker_ils`. `_core_plan` splits each over-size sleeve's
+overshoot across its own holdings into `sleeve_trim_from_ils`, leaving out every ticker the core basket holds; the trim
+leg is sized from that; the executor sells exactly that split; the card names it ("... (from SOXL, UGL, the sleeves that
+are over)") and carries it in `meta.plan`.
+
+**Tests.** `tests/test_c15_the_core_trims_only_what_is_over.py` (4): a short sleeve is not sold, the over one is; a basket
+ticker is not sold to be bought back; the trim never takes a sleeve below its size; the card names the sources. The 124
+core / occupancy / realign tests pass. Full Postgres suite: **2,864 passed, 0 failed, 0 skipped**. Ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-c15-core-trims-only-what-is-over.ps1`. Production before the merge (`abd4d39`, no
+`-Since`): the whole visible ledger shows the bug as NOTEs, 17 bought-back core sales and 5 same-ticker accepts. Production
+after deploy (with `-Since`): PROD_RESULT.
 
 ---
 
@@ -73,7 +107,7 @@ heads-up's three states and its silences; Today carries it. Full Postgres suite:
 **Smoke.** `scripts/smoke/smoke-pr143-rule-check-is-loud.ps1`. Production before the merge (`1984d6f`, `-Since` 11:00):
 PASS 4 FAIL 0 SKIP 2 (the history skip is the bug: nothing from before 11:01 survived). Local build with the scheduler on
 migrated Postgres, restarted twice: PASS 5 FAIL 0 SKIP 1 ("3 job(s) remember a run from before" the restart; `runs: 2`).
-Production after deploy: PROD_RESULT. Section 3 can only pass from the deploy AFTER this one.
+Production after deploy (`abd4d39`, 11:37 UTC): **PASS 4 FAIL 0 SKIP 2**: the 11:37 rule check ran and is recorded (1 book, 0 triggered); no 'not checked' heads-up; nothing failing. The history SKIP is expected on this deploy (nothing was persisted before it) and must PASS on the next one. `smoke-all`: 22 passed, 3 failed (Gemini credits).
 
 ---
 

@@ -1906,6 +1906,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                                   "core_strategy_id": _core_id},
                         "meta": {"plan": {k: v for k, v in _plan.items()
                                           if k in ("sells_ils", "sleeve_trim_ils",
+                                                   "sleeve_trim_from_ils",   # C15: from where
                                                    "cash_used_ils", "buys_ils",
                                                    "tax_ils", "shortfall_ils")}},
                     })
@@ -7126,6 +7127,14 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     # second subtraction here that could disagree with the Sleeves card.
     occ = await sleeve_occupancy(session, user)
     over = 0.0
+    # C15 (2026-10-23): WHERE the overshoot is, per ticker. The trim used to be
+    # sized from the sleeves that are over and then sold pro-rata across EVERY
+    # sleeve holding -- the production ledger 10-19 .. 10-21 shows each accept
+    # selling TQQQ (its sleeve short) and sleeve funding buying it back minutes
+    # later. A ticker the core's own basket holds is not a source either: selling
+    # QQQ in one leg to buy QQQ in the next (10-20 03:59) is tax for nothing.
+    basket_tks = {str(t).upper() for t in basket}
+    trim_from: dict[str, float] = {}
     for s in (occ.get("sleeves") or []):
         held_pct = float(s.get("held_pct") or 0.0) * 100.0   # held_pct is a fraction
         # `target_pct`, NOT `sleeve_pct`. `sleeve_occupancy` has never emitted a
@@ -7140,7 +7149,16 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         # have sold a whole sleeve. PR 60.1.
         want_pct = float(s.get("target_pct") or 0.0)
         if held_pct > want_pct:
-            over += (held_pct - want_pct) / 100.0 * nav
+            o_ils = (held_pct - want_pct) / 100.0 * nav
+            mine = {str(t).upper(): float(v) for t, v in (s.get("held_by_ticker_ils") or {}).items()
+                    if float(v) > 0 and str(t).upper() in sleeve_val
+                    and str(t).upper() not in basket_tks}
+            tot = sum(mine.values())
+            if tot > 0:
+                take = min(o_ils, tot)
+                for t, v in mine.items():
+                    trim_from[t] = trim_from.get(t, 0.0) + take * v / tot
+                over += take
     if sleeve_val:
         tot = sum(sleeve_val.values())
         gain["__sleeves__"] = sum(gain.get(t, 0.0) * v for t, v in sleeve_val.items()) / tot
@@ -7204,6 +7222,7 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
     out["core_strategy_id"] = core_id
     out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
     out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}
+    out["sleeve_trim_from_ils"] = {t: round(v, 2) for t, v in sorted(trim_from.items())}
     return out
 
 
@@ -7291,10 +7310,11 @@ async def _apply_core_to_basket(session: AsyncSession, user: User, spec: dict) -
             if p is not None:
                 await _sell_ils(p, float(leg["ils"]), bool(leg.get("full_exit")))
         elif leg["action"] == "trim_sleeves":
-            # PRO-RATA ACROSS THE SLEEVE HOLDINGS. Taking it all from one ticker
-            # would silently re-weight the sleeves against each other, which is a
-            # decision this action was never given.
-            vals = plan.get("sleeve_values_ils") or {}
+            # FROM THE SLEEVES THAT ARE OVER, ONLY (C15). Spread over each such
+            # sleeve's own holdings in proportion to its overshoot -- never a
+            # sleeve under its size, which "Fund my sleeves" would buy straight
+            # back, and never a ticker the core basket holds.
+            vals = plan.get("sleeve_trim_from_ils") or {}
             total = sum(vals.values())
             if total > 0:
                 for tk, v in vals.items():
