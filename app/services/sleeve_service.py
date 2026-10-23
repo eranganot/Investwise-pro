@@ -196,7 +196,7 @@ def _live_for(live: dict | None, strategy_id: str) -> dict | None:
     return ((live or {}).get(strategy_id) or {}).get("target") or None
 
 
-async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, float]:
+async def all_sleeve_targets(session: AsyncSession, user: User, *, capped: bool = True) -> dict[str, float]:
     """Every sleeve's target weights, SUMMED PER TICKER across the whole book.
 
     This is the primitive the N-sleeve safety rules are built on, and summing is
@@ -211,6 +211,9 @@ async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, flo
 
     Weights are shares of NAV, so they add directly: a 10% SOXL sleeve and a
     15% sleeve that is 40% SOXL contribute 0.10 and 0.06 to the same ticker.
+
+    C24: 2x/3x tickers come back scaled to `leveraged_ceiling_pct` unless
+    ``capped=False``.
     """
     # Local import: strategy_service imports this module, and sleeve_targets is
     # a pure catalog lookup with no session of its own.
@@ -223,6 +226,13 @@ async def all_sleeve_targets(session: AsyncSession, user: User) -> dict[str, flo
                                      live=_live_for(live, s.strategy_id)) or {}).items():
             tk = tk.upper()
             out[tk] = out.get(tk, 0.0) + float(w)
+    if capped:
+        # C24 (D125): the 2x/3x sleeves are managed to the leveraged ceiling, not
+        # to their chosen size. Every reader of the summed targets -- the book
+        # target, drift, the max_weight caps, contradictions -- sees the capped
+        # weights; `capped=False` is what you chose (the Plan tab shows both).
+        from app.services.leveraged_ceiling import cap_targets
+        out, _cut = cap_targets(out)
     return out
 
 

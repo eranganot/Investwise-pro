@@ -69,6 +69,29 @@ no hold an unfunded sleeve keeps first claim. Core/card/sleeve subset 438 passed
 **Smoke.** `scripts/smoke/smoke-c27-blocked-sleeve-frees-the-core.ps1`. Production before (`332deff`): **PASS 3 FAIL 3**,
 the gap itself (no blocked figure; holdings reserved with nothing buyable; QQQ and SMH bands with nothing to execute).
 After deploy: PROD_RESULT. Left: C28, the band notes still quote the target from when they were armed.
+## C24 — the target mix manages the 2x/3x sleeves to the ceiling; the excess is in the core (D125)
+
+**Why.** PR 148 stops every buy at `leveraged_ceiling_pct` (44), but the target mix still summed the sleeves as chosen.
+Live 10-23 (`df23a17`): planned sleeve targets TQQQ 28.4% + SOXL 23% (+ QQQ 11.6% from the vol-target sleeve's live
+split) = 51.4% in 2x/3x funds, so drift, the Plan tab and the `max_weight` caps measured against a share no buyer
+would reach.
+
+**What.** `leveraged_ceiling.cap_targets` scales the 2x/3x tickers' summed targets pro rata to the ceiling;
+`sleeve_service.all_sleeve_targets` applies it by default (`capped=False` is what you chose). Every reader sees the
+capped weights: the book target (the core is the remainder, so it gets the excess by construction), sleeve drift,
+the `max_weight` caps armed on the next sleeve change, contradictions. `book_target` reports `ceiling_cut`;
+`/plan/sleeves` reports `leveraged_ceiling` {ceiling, chosen, managed, cut}; the Plan tab sleeve card says "set to X%;
+your ceiling is 44%, so they are managed to 44% and the other N points are managed in the core", and its "not holding
+it yet" shortfall no longer counts the capped part. Shell `iw-v74`.
+
+**Verified.** 4 tests (`test_c24_the_target_mix_respects_the_ceiling.py`). Sleeve/mix/drift subset: 663 passed, 4 failed, every one a
+test whose sleeve put more than 44% in TQQQ (two `max_weight` re-level tests, a two-sizes test, a monkeypatched
+`all_sleeve_targets` without the new keyword); they now run their mechanics with the ceiling off and pass. Note: the
+`max_weight` caps armed on the next sleeve change follow the capped targets. Full
+Postgres suite: 2,911 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c24-target-mix-ceiling.ps1`. Production before (`df23a17`): PASS 2 FAIL 1 (no
+`leveraged_ceiling`: the build before). After deploy: PROD_RESULT.
 
 ## C26 — the goal is held against a US stock index fund (D126)
 
@@ -91,7 +114,8 @@ offered above it (end to end through `/recommendations`); the note. Goal/frontie
 Postgres suite: 2,900 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
-benchmark on the stored solve: the build before). After deploy AND a solve on the new build: PROD_RESULT.
+benchmark on the stored solve: the build before). After deploy (`332deff`): **PASS 2 FAIL 0 SKIP 1** -- the stored solve (13:43 UTC)
+predates the build; the measured result is owed after the 04:10 UTC solve. PR 138b's smoke on the same build 7/0/0.
 ## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
 
 **Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,
@@ -104,7 +128,9 @@ it is unchanged. Words only.
 end from a stored result: fails on `eac1df4` (1 failed, 3 passed), passes with the fix. Full Postgres suite: 2,896 passed, 0 failed.
 
 **Smoke.** `smoke-pr138b-goal-note-names-levers.ps1` section 1 now fails a note that does both. Production before
-(`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy: PROD_RESULT.
+(`eac1df4`): **PASS 6 FAIL 1**, the new check (the observation). After deploy (`e2e0ea5`): **PASS 7 FAIL 0 SKIP 0**; the live note now reads "... Changing that limit is
+one lever, and it is yours. What would close the gap: lower your target return from 30%/yr to 3.7%/yr ..." (C26
+replaces that lever with the index comparison once a solve runs on its build).
 ## PR 148 — no app buy takes the 2x/3x funds past 44% of the book (D125)
 
 **What.** `leveraged_ceiling_pct` (Card-thresholds sheet, default 44, 0 = none; owner 2026-10-23 "44% (Recommended)")
@@ -141,7 +167,10 @@ clipped plan (`ceiling_capped_pct`), and the reason names the ceiling. After the
 subset 622 passed.
 
 **Smoke.** `scripts/smoke/smoke-pr148-leveraged-ceiling.ps1`. Production before (`302e279`): PASS 2 FAIL 1 (no setting:
-the build before). After deploy: PROD_RESULT.
+the build before). After deploy (`09976c4`): **PASS 8 FAIL 0 SKIP 0**: the setting reads 44 and counts 18 funds (the
+2x/3x set, including the -3x SQQQ; PSQ/SH excluded); 2x/3x funds under the ceiling, no trim card; Fund my sleeves
+(dry run) buys 0 ILS of 2x/3x against a ₪5,257 headroom (SOXL's stop hold blocks the group, PR 141); no Today buy
+past the headroom; PR 141's smoke 6/0/1. `smoke-all` 22/3 (Gemini credits).
 
 ## C18.1 — an automatic re-arm records the price it re-armed at
 

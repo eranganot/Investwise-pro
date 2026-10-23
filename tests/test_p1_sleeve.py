@@ -82,7 +82,7 @@ async def test_applying_arms_a_cap_at_the_sleeve_size():
 
 
 @pytest.mark.asyncio
-async def test_two_sleeve_sizes_produce_two_different_plans():
+async def test_two_sleeve_sizes_produce_two_different_plans(no_leveraged_ceiling):
     """The bug in one test: 20% and 90% used to be indistinguishable."""
     eng, Session = _session()
     try:
@@ -102,7 +102,7 @@ async def test_two_sleeve_sizes_produce_two_different_plans():
 
 
 @pytest.mark.asyncio
-async def test_arming_is_idempotent_and_relevels_instead_of_stacking():
+async def test_arming_is_idempotent_and_relevels_instead_of_stacking(no_leveraged_ceiling):
     """Applying twice must not leave two caps on one ticker at two levels."""
     eng, Session = _session()
     try:
@@ -239,3 +239,16 @@ async def test_the_preview_differs_between_sleeve_sizes(monkeypatch):
     small_buy = small["funding"]["buys"][0]["buy_ils"]
     big_buy = big["funding"]["buys"][0]["buy_ils"]
     assert big_buy > small_buy, "a bigger sleeve must cost more to fund"
+
+
+import pytest as _pytest  # noqa: E402
+
+
+@_pytest.fixture
+def no_leveraged_ceiling():
+    """C24: a 90% TQQQ sleeve is capped at the 44% 2x/3x ceiling; these tests are
+    about the max_weight cap following the sleeve, so they run without one."""
+    from app.services import thresholds
+    tok = thresholds._OVERRIDES.set({"leveraged_ceiling_pct": 0.0})
+    yield
+    thresholds._OVERRIDES.reset(tok)

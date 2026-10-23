@@ -220,6 +220,9 @@ async def book_target(session, user, objective: str) -> dict:
     from app.services import strategies as static_cat
 
     targets = await sv.all_sleeve_targets(session, user)
+    # C24: what the leveraged ceiling took off the 2x/3x sleeves (and the core got).
+    from app.services.leveraged_ceiling import cap_targets as _cap
+    _ceiling_cut = _cap(await sv.all_sleeve_targets(session, user, capped=False))[1]
     sid = await sv.core_strategy_id(session, user)
     entry = None
     for c in static_cat.CATALOG:
@@ -287,6 +290,7 @@ async def book_target(session, user, objective: str) -> dict:
     out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective,
                   cash_pct=cash_pct, held_back=held)
     out["planned_sleeve_targets"] = {k.upper(): round(float(v), 4) for k, v in planned.items()}
+    out["ceiling_cut"] = {k: round(v, 4) for k, v in _ceiling_cut.items() if v > 0}
     if held:
         # What the book SHOWS as its sleeves stays the plan (review: the display
         # fields quoted the held-back weight as if the sleeve had shrunk). The
