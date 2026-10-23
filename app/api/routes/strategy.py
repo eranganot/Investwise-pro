@@ -102,6 +102,8 @@ async def strategy_correlations(session: AsyncSession = Depends(get_session),
             sb = div.same_bet(a, b, corr)
             rows.append({"a": a, "b": b, "a_name": div._name(a), "b_name": div._name(b),
                          "correlation": rho, "overlap_pct": ov, "markets": markets,
+                         # D123: what each holds when invested, measured nightly
+                         "invested_correlation": (corr.get("invested_pairs") or {}).get(div.pair_key(a, b)),
                          "same_bet": sb is not None, "why": sb["why"] if sb else None})
     rows.sort(key=lambda r: -(r["correlation"] if r["correlation"] is not None else -2))
     lim_o, lim_c = div._limits()
