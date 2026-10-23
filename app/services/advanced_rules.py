@@ -177,7 +177,10 @@ def evaluate(rule, pos: dict) -> tuple[bool, str, str, float | None]:
                 f"Your trend-break rule on {tk} fired: the {_SIG_WORDS[sig]}.", None)
     if rt == "buy_back":
         # Level 0 = "until the drawdown guard re-arms": never a price event.
-        if L <= 0 or cur <= 0:
+        # PR 139: nor is a stop hold -- a lower price is the market the stop
+        # sold out of, not a reason to buy it back.
+        _bp = rule.params if isinstance(rule.params, dict) else {}
+        if _bp.get("kind") == "stop" or L <= 0 or cur <= 0:
             return False, "", "", (L or None)
         return (cur < L, f"↩️ {tk} fell below your buy-back level {L:,.2f}",
                 (f"{tk} is {cur:,.2f}, under the {L:,.2f} you set when you sold. The cash "

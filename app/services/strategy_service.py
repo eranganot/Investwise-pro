@@ -694,6 +694,15 @@ async def _held_back_tickers(session: AsyncSession, user: User, rows) -> set[str
         return set()
 
 
+async def _stop_holds(session: AsyncSession, user: User) -> dict[str, dict]:
+    """PR 139: tickers a protective rule sold. Unlike the PR 75 hold above, these
+    bind the Plan screen too: 10-14 and 10-19 the Plan's own funding buttons
+    re-bought SOXL days after a stop sold it. NOT wrapped in a broad except --
+    a hold that cannot be read must not read as "no hold"."""
+    from app.services import buyback_hold as bh
+    return bh.stop_held(await bh.load(session, user))
+
+
 async def load_basket(session: AsyncSession, user: User, strategy_id: str,
                       total: float | None = None, sleeve_pct: float | None = None,
                       mode: str | None = None, dry_run: bool = False,
@@ -811,6 +820,17 @@ async def _fund_sleeve(session: AsyncSession, user: User, strategy_id: str, s: d
                 "error": "this strategy has no sleeve to fund — its basket is the core itself"}
 
     rows = await list_positions(session, user)
+    _stops = await _stop_holds(session, user)
+    stopped = {k: v for k, v in targets.items() if k.upper() in _stops}
+    if stopped:
+        targets = {k: v for k, v in targets.items() if k.upper() not in _stops}
+        if not targets:
+            _tk = sorted(stopped)[0].upper()
+            from app.services import buyback_hold as _bh
+            return {"ok": False, "mode": FUND, "strategy_id": strategy_id,
+                    "refused": "STOP_HOLD", "held_back": sorted(k.upper() for k in stopped),
+                    "error": "this sleeve is on hold after a stop sold it",
+                    "reason": _bh.refusal(_tk, _stops[_tk])}
     if honour_holds:
         _hb = await _held_back_tickers(session, user, rows)
         targets = {k: v for k, v in targets.items() if k.upper() not in _hb}
@@ -969,6 +989,7 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
     cash_ils = await get_cash(session, user)
     held = _held_ils(rows, snap)
     _hb_plan = await _held_back_tickers(session, user, rows) if honour_holds else set()
+    _stops_plan = await _stop_holds(session, user)   # PR 139: always, Plan included
     # No sleeve is a funding source for any other, including itself.
     exclude = await sv.sleeve_tickers(session, user)
 
@@ -1011,6 +1032,15 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
             targets = {k: v for k, v in targets.items() if k.upper() not in _hb_plan}
         entry = {"strategy_id": sid, "sleeve_pct": pct,
                  "name": (strategy_catalog.get(sid) or {}).get("name", sid)}
+        _stopped = sorted(k.upper() for k in (targets or {}) if k.upper() in _stops_plan)
+        if _stopped:
+            targets = {k: v for k, v in targets.items() if k.upper() not in _stops_plan}
+            if not targets:
+                from app.services import buyback_hold as _bh
+                out.append({**entry, "status": "held_back", "amount_ils": 0.0,
+                            "held_back": _stopped,
+                            "reason": _bh.refusal(_stopped[0], _stops_plan[_stopped[0]])})
+                continue
         if not targets:
             out.append({**entry, "status": "not_a_sleeve", "amount_ils": 0.0,
                         "reason": "this strategy's basket is the core itself — nothing to fund"})
@@ -1111,10 +1141,12 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
     if not result["fully_funded"]:
         skipped = [x["name"] for x in out if x["status"] == "skipped"]
         lot_bound = [x["name"] for x in out if x["status"] == "as_close_as_a_lot_allows"]
+        held_back = [x for x in out if x["status"] == "held_back"]
         result["message"] = (
             f"This would leave the book at {resulting_pct:g}% in sleeves against the "
             f"{intended_pct:g}% you chose."
             + (f" Not funded: {', '.join(skipped)}." if skipped else "")
+            + "".join(f" {x['reason']}" for x in held_back)
             + (f" As close as a whole lot allows: {', '.join(lot_bound)} — the remaining"
                f" gap is smaller than the minimum trade, so it will stay there."
                if lot_bound else "")
@@ -1163,6 +1195,8 @@ async def fund_plan(session: AsyncSession, user: User, *, dry_run: bool = True,
 async def _execute_funded_sleeve(session: AsyncSession, user: User,
                                  legs: list[dict], fund: dict) -> dict:
     """Sell the named legs, then buy the sleeve. Nothing else is touched."""
+    from app.services import buyback_hold as _bh   # PR 139: before the first sale
+    await _bh.assert_buyable(session, user, [lg.get("ticker") for lg in legs])
     rows = await list_positions(session, user)
     by_ticker = {(p.ticker or "").upper(): p for p in rows}
     sold, raised, tax_total = [], 0.0, 0.0
@@ -1288,6 +1322,17 @@ async def _replace_book(session: AsyncSession, user: User, strategy_id: str, s: 
                            f"Make this your core instead — it sets the mix the rest of "
                            f"the book is managed to and sells nothing."),
                 "sleeves": [x.strategy_id for x in sleeves]}
+
+    # PR 139: this writes positions directly (`upsert_positions`), so the
+    # writer's backstop never sees it. Refuse up front, before anything is deleted.
+    from app.services import buyback_hold as _bh
+    _stops = _bh.stop_held(await _bh.load(session, user))
+    _hit = sorted({str(t).upper() for t, _w in s["basket"]} & set(_stops))
+    if _hit:
+        return {"ok": False, "mode": REPLACE, "strategy_id": strategy_id,
+                "refused": "STOP_HOLD", "held_back": _hit,
+                "error": "this basket holds a ticker a stop sold",
+                "reason": _bh.refusal(_hit[0], _stops[_hit[0]])}
 
     rows = await list_positions(session, user)
     snap = _snapshot(rows)

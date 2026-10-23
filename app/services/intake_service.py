@@ -157,6 +157,7 @@ def _intake_meta(existing: dict | None, incoming: dict, market: str | None) -> d
 async def buy_into_book(
     session: AsyncSession, user: User, *, ticker: str, market: str, price: float,
     shares: float, asset_class: str | None = None, depth: int = 1,
+    recording: bool = False,
 ) -> bool:
     """Add `shares` of `ticker` at `price` (native currency) to the user's book.
 
@@ -184,6 +185,17 @@ async def buy_into_book(
     tk = (ticker or "").upper()
     if shares <= 0 or price <= 0 or not tk:
         raise ValueError(f"refusing to book {shares} of {tk!r} at {price}")
+    if not recording:
+        # PR 139 BACKSTOP. Every app-proposed buy lands here, so a stop hold is
+        # enforced here even for a buyer that forgot to plan around it. Raising
+        # rolls the whole request back (no commit has happened on these paths
+        # before the buy), so a refused buy never leaves half a trade behind.
+        # `recording=True` is YOU entering a purchase you made (Holdings > Add):
+        # refusing that would make the book disagree with the broker.
+        from app.services import buyback_hold as _bh
+        _h = _bh.stop_held(await _bh.load(session, user)).get(tk)
+        if _h:
+            raise _bh.HeldBack(_bh.refusal(tk, _h))
 
     rows = await list_positions(session, user)
     existing = next((p for p in rows if (p.ticker or "").upper() == tk), None)
@@ -686,7 +698,7 @@ async def add_by_amount(session, user, *, ticker: str, amount: float, asset_clas
     ac = asset_class or ("Commodities" if is_commodity(ticker) else None)
     mk = market if market in {m.value for m in Market} else "NYSE"
     tk = ticker.upper()
-    await buy_into_book(session, user, ticker=tk, market=mk, price=price, shares=qty,
+    await buy_into_book(session, user, recording=True, ticker=tk, market=mk, price=price, shares=qty,
                         asset_class=ac)
     er = (commodity(tk) or {}).get("expense_ratio_pct")
     if er is not None:

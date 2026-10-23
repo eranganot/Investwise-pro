@@ -76,7 +76,11 @@ _SIGNAL_MODES = ("entry", "exit")
 # WATCH ALERTS -- "tell me when AMZN dips to 180" -- and are never purged or
 # retired for not being held. Only exit rules (stop, take-profit, trailing...)
 # of a position you no longer hold are cleared, and only by the evaluator.
-ENTRY_TYPES = frozenset({"buy_dip", "price_below", "price_above"})
+# PR 139: `buy_back` too. A hold EXISTS for a ticker you no longer hold -- that
+# is the whole point of it -- and as an "exit" it was purged by the evaluator and
+# hidden by the list the moment the position was gone. Measured: a stop-out's
+# hold was written and deleted within the same evaluation.
+ENTRY_TYPES = frozenset({"buy_dip", "price_below", "price_above", "buy_back"})
 
 
 def _watch_pos(rule) -> dict | None:
@@ -642,6 +646,10 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
                               "action": action, "event": event})
             continue
         pos = idx.get(r.ticker.upper())
+        if (not pos and r.rule_type == "buy_back" and isinstance(r.params, dict)
+                and r.params.get("kind") == "stop"):
+            # PR 139: no price ends a stop hold, so there is nothing to quote.
+            continue
         if not pos and r.rule_type in ENTRY_TYPES and r.ticker.upper() != "CASH":
             # PR 109 (D-b): a WATCH ALERT on a ticker you don't hold. Quote it
             # and evaluate it like any other rule; store the price on the rule
@@ -1429,6 +1437,14 @@ def _adv_status(r, pos: dict) -> str | None:
         return (f"{'50/200' if sig == 'long' else '20/50'}-day trend {m.get(sig)}"
                 f" · selling on it {'has' if edge else 'has not'} beaten holding")
     if r.rule_type == "buy_back":
+        _bp = r.params if isinstance(r.params, dict) else {}
+        if _bp.get("kind") == "stop":
+            # PR 139: no price ends it, so no "vs the level" figure.
+            if not _bp.get("strategy_id"):
+                return "held until you end it · no sleeve signal owns this ticker"
+            return (f"{_bp['strategy_id']} signal went out · the next re-entry ends the hold"
+                    if _bp.get("signal_out") else
+                    f"{_bp['strategy_id']} signal still in · waits for it to go out, then back in")
         if float(r.level or 0) <= 0:
             return "holds re-buys until your drawdown guard re-arms"
         cur = float(pos.get("price") or 0)

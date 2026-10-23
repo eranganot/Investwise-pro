@@ -38,7 +38,7 @@
 
 | # | Item | Status | Pri |
 |---|---|---|---|
-| O6 | **GitHub Actions is not running** -- every job refused since 2026-10-15 ("recent account payments have failed or your spending limit needs to be increased"). PR 131-136b merged on full local SQLite + Postgres runs instead. Fix in GitHub -> Settings -> Billing & plans. | Open | P1 |
+| O6 | **GitHub Actions is not running** -- every job refused since 2026-10-13 10:40 UTC (the last green run was PR 127's branch at 10:25). Cause: the Free plan's Actions minutes ran out (owner, 2026-10-23); they reset on 2026-11-01. Each merge cost ~46 minutes (two runs of ~23: SQLite ~10, Postgres ~10, lint <1). Until then every PR is gated on full local SQLite + Postgres runs on Python 3.12, ruff, and its smoke against a locally served build. After the reset: run CI on push to main only, or drop the duplicate SQLite job, to halve the minutes. | Open | P1 |
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
 | O3 | **Database backups and a restore procedure.** Nothing in the repo describes them; the Railway CLI can't show backup status. | Confirmed gap 10-08. Check the Railway dashboard → Postgres → Backups (plan W0-1) | P1 |
 | R2 | Orphan `redis-volume` (150 MB, attached to nothing) in the Railway project | Plan W0-2 | P3 |
@@ -78,7 +78,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C13 | The unspent-leg refund (`unspent_ils`) has no test | V7 | — | P3 | — |
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
 | C15 | Core realign (`core_to_basket`, rec_f6f017) keeps selling TQQQ right after sleeve top-ups (net TQQQ ledger -991 since 10-14). Cause unexplained; `trim_sleeves` leg is sized from sleeve overshoot. | `core_realign` | I | P2 | — |
-| C16b | Why were the SOXL, TQQQ and QQQ stop-losses switched OFF? The audit log has no toggle for 5 of 6 rules (PR 138 root cause 4, unproven). Check what writes `active=false` (evaluator retire path, sleeve apply, re-arm on fill). | `rules_service` | I | P2 | — |
+| C16b | Why were the SOXL, TQQQ and QQQ stop-losses switched OFF? Narrowed 2026-10-23 (PR 139 review): SOXL stop `c89d8251` (made ~10-19, unstamped, SOXL held throughout) had ONE pausing writer in its life per the audit log, the `rec_goal_protect_book` Accept at 10-20 14:21:50. Strong by elimination, not observed: `apply_rules_tuning` sets `active=False` and records no event, so the card leaves no trace of what it paused. Fix that trail and the card itself in PR 140. | `frontier_service` | I | P1 | PR 140 |
 | C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |
 
