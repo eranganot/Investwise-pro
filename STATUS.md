@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C15: the core trims only what is over). Last product PR: **C15**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 147: the ledger says what it sold). Last product PR: **PR 147**. Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,39 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 147 — every trade the ledger records carries its price and value (D120)
+
+**Report (2026-10-22 review).** Ledger rows written at price 0.00.
+
+**Root cause (PROVEN: production ledger and rule events; all five new tests fail on `99258a9`).** 140 of 440 production
+ledger rows (08-29 .. 10-23) have price 0 and/or value 0: `buy_funded` 42, `sleeve_fund` 32, `trim` 27, `core_to_basket`
+18 (all before 10-14), `sell_position` 10 and a few others -- today's SOXL stop (15.78 shares) reads "₪0". The generic
+recorder (`_record_apply` -> `ledger.record_legs`) reads `price` and `value_ils` from each handler's result, and:
+`trim` and `sell_position` report the sale as a bare ticker with `shares` and `cash_added_ils` only; `buy_funded` reports
+`bought` as a ticker with `value_ils` and no price; the sleeve funder's sell legs carry `value_ils` and no price.
+
+**Blast radius.** The money was right: each handler credits cash and reports `cash_added_ils` (SOXL stop 10-16 +4,932.96,
+VXUS trim 10-20 +630.66, and the ₪4,026 now reserved for SOXL). What was wrong is the record: the ledger cannot say what a
+sale raised; Holdings' "vs your last buy" skips price-0 buys, so XOM shows none (its only buy, 10-21, ₪891, has price 0);
+`net_flows_ils` reads only Adjust rows and is unaffected; the per-holding chart uses quantities, which the recent rows have.
+
+**Fix.** `trim` / `sell_position` details carry `price` and `gross_ils`; `buy_funded` carries `price`; the recorder's
+single-ticker paths use them; the sleeve funder records the sold price; `record_leg` logs an ERROR for any Buy/Sell with
+a quantity and no price or value.
+
+**Not done here: the 140 older rows.** Rewriting them is a production data repair. It is possible for most (value from
+`cash_added_ils + tax_ils`, price from value / quantity / FX), not for the August trims recorded with quantity 0.
+Owner's call; BACKLOG C22.
+
+**Tests.** `tests/test_pr147_the_ledger_says_what_it_sold.py` (5): a stop sale, a cap trim, sleeve funding and a funded buy
+reported as one ticker each record a price and value; a leg without them is logged. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-pr147-the-ledger-says-what-it-sold.ps1`. Production before the merge (`99258a9`, `-Since`
+10-20): **FAIL 20**, every trim, stop, funded buy and sleeve-funding sale since 10-20 (the bug). Production after deploy:
+PROD_RESULT (section 1 needs a trade after the deploy to read).
 
 ---
 

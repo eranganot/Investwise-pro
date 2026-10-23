@@ -50,6 +50,14 @@ async def record_leg(
     """
     from app.models.tables import Transaction
 
+    if txn_type in (BUY, SELL) and float(quantity or 0) > 0 and (
+            float(price or 0) <= 0 or float(value_ils or 0) <= 0):
+        # PR 147: 140 of 440 production rows (08-29 .. 10-23) were written at
+        # price 0 and/or ₪0 because the caller's result carried no `price` /
+        # `value_ils`. The trade itself was right; the record was not. Still
+        # written (the share count matters), but no longer silently.
+        logger.error("ledger leg without a price or value: %s %s x%s price=%s value=%s (%s)",
+                     txn_type, ticker, quantity, price, value_ils, source)
     try:
         row = Transaction(
             position_id=position_id,

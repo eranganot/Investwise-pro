@@ -6495,7 +6495,10 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
             res = await _sell_shares(session, user, _held, float(spec["shares"]))
             credited = await credit_cash(session, user, res["gross"] - res["tax"])
             # `shares` IS WHAT THE LEDGER RECORDS (a 0-share sell hid 15 trims).
+            # PR 147: `price` and `gross_ils` are what the ledger records; without
+            # them every trim was written at price 0 and ₪0.
             detail = {"sold": [spec["ticker"]], "shares": round(res["shares"], 6),
+                      "price": float(res["price"] or 0), "gross_ils": round(res["gross"], 2),
                       "cash_added_ils": round(credited, 2),
                       "tax_ils": round(res["tax"], 2), "full_exit": res["full_exit"]}
             if spec.get("hold_after_sale") and res["shares"] > 0:
@@ -6522,6 +6525,7 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
                                      float(spec.get("shares") or 0) or _total)
             credited = await credit_cash(session, user, res["gross"] - res["tax"])
             detail = {"sold": [spec["ticker"]], "shares": round(res["shares"], 6),
+                      "price": float(res["price"] or 0), "gross_ils": round(res["gross"], 2),
                       "cash_added_ils": round(credited, 2), "tax_ils": round(res["tax"], 2),
                       "full_exit": res["full_exit"],
                       "broker_note": "Tracked book updated — no brokerage order was placed."}
@@ -6833,7 +6837,10 @@ async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> 
                 if len(parts) == 2 and parts[0].replace(".", "", 1).isdigit():
                     sells.append({"ticker": parts[1], "shares": float(parts[0])})
                 else:
-                    sells.append({"ticker": s, "shares": detail.get("shares") or 0})
+                    # PR 147: a single-ticker sale reports its price and gross here.
+                    sells.append({"ticker": s, "shares": detail.get("shares") or 0,
+                                  "price": detail.get("price") or 0,
+                                  "value_ils": detail.get("gross_ils") or 0})
         if sells:
             # A single reported tax figure covers the whole card; attribute it to
             # the first leg rather than repeating it on each, so the ledger's tax
@@ -6846,7 +6853,8 @@ async def _record_apply(session, user, kind: str, rec_id: str, detail: dict) -> 
             buys = [b for b in detail["bought"] if isinstance(b, dict)]
         elif isinstance(detail.get("bought"), str):
             buys = [{"ticker": detail["bought"], "shares": detail.get("shares") or 0,
-                     "amount_ils": detail.get("value_ils") or 0}]
+                     "amount_ils": detail.get("value_ils") or 0,
+                     "price": detail.get("price") or 0}]
         await ledger.record_legs(session, user, sold=sells, bought=buys,
                                  source=src, note=note)
         await session.commit()
@@ -7049,7 +7057,7 @@ async def _apply_buy_funded(session: AsyncSession, user: User, spec: dict) -> di
     # Cash pays only its share; sale proceeds went straight into the buy.
     await set_cash(session, user, round(cash_before - from_cash, 2))
     return {"sold": sold, "tax_ils": round(tax_total, 2), "bought": ticker,
-            "shares": round(qty, 4), "value_ils": round(budget, 2),
+            "shares": round(qty, 4), "value_ils": round(budget, 2), "price": float(price),
             "from_cash_ils": round(from_cash, 2)}
 
 
