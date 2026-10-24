@@ -2033,54 +2033,59 @@ async def build_recommendations(session: AsyncSession, user: User,
     #    all cite one number instead of three.
     _tm.mark("allocation_cards")
     projected_median = None
-    # The standing order is money the app itself will record every month, so
-    # the "current path" includes it. Without this the card kept telling a user
-    # who had just set up ₪1,067/month to "add ₪1,067/month".
-    try:
-        from app.services.standing_order_service import monthly_total as _so_monthly
-        _standing = await _so_monthly(session, user)
-    except Exception:  # noqa: BLE001
-        _standing = 0.0
-    # PR 74 -- ONE goal (goal_service) and ONE return basis. Before, this card
-    # read the stored `plan.target_amount` (a different number from /plan's live
-    # one), counted years from the deadline where /plan counted the horizon, and
-    # projected at the static objective table while /plan used the measured
-    # return. Now it asks the same questions of the same functions as /plan and
-    # /plan/projection, so all three quote one target, one deadline, one return.
-    _goal: dict = {}
-    _pstats: dict = {}
-    _levers = None
-    try:
-        from app.services.plan_view import book_measured as _measured
-        from app.services.plan_view import portfolio_stats as _portfolio_stats
-        from app.services.goal_service import compute_goal
-        _pstats = _portfolio_stats(rows, await _measured(session, user))
-        _goal = await compute_goal(session, user, plan, _pstats.get("nav"))
-        if _pstats.get("nav") and _goal.get("target") and _goal.get("years_left"):
-            _er = _pstats.get("expected_roi")
-            _levers = await _offload(
-                _goal_levers, nav=_pstats["nav"],
-                rate=(_er if _er is not None else 6.0),
-                vol=_pstats.get("volatility") or 12.0,
-                years=_goal["years_left"], target=_goal["target"],
-                standing_monthly=_standing,
-                cons_rate=_OBJ_RETURN.get(objective, 6.5),
-                cons_vol=_pstats.get("static_volatility") or _pstats.get("volatility") or 12.0)
-            projected_median = _levers["projected"]
-    except Exception:  # noqa: BLE001
-        logger.warning("goal projection for the behind card failed", exc_info=True)
-        projected_median, _levers = None, None
-    _er = _pstats.get("expected_roi")
-    # PR 92: while a fresh goal verdict speaks for the goal, this card stands
-    # down -- it projects at the app-wide measured return, the goal cards at
-    # the user's own return confidence, and two goal stories on two bases
-    # contradict each other on one screen.
+    # PR 92: while a fresh goal verdict speaks for the goal, the behind-your-goal card
+    # stands down -- it projects at the app-wide measured return, the goal cards at the
+    # user's own return confidence, and two goal stories on two bases contradict each
+    # other on one screen.
+    # PR 146b (measured 2026-10-24): asked FIRST. Everything below exists only for that
+    # card, and `_goal_levers` alone is a Monte-Carlo bisection of 220-325 ms (the whole
+    # 250 ms `goal_projection` stage on production) that was computed on every Today and
+    # then discarded whenever the goal story was active -- which it is for every user
+    # with a goal-mode verdict.
     try:
         from app.services.frontier_service import goal_story_active
         _goal_owned = await goal_story_active(session, user)
     except Exception:  # noqa: BLE001 -- the older card is the safe fallback
         _goal_owned = False
     if not _goal_owned:
+        # The standing order is money the app itself will record every month, so
+        # the "current path" includes it. Without this the card kept telling a user
+        # who had just set up ₪1,067/month to "add ₪1,067/month".
+        try:
+            from app.services.standing_order_service import monthly_total as _so_monthly
+            _standing = await _so_monthly(session, user)
+        except Exception:  # noqa: BLE001
+            _standing = 0.0
+        # PR 74 -- ONE goal (goal_service) and ONE return basis. Before, this card
+        # read the stored `plan.target_amount` (a different number from /plan's live
+        # one), counted years from the deadline where /plan counted the horizon, and
+        # projected at the static objective table while /plan used the measured
+        # return. Now it asks the same questions of the same functions as /plan and
+        # /plan/projection, so all three quote one target, one deadline, one return.
+        _goal: dict = {}
+        _pstats: dict = {}
+        _levers = None
+        try:
+            from app.services.plan_view import book_measured as _measured
+            from app.services.plan_view import portfolio_stats as _portfolio_stats
+            from app.services.goal_service import compute_goal
+            _pstats = _portfolio_stats(rows, await _measured(session, user))
+            _goal = await compute_goal(session, user, plan, _pstats.get("nav"))
+            if _pstats.get("nav") and _goal.get("target") and _goal.get("years_left"):
+                _er = _pstats.get("expected_roi")
+                _levers = await _offload(
+                    _goal_levers, nav=_pstats["nav"],
+                    rate=(_er if _er is not None else 6.0),
+                    vol=_pstats.get("volatility") or 12.0,
+                    years=_goal["years_left"], target=_goal["target"],
+                    standing_monthly=_standing,
+                    cons_rate=_OBJ_RETURN.get(objective, 6.5),
+                    cons_vol=_pstats.get("static_volatility") or _pstats.get("volatility") or 12.0)
+                projected_median = _levers["projected"]
+        except Exception:  # noqa: BLE001
+            logger.warning("goal projection for the behind card failed", exc_info=True)
+            projected_median, _levers = None, None
+        _er = _pstats.get("expected_roi")
         recs += _behind_goal_recs(plan, snap, objective, projected_median, standing_monthly=_standing,
                                   goal=_goal, expected_roi_pct=(_er if _er is not None else None),
                                   return_basis=_pstats.get("assumption_basis"),
