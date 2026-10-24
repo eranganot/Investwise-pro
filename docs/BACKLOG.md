@@ -41,11 +41,11 @@
 
 | # | Item | Status | Pri |
 |---|---|---|---|
-| O6 | **GitHub Actions is not running** -- every job refused since 2026-10-13 10:40 UTC (the last green run was PR 127's branch at 10:25). Cause: the Free plan's Actions minutes ran out (owner, 2026-10-23); they reset on 2026-11-01. Each merge cost ~46 minutes (two runs of ~23: SQLite ~10, Postgres ~10, lint <1). Until then every PR is gated on full local SQLite + Postgres runs on Python 3.12, ruff, and its smoke against a locally served build. After the reset: run CI on push to main only, or drop the duplicate SQLite job, to halve the minutes. | Open | P1 | **Revisit the goal (D122).** The comparison is built (P1 PR: "Compare goals" on the Plan tab, priced nightly). Open: the owner reads it and picks a goal. | plan v4 §4.3, D122 | P1 (owner) |
+| O6 | **GitHub Actions is not running** -- every job refused since 2026-10-13 10:40 UTC (the last green run was PR 127's branch at 10:25). Cause: the Free plan's Actions minutes ran out (owner, 2026-10-23); they reset on 2026-11-01. Each merge cost ~46 minutes (two runs of ~23: SQLite ~10, Postgres ~10, lint <1). Until then every PR is gated on a full local Postgres run on Python 3.12, ruff, and its smoke (PR 145: Postgres is the gate, SQLite is not). After the reset: one Postgres job + ruff on pushes to main and on PRs; no SQLite job. | Open | P1 | **Revisit the goal (D122).** The comparison is built (P1 PR: "Compare goals" on the Plan tab, priced nightly). Open: the owner reads it and picks a goal. | plan v4 §4.3, D122 | P1 (owner) |
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
 | O3 | ~~Database backups and a restore procedure~~ | Owner confirmed 2026-10-23 (plan A3) | Done |
 | R2 | ~~Orphan `redis-volume`~~ | Owner deleted it 2026-10-23 (plan A5) | Done |
-| O4 | Install the `pre-push` hook on every machine | Installed in the cloud sandbox clone 2026-10-23 (self-test: a rewrite of main is refused); the owner's Mac: `~/iw-install-hook.sh` given 2026-10-23 | P2 |
+| O4 | Install the `pre-push` hook on every machine | Checked in (`scripts/ops/pre-push`) with a self-testing installer, `sh scripts/ops/install-pre-push.sh` (PR 145). Installed in the cloud sandbox clone 2026-10-23; the owner's Mac: run the installer in the repo (or `~/iw-install-hook.sh`) | P2 |
 | O5 | Rotate the Postgres password | Parked deliberately: only for a reason (D40) | Parked |
 
 ## Product (owner decisions)
@@ -112,9 +112,9 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 | # | Item |
 |---|---|
-| V1 | Pixel QA for PR 104a (`qa/QA-2026-10-06-pr104a-plan-tabs.md`). Its successors 104b–104d passed, so it is probably covered; record it or void it. |
-| V2 | `qa/QA-2026-07-12-notification-alignment.md` and `qa/QA-2026-08-10-p0-safety.md` were never run. Void them or re-scope. |
-| V3 | `test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable` fails locally on untouched main (live market data is rate-limited, so the second Today build does not rebuild the dismissed card); make it deterministic. |
+| V1 | ~~Pixel QA for PR 104a~~. Voided by PR 145: its successors 104b-104d passed on the same screens. The file stays in `qa/` for the record; re-open if wanted. |
+| V2 | ~~`qa/QA-2026-07-12-notification-alignment.md` and `qa/QA-2026-08-10-p0-safety.md` never run~~. Voided by PR 145: both screens were rebuilt since (PR 102 heads-ups, PR 139-144 safety); the files stay in `qa/`; re-open if wanted. |
+| V3 | ~~`test_portfolio_totals::test_dismissed_recommendations_are_counted_and_restorable` was flaky~~. Closed by PR 145: it dismisses the concentration trim the one-holding book always gets (it took the first card, which could come from live market data, and returned early on an empty Today). |
 
 ## Recently closed (do not re-open)
 

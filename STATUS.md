@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C27: a blocked sleeve no longer freezes the core). Last product PR: **C27**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 145: hygiene). Last product PR: **PR 145**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,36 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 145 — hygiene: smoke-all is read-only, the gate is Postgres, the hook ships with an installer
+
+**What.**
+- **`smoke-all.ps1` no longer writes.** Section 5 POSTed `/rules/evaluate`, so every run fired rules and un-latched them
+  (its own section 6 comment records a "deadlock" that was the script's write). It now reads the rule check the
+  30-minute price job records (`push/status` -> `scheduler.history.price_refresh.last_result.rules`, PR 143).
+  `test_pr145_the_smokes_are_read_only.py` fails any smoke that POSTs/PUTs/DELETEs, except dry runs and compute-only
+  endpoints (ask, whatif, risk, performance, frontier preview / rule-impact, m2m); the smokes from before PR 139 that
+  refresh a cache or act on the book are listed as frozen legacy, and smoke-all gets no exception.
+- **V3:** `test_dismissed_recommendations_are_counted_and_restorable` dismissed the first card, which could come from
+  live market data (rate-limited, so the second build did not rebuild it), and returned early on an empty Today -- a
+  silent pass. It now dismisses the concentration trim the one-holding book always gets, and asserts it exists.
+  Three runs: 4/4 each.
+- **The gate is Postgres** in DEVELOPMENT.md, CLAUDE.md and BACKLOG O6 (they said "full local SQLite + Postgres").
+- **The pre-push hook** (`scripts/ops/pre-push`, already checked in) gets `scripts/ops/install-pre-push.sh`, which
+  installs it and self-tests that a rewrite of main is refused (run on a throwaway clone: refused). BACKLOG O4.
+- OPERATIONS.md records the owner's 2026-10-23 backup confirmation (A3) and the redis-volume deletion (A5); a restore
+  test is still to do. **V1 / V2** voided (the screens were rebuilt since); the QA files stay in `qa/`.
+
+**Not done (from plan §4.7):** making the tests themselves default to Postgres when a URL is set -- they already
+use `DATABASE_URL` when it is set, and the gate scripts set it, so nothing changes in practice.
+
+**Verified.** 3 new tests; the read-only guard fails on `dc4aa1d`'s `smoke-all.ps1` (it POSTs `/rules/evaluate`).
+`smoke-all` with the change against production: 22 passed, 3 failed (Gemini credits), section 5 "rule check ran
+(newly triggered: 0)". Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-pr145-hygiene.ps1`. Production before (`dc4aa1d`): PASS 4 FAIL 0 SKIP 0 (it checks the
+recorded rule check smoke-all now reads, and that Today still builds; this PR changes no app code). After deploy:
+PROD_RESULT.
 
 ## C27 — money a stop-held sleeve cannot use is no longer frozen out of the core (D127)
 
