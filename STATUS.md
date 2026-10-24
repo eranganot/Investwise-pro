@@ -38,12 +38,33 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 146c — the goal projection is kept for the same inputs (146b's smoke FAILED)
+
+**Incident.** 146b deployed (b951765); its smoke: PASS 4 FAIL 1 -- `goal_projection` median still 250 ms. Root cause
+(observed live): the goal verdict was goal-mode but NOT current -- solved (06:21 / 09:21 UTC) for the sleeves
+`btm_vol_target_tqqq` 40% + `btm_trend_soxl` 23%, while the plan now holds `btm_trend_soxl` 23% + `div_dbmf` 40%
+(the owner swapped the TQQQ sleeve for DBMF that day). `goal_story_active` therefore returned False, and Today showed
+the older "You're behind -- add a monthly contribution" card, which needs the projection. 146b changed nothing on
+this book; its smoke tested "verdict mode is goal", which is not "the verdict is current". No behaviour regressed
+(146b only skips work the card does not read).
+
+**What.** `_goal_levers` keeps its answer for exactly the same inputs (no rounding: the card and /plan/projection
+still quote one median), a 32-entry bounded cache, copies out. Inputs move only on a price refresh or a deposit, so a
+warm Today skips the search. The 146b smoke now SKIPs when the behind card is on Today.
+
+**Verified.** `test_pr146c_the_projection_is_kept_for_the_same_inputs.py` (2): same inputs -> identical numbers to the
+uncached search, second call >10x faster; any input change searches again; callers cannot edit the kept answer; the
+cache stays bounded. Full Postgres suite below.
+
+**Smoke.** `scripts/smoke/smoke-pr146c-projection-kept.ps1`. Measured after deploy below.
+
 ## PR 146b — Today skips the behind-your-goal projection while the goal story owns the goal
 
 **Root cause (measured).** PR 146a on production (6b56882), five warm reads: `goal_projection` median 250 ms of a
 ~0.5 s Today. `_goal_levers` (a Monte-Carlo bisection) measured 220-325 ms locally on the same inputs: it is the
 whole stage. Its only reader is the behind-your-goal card, which stands down while a fresh goal-mode verdict owns the
-goal (PR 92); production's verdict is goal-mode, so the 250 ms was computed and discarded on every Today. Ruled out:
+goal (PR 92). *Corrected by 146c:* the claim that production's goal story owned the goal was inferred from a
+goal-mode verdict and was wrong -- see 146c. Ruled out:
 `compute_goal` / `portfolio_stats` (DB reads, a few ms in the local run) and `goal_story_active` (one row). Silent
 because the result was simply unused; nothing measured the stage until 146a split it.
 

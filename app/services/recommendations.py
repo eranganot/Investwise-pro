@@ -3498,8 +3498,34 @@ def _fv_monthly(monthly: float, r: float, years: float) -> float:
     return monthly * (((1 + rm) ** n - 1) / rm) if rm else monthly * n
 
 
+# PR 146c (measured 2026-10-24): when the behind-your-goal card speaks, `_goal_levers` is
+# 220-325 ms of every Today read (a Monte-Carlo bisection, seeded, so deterministic). Its
+# inputs only move when a price refresh or a deposit moves them, so the answer is kept for
+# exactly the same inputs -- no rounding, so the card and /plan/projection still quote one
+# median (PR 74). A small bounded cache; a copy is returned so no caller can edit it.
+_LEVERS_CACHE: dict[tuple, dict] = {}
+_LEVERS_CACHE_MAX = 32
+_LEVERS_LOCK = __import__("threading").Lock()
+
+
 def _goal_levers(*, nav: float, rate: float, vol: float, years: float, target: float,
                  standing_monthly: float, cons_rate: float, cons_vol: float) -> dict:
+    key = tuple(float(x) for x in (nav, rate, vol, years, target, standing_monthly, cons_rate, cons_vol))
+    with _LEVERS_LOCK:
+        hit = _LEVERS_CACHE.get(key)
+    if hit is not None:
+        return dict(hit)
+    out = _goal_levers_uncached(nav=nav, rate=rate, vol=vol, years=years, target=target,
+                                standing_monthly=standing_monthly, cons_rate=cons_rate, cons_vol=cons_vol)
+    with _LEVERS_LOCK:
+        if len(_LEVERS_CACHE) >= _LEVERS_CACHE_MAX:
+            _LEVERS_CACHE.pop(next(iter(_LEVERS_CACHE)))
+        _LEVERS_CACHE[key] = dict(out)
+    return dict(out)
+
+
+def _goal_levers_uncached(*, nav: float, rate: float, vol: float, years: float, target: float,
+                          standing_monthly: float, cons_rate: float, cons_vol: float) -> dict:
     """Every number the behind card states, from ONE engine (the one
     /plan/projection runs: same seed, same inputs).
 
