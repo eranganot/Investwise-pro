@@ -1855,6 +1855,11 @@ async def score_books(session, user, books: list[dict[str, float]], *,
                    "p_halve_without_rules_pct": (rb.get("off") or {}).get("p_halve_pct"),
                    "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
                    "median": on.get("median"),
+                   # C29: the amount reached at the bar, rules as armed -- what the review ranks on.
+                   "amount_at_confidence": on.get("amount_at_confidence"),
+                   "benchmark": ({k: (v.get("benchmark") or {}).get(k)
+                                  for k in ("ticker", "label", "amount_at_confidence")}
+                                 if v.get("benchmark") else None),
                    "growth_cagr_pct": (v.get("before") or {}).get("growth_cagr_pct"),
                    # PR 136a: the sizes the goal model would choose for THIS set of sleeves.
                    "proposed": {s["id"]: s.get("proposed_pct") for s in v.get("sleeves") or []
@@ -1867,6 +1872,9 @@ async def score_books(session, user, books: list[dict[str, float]], *,
                                      "halve_floor_pct": tu.get("halve_floor_pct"),
                                      "best_p_goal_pct": (best.get("stats") or {}).get("p_goal_pct"),
                                      "best_p_halve_pct": (best.get("stats") or {}).get("p_halve_pct"),
+                                     "best_amount_at_confidence": (best.get("stats") or {}).get("amount_at_confidence"),
+                                     "current_amount_at_confidence": ((tu.get("current") or {}).get("stats") or {}
+                                                                      ).get("amount_at_confidence"),
                                      "changes": tu.get("changes")} if tu else None
                 if current_core:
                     try:
@@ -1885,7 +1893,18 @@ async def score_books(session, user, books: list[dict[str, float]], *,
             out.append(row)
         return {"ok": True, "scores": out}
 
-    return await offload(work)
+    res = await offload(work)
+    # C29: each amount as a yearly return, on the goal's own deposits and deadline.
+    for row in res.get("scores") or []:
+        if row.get("ok") and row.get("amount_at_confidence"):
+            row["roi_at_confidence_pct"] = _roi_for_amount(goal, float(row["amount_at_confidence"]))
+        bm = row.get("benchmark")
+        if bm and bm.get("amount_at_confidence"):
+            bm["roi_at_confidence_pct"] = _roi_for_amount(goal, float(bm["amount_at_confidence"]))
+        pr = row.get("protection")
+        if pr and pr.get("best_amount_at_confidence"):
+            pr["best_roi_at_confidence_pct"] = _roi_for_amount(goal, float(pr["best_amount_at_confidence"]))
+    return res
 
 
 async def _rules_context(session, user, sleeves: list[dict], *, armed: dict | None = None,
