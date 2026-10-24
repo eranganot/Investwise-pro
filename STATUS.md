@@ -56,7 +56,7 @@ warm Today skips the search. The 146b smoke now SKIPs when the behind card is on
 uncached search, second call >10x faster; any input change searches again; callers cannot edit the kept answer; the
 cache stays bounded. Full Postgres suite: 2,970 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-pr146c-projection-kept.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-pr146c-projection-kept.ps1` on 19cfbda: PASS 4 FAIL 0 SKIP 0 -- `goal_projection` median 15 ms (was 250; the behind card is on Today, so this is the kept answer); Today server time median 254 ms (was ~505).
 
 ## PR 146b — Today skips the behind-your-goal projection while the goal story owns the goal
 
@@ -74,7 +74,7 @@ when the older card speaks. No card changes.
 **Verified.** `test_pr146b_the_unused_projection_is_not_computed.py` (2): owned -> `_goal_levers` never runs;
 not owned -> it runs once. Full Postgres suite: 2,962 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-pr146b-today-skips-the-unused-projection.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-pr146b-today-skips-the-unused-projection.ps1` on b951765: PASS 4 FAIL 1 (goal_projection 250 ms) -- the incident 146c records and fixes.
 
 ## P17 measured: no stock ranking beats SPY; rotation is not built (D133)
 
@@ -111,7 +111,7 @@ the verdicts, so the cost could not be attributed.
 
 **Verified.** `test_pr146_today_is_timed_in_parts.py`. Full Postgres suite: 2,955 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-pr146a-today-timed-in-parts.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-pr146a-today-timed-in-parts.ps1` on 6b56882: PASS 4 FAIL 0 SKIP 0 -- medians: goal_projection 250 ms, strategy_signals 80, reconcile_and_filter 45, war_room 38.
 
 ## C13, C17, C28 — small fixes
 
@@ -126,7 +126,7 @@ sentence from the live target whenever the rules list is read (no target -> says
 
 **Verified.** `test_c13_c17_c28_small_fixes.py` (5). Full Postgres suite: 2,959 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-c28-band-notes-and-refusals.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-c28-band-notes-and-refusals.ps1` on 33a7122: PASS 6 FAIL 0 SKIP 1 -- SMH 7.4, VXUS 9.8, VTI 19.7, QQQ 12.3: every note = the live target; the SKIP is C17/C13 (tests only).
 
 ## A3r — one exit per holding: the protection manager (D132)
 
@@ -155,7 +155,7 @@ suggestions) and were rewritten to the new rule. First gate: 5 failed -- those f
 the volatility fetch nested in an async function (moved to module level, offloaded). Full Postgres suite: 2,954
 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-a3r-one-exit-per-holding.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-a3r-one-exit-per-holding.ps1` on 0cdcc54: PASS 4 FAIL 0 SKIP 1 before the first measurement; after `POST /plan/protection/refresh` (15:10 local, owner: "run it now"): PASS 9 FAIL 0 SKIP 0. Measured: 9 core, 2 sleeve/2x-3x (TQQQ 17.2%, UGL 16.8% monthly vol); 2x chosen: at the bar 24,159 -> 24,788 (3.6 -> 4.0%/yr), median 27,224 -> 32,427, goal chance 0.1 -> 9.9%, halving 0.0 -> 8.6% (limit 30%), worst-5% 15,218 -> 11,895; 3x and 4x measured lower at the bar with more halving. Card: remove 31 rules, set 2 trailing stops (TQQQ 20 -> 34.5%, UGL 12 -> 33.5%). Owner's decision pending.
 
 ## D-1 — a read-only key for the scheduled production smoke (D131)
 
@@ -172,7 +172,7 @@ PUT and DELETE (accept, evaluate, plan, position, optimiser refresh) are refused
 wrong key is 401; set equal to the agent key it does not make the agent key read-only. Full Postgres suite: 2,944
 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-d1-read-only-smoke-key.ps1` (reads only; the write refusal is the tests' job).
+**Smoke.** `scripts/smoke/smoke-d1-read-only-smoke-key.ps1` on 265b4c6: PASS 3 FAIL 0 SKIP 1 (IW_SMOKE_KEY lives on the cloud environment). Scheduled task "Daily production smoke" created: 08:07 Israel time daily, read-only, messages on FAIL only; first test run fired 2026-10-24.
 
 ## C29 — "Your book vs the S&P 500": one card, the measured changes ranked by the amount at the bar (D130)
 
@@ -199,7 +199,7 @@ nothing-to-offer note; no card above the index and on track; a moved rule drops 
 keeps the old card; the route accepts o1-o9; a real run stores the amount and the review. Full Postgres suite: 2,940
 passed, 0 failed.
 
-**Smoke.** `scripts/smoke/smoke-c29-book-vs-spy-review.ps1`. Measured after deploy below.
+**Smoke.** `scripts/smoke/smoke-c29-book-vs-spy-review.ps1` on 8f76be5: PASS 2 FAIL 0 SKIP 1 (the stored optimiser result predates the build; the review fills on the 05:10 UTC run).
 
 **Also.** O4: the pre-push hook is installed on the owner's Mac (`/Users/eranganot/Dev/Investwise-pro`, self-test:
 a rewrite of main is refused, 2026-10-24). P20 opened (relative value across two prices of one exposure, P3).
