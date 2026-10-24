@@ -61,7 +61,7 @@ moved; the card lists the widened stop, quotes the amount, and its Accept sets t
 652 passed. Full Postgres suite: 2,931 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a2r-retune-tries-stop-widths.ps1`. Production before (`7292092`): PASS 2 SKIP 1 (the
-stored solve predates the build). After deploy and a solve: PROD_RESULT.
+stored solve predates the build). After deploy (`808b000`): PASS 2 SKIP 1 (the solve stored at 06:21 UTC ran on A1's build); measured after the next solve.
 
 ## A1 — the goal model replays a fixed stop as a one-time sale; the goal is held against SPY (D128)
 
@@ -85,7 +85,12 @@ fixed stop exits at most once while a trail at the same distance exits again and
 solve has it. Goal/rules subset 649 passed. Full Postgres suite: 2,927 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a1-fixed-stops-and-spy.ps1`. Production before (`aa575b0`): PASS 2 SKIP 1 (the stored
-solve predates the build). After deploy (`7292092`): PASS 2 SKIP 1 (the solve stored at 07:12 predates the build); measured after the next solve. Opened: A2r (the retune tries stop widths), A3r (one
+solve predates the build). After deploy (`7292092`): PASS 2 SKIP 1 (the solve stored at 07:12 predates the build). **Measured on the solve of 06:21 UTC
+(`808b000`, triggered when the owner deleted the TQQQ 65.73 stop): PASS 6 FAIL 0 SKIP 0.** Price stops read "sells once at"; the
+TQQQ sleeve out of the market 68.5% of the time (was 95.6%), 2.7 exits a year; SOXL 80.2% (was 88.3%), 5.0. At the 65%
+bar: the book 4.2%/yr with rules (₪25,025, halving 0.8%), SPY 8.0%/yr (₪30,313, halving 0.1%), the book without rules
+11.0%/yr (₪32,576, halving 58.8%). The TQQQ sleeve's tightest exit is now QQQ's 10% trailing stop; held tickers with a 10%
+trail sit out 27-52% of the time. A2r's search runs on the next solve. Opened: A2r (the retune tries stop widths), A3r (one
 exit per holding, a deterministic protection manager).
 
 ## C16 — a top-up routed to the whole-plan funder asks it first (a guard)
