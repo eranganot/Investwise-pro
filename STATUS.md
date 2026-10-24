@@ -57,7 +57,7 @@ VTI's column stays the fallback when SPY has no history.
 
 **Verified.** `test_a1_a_fixed_stop_sells_once.py` (3): a price stop is a level, not a trail; on the same paths a
 fixed stop exits at most once while a trail at the same distance exits again and again; the benchmark is SPY when the
-solve has it. Goal/rules subset 649 passed. Full Postgres suite: GATE_RESULT.
+solve has it. Goal/rules subset 649 passed. Full Postgres suite: 2,927 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a1-fixed-stops-and-spy.ps1`. Production before (`aa575b0`): PASS 2 SKIP 1 (the stored
 solve predates the build). After deploy and a solve: PROD_RESULT. Opened: A2r (the retune tries stop widths), A3r (one
