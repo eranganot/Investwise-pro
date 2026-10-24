@@ -547,6 +547,7 @@ def _rank_select(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
     hold_map = o.get("hold_map") or {}
     margin = float(o.get("switch_margin", 0.0))
     veto = o.get("trend_veto_days")
+    recent = int(o.get("recent_filter_days") or 0)
     ts = o.get("two_stage")
     n = len(next(iter(px.values())))
 
@@ -580,6 +581,8 @@ def _rank_select(px: dict[str, np.ndarray], spec: dict) -> list[dict]:
                         continue
                     if veto and not _trend_ok(px[t], i, int(veto)):
                         continue
+                    if recent and not (_ok(px[t], i - recent, i) and px[t][i] / px[t][i - recent] > 1.0):
+                        continue                 # P17a: up over the last month, or not eligible
                     if hold_map and not _ok(px.get(hold_map.get(t, t), np.array([])), i):
                         continue
                     scored[t] = v
