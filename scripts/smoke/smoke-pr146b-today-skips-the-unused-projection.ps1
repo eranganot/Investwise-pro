@@ -17,9 +17,12 @@ Assert-Build -Sha $Sha -Schema '0029_drop_legacy_tables' -Why "(no migration in 
 if (-not $haveKey) { Skip "no agent key: set IW_AGENT_KEY"; Stop-Smoke }
 
 Sec "1  the goal story owns the goal"
-$f = Api GET "/api/v1/plan/frontier"
-if ($f.mode -ne "goal") { Skip ("verdict mode is {0}: the older card speaks, so the projection still runs" -f $f.mode); Stop-Smoke }
-Ok ("goal verdict {0}" -f $f.computed_at)
+# 146c: goal-mode is not enough -- a verdict solved for other sleeves is not current, and then the
+# older behind-your-goal card speaks and needs the projection (seen live on b951765).
+$t0 = Api GET "/api/v1/recommendations"
+$behind = @(@($t0.recommendations) + @($t0.more_recommendations) | Where-Object { $_.title -like "You're behind*" })
+if ($behind.Count) { Skip "the behind-your-goal card is on Today (the goal verdict is not current): it needs the projection"; Stop-Smoke }
+Ok "the goal story owns the goal"
 
 Sec "2  goal_projection, five warm reads"
 $null = Api GET "/api/v1/recommendations"
