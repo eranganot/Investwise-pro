@@ -38,6 +38,19 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 146a — Today's first stage timed in four parts (measure before changing anything)
+
+**Why.** Production, 2026-10-24, five warm reads of Today: ~0.5 s of server time (curl ~0.9 s with ~0.25 s round
+trip; one cold read 2.1 s). `holding_verdicts` was 268-323 ms, but that mark timed everything from the first query to
+the verdicts, so the cost could not be attributed.
+
+**What.** The stopwatch now marks `load`, `book_target`, `allocation_cards`, `goal_projection`, then
+`holding_verdicts`. No behaviour change; the fix (PR 146b) follows the measurement.
+
+**Verified.** `test_pr146_today_is_timed_in_parts.py`. Full Postgres suite: 2,955 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr146a-today-timed-in-parts.ps1`. Measured after deploy below.
+
 ## C13, C17, C28 — small fixes
 
 **C28 (proven live, 2026-10-24 `GET /rules`).** Every rebalance band's note was the suggestion's sentence stored at arm
