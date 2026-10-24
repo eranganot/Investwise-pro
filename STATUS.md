@@ -54,7 +54,7 @@ warm Today skips the search. The 146b smoke now SKIPs when the behind card is on
 
 **Verified.** `test_pr146c_the_projection_is_kept_for_the_same_inputs.py` (2): same inputs -> identical numbers to the
 uncached search, second call >10x faster; any input change searches again; callers cannot edit the kept answer; the
-cache stays bounded. Full Postgres suite below.
+cache stays bounded. Full Postgres suite: 2,970 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-pr146c-projection-kept.ps1`. Measured after deploy below.
 
