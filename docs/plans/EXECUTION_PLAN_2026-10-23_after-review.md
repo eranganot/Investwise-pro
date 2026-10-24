@@ -288,6 +288,9 @@ again, and §1.2 point 2 becomes a pre-push habit rather than the only gate.
 
 ### 4.10 PR 146: speed (measure first)
 
+**2026-10-24:** measured (PR 146a): warm Today ~0.5 s server; `goal_projection` 250 ms of it, all `_goal_levers`
+(220-325 ms locally on the same inputs), computed and discarded while the goal story owns the goal. PR 146b skips it.
+
 **Value M · Effort M.** The warm Today call is 1.2 s (smoke-all). Measure before changing anything: cold Today after a
 deploy, the Plan tab, Holdings, the 30-min rule check, the nightly solves. Use `_tm.mark` timings and `/health`. Fix
 the slowest measured path only, and record before/after in STATUS.
