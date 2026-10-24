@@ -434,19 +434,27 @@ def _goal_mix(points: list, *, p_star: float):
 BENCHMARK_ID = "us_equity"
 
 
-def _benchmark_tail(daily, ids, *, years, nav, target, monthly, p_star, book_tail) -> dict | None:
-    """What an all-index-fund book reaches on the solve's own paths (C26). Pure."""
-    if BENCHMARK_ID not in ids:
+def _benchmark_tail(daily, ids, *, years, nav, target, monthly, p_star, book_tail,
+                    bench_daily=None) -> dict | None:
+    """What an all-index-fund book reaches on the solve's own paths (C26). Pure.
+
+    A1: SPY itself (`bench_daily`, its own ILS history re-centred on the US-equity
+    drift the book is priced on) when the solve has it; VTI's column otherwise."""
+    if bench_daily is not None:
+        series, ticker = np.asarray(bench_daily, dtype=float), fi.BENCHMARK_TICKER
+    elif BENCHMARK_ID in ids:
+        w = np.zeros(len(ids))
+        w[ids.index(BENCHMARK_ID)] = 1.0
+        series, ticker = daily @ w, fi.CLASS_PROXIES[BENCHMARK_ID].get("assumption_ticker")
+    else:
         return None
-    w = np.zeros(len(ids))
-    w[ids.index(BENCHMARK_ID)] = 1.0
     try:
-        st = paths.goal_stats(paths.simulate(daily @ w, years=years), nav=nav, target=target,
+        st = paths.goal_stats(paths.simulate(series, years=years), nav=nav, target=target,
                               monthly=monthly, p_star=p_star)
     except ValueError:
         return None
-    label = fi.CLASS_PROXIES[BENCHMARK_ID]
-    return {"id": BENCHMARK_ID, "ticker": label.get("assumption_ticker"), "label": "a US stock index fund",
+    return {"id": BENCHMARK_ID, "ticker": ticker,
+            "label": "the S&P 500" if ticker == "SPY" else "a US stock index fund",
             "basis": "history, no rules, no cash", "p_goal_pct": st["p_goal_pct"], "median": st["median"],
             "p_halve_pct": st["p_halve_pct"], "amount_at_confidence": st["amount_at_confidence"],
             "book_amount_at_confidence_history": (book_tail or {}).get("amount_at_confidence")}
@@ -660,12 +668,12 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
         sl_specs = []
         for j, sid in enumerate(sleeve_ids):
             sp = (rules.get("sleeves") or {}).get(sid) or {}
-            sl_specs.append({"col": j, "id": sid, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
-                             "tp_fraction": sp.get("tp_fraction")})
+            sl_specs.append({"col": j, "id": sid, "trail": sp.get("trail"), "stop_ratio": sp.get("stop_ratio"),
+                             "tp_ratio": sp.get("tp_ratio"), "tp_fraction": sp.get("tp_fraction")})
         for i, (tk, _h) in enumerate(held):
             sp = rules["holdings"][tk]
-            sl_specs.append({"col": k + i, "id": tk, "trail": sp.get("trail"), "tp_ratio": sp.get("tp_ratio"),
-                             "tp_fraction": sp.get("tp_fraction")})
+            sl_specs.append({"col": k + i, "id": tk, "trail": sp.get("trail"), "stop_ratio": sp.get("stop_ratio"),
+                             "tp_ratio": sp.get("tp_ratio"), "tp_fraction": sp.get("tp_fraction")})
         g_spec = None
         if rules.get("guard") and k:
             vols = unit_daily[:, :k].std(axis=0)
@@ -856,7 +864,17 @@ def goal_solve(prep: dict, *, sleeves_pct: dict[str, float], core_basket: dict[s
     # lever may offer a target below what an index fund reaches. Same history,
     # same re-centred drift, same seed (so the same blocks), same deposits,
     # deadline and confidence bar; the fund holds no cash and runs no rules.
-    benchmark = _benchmark_tail(daily, ids, years=years, nav=nav, target=target, monthly=monthly,
+    _bd = None
+    if prep.get("bench_ils") is not None:
+        _b = np.asarray(prep["bench_ils"], dtype=float)
+        if _b.shape[0] == ils.shape[0]:
+            _ui = next((i for i, a in enumerate(assets) if a["id"] == BENCHMARK_ID), None)
+            _mu = float(est0["mu"][_ui]) if _ui is not None else float(_b.mean() * paths.TRADING_DAYS)
+            _vs = est_kw.get("vol_scale")
+            _vsb = [float(np.asarray(_vs)[_ui])] if (_vs is not None and _ui is not None
+                                                     and _ui < np.asarray(_vs).size) else None
+            _bd = paths.recentre(_b[:, None], np.array([_mu]), vol_scale=_vsb)[:, 0]
+    benchmark = _benchmark_tail(daily, ids, years=years, nav=nav, target=target, monthly=monthly, bench_daily=_bd,
                                 p_star=p_star, book_tail=tail_base)
     for m in (before, after):
         m.pop("volatility", None)
@@ -1063,7 +1081,7 @@ def _spec_id(s: dict, sleeve_ids) -> str:
 def _setup_specs(c: dict, sl_specs, sleeve_ids, g_spec, guard_col):
     """One retune candidate -> the (sleeves, guard) `simulate_rules` takes."""
     off = set(c.get("pause_take_profits") or [])
-    sl = [dict(s, **({"trail": None} if c["retire_sleeve_exits"] else {}),
+    sl = [dict(s, **({"trail": None, "stop_ratio": None} if c["retire_sleeve_exits"] else {}),
                **({"tp_ratio": None} if _spec_id(s, sleeve_ids) in off else {})) for s in sl_specs]
     return sl, _guard_spec(c["guard_pct"], g_spec, guard_col, c.get("guard_fraction_pct"),
                            c.get("guard_rearm_gap_pts"))
@@ -1134,7 +1152,8 @@ def _replay_without(run, rules: dict, sl_specs, g_spec, sleeve_ids, drop: set, n
     sl = []
     for s in sl_specs:
         sp = by_id.get(_spec_id(s, sleeve_ids)) or {}
-        sl.append(dict(s, trail=sp.get("trail"), tp_ratio=sp.get("tp_ratio"), tp_fraction=sp.get("tp_fraction")))
+        sl.append(dict(s, trail=sp.get("trail"), stop_ratio=sp.get("stop_ratio"), tp_ratio=sp.get("tp_ratio"),
+                       tp_fraction=sp.get("tp_fraction")))
     gd = None if (g_spec is None or spec["guard"] is None) else {**spec["guard"], "col": g_spec["col"]}
     return run(sl=sl, gd=gd, n_paths=n_paths)
 
@@ -1175,9 +1194,10 @@ def _per_rule_impact(run, rules: dict, sl_specs, g_spec, sleeve_ids) -> dict | N
             sl = []
             for s, sid in zip(sl_specs, ids):
                 sp = by_id.get(sid) or {}
-                sl.append(dict(s, trail=sp.get("trail"), tp_ratio=sp.get("tp_ratio"),
+                sl.append(dict(s, trail=sp.get("trail"), stop_ratio=sp.get("stop_ratio"), tp_ratio=sp.get("tp_ratio"),
                                tp_fraction=sp.get("tp_fraction")))
-            if all(a.get("trail") == b.get("trail") and a.get("tp_ratio") == b.get("tp_ratio")
+            if all(a.get("trail") == b.get("trail") and a.get("stop_ratio") == b.get("stop_ratio")
+                   and a.get("tp_ratio") == b.get("tp_ratio")
                    for a, b in zip(sl, sl_specs)):
                 out[rid] = {"modelled": True, "covered": True, "goal_pts": 0.0,
                             "halve_with_pct": base["p_halve_pct"], "halve_without_pct": base["p_halve_pct"]}
@@ -1568,7 +1588,7 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
     from app.services.rules_service import TAKE_PROFIT_FRACTION
 
     def _blank():
-        return {"trail": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": [],
+        return {"trail": None, "stop_ratio": None, "tp_ratio": None, "tp_fraction": TAKE_PROFIT_FRACTION, "rules": [],
                 "exit_rule_ids": [], "tp_rule_ids": []}
     out = {sid: _blank() for sid in sleeve_tickers}
     # PR 123: a held ticker outside every sleeve, modelled as its own column.
@@ -1599,8 +1619,19 @@ def rules_spec(rules: list[dict], *, prices: dict[str, float],
             trail = lvl / 100.0
         elif rt == "profit_protect" and (r.get("params") or {}).get("activated"):
             trail = lvl / 100.0
+        elif rt == "stop_loss" and r.get("mode") == "price":
+            # A1 (2026-10-24): a FIXED stop sells once, at its price. It was read as
+            # a trailing stop at today's distance, so TQQQ's 65.73 stop with the
+            # price at 66.29 replayed as a 0.8% trail for five years: the sleeve
+            # out of the market 96% of the time, 3.7 exits a year.
+            if px > 0 and 0 < lvl / px < 1:
+                ratio = lvl / px
+                spec["stop_ratio"] = ratio if spec["stop_ratio"] is None else max(spec["stop_ratio"], ratio)
+                spec["rules"].append(f"stop_loss {tk} (sells once at {lvl:g}, {1 - ratio:.0%} below today)")
+                if r.get("id"):
+                    spec["exit_rule_ids"].append(str(r["id"]))
         elif rt == "stop_loss":
-            trail = (1.0 - lvl / px) if r.get("mode") == "price" and px > 0 else lvl / 100.0
+            trail = lvl / 100.0
         if trail is not None and 0 < trail < 1:
             spec["trail"] = trail if spec["trail"] is None else min(spec["trail"], trail)
             spec["rules"].append(f"{rt} {tk} ({trail:.0%} below the peak)")

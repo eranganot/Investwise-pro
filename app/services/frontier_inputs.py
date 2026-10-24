@@ -66,6 +66,9 @@ CASH_ID = "cash"
 
 # The class proxies. `assumption_ticker` names the instrument-table row whose
 # stated return feeds the PRIOR's calibration (never the cross-section).
+#: A1 (owner, 2026-10-24: "the comparison should be spy and not vti").
+BENCHMARK_TICKER = "SPY"
+
 CLASS_PROXIES: dict[str, dict] = {
     "us_equity": {"label": "US Equities", "book_class": "Equities",
                   "weights": {"VTI": 1.0}, "assumption_ticker": "VTI"},
@@ -246,6 +249,9 @@ def prepare(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict]) 
         needed |= set(bt.tickers_needed(s["spec"]))
     if fx_rows:
         needed.add(FX_TICKER)
+    _bench = BENCHMARK_TICKER in feed and bool(needed)
+    if _bench:
+        needed.add(BENCHMARK_TICKER)
     if not needed:
         return {"ok": False, "reason": "NO_ASSETS", "detail": "nothing could be priced",
                 "excluded": excluded}
@@ -279,8 +285,10 @@ def prepare(series: dict[str, list[tuple[str, float]]], *, sleeves: list[dict]) 
     ils = (1.0 + usd) * (1.0 + fx_r)[:, None] - 1.0
     # `px` / `fx_r` ride along (never serialised) so a caller can price another
     # basket on the SAME calendar -- PR 94's candidate cores.
+    # A1: the benchmark's ILS daily returns on the same calendar (None without SPY).
+    bench_ils = ((1.0 + _returns(px[BENCHMARK_TICKER])) * (1.0 + fx_r) - 1.0) if _bench else None
     return {"ok": True, "assets": assets, "ils": ils, "dates": dates, "px": px, "fx_r": fx_r,
-            "fx": bool(fx_rows), "excluded": excluded, "degraded": degraded}
+            "fx": bool(fx_rows), "excluded": excluded, "degraded": degraded, "bench_ils": bench_ils}
 
 
 def estimate(ils: np.ndarray, assets: list[dict], *, objective_target: dict[str, float],
@@ -569,6 +577,7 @@ async def load_context(session, user, *, extra_sleeves: list[str] | None = None)
         tickers |= set(bt.tickers_needed(s["spec"]))
     from app.engines import regime as _regime
     tickers |= set(_regime.tickers_needed())
+    tickers.add(BENCHMARK_TICKER)            # A1 (owner, 2026-10-24): the goal is held against SPY
     series, no_data, unavailable = await offload(_fetch_blocking, sorted(tickers))
     # PR 97: today's market regime, from the SAME price-derived function the
     # backtests gate on (never the futures feed).
