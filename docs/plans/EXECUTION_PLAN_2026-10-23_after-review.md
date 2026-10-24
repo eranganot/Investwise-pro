@@ -300,6 +300,7 @@ the slowest measured path only, and record before/after in STATUS.
 | P17 | Live stock rotation (selection strategies as sleeves) | M | L | P2, after P19 | D101; the one new way to beat the S&P |
 | P9 | Per-holding day attribution; an intraday "today" chart point | L-M | M | P3 | |
 | P18 | Fixed-amount goals in the goal model | L for this owner | M | P3 | D105; he uses a %/yr goal |
+| P20 | Relative value across two prices of one exposure (dual listing, fund vs NAV), gap vs its 30/60-day range | L-M | M | P3, after P17 | measure the gaps after costs first |
 | C14 | Israeli inflation-indexed CGT basis | M | M | later | Needs an accountant's sign-off first |
 
 ### 4.12 Parked or proposed to drop (owner to confirm)

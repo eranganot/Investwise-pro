@@ -38,6 +38,36 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## C29 — "Your book vs the S&P 500": one card, the measured changes ranked by the amount at the bar (D130)
+
+**Why.** Owner, 2026-10-24: the book beats SPY at the bar in only "4.2%" of cases; "I would expect a recommendation
+card that reviews my portfolio and says what I need to add/remove/edit"; chose "One card, ranked options". Root cause
+of "no card" (live, 808b000): `book_optimizer.optimize` and its card ranked by goal odds, which read 0.1-1.2% for every
+book on this goal, so no step passed `optimizer_min_step_pts` and Today said only "No sleeve change we can measure
+lifts your goal chance much above 0.3%" (12 candidates). Ruled out: no candidates (12 were scored), a halving breach
+(none was rejected for it).
+
+**What.** `score_books` rows carry `amount_at_confidence` (rules as armed), `roi_at_confidence_pct` and SPY's
+`benchmark`. The optimiser ranks each step by the amount added at the bar (+2% of today's, A2r's bar), falls back to goal
+odds only for a row without an amount, measures the all-core book, and stores a `review`: every single change from the
+book as held that adds 2% within the halving limit, the combined set, and the protection retune on the held book, best
+first (top 5). The card "Your book vs the S&P 500: X%/yr vs Y%/yr at your 65% bar" lists them with each one's amount,
+return and halving; Accept takes `?choice=oN` and runs the option through `sleeve_move` (sells nothing) or
+`frontier_rules` (refuses if a rule moved; an option whose rule moved since is dropped from the card). Nothing to offer
+-> a note with the all-core number and, below the index, that the sleeves do not earn their risk. A result stored
+before C29 keeps the old card. UI: ranked tiles, one button each; sw iw-v75.
+
+**Verified.** `test_c29_the_book_vs_spy_review.py` (9): the review ranks and filters; the optimiser ranks by amount with
+goal odds flat (as live); the card's title, lines and Accept (needs a choice; o1 sets the sizes, sells nothing); the
+nothing-to-offer note; no card above the index and on track; a moved rule drops the protection option; an old result
+keeps the old card; the route accepts o1-o9; a real run stores the amount and the review. Full Postgres suite: 2,940
+passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c29-book-vs-spy-review.ps1`. Measured after deploy below.
+
+**Also.** O4: the pre-push hook is installed on the owner's Mac (`/Users/eranganot/Dev/Investwise-pro`, self-test:
+a rewrite of main is refused, 2026-10-24). P20 opened (relative value across two prices of one exposure, P3).
+
 ## A2r — the protection retune tries wider stops and ranks by the amount at the bar (D129)
 
 **Why.** The 10-24 solve's retune tried 28 setups (the 15-25% book guard, its sell size and re-arm gap, pausing
@@ -61,7 +91,7 @@ moved; the card lists the widened stop, quotes the amount, and its Accept sets t
 652 passed. Full Postgres suite: 2,931 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a2r-retune-tries-stop-widths.ps1`. Production before (`7292092`): PASS 2 SKIP 1 (the
-stored solve predates the build). After deploy and a solve: PROD_RESULT.
+stored solve predates the build). After deploy (`808b000`): PASS 2 SKIP 1 (the solve stored at 06:21 UTC ran on A1's build); measured after the next solve.
 
 ## A1 — the goal model replays a fixed stop as a one-time sale; the goal is held against SPY (D128)
 
@@ -85,7 +115,12 @@ fixed stop exits at most once while a trail at the same distance exits again and
 solve has it. Goal/rules subset 649 passed. Full Postgres suite: 2,927 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a1-fixed-stops-and-spy.ps1`. Production before (`aa575b0`): PASS 2 SKIP 1 (the stored
-solve predates the build). After deploy (`7292092`): PASS 2 SKIP 1 (the solve stored at 07:12 predates the build); measured after the next solve. Opened: A2r (the retune tries stop widths), A3r (one
+solve predates the build). After deploy (`7292092`): PASS 2 SKIP 1 (the solve stored at 07:12 predates the build). **Measured on the solve of 06:21 UTC
+(`808b000`, triggered when the owner deleted the TQQQ 65.73 stop): PASS 6 FAIL 0 SKIP 0.** Price stops read "sells once at"; the
+TQQQ sleeve out of the market 68.5% of the time (was 95.6%), 2.7 exits a year; SOXL 80.2% (was 88.3%), 5.0. At the 65%
+bar: the book 4.2%/yr with rules (₪25,025, halving 0.8%), SPY 8.0%/yr (₪30,313, halving 0.1%), the book without rules
+11.0%/yr (₪32,576, halving 58.8%). The TQQQ sleeve's tightest exit is now QQQ's 10% trailing stop; held tickers with a 10%
+trail sit out 27-52% of the time. A2r's search runs on the next solve. Opened: A2r (the retune tries stop widths), A3r (one
 exit per holding, a deterministic protection manager).
 
 ## C16 — a top-up routed to the whole-plan funder asks it first (a guard)

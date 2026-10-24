@@ -34,6 +34,18 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D130 · 2026-10-24 · The optimiser ranks by the amount at the bar and holds the book against SPY on one card.**
+  Each step of the book optimiser ranks candidates by the amount reached at the goal's confidence bar with the rules as
+  armed (a change counts at +2% of today's amount, A2r's bar), not by goal odds; it also measures the all-core book (no
+  sleeves). Today shows one card, "Your book vs the S&P 500: X%/yr vs Y%/yr at your bar", listing every single change
+  that adds 2% or more within the halving limit (add or remove a sleeve, the combined set, the protection retune), best
+  first, each measured alone with its own amount, return and halving; Accept takes `?choice=oN` and runs that option
+  through its own path (`sleeve_move` sells nothing; `frontier_rules` refuses if a rule moved). With nothing to offer it
+  is a note quoting the all-core number and, below the index, that the sleeves do not earn their risk. A result stored
+  before C29 keeps the old card. *Why:* owner, 2026-10-24: the book beats SPY at the bar in only "4.2%" of the cases,
+  "I would expect a recommendation card that reviews my portfolio and says what I need to add/remove/edit"; chose "One
+  card, ranked options". On 808b000 every book read 0.1-1.2% goal odds, so nothing passed `min_step` and Today said only
+  "No sleeve change we can measure lifts your goal chance". → C29
 - **D129 · 2026-10-24 · The protection retune may widen a stop up to x3, never remove one; it ranks by the amount at the bar.**
   Each replay column with an exit (a sleeve, or a held ticker) is tried at x1.5, x2 and x3 its current distance, all
   together and one at a time, beside the guard and take-profit options; a stop is never switched off (D115 stands).

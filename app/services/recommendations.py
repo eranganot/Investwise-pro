@@ -76,7 +76,9 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # PR 135b (wave 4): set the sleeve sizes a scored move proposes.
                      "sleeve_move",
                      # PR 135c: an overweight position -- trim, or raise the sleeve.
-                     "overweight_choice"}
+                     "overweight_choice",
+                     # C29: the book against SPY -- one of the ranked measured changes.
+                     "book_review"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -6504,6 +6506,15 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
     spec = rec.get("apply") or {"kind": "none"}
     kind = spec.get("kind")
     _sleeve_after = None
+    if kind == "book_review":
+        # C29: the answer picks one ranked option; it then runs through its own path
+        # (`sleeve_move` sells nothing; `frontier_rules` edits rules, refuses if they moved).
+        opts = spec.get("options") or {}
+        if choice not in opts:
+            return {"ok": False, "applied": "none", "needs_choice": True, "title": rec["title"],
+                    "error": "This card needs a choice: pick one of the measured changes."}
+        spec = opts[choice]
+        kind = spec.get("kind")
     if kind == "overweight_choice":
         # PR 135c: the answer picks which of the card's two moves runs; each then
         # goes through its own path (`trim`, or `sleeve_move`, which sells nothing).

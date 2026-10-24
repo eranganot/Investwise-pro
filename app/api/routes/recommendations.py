@@ -42,7 +42,7 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
 
 @router.post("/recommendations/{rec_id}/accept", dependencies=[Depends(require_role(Role.ANALYST))])
 async def accept_recommendation(rec_id: str, state: CardState | None = None,
-                                choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy|trim|raise)$"),
+                                choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy|trim|raise|o[1-9])$"),
                                 level: float | None = Query(None, gt=0),
                                 alloc: str | None = Query(None, max_length=600),
                                 session: AsyncSession = Depends(get_session),

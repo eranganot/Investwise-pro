@@ -1386,6 +1386,7 @@ function decisionBlock(o){
   const ap=o.apply||{};
   if(ap.kind==="held_cash"&&ap.options) return heldCashBlock(o);
   if(ap.kind==="overweight_choice"&&ap.options) return overweightBlock(o);
+  if(ap.kind==="book_review"&&ap.ranked) return reviewBlock(o);
   if(!(ap.kind==="rule_vs_sleeve"&&ap.options)) return "";
   const s=ap.options.sell||{}, k=ap.options.keep||{}, u=k.mode==="pct"?"%":"";
   const sh=(s.apply||{}).shares, tk=ap.ticker||"", r=ap.recommended||"sell";
@@ -1474,6 +1475,7 @@ function actBtn(o){
   if(ap.kind==="held_cash"&&ap.options) return "";
   if(ap.kind==="rule_vs_sleeve"&&ap.options) return "";
   if(ap.kind==="overweight_choice"&&ap.options) return "";
+  if(ap.kind==="book_review"&&ap.ranked) return "";
   return o.actionable
     ? `<button class="acc" onclick="acceptRec('${o.id}',true,this)">✓ Accept</button>`
     : `<button class="acc" onclick="acceptRec('${o.id}',false)">✓ Mark as done</button>`;
@@ -1568,6 +1570,29 @@ function overweightBlock(o){
       <div class="dd">Your plan takes the size you already hold. Nothing is sold.</div>${why("raise")}
       <div class="dgo"><button onclick="decideOverweight('${o.id}','raise')">Raise the size</button></div></div>
   </div>`;
+}
+// C29: the book against SPY -- the measured changes, best first, one button each.
+const REVIEW={};
+function reviewBlock(o){
+  const ap=o.apply||{}, r=ap.recommended;
+  REVIEW[o.id]=ap.ranked||[];
+  return `<div class="dec">${(ap.ranked||[]).map(x=>`
+    <div class="dopt${x.id===r?" rec":""}">${x.id===r?`<span class="tag">Best measured</span>`:""}
+      <div class="dt">${esc(x.label)}</div>
+      <div class="dd">${esc(x.detail)}</div>
+      <div class="dgo"><button onclick="decideReview('${o.id}','${x.id}')">Choose this</button></div></div>`).join("")}
+  </div>`;
+}
+async function decideReview(id,choice){
+  const x=(REVIEW[id]||[]).find(y=>y.id===choice);
+  if(!confirm((x&&x.confirm)||"Apply this change?"))return;
+  try{const r=await fetch(`/api/v1/recommendations/${id}/accept?choice=${choice}`,_statePost(_cardState(id)));
+    const j=await r.json().catch(()=>({}));
+    if(r.status===404){alert("That decision no longer applies, so I've removed it.");HMAP={};loadToday();return;}
+    if(!r.ok){alert(j.detail||"Not applied.");return;}
+    alert(j.note||_applyMsg(j));
+    HMAP={};loadToday();
+  }catch(e){alert(e.message||e);}
 }
 async function decideOverweight(id,choice){
   const msg=choice==="raise"?"Raise the sleeve to what you hold?\n\nNothing is bought or sold; your plan's size changes."
