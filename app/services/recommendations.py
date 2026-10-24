@@ -1470,7 +1470,9 @@ async def build_recommendations(session: AsyncSession, user: User,
     except Exception:  # noqa: BLE001 - a hold must never cost the Today view
         logger.warning("buy-back holds unavailable", exc_info=True)
         _holds_active = {}
+    _tm.mark("load")             # PR 146: the first lump split, to attribute it
     btgt = await _book_target(session, user, objective)
+    _tm.mark("book_target")
 
     # Sleeve holdings AND the core basket are never a funding source for a Today
     # card. The plan holds both on purpose; C3 established it for sleeves, PR 37
@@ -2029,6 +2031,7 @@ async def build_recommendations(session: AsyncSession, user: User,
     #    Reconcile the "current path" projection with the app's home panel — same
     #    Monte-Carlo engine — so the card, the digest and "Where this could end up"
     #    all cite one number instead of three.
+    _tm.mark("allocation_cards")
     projected_median = None
     # The standing order is money the app itself will record every month, so
     # the "current path" includes it. Without this the card kept telling a user
@@ -2083,6 +2086,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                                   return_basis=_pstats.get("assumption_basis"),
                                   measured_pct=_pstats.get("measured_pct_of_book"),
                                   volatility_pct=_pstats.get("volatility"), levers=_levers)
+    _tm.mark("goal_projection")
     recs += FeeAgent().recommendations(pdicts)  # Phase 3.2 fee optimizer
 
     # 5) Manage-the-holdings agents (Phase 4): per-holding Buy/Hold/Trim verdicts,
