@@ -65,7 +65,7 @@
 | P16 | ~~The halving limit~~. Decided 2026-10-23 (D122): keep 30%; revisit the goal instead (P1). | STATUS PR 136a | Done |
 | P17 | **Live stock rotation** -- hold and rotate a selection strategy's monthly picks, so Explore-only strategies (Quality Momentum 5) can be added as sleeves. | D101 | P2 (owner, 2026-10-24: after C16 and PR 145) |
 | P18 | **Fixed-amount goals in the goal model.** Only a %/yr goal gets odds, sleeve moves, the optimiser and a starter book; a plan with an amount and no yearly ROI gets none. | D105 | P3 (owner, 2026-10-24) |
-| P19 | **Objective default core mixes as settings** (used only when no core is chosen; code constants today -- "every decision is a setting"). | owner, 2026-10-18 | P2 (owner, 2026-10-24: a quick item) |
+| P19 | **Objective default core mixes as settings** (used only when no core is chosen; code constants today -- "every decision is a setting"). | owner, 2026-10-18 | Parked (owner, 2026-10-24) |
 | P15 | **Single-stock short selling.** The book, funding and backtest engine are long-only end to end; it needs negative quantities, margin, borrow fees and forced exits through every layer, and the research in the sleeve plan finds the edge mostly gone after fees. Inverse-ETF legs (PSQ/SH) are the in-plan route. | sleeve plan, research | Parked |
 | P11 | The objective tilt for the screener (`OBJECTIVE_WEIGHTS` is empty and `OWNER_REVIEWED = False`). | AGENTS.md | ? |
 
@@ -82,7 +82,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 | C14 | Israeli CGT inflation-indexed basis not modelled (disclosed only); needs accountant sign-off | `tax_engine` | — | P3 | — |
 | C15 | ~~Core realign keeps selling TQQQ right after sleeve top-ups~~. Closed (D119): the trim was sold pro-rata across every sleeve, short ones included; now only over-size sleeves, from their own holdings, never a basket ticker. | `core_realign` | P | P2 | C15 |
 | C16b | ~~Why were the stops OFF?~~ Closed by PR 140: the protection card's all-or-nothing `retire_sleeve_exits` paused every stop on the book; it is gone, Accept refuses a stop, and every pause now writes a rule event. | `frontier_service` | I | P1 | PR 140 |
-| C16 | The `fund_plan` card variant has no funder preview, so it can still offer an Accept the funder refuses (same bug as PR 137) | `recommendations.py` | I | P2 | — |
+| C16 | ~~The `fund_plan` card variant has no funder preview~~. Closed by C16 (owner 2026-10-24: "ship it as a guard"): the drift top-up previews `fund_plan(dry_run=True, honour_holds=True)` too. Inferred, not observed live (no ticker two sleeves want on the live book). | `recommendations.py` | I | P2 | C16 |
 | C17 | The refusal alert on a failed Accept shows only the short error, not the reason and legs the Plan tab shows | `index.html` | P | P3 | — |
 | C19 | ~~A stop on SOXL did not stop the app buying TQQQ~~ (2026-10-22 review G3/G6). Closed by PR 141 (D116): a stop hold on a 2x/3x fund blocks every 2x/3x fund for every buyer; the held-cash card offers non-blocked places only; a blocked sleeve gets no top-up card (so no daily drift push). | `buyback_hold` | P | P1 | PR 141 |
 | C20 | ~~Ignoring a fired stop switched it off~~ (2026-10-22 review). Closed by PR 142 (D117): Ignore re-arms it below today. | `rules_service` | P | P1 | PR 142 |
