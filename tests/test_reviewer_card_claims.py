@@ -110,11 +110,10 @@ async def test_the_sell_card_does_what_it_says_across_two_accounts(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_the_no_edge_card_arms_a_stop_and_sells_nothing(monkeypatch):
-    """Eran, 2026-09-28: "the card should be actionable". Applied and
-    re-measured: one stop-loss armed below today's price, no share or shekel
-    moved, and the review's card replaced the momentum card (one per holding)."""
-    from app.models.tables import TradingRule as Rule
+async def test_the_no_edge_review_no_longer_arms_a_stop(monkeypatch):
+    """Eran, 2026-09-28 made this card arm a stop-loss. A3r (D132, 2026-10-24): exits are the
+    protection manager's alone -- a core fund has none, a sleeve holding one trailing stop --
+    so neither the review nor the momentum card offers a stop any more, and nothing is sold."""
     tk = "RVN"
     _patch_history(monkeypatch, tk, down_both())
     eng, S = _session()
@@ -124,25 +123,18 @@ async def test_the_no_edge_card_arms_a_stop_and_sells_nothing(monkeypatch):
             await hr.save(s, {"ticker": tk, **measurement(edge_long=False)})
             await s.commit()
             built = await rr.build_recommendations(s, user)
-            mine = [c for c in built["recommendations"] + built["more_recommendations"]
-                    if tk in {(c.get("meta") or {}).get("ticker"),
-                              *[str(r.get("ticker")) for r in (c.get("apply") or {}).get("rules") or []]}]
-            card = next(c for c in mine if c.get("dimension") == "holding_review")
-            cash0 = await get_cash(s, user)
-            await rr.apply_recommendation(s, user, card["id"])
-            left = [p for p in await list_positions(s, user) if p.ticker == tk]
-            cash1 = await get_cash(s, user)
-            rules = (await s.scalars(select(Rule).where(Rule.ticker == tk))).all()
     finally:
         await eng.dispose()
-    trend = [c["dimension"] for c in mine if c["dimension"] in ("momentum", "holding_review")]
-    assert trend == ["holding_review"], "one trend card per holding: the review replaced momentum"
-    assert card["actionable"] is True and card["apply"]["kind"] == "create_rules"
-    assert sum(float(p.quantity) for p in left) == pytest.approx(10.0), "nothing sold"
-    assert cash1 == pytest.approx(cash0)
-    stops = [r for r in rules if r.rule_type == "stop_loss"]
-    assert len(stops) == 1 and float(stops[0].level) == pytest.approx(card["meta"]["stop"])
-    assert float(stops[0].level) < 150.0
+    mine = [c for c in built["recommendations"] + built["more_recommendations"]
+            if tk in {(c.get("meta") or {}).get("ticker"),
+                      *[str(r.get("ticker")) for r in (c.get("apply") or {}).get("rules") or []]}]
+    arming = [c["id"] for c in mine for r in (c.get("apply") or {}).get("rules") or []
+              if r.get("rule_type") in ("stop_loss", "trailing_stop", "take_profit", "profit_protect")]
+    assert arming == [], arming
+    assert not [c for c in mine if c.get("dimension") in ("holding_review", "momentum")
+                and (c.get("apply") or {}).get("kind") in ("trim", "sell_position")], "no edge: the review sells nothing"
+    row = next(r for r in built["holding_review"] if r["ticker"] == tk)
+    assert row, "the review itself still reports the holding"
 
 
 def test_the_nightly_job_runs_and_stores(monkeypatch):

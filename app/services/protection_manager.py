@@ -159,6 +159,19 @@ def filter_suggestions(sugg: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # measuring
 # --------------------------------------------------------------------------- #
+def _vols_blocking(tks: list[str]) -> dict[str, float | None]:
+    """Each holding's monthly volatility from its own history. Blocking: run through `offload`."""
+    from app.providers.registry import guarded_history
+    out = {}
+    for tk in tks:
+        try:
+            hist = guarded_history(tk, days=400)
+            out[tk] = monthly_vol_pct([c for _d, c in hist] if hist else [])
+        except Exception:  # noqa: BLE001 -- no history: this holding is left as it is
+            out[tk] = None
+    return out
+
+
 async def _inputs(session, user) -> dict:
     from sqlalchemy import select
 
@@ -179,18 +192,7 @@ async def _inputs(session, user) -> dict:
               "level": float(r.level or 0), "active": bool(r.active)} for r in rows]
     rules = [r for r in rules if str(r["ticker"]).upper() in roles]
 
-    def vols_blocking(tks):
-        from app.providers.registry import guarded_history
-        out = {}
-        for tk in tks:
-            try:
-                hist = guarded_history(tk, days=400)
-                out[tk] = monthly_vol_pct([c for _d, c in hist] if hist else [])
-            except Exception:  # noqa: BLE001 -- no history: this holding is left as it is
-                out[tk] = None
-        return out
-
-    vols = await offload(vols_blocking, [tk for tk, r in roles.items() if r == "sleeve"])
+    vols = await offload(_vols_blocking, [tk for tk, r in roles.items() if r == "sleeve"])
     return {"roles": roles, "rules": rules, "vols": vols}
 
 
