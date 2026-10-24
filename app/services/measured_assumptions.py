@@ -458,11 +458,11 @@ async def book_assumptions(session, user, *, return_basis: str | None = None) ->
         # PR 71: a class carved out of the core (Commodities, when the core
         # names none) is not part of the core's composition either.
         from app.services.allocation_mix import classify as _cls
-        from app.services.book_target import carved_classes
+        from app.services.book_target import carve_out_fraction, carved_classes
         from app.services.plan_service import get_plan as _gp
         _plan = await _gp(session, user)
         _carved = carved_classes(((_static_get(core_row_id) or {}).get("target_allocation")),
-                                 getattr(_plan, "objective", None))
+                                 getattr(_plan, "objective", None), carve_out_fraction())
         held = {tk: val for tk, meta, val in unclaimed
                 if str(meta.get("asset_class") or "") != "Cash" and tk != "CASH"
                 and (str(meta.get("asset_class") or "") or _cls(tk, "")) not in _carved}

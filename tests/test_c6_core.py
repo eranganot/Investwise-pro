@@ -223,10 +223,10 @@ async def test_the_core_target_is_the_familys_mix_and_falls_back_to_the_objectiv
         await sv.set_core(s, user, CORE)
         await s.commit()
         bt = await book_target(s, user, "Grow")
-        # PR 71: Grow's 10% Commodities is carved out of a core that names none,
-        # and the core keeps its own 60/40 shape inside the 90% it now manages.
-        assert bt["target"] == {"Equities": 0.54, "Fixed Income": 0.36, "Commodities": 0.1}
-        assert bt["commodities_pct"] == 0.1 and bt["core_pct"] == 0.9
+        # D134 (was PR 71's 10% carve-out): commodities live inside the core, so a
+        # 60/40 core is the whole 60/40 book.
+        assert bt["target"] == {"Equities": 0.6, "Fixed Income": 0.4}
+        assert bt["commodities_pct"] == 0.0 and bt["core_pct"] == 1.0
         assert bt["source"] == "core"
         await sv.clear_core(s, user)
         await s.commit()
@@ -259,9 +259,8 @@ async def test_resizing_a_sleeve_does_not_change_the_cores_target_mix():
     try:
         await apply_strategy(s, user, CORE)
         _b = await book_target(s, user, "Balanced")
-        # PR 71: Balanced's 10% Commodities comes out of the 60/40 core, so the
-        # book target is 54/36/10 -- and the CORE's own shape is still 60/40.
-        assert _b["target"] == {"Equities": 0.54, "Fixed Income": 0.36, "Commodities": 0.1}
+        # D134: no commodity carve-out by default -- the book target is the core's 60/40.
+        assert _b["target"] == {"Equities": 0.6, "Fixed Income": 0.4}
         before = {c: round(w / _b["core_pct"], 4) for c, w in _b["core"].items()}
         assert before == {"Equities": 0.6, "Fixed Income": 0.4}
 
@@ -274,7 +273,7 @@ async def test_resizing_a_sleeve_does_not_change_the_cores_target_mix():
         # purpose, and a rebalance card that did not know it went on demanding
         # those 15 points be sold. What must NOT move is the core's own mix.
         assert bt["sleeves"] == {"Equities": 0.15}
-        assert bt["core_pct"] == 0.75        # 85% unclaimed, less the 10% Commodities carve-out
+        assert bt["core_pct"] == 0.85        # 85% unclaimed; no carve-out since D134
         after_core_shape = {c: round(w / bt["core_pct"], 4) for c, w in bt["core"].items()}
         assert after_core_shape == before, (
             f"the core's target mix moved to {after_core_shape} because a SLEEVE was resized")
