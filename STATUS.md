@@ -58,7 +58,7 @@ writes an "edited" rule event; a moved stop refuses the whole card untouched.
 **Verified.** `test_a2r_the_retune_tries_stop_widths.py` (4): widening a trail and a fixed stop; the retune tries 1.5,
 2 and 3, retires nothing, and its best has the most at the bar; Accept widens the measured stop and refuses one that
 moved; the card lists the widened stop, quotes the amount, and its Accept sets the level (end to end). Goal/rules subset
-652 passed. Full Postgres suite: GATE_RESULT.
+652 passed. Full Postgres suite: 2,931 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a2r-retune-tries-stop-widths.ps1`. Production before (`7292092`): PASS 2 SKIP 1 (the
 stored solve predates the build). After deploy and a solve: PROD_RESULT.
