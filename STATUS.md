@@ -38,6 +38,21 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## P17a — three more stock rankings, held against SPY, sized 15/25/30 (D133); P20 parked
+
+**Why.** Owner, 2026-10-24, on P17: "Test other rankings first". Measured on production before building rotation
+(10 years to 2026-10-23, `GET /strategies/round2/stocks/S2/measure`): Quality Momentum 5 13.75%/yr vs QQQ 20.28%,
+selection edge -4.64%/yr, worst drop 36.8%; at 15% of the book 24.7 -> 24.3%/yr, worst drop -3.0 points.
+
+**What.** Pre-registered R1 (30-day momentum, top 10), R2 (12-month momentum + 30-day filter, top 10), R3 (Quality
+Momentum + 30-day filter, top 5); engine option `recent_filter_days`. Every round-2 stock measurement carries
+`tests.vs_spy` (SPY held on the same engine; not part of the gate's pass) and takes `sleeve_pct` 15/25/30 for the book
+effect. P20 parked with P6 (no TASE price source; no dual-listed name held).
+
+**Verified.** `test_p17a_more_rankings_vs_spy.py` (6). Full Postgres suite: 2,960 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-p17a-more-rankings-vs-spy.ps1`. The measurements follow below.
+
 ## PR 146a — Today's first stage timed in four parts (measure before changing anything)
 
 **Why.** Production, 2026-10-24, five warm reads of Today: ~0.5 s of server time (curl ~0.9 s with ~0.25 s round
