@@ -65,8 +65,8 @@ use `DATABASE_URL` when it is set, and the gate scripts set it, so nothing chang
 (newly triggered: 0)". Full Postgres suite: 2,922 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-pr145-hygiene.ps1`. Production before (`dc4aa1d`): PASS 4 FAIL 0 SKIP 0 (it checks the
-recorded rule check smoke-all now reads, and that Today still builds; this PR changes no app code). After deploy:
-PROD_RESULT.
+recorded rule check smoke-all now reads, and that Today still builds; this PR changes no app code). After deploy (`2e86e36`):
+**PASS 4 FAIL 0 SKIP 0**; `smoke-all` (now read-only) 22/3 (Gemini credits).
 
 ## C27 — money a stop-held sleeve cannot use is no longer frozen out of the core (D127)
 
