@@ -45,7 +45,7 @@
 | O2 | **Rotate the GitHub PAT and the Railway token** (one project-scoped token). Never rotated since first flagged on 2026-08-03. | Open (plan W0-6) | P1 |
 | O3 | ~~Database backups and a restore procedure~~ | Owner confirmed 2026-10-23 (plan A3) | Done |
 | R2 | ~~Orphan `redis-volume`~~ | Owner deleted it 2026-10-23 (plan A5) | Done |
-| O4 | Install the `pre-push` hook on every machine | Checked in (`scripts/ops/pre-push`) with a self-testing installer, `sh scripts/ops/install-pre-push.sh` (PR 145). Installed in the cloud sandbox clone 2026-10-23; the owner's Mac: run the installer in the repo (or `~/iw-install-hook.sh`) | P2 |
+| O4 | ~~Install the `pre-push` hook on every machine~~ | Installed in the cloud sandbox clone 2026-10-23 and on the owner's Mac 2026-10-24 (self-test: a rewrite of main is refused) | Done |
 | O5 | Rotate the Postgres password | Parked deliberately: only for a reason (D40) | Parked |
 
 ## Product (owner decisions)

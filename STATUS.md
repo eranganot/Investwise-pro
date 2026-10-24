@@ -38,6 +38,36 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## C29 — "Your book vs the S&P 500": one card, the measured changes ranked by the amount at the bar (D130)
+
+**Why.** Owner, 2026-10-24: the book beats SPY at the bar in only "4.2%" of cases; "I would expect a recommendation
+card that reviews my portfolio and says what I need to add/remove/edit"; chose "One card, ranked options". Root cause
+of "no card" (live, 808b000): `book_optimizer.optimize` and its card ranked by goal odds, which read 0.1-1.2% for every
+book on this goal, so no step passed `optimizer_min_step_pts` and Today said only "No sleeve change we can measure
+lifts your goal chance much above 0.3%" (12 candidates). Ruled out: no candidates (12 were scored), a halving breach
+(none was rejected for it).
+
+**What.** `score_books` rows carry `amount_at_confidence` (rules as armed), `roi_at_confidence_pct` and SPY's
+`benchmark`. The optimiser ranks each step by the amount added at the bar (+2% of today's, A2r's bar), falls back to goal
+odds only for a row without an amount, measures the all-core book, and stores a `review`: every single change from the
+book as held that adds 2% within the halving limit, the combined set, and the protection retune on the held book, best
+first (top 5). The card "Your book vs the S&P 500: X%/yr vs Y%/yr at your 65% bar" lists them with each one's amount,
+return and halving; Accept takes `?choice=oN` and runs the option through `sleeve_move` (sells nothing) or
+`frontier_rules` (refuses if a rule moved; an option whose rule moved since is dropped from the card). Nothing to offer
+-> a note with the all-core number and, below the index, that the sleeves do not earn their risk. A result stored
+before C29 keeps the old card. UI: ranked tiles, one button each; sw iw-v75.
+
+**Verified.** `test_c29_the_book_vs_spy_review.py` (9): the review ranks and filters; the optimiser ranks by amount with
+goal odds flat (as live); the card's title, lines and Accept (needs a choice; o1 sets the sizes, sells nothing); the
+nothing-to-offer note; no card above the index and on track; a moved rule drops the protection option; an old result
+keeps the old card; the route accepts o1-o9; a real run stores the amount and the review. Full Postgres suite: 2,940
+passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c29-book-vs-spy-review.ps1`. Measured after deploy below.
+
+**Also.** O4: the pre-push hook is installed on the owner's Mac (`/Users/eranganot/Dev/Investwise-pro`, self-test:
+a rewrite of main is refused, 2026-10-24). P20 opened (relative value across two prices of one exposure, P3).
+
 ## A2r — the protection retune tries wider stops and ranks by the amount at the bar (D129)
 
 **Why.** The 10-24 solve's retune tried 28 setups (the 15-25% book guard, its sell size and re-arm gap, pausing
