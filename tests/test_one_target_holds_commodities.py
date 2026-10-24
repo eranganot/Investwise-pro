@@ -99,8 +99,11 @@ def test_a_held_commodity_is_neither_sold_by_the_rebalance_nor_by_the_core_card(
             c.put("/api/v1/plan", json={"objective": "Grow", "risk_tolerance": "High",
                                         "horizon_years": 6, "target_amount": 137547})
             assert c.post("/api/v1/plan/core", json={"strategy_id": "bal_6040"}).json()["ok"]
+            # D134: the carve-out is a setting, default 0; PR 71's book is the one with 10.
+            assert c.put("/api/v1/plan", json={"thresholds": {"commodities_carve_out_pct": 10}}).status_code == 200
             mix = c.get("/api/v1/mix").json()
             body = c.get("/api/v1/recommendations").json()
+            c.put("/api/v1/plan", json={"thresholds": {"commodities_carve_out_pct": 0}})
     finally:
         logging.disable(logging.NOTSET)
     assert mix["target_allocation"].get("Commodities") == pytest.approx(0.10, abs=0.005), mix
