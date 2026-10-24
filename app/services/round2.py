@@ -57,6 +57,28 @@ STOCK_CANDIDATES: list[dict] = [
     {"id": "r2_52w_high_leaders", "code": "S3", "name": "52-Week-High Leaders", "expected_risk": "High",
      "sleeve_pct": 15, **_rank("high_52w", 6, 12, [4, 5, 6, 8, 10])},
 ]
+# P17a (owner, 2026-10-24: "Test other rankings first", after Quality Momentum 5 measured
+# 13.8%/yr against QQQ 20.3% and lowered the book's return). Pre-registered here, before any
+# result: a 30-day momentum ranking, and the 12-month rankings with a 30-day filter (a name
+# must be up over the last 21 sessions to be picked). Same universe, gate, cadence and tests;
+# each is also held against SPY.
+def _rank_recent(score: str, top: int, buffer: int, sweep: list[int], **extra) -> dict:
+    r = _rank(score, top, buffer, sweep)
+    r["overlay"].update(extra)
+    return r
+
+
+STOCK_CANDIDATES += [
+    {"id": "r2b_mom_30d_10", "code": "R1", "name": "30-Day Momentum 10", "expected_risk": "High",
+     "sleeve_pct": 15, **_rank_recent("ret", 10, 20, [6, 8, 10, 12, 15], lookback_days=21)},
+    {"id": "r2b_mom_12m_30d_10", "code": "R2", "name": "12-Month Momentum 10, 30-day filter", "expected_risk": "High",
+     "sleeve_pct": 15, **_rank_recent("mom_12_1", 10, 20, [6, 8, 10, 12, 15], recent_filter_days=21)},
+    {"id": "r2b_qmom_30d_5", "code": "R3", "name": "Quality Momentum 5, 30-day filter",
+     "expected_risk": "High to Very high",
+     "sleeve_pct": 15, **_rank_recent("risk_adj_mom", 5, 10, [3, 4, 5, 6, 8], recent_filter_days=21)},
+]
+SIZES_PCT = (15.0, 25.0, 30.0)     # P17a: the owner's sizing question
+
 _META = {"code", "name", "expected_risk", "sleeve_pct"}
 LEVERAGED_SLEEVE = "btm_vol_target_tqqq"     # the owner's: "Volatility-Targeted Leverage"
 QQQ_HOLD = {"id": "qqq_hold", "weights": {"QQQ": 1.0}, "overlay": {"kind": "buy_hold"}}
@@ -103,8 +125,18 @@ def _any(key: str, fetch=None) -> tuple[dict | None, dict | None, list[str]]:
 # --------------------------------------------------------------------------- #
 # option 2
 # --------------------------------------------------------------------------- #
+def spy_cagr_blocking(fetch=None) -> float | None:
+    """P17a: SPY held, run on the same engine, so a ranking is also held against the S&P."""
+    from app.services.backtest_service import _fetch
+    series, missing = (fetch or _fetch)(["SPY"])
+    if missing or "SPY" not in series:
+        return None
+    r = bt.run(series, {"id": "spy_hold", "weights": {"SPY": 1.0}, "overlay": {"kind": "buy_hold"}})
+    return r.get("cagr_pct") if r.get("ok") else None
+
+
 def evaluate_stock_blocking(key: str, book: dict | None, *, ratio_gain: float, drop_tol: float,
-                            fetch=None) -> dict:
+                            fetch=None, sleeve_pct: float | None = None) -> dict:
     """One S-candidate against the Beat-the-Market gate (S5 is `near_duplicates_blocking`)."""
     from app.services import book_effect, sleeve_diversity as div, strategy_catalog
     from app.services.backtest_service import _fetch, measure
@@ -126,7 +158,10 @@ def evaluate_stock_blocking(key: str, book: dict | None, *, ratio_gain: float, d
         "S3": {"pass": oos is not None and oos != "likely overfitted", "verdict": oos},
         "S4": {"pass": bool(sw.get("robust")), "spread_pct": sw.get("cagr_spread_pct")},
     }
-    be = (book_effect.compare_blocking(book, {**sp, "id": entry["id"]}, float(entry["sleeve_pct"]), fetch,
+    size = float(sleeve_pct or entry["sleeve_pct"])
+    spy = spy_cagr_blocking(fetch)
+    tests["vs_spy"] = {"pass": spy is not None and m["cagr_pct"] > spy, "cagr_pct": m["cagr_pct"], "spy_cagr_pct": spy}
+    be = (book_effect.compare_blocking(book, {**sp, "id": entry["id"]}, size, fetch,
                                        ratio_gain=ratio_gain, drop_tol=drop_tol)
           if book else {"ok": False, "reason": "NO_BOOK"})
     # D97 against each sleeve held: shared market from the profiles, correlation
@@ -143,9 +178,9 @@ def evaluate_stock_blocking(key: str, book: dict | None, *, ratio_gain: float, d
         same.append({"sleeve": s["id"], "overlap_pct": ov, "markets": markets,
                      "correlation": round(rho, 3) if rho is not None else None,
                      "same_bet": ov >= lim_o or (rho is not None and rho >= lim_c)})
-    passes = all(t["pass"] for t in tests.values())
+    passes = all(t["pass"] for k, t in tests.items() if k != "vs_spy")
     return {"ok": True, "code": entry["code"], "id": entry["id"], "name": entry["name"],
-            "sleeve_pct": entry["sleeve_pct"], "expected_risk": entry["expected_risk"],
+            "sleeve_pct": size, "expected_risk": entry["expected_risk"],
             "measured_risk": strategy_catalog.measured_risk(m.get("max_drawdown_pct")),
             "window": {"cagr_pct": m["cagr_pct"], "max_drawdown_pct": m.get("max_drawdown_pct"),
                        "start": m.get("start"), "end": m.get("end")},

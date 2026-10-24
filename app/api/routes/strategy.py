@@ -167,14 +167,19 @@ async def round2_stock_near_duplicates(user: User = Depends(acting_user)) -> dic
 
 
 @router.get("/strategies/round2/stocks/{key}/measure")
-async def round2_stock_measure(key: str, session: AsyncSession = Depends(get_session),
+async def round2_stock_measure(key: str, sleeve_pct: float | None = None,
+                               session: AsyncSession = Depends(get_session),
                                user: User = Depends(acting_user)) -> dict:
     """PR 134b, option 2: one S-candidate against the Beat-the-Market gate on 115 US
     stocks, with its book effect and same-bet verdicts. Slow; read-only."""
     from app.core.offload import offload
     from app.services import round2
     book, err, (rg, dt) = await _round2_ctx(session, user)
-    out = await offload(round2.evaluate_stock_blocking, key, book, ratio_gain=rg, drop_tol=dt)
+    if sleeve_pct is not None and sleeve_pct not in round2.SIZES_PCT:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="sleeve_pct is 15, 25 or 30 (P17a)")
+    out = await offload(round2.evaluate_stock_blocking, key, book, ratio_gain=rg, drop_tol=dt,
+                        sleeve_pct=sleeve_pct)
     if err and isinstance(out, dict):
         out["book_unavailable"] = err
     return out

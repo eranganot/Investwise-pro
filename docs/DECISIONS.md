@@ -34,6 +34,16 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D133 · 2026-10-24 · Before live stock rotation, three more rankings are measured against SPY; P20 waits for a TASE price source.**
+  Measured on production (10 years to 2026-10-23): Quality Momentum 5 13.8%/yr vs QQQ 20.3% (selection edge -4.6%/yr,
+  worst drop 37%); at 15% of the book it lowers return 24.7 -> 24.3%/yr and cuts the worst drop 3 points -- a hedge,
+  not a way past the S&P. Pre-registered before any result, same universe, gate and tests: R1 30-day momentum (top 10),
+  R2 12-month momentum with a 30-day filter (a name must be up over the last 21 sessions; top 10), R3 Quality Momentum
+  with the same filter (top 5). Each round-2 measurement now also carries `vs_spy` (SPY held on the same engine; not
+  part of the gate's pass) and reads the book effect at 15, 25 or 30%. Live rotation is built only for a ranking that
+  passes the gate AND beats SPY. P20 (relative value across two listings) is parked with P6: the price provider
+  cannot price TASE numeric symbols, and no dual-listed name is held. *Why:* owner, 2026-10-24: P17 "Test other
+  rankings first"; P20 "Park with P6". → P17a
 - **D132 · 2026-10-24 · One exit per holding: core funds have none, sleeve and 2x/3x holdings one trailing stop sized from volatility, no take-profits; the protection manager is the one place that proposes an exit.**
   Core funds (held, in no sleeve, not 2x/3x) carry no stop-loss, trailing stop, take-profit or profit-protect: the
   rebalance bands and the book's drawdown guard protect them. A sleeve's tickers and any 2x/3x fund held carry exactly
