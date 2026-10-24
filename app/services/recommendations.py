@@ -2762,14 +2762,22 @@ async def build_recommendations(session: AsyncSession, user: User,
                 # says why (PR 102: knowledge without an ask is not a card). A
                 # failed preview leaves the card exactly as it was: a preview
                 # must never cost Today a card.
-                if not _over and recs[-1]["apply"].get("kind") == "fund_sleeve":
+                # C16 (owner, 2026-10-24: "ship it as a guard"): a ticker two sleeves
+                # want routes to the whole-plan funder (`fund_plan`), and that card
+                # never asked it first -- the PR 137 shape on the other branch. It
+                # previews the same call Accept makes, with the same flags.
+                if not _over and recs[-1]["apply"].get("kind") in ("fund_sleeve", "fund_plan"):
                     try:
                         async with _agent_tx(session):
-                            from app.services.strategy_service import load_basket
-                            _pv = await load_basket(session, user,
-                                                    recs[-1]["apply"]["strategy_id"],
-                                                    mode="fund", dry_run=True,
-                                                    honour_holds=True)
+                            if recs[-1]["apply"]["kind"] == "fund_plan":
+                                from app.services.strategy_service import fund_plan
+                                _pv = await fund_plan(session, user, dry_run=True, honour_holds=True)
+                            else:
+                                from app.services.strategy_service import load_basket
+                                _pv = await load_basket(session, user,
+                                                        recs[-1]["apply"]["strategy_id"],
+                                                        mode="fund", dry_run=True,
+                                                        honour_holds=True)
                     except Exception:  # noqa: BLE001 - a preview must not kill Today
                         _pv = None
                     if isinstance(_pv, dict) and _pv.get("ok") is False:

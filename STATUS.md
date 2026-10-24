@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (PR 145: hygiene). Last product PR: **PR 145**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (C16: a guard on the whole-plan top-up). Last product PR: **C16**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,21 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## C16 — a top-up routed to the whole-plan funder asks it first (a guard)
+
+**What.** PR 137 made the sleeve-drift top-up preview the funder before offering Accept, but only for `fund_sleeve`
+(one sleeve wants the ticker). When two sleeves want it, `_fund_action` routes Accept to `fund_plan`, and that card
+offered Accept without asking -- the same shape as PR 137. It now previews `fund_plan(dry_run=True,
+honour_holds=True)`, the call Accept makes; a refusal turns the card into the same held-back heads-up.
+
+**Inferred, not observed** (owner, 2026-10-24: "ship it as a guard"). The live book has no ticker two sleeves want, and
+in tests a sleeve shares a ticker only when it follows a live signal, so the route and the funder's answer are forced
+in the test, as PR 137's does. `test_c16_the_whole_plan_top_up_asks_first.py`: the refused case fails on `2e86e36`
+(1 failed, 1 passed) and passes with the guard; PR 137's four tests unchanged. Full Postgres suite: GATE_RESULT.
+
+**Smoke.** `scripts/smoke/smoke-c16-whole-plan-top-up-asks-first.ps1`. Production before (`2e86e36`): PASS 2 FAIL 0
+SKIP 2 (no top-up card of either kind today). After deploy: PROD_RESULT. Also: P19 parked (owner, 2026-10-24).
 
 ## PR 145 — hygiene: smoke-all is read-only, the gate is Postgres, the hook ships with an installer
 
