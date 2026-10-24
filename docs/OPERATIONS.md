@@ -111,6 +111,10 @@ Current state of these items: [BACKLOG.md § Ops](BACKLOG.md#ops-owner-only).
 
 ## 7. Backups and recovery
 
+**Confirmed again by the owner 2026-10-23 (plan A3; BACKLOG O3):** the daily backup schedule is running. The orphan
+`redis-volume` was deleted the same day (A5, R2). A restore has not been tested: do one into a scratch service before
+it is needed.
+
 **Status 2026-10-12 (owner, Railway dashboard › Postgres › Backups):**
 - **A daily volume-backup schedule is set** (owner, 2026-10-12). The first scheduled run was due about 12 hours after it
   was set.

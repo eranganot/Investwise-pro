@@ -142,8 +142,14 @@ if ($null -eq $plan) { Skip "plan unreachable (NOT a pass)" } else {
 
 # ---------- PHASE 6: cash not tradeable ----------
 Sec "5. Cash is not a tradeable holding (phase 6)"
-$ev = Api POST '/api/v1/rules/evaluate'
-if ($null -eq $ev) { Skip "evaluate unreachable" } else { Ok "evaluation ran (newly triggered: $($ev.triggered.Count))" }
+# PR 145: READ-ONLY. This POSTed /rules/evaluate, so every run fired rules and
+# un-latched them. The 30-minute price job checks the rules itself and records
+# the result (PR 143); read that instead.
+$st5 = Api GET '/api/v1/push/status'
+$pr5 = if ($st5) { $st5.scheduler.history.price_refresh } else { $null }
+if ($null -eq $pr5) { Skip "no price_refresh history (NOT a pass)" }
+elseif ($pr5.last_ok -and $pr5.last_result.rules) { Ok ("rule check ran at {0} (newly triggered: {1})" -f $pr5.last_run, $pr5.last_result.rules.triggered) }
+else { Bad ("the last rule check did not run cleanly at {0}: {1}" -f $pr5.last_run, $pr5.last_error) }
 $rules = (Api GET '/api/v1/rules').rules
 if ($null -eq $rules) { Skip "rules unreachable (NOT a pass)" } else {
   if (@($rules | Where-Object { $_.ticker -eq 'CASH' -and $_.active }).Count -eq 0) { Ok "no active rule on CASH" } else { Bad "CASH rule still armed" }
@@ -154,7 +160,7 @@ if ($null -eq $rules) { Skip "rules unreachable (NOT a pass)" } else {
 Sec "6. Banner matches the cards (phases 6 + 8)"
 # Re-read recommendations HERE, not the copy from section 1.
 #
-# Section 5 POSTs /rules/evaluate, which is what fires a rule ("newly triggered:
+# Section 5 USED TO POST /rules/evaluate (read-only since PR 145), which is what fired a rule ("newly triggered:
 # 1"). Comparing the section-1 snapshot against rules read after that evaluate
 # compared two different moments with a deliberate state change between them, so
 # a rule triggered by THIS SCRIPT read as a banner/card mismatch. It reported a

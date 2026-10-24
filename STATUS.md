@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C27: a blocked sleeve no longer freezes the core). Last product PR: **C27**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-23 by Claude (PR 145: hygiene). Last product PR: **PR 145**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,36 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 145 — hygiene: smoke-all is read-only, the gate is Postgres, the hook ships with an installer
+
+**What.**
+- **`smoke-all.ps1` no longer writes.** Section 5 POSTed `/rules/evaluate`, so every run fired rules and un-latched them
+  (its own section 6 comment records a "deadlock" that was the script's write). It now reads the rule check the
+  30-minute price job records (`push/status` -> `scheduler.history.price_refresh.last_result.rules`, PR 143).
+  `test_pr145_the_smokes_are_read_only.py` fails any smoke that POSTs/PUTs/DELETEs, except dry runs and compute-only
+  endpoints (ask, whatif, risk, performance, frontier preview / rule-impact, m2m); the smokes from before PR 139 that
+  refresh a cache or act on the book are listed as frozen legacy, and smoke-all gets no exception.
+- **V3:** `test_dismissed_recommendations_are_counted_and_restorable` dismissed the first card, which could come from
+  live market data (rate-limited, so the second build did not rebuild it), and returned early on an empty Today -- a
+  silent pass. It now dismisses the concentration trim the one-holding book always gets, and asserts it exists.
+  Three runs: 4/4 each.
+- **The gate is Postgres** in DEVELOPMENT.md, CLAUDE.md and BACKLOG O6 (they said "full local SQLite + Postgres").
+- **The pre-push hook** (`scripts/ops/pre-push`, already checked in) gets `scripts/ops/install-pre-push.sh`, which
+  installs it and self-tests that a rewrite of main is refused (run on a throwaway clone: refused). BACKLOG O4.
+- OPERATIONS.md records the owner's 2026-10-23 backup confirmation (A3) and the redis-volume deletion (A5); a restore
+  test is still to do. **V1 / V2** voided (the screens were rebuilt since); the QA files stay in `qa/`.
+
+**Not done (from plan §4.7):** making the tests themselves default to Postgres when a URL is set -- they already
+use `DATABASE_URL` when it is set, and the gate scripts set it, so nothing changes in practice.
+
+**Verified.** 3 new tests; the read-only guard fails on `dc4aa1d`'s `smoke-all.ps1` (it POSTs `/rules/evaluate`).
+`smoke-all` with the change against production: 22 passed, 3 failed (Gemini credits), section 5 "rule check ran
+(newly triggered: 0)". Full Postgres suite: 2,922 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr145-hygiene.ps1`. Production before (`dc4aa1d`): PASS 4 FAIL 0 SKIP 0 (it checks the
+recorded rule check smoke-all now reads, and that Today still builds; this PR changes no app code). After deploy:
+PROD_RESULT.
+
 ## C27 — money a stop-held sleeve cannot use is no longer frozen out of the core (D127)
 
 **Reported** (owner, 2026-10-23 23:50): "Currently I have two triggered rules but no recommendation on how to act."
@@ -68,7 +98,10 @@ no hold an unfunded sleeve keeps first claim. Core/card/sleeve subset 438 passed
 
 **Smoke.** `scripts/smoke/smoke-c27-blocked-sleeve-frees-the-core.ps1`. Production before (`332deff`): **PASS 3 FAIL 3**,
 the gap itself (no blocked figure; holdings reserved with nothing buyable; QQQ and SMH bands with nothing to execute).
-After deploy: PROD_RESULT. Left: C28, the band notes still quote the target from when they were armed.
+After deploy (`dc4aa1d`): **PASS 6 FAIL 0 SKIP 0**: sleeves short ₪6,728, of which a stop hold blocks ₪6,724; nothing
+reserved; the core card now sells GOOGL ₪1,752, XOM ₪922, XLE ₪475, BND ₪314 and buys QQQ ₪2,866 and SMH ₪875 (tax ~₪9),
+so the QQQ and SMH bands have a trade; SOXL on hold, no 2x/3x buy. Re-run 2026-10-24 04:36 UTC: 6/0/0. Left: C28, the
+band notes still quote the target from when they were armed.
 ## C24 — the target mix manages the 2x/3x sleeves to the ceiling; the excess is in the core (D125)
 
 **Why.** PR 148 stops every buy at `leveraged_ceiling_pct` (44), but the target mix still summed the sleeves as chosen.
@@ -116,7 +149,10 @@ Postgres suite: 2,900 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c26-goal-vs-the-index.ps1`. Production before (`eac1df4`): PASS 2 FAIL 0 SKIP 1 (no
 benchmark on the stored solve: the build before). After deploy (`332deff`): **PASS 2 FAIL 0 SKIP 1** -- the stored solve (13:43 UTC)
-predates the build; the measured result is owed after the 04:10 UTC solve. PR 138b's smoke on the same build 7/0/0.
+predates the build. PR 138b's smoke on the same build 7/0/0. **Measured after the 04:10 UTC solve (2026-10-24, `dc4aa1d`):
+PASS 5 FAIL 0 SKIP 1.** At the 65% bar: the book 4.5%/yr with the rules armed (₪25,343 by 2031); VTI on the same paths
+7.9%/yr (₪30,104; halving 0.1%); the book on plain history, rules off, 11.0%/yr (₪35,144; halving 54.9%). No target
+card below the index; the note says the book is not beating it. SKIP: the solve found no deposit or deadline lever.
 ## PR 138c — the goal note no longer calls the halving limit "the one lever left" beside another lever
 
 **Observed** on production `eac1df4`, the first read of PR 138b's note: "... Changing that limit is the one lever left,
@@ -281,7 +317,8 @@ none was found and the confident %/yr was 3.7%, which says what is out of reach 
 Full Postgres suite: **2,887 passed, 0 failed, 0 skipped**. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-p1-goal-comparison.ps1`. Production before (`47e9ebe`): PASS 3 FAIL 1 SKIP 3 (no grid;
-shell `iw-v72`). After the deploy AND the 04:10 UTC solve: PROD_RESULT.
+shell `iw-v72`). After the deploy AND the 04:10 UTC solve (2026-10-24 04:36 UTC, `dc4aa1d`): **PASS 7 FAIL 0 SKIP 0**:
+20 cells on 500 paths in 50.2 s, none skipped; own goal 0.2% vs headline 0.1%; odds rise as the goal eases in every column.
 
 **Next (owner).** Read the table on the Plan tab and choose a goal; changing it is the Plan settings' existing goal edit.
 
@@ -315,7 +352,7 @@ suite: **2,883 passed, 0 failed, 0 skipped**. Ruff clean.
 
 *Smoke.* `scripts/smoke/smoke-d123-same-bet-on-what-they-hold.ps1`. Production before (`47e9ebe`): PASS 4 FAIL 0 SKIP 2
 (no invested correlations measured yet; every existing same-bet pair still marked). After deploy AND the next 03:50 UTC
-run: on `793dbe9` before the 03:50 UTC run: PASS 4 FAIL 0 SKIP 2 (not measured yet; every existing same-bet pair still marked); PR 144's smoke on the same build 6/0/0; smoke-all 22/3 (Gemini credits). The measured result is owed after the 03:50 UTC run.
+run: on `793dbe9` before the 03:50 UTC run: PASS 4 FAIL 0 SKIP 2 (not measured yet; every existing same-bet pair still marked); PR 144's smoke on the same build 6/0/0; smoke-all 22/3 (Gemini credits). The measured result is owed after the 03:50 UTC run. **Measured after the 03:50 UTC run (2026-10-24, `dc4aa1d`): PASS 6 FAIL 0 SKIP 0**: 120 of 153 pairs carry an invested correlation; SOXL-trend vs TQQQ vol-target: strategies 0.78, invested 0.87, a same bet; 48 same-bet pairs, each with a reason; every earlier pair still marked. PR 144's smoke: boot_check ok, 13 jobs each with a run, all healthy (6/0/0). `smoke-all` 22/3 (Gemini credits).
 
 **P14's other half: the sleeve-plan smokes on `47e9ebe`.** 134d 17/0/0, 135a 8/0/0, 135b 5/0/1, 135c 4/1/1 → 5/0/1 after
 fixing its pinned `iw-v69` check (PR 139 moved the shell to `iw-v72`; the check is now "not older than v69"), 136a 7/0/0,

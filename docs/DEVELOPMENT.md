@@ -69,19 +69,21 @@ The ~60 tuning constants (tax rates, Monte Carlo runs, risk caps, provider TTLs,
 
 ## 4. Tests
 
+**The gate is Postgres** (PR 145). SQLite is only the conftest default for a quick run while you work; it proves less
+than it looks like (incident `5a6dfef` shipped with three cross-loop failures only Postgres saw), so it is never the
+gate.
 ```bash
-pytest -q                        # SQLite (the conftest default). Exactly what CI's `test` job runs
-ruff check app tests             # exactly what CI's `lint` job runs
+ruff check app tests             # lint
+pytest -q                        # quick local run on SQLite (the conftest default) -- not the gate
 ```
-
-**Run the Postgres job before pushing.** Only Postgres catches cross-loop bugs (incident `5a6dfef` shipped with three
-failures only `test-postgres` saw).
 ```bash
 docker compose up -d db          # or in a Linux sandbox:
 # apt-get install -y postgresql && service postgresql start
 # sudo -u postgres psql -c "create role investwise login password 'investwise' createdb;" -c "create database investwise owner investwise;"
-DATABASE_URL=postgresql+asyncpg://investwise:investwise@127.0.0.1:5432/investwise pytest -q
+DATABASE_URL=postgresql+asyncpg://investwise:investwise@127.0.0.1:5432/investwise pytest -q   # THE GATE
 ```
+Use a fresh database for each run (drop and create it), and do not edit files while it runs: several tests read
+source by line number. Two Postgres runs at once on one machine share the database; run them one after another.
 
 Facts about the suite:
 - **~2,290 tests in 254 files**, organised by claim, not by module. File names are sentences
@@ -146,11 +148,13 @@ The full rules are in [`CLAUDE.md`](../CLAUDE.md) "Ship rules"; this is the sequ
 1. **Read `STATUS.md` first.** Check `git log -1` so a re-run never duplicates a commit.
 2. Make the change and add tests that fail on HEAD. Bump `sw.js` if the shell changed.
 3. Write **`scripts/smoke/smoke-prNN-<slug>.ps1`** in the same commit (see below).
-4. Run the gate locally: `pytest -q` (SQLite), `pytest -q` against Postgres, and `ruff check app tests`. All green.
+4. Run the gate locally: `ruff check app tests` and the full suite **against Postgres**. All green. A test you change
+   because the PR changes behaviour is named in STATUS with why.
 5. Commit **one commit per round**:
    - `git add <explicit paths>`. Never `git add -A`, because CRLF noise and other sessions' files are in the tree.
    - `git commit -F <msgfile>`, with the message file written **without a BOM**.
-   - Never amend a pushed commit, never force-push. The `scripts/ops/pre-push` hook refuses force-pushes to main.
+   - Never amend a pushed commit, never force-push. The `scripts/ops/pre-push` hook refuses force-pushes to main;
+     install it on every clone with `sh scripts/ops/install-pre-push.sh` (macOS/Linux; it self-tests).
 6. Push to `main`. **Railway deploys on push regardless of CI.** A red CI run means the bad build is already live: treat it as an incident.
 7. Run the smoke against production: `.\scripts\smoke\smoke-prNN-<slug>.ps1 -Sha <short-sha>`. Record PASS / FAIL / SKIP in STATUS.md.
    A FAIL is an incident.

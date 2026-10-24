@@ -54,9 +54,14 @@ def test_dismissed_recommendations_are_counted_and_restorable():
         _seed(c)
         recs = c.get("/api/v1/recommendations").json()
         assert "degraded" in recs and "dismissed_count" in recs
-        ids = [r["id"] for r in recs["recommendations"]]
-        if not ids:
-            return                                    # nothing to dismiss on this book
+        # V3 (PR 145): dismiss the CONCENTRATION TRIM, which this one-holding book
+        # always gets from its own numbers. It took the first card, which could be
+        # one built from live market data; under a rate limit the second build did
+        # not rebuild it, so the restore check failed on an untouched main. And an
+        # empty Today returned early -- a silent pass.
+        ids = [r["id"] for r in recs["recommendations"]
+               if (r.get("apply") or {}).get("kind") == "trim" and (r.get("apply") or {}).get("ticker") == "TEVA"]
+        assert ids, [r["title"] for r in recs["recommendations"]]
         assert c.post(f"/api/v1/recommendations/{ids[0]}/dismiss").status_code == 200
         after = c.get("/api/v1/recommendations").json()
         assert ids[0] not in [r["id"] for r in after["recommendations"]]
