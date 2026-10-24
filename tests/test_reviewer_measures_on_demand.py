@@ -81,7 +81,8 @@ async def test_the_today_build_hands_unmeasured_holdings_over(monkeypatch):
     assert asked and tk in asked[0]
     row = next(r for r in built["holding_review"] if r["ticker"] == tk)
     assert row["measuring"] is True and "Measuring now" in row["measurement_note"]
-    card = next(c for c in built["recommendations"] + built["more_recommendations"]
-                if c.get("dimension") == "holding_review" and c["meta"]["ticker"] == tk)
-    assert card["apply"]["kind"] not in ("trim", "sell_position"), "still no sale unmeasured"
-    assert "Measuring now" in card["action"]
+    # A3r (D132): the unmeasured review card offered a stop-loss; exits are the protection
+    # manager's now, so no review card arms one -- and none sells unmeasured.
+    cards = [c for c in built["recommendations"] + built["more_recommendations"]
+             if c.get("dimension") == "holding_review" and (c.get("meta") or {}).get("ticker") == tk]
+    assert all((c.get("apply") or {}).get("kind") not in ("trim", "sell_position", "create_rules") for c in cards)

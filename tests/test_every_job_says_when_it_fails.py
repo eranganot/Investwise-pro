@@ -78,6 +78,12 @@ def _fail_optimizer(mp):
     mp.setattr(book_optimizer, "refresh_all", _aboom)
 
 
+def _fail_protection(mp):
+    from app.services import protection_manager
+    _seed_user()
+    mp.setattr(protection_manager, "refresh_all", _aboom)
+
+
 def _fail_review(mp):
     from app.services import holding_review
     mp.setattr(holding_review, "_measure_all_async", _aboom)
@@ -107,6 +113,7 @@ FAIL_WITH = {
     "strategy_correlation": _fail_correlation,
     "sleeve_moves": _fail_sleeve_moves,
     "book_optimizer": _fail_optimizer,
+    "protection_manager": _fail_protection,
     "holding_review": _fail_review,
     "strategy_signals": _fail_signals,
     "standing_orders": _fail_orders,

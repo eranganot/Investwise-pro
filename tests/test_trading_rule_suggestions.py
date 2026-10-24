@@ -66,11 +66,10 @@ def test_suggestions_endpoint_gives_a_rule_set_per_holding():
             {"ticker": "AAA", "market": "NYSE", "asset_class": "Equities", "depth": 2,
              "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 80}]})
         data = c.get("/api/v1/rules/suggestions").json()["suggestions"]
-        assert data, "expected per-holding suggestions"
-        holding = next(h for h in data if h["ticker"] == "AAA")
-        kinds = {r["rule_type"] for r in holding["rules"]}
-        assert {"stop_loss", "trailing_stop"} <= kinds
-        for r in holding["rules"]:
+        # A3r (D132): exits are the protection manager's; suggestions carry none.
+        kinds = {r["rule_type"] for h in data for r in h["rules"]}
+        assert not kinds & {"stop_loss", "trailing_stop", "take_profit", "profit_protect"}, kinds
+        for r in [r for h in data for r in h["rules"]]:
             assert isinstance(r["level"], (int, float)) and r["ticker"] == "AAA"
             assert r["why"]
 
@@ -92,7 +91,8 @@ def test_a_paused_rule_is_a_decision_not_a_gap():
         assert "stop_loss" not in kinds, "a paused stop was offered back as 'ready to arm'"
 
 
-def test_accept_trend_card_arms_the_rule_end_to_end(monkeypatch):
+def test_a_trend_card_no_longer_arms_a_stop(monkeypatch):
+    """A3r (D132): the downtrend card armed a stop-loss; exits are the protection manager's now."""
     monkeypatch.setattr("app.providers.registry.guarded_history",
                         lambda tk, days=200: _down_closes() if tk == "DOWN" else None)
     with TestClient(m.app) as c:
@@ -101,10 +101,9 @@ def test_accept_trend_card_arms_the_rule_end_to_end(monkeypatch):
              "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 100},
             {"ticker": "KEEP", "market": "TASE", "asset_class": "Fixed Income", "depth": 2,
              "spot_price": 100, "listing_price": 100, "quantity": 100, "cost_basis": 100}]})
-        recs = c.get("/api/v1/recommendations").json()["recommendations"]
-        card = next(r for r in recs if r["apply"]["kind"] == "create_rules")
-        res = c.post(f"/api/v1/recommendations/{card['id']}/accept").json()
-        assert res["applied"] == "create_rules"
-        assert res["rules_created"] and res["rules_created"][0]["ticker"] == "DOWN"
-        rules = c.get("/api/v1/rules").json()["rules"]
-        assert any(r["ticker"] == "DOWN" and r["rule_type"] == "stop_loss" for r in rules)
+        j = c.get("/api/v1/recommendations").json()
+        recs = j["recommendations"] + j.get("more_recommendations", [])
+        arming = [r["id"] for r in recs if (r.get("apply") or {}).get("kind") == "create_rules"
+                  and any(x.get("rule_type") in ("stop_loss", "trailing_stop", "take_profit", "profit_protect")
+                          for x in r["apply"].get("rules") or [])]
+        assert arming == []
