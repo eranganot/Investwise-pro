@@ -314,7 +314,7 @@ the slowest measured path only, and record before/after in STATUS.
 
 | # | Decision | Needed by | Options / recommendation |
 |---|---|---|---|
-| D-1 | A daily production smoke as a scheduled task? Time? | §4.2 part 3 | **Decided: yes, 08:30 Israel time, message on FAIL only.** Open: where the agent key lives for a scheduled run (not in the task text) |
+| D-1 | A daily production smoke as a scheduled task? Time? | §4.2 part 3 | **Decided: yes, 08:30 Israel time, message on FAIL only.** Key: a separate read-only `SMOKE_API_KEY` (D131), held as `IW_SMOKE_KEY` on the cloud environment |
 | D-2 | The halving limit (P16) | §4.3 | **Decided D122:** keep 30%, revisit the goal (P1: goal comparison) |
 | D-3 | Same-bet test: lower to 0.75, or measure on underlying returns | §4.3 | **Decided D123:** on what sleeves hold |
 | D-4 | The leveraged ceiling value | §4.4 | **Decided: 44%** |

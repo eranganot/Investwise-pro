@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     require_auth: bool = False        # if True, JWT + RBAC enforced on protected routes
     session_ttl_sec: int = 2592000    # "remember me": Google session lasts 30 days
     agent_api_key: str = ""           # if set, X-Agent-Key header grants SUPERADMIN write access (for the agent)
+    # D-1: a READ-ONLY key for the scheduled production smoke. Sent the same way (X-Agent-Key); accepted
+    # for GET/HEAD only, every other method is refused 403. Never the same value as agent_api_key.
+    smoke_api_key: str = ""
     superadmin_email: str = "eran.ganot@gmail.com"
     # NO DEFAULT, deliberately. A default here is a PUBLISHED credential rather
     # than a password: everyone with repo access has it, and this repository was

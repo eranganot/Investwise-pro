@@ -34,6 +34,13 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D131 · 2026-10-24 · The scheduled production smoke uses its own read-only key.**
+  `SMOKE_API_KEY` (Railway variable), sent as `X-Agent-Key` like the agent key, acts as the owner for GET/HEAD only;
+  any other method is refused 403 ("the smoke key is read-only"). It keeps the owner's role on the principal because
+  `acting_user` writes the principal's role onto the user row. Set to the agent key's value by mistake it is ignored
+  (the agent key keeps writing). The daily smoke's cloud environment holds it as `IW_SMOKE_KEY`; never the agent key,
+  which can accept cards and change rules, and never in a task's text. *Why:* owner, 2026-10-24 (D-1: a daily smoke at
+  08:30, message on FAIL only); a key that runs unattended every day should not be able to trade. → D-1
 - **D130 · 2026-10-24 · The optimiser ranks by the amount at the bar and holds the book against SPY on one card.**
   Each step of the book optimiser ranks candidates by the amount reached at the goal's confidence bar with the rules as
   armed (a change counts at +2% of today's amount, A2r's bar), not by goal odds; it also measures the all-core book (no

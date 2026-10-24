@@ -38,6 +38,23 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## D-1 — a read-only key for the scheduled production smoke (D131)
+
+**Why.** Owner, 2026-10-24 (D-1): a daily production smoke at 08:30 Israel time, message on FAIL only. Its key runs
+unattended every day; the only key was the agent key, which acts as the owner and can accept cards and change rules.
+
+**What.** `SMOKE_API_KEY` (config `smoke_api_key`), sent as `X-Agent-Key`: GET/HEAD act as the owner, anything else
+is refused 403 "the smoke key is read-only" (`require_role`, before the agent-key check; constant-time compare). The
+principal keeps the owner's role because `acting_user` writes the principal's role onto the user row. Equal to the
+agent key, it is ignored. The scheduled task's cloud environment holds it as `IW_SMOKE_KEY`.
+
+**Verified.** `test_d1_the_smoke_key_only_reads.py` (4): it reads Today, the optimiser, rules and the portfolio; a POST,
+PUT and DELETE (accept, evaluate, plan, position, optimiser refresh) are refused 403; the agent key still writes; a
+wrong key is 401; set equal to the agent key it does not make the agent key read-only. Full Postgres suite: 2,944
+passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-d1-read-only-smoke-key.ps1` (reads only; the write refusal is the tests' job).
+
 ## C29 — "Your book vs the S&P 500": one card, the measured changes ranked by the amount at the bar (D130)
 
 **Why.** Owner, 2026-10-24: the book beats SPY at the bar in only "4.2%" of cases; "I would expect a recommendation

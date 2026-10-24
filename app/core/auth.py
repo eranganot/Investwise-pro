@@ -6,6 +6,7 @@ on, a valid Bearer JWT with sufficient role is required.
 """
 from __future__ import annotations
 
+import hmac
 import time
 import uuid
 from enum import Enum
@@ -152,6 +153,15 @@ def require_role(min_role: Role):
         # Agent override: a request carrying the secret X-Agent-Key acts as SUPERADMIN
         # (attributed to the owner) even when auth is enforced - lets the agent apply
         # holdings overrides without disabling auth.
+        # D-1: the scheduled smoke's key reads, and only reads. It acts as the owner (so the
+        # smoke sees his book; `acting_user` records the principal's role on the user row, so
+        # it must not be a lower role) but any method other than GET/HEAD is refused.
+        _sent = request.headers.get("x-agent-key") if request is not None else None
+        if _sent and s.smoke_api_key and s.smoke_api_key != s.agent_api_key \
+                and hmac.compare_digest(_sent, s.smoke_api_key):
+            if request.method not in ("GET", "HEAD"):
+                raise HTTPException(403, "the smoke key is read-only")
+            return Principal(sub=s.superadmin_email, role=Role.SUPERADMIN)
         if s.agent_api_key and request is not None:
             if request.headers.get("x-agent-key") == s.agent_api_key:
                 return Principal(sub=s.superadmin_email, role=Role.SUPERADMIN)
