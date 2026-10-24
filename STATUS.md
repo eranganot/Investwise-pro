@@ -38,6 +38,21 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## C13, C17, C28 — small fixes
+
+**C28 (proven live, 2026-10-24 `GET /rules`).** Every rebalance band's note was the suggestion's sentence stored at arm
+time while its status measured the live plan target: QQQ "7.2%" vs live 12.3%, VTI 26.6% vs 19.7%, VXUS 8.9% vs 9.8%,
+SMH 3.9% vs 7.4%. Silent because a note is free text nothing re-checks. Now `band_note_now` re-words the generated
+sentence from the live target whenever the rules list is read (no target -> says so); a hand-written note is kept.
+**C17 (reproduced in tests).** A refused Accept answered 400 with `result["error"]` only, dropping the refusal's
+`reason` (the sleeve size that would work), its funding sentence and its legs; every Today alert shows `detail`.
+`refusal_text` puts all four in the detail. **C13.** The funded-sleeve executor's unspent-leg refund now has a test
+(an unpriceable leg is skipped and credited back; cash conserved).
+
+**Verified.** `test_c13_c17_c28_small_fixes.py` (5). Full Postgres suite: 2,959 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-c28-band-notes-and-refusals.ps1`. Measured after deploy below.
+
 ## A3r — one exit per holding: the protection manager (D132)
 
 **Why.** Live 2026-10-24 (`GET /rules`): 43 rules, 39 active. VTI, VXUS, QQQ, SMH, XLE, COMT, USO, UGA, UGL and BIL each
