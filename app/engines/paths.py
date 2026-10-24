@@ -143,8 +143,9 @@ def simulate_rules(asset_daily: np.ndarray, weights: np.ndarray, *, years: float
 
     ``asset_daily`` is T x K daily returns of the book's units (sleeves first,
     then the core, then cash); ``weights`` their targets (sum 1). ``sleeves`` is
-    one dict per sleeve column: {"col", "trail", "tp_ratio", "tp_fraction"}
-    (``trail`` a fraction, ``tp_ratio`` the take-profit price over today's).
+    one dict per sleeve column: {"col", "trail", "stop_ratio", "tp_ratio", "tp_fraction"}
+    (``trail`` a fraction, ``stop_ratio`` a fixed stop's price over today's -- it
+    sells ONCE, A1 -- ``tp_ratio`` the take-profit price over today's).
     ``guard`` is {"level", "rearm", "fraction", "col"} or None. With
     ``rules_on=False`` the identical paths run with no rule acting.
     """
@@ -165,6 +166,7 @@ def simulate_rules(asset_daily: np.ndarray, weights: np.ndarray, *, years: float
     peak = np.ones((n_paths, m))
     out = np.zeros((n_paths, m), dtype=bool)            # held out after a sale
     out_level = np.zeros((n_paths, m))
+    stop_done = np.zeros((n_paths, m), dtype=bool)      # A1: a fixed stop fires once
     low = np.ones((n_paths, m))
     rung = np.array([s.get("tp_ratio") or np.inf for s in sleeves])[None, :].repeat(n_paths, 0)
     tp_held = np.zeros((n_paths, m), dtype=bool)
@@ -204,6 +206,17 @@ def simulate_rules(asset_daily: np.ndarray, weights: np.ndarray, *, years: float
         if rules_on:
             for j, s in enumerate(sleeves):
                 c = s["col"]
+                sr = s.get("stop_ratio")
+                if sr:
+                    hit = ~out[:, j] & ~stop_done[:, j] & (price[:, j] <= sr)
+                    if hit.any():
+                        cash[hit] += hold[hit, c]
+                        hold[hit, c] = 0.0
+                        out[hit, j] = True
+                        out_level[hit, j] = price[hit, j]
+                        low[hit, j] = price[hit, j]
+                        exits[hit, j] += 1
+                        stop_done[hit, j] = True
                 trail = s.get("trail")
                 if trail:
                     hit = ~out[:, j] & (price[:, j] <= peak[:, j] * (1.0 - trail))

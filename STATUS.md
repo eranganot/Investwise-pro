@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-23 by Claude (C16: a guard on the whole-plan top-up). Last product PR: **C16**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-24 by Claude (A1: fixed stops sell once; SPY). Last product PR: **A1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,31 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## A1 — the goal model replays a fixed stop as a one-time sale; the goal is held against SPY (D128)
+
+**Root cause (observed, 2026-10-24 on `2e86e36`).** The stored solve's rules replay showed the TQQQ vol-target sleeve
+out of the market 95.6% of the time (3.65 exits a year) and the SOXL trend sleeve 88.3% (6.28), with its rule list
+reading "stop_loss TQQQ (1% below the peak)". `rules_spec` turned a price-mode stop into a trail of `1 - level/price`:
+TQQQ's stop at 65.73 with the price at 66.29 became a 0.84% trailing stop applied for five years (the sleeve's
+`trail` = 0.0084; SMH's 502.65 stop at 527.20 a 4.7% trail). A fixed stop sells once and does not move up.
+**Ruled out:** a stale price (66.29 was the live quote); the trailing stops (TQQQ 20%, QQQ 10%, SMH 11% -- all wider).
+
+**Fix.** `rules_spec` emits a price stop as `stop_ratio` (level over today's price, the highest wins);
+`paths.simulate_rules` sells the column once when its path crosses it and marks it spent. Every place that copies a
+sleeve's exit spec carries `stop_ratio` (the retune, the per-rule comparison, its "covered" check).
+
+**SPY (owner, 2026-10-24).** `load_context` fetches SPY; `prepare` returns its ILS daily returns on the solve's
+calendar (`bench_ils`); `_benchmark_tail` re-centres them on the US-equity drift and labels it "the S&P 500 (SPY)".
+VTI's column stays the fallback when SPY has no history.
+
+**Verified.** `test_a1_a_fixed_stop_sells_once.py` (3): a price stop is a level, not a trail; on the same paths a
+fixed stop exits at most once while a trail at the same distance exits again and again; the benchmark is SPY when the
+solve has it. Goal/rules subset 649 passed. Full Postgres suite: 2,927 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-a1-fixed-stops-and-spy.ps1`. Production before (`aa575b0`): PASS 2 SKIP 1 (the stored
+solve predates the build). After deploy and a solve: PROD_RESULT. Opened: A2r (the retune tries stop widths), A3r (one
+exit per holding, a deterministic protection manager).
+
 ## C16 — a top-up routed to the whole-plan funder asks it first (a guard)
 
 **What.** PR 137 made the sleeve-drift top-up preview the funder before offering Accept, but only for `fund_sleeve`
@@ -51,7 +76,7 @@ in the test, as PR 137's does. `test_c16_the_whole_plan_top_up_asks_first.py`: t
 (1 failed, 1 passed) and passes with the guard; PR 137's four tests unchanged. Full Postgres suite: 2,924 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c16-whole-plan-top-up-asks-first.ps1`. Production before (`2e86e36`): PASS 2 FAIL 0
-SKIP 2 (no top-up card of either kind today). After deploy: PROD_RESULT. Also: P19 parked (owner, 2026-10-24).
+SKIP 2 (no top-up card of either kind today). After deploy (`aa575b0`): PASS 2 FAIL 0 SKIP 2 (no top-up card of either kind today). Also: P19 parked (owner, 2026-10-24).
 
 ## PR 145 — hygiene: smoke-all is read-only, the gate is Postgres, the hook ships with an installer
 

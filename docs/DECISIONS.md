@@ -34,6 +34,13 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D128 · 2026-10-24 · The goal model replays a fixed stop as a one-time sale at its price; the goal is held against SPY.**
+  A price-mode `stop_loss` was modelled as a trailing stop at today's distance (`1 - level/price`), so a stop the price
+  had drifted down to (TQQQ 65.73 vs 66.29) became a 0.8% trail for five years. It is now `stop_ratio`: the sleeve sells
+  once when its path crosses the level, and the stop is spent. Trailing stops and activated profit-protects still
+  trail. The C26 benchmark is SPY itself (fetched for the solve, re-centred on the US-equity drift the book is priced on)
+  instead of VTI, with VTI's column as the fallback. *Why:* owner, 2026-10-24 ("The comparison should be spy and not
+  vti"; protective rules: "come back with insights"). → A1
 - **D127 · 2026-10-23 · Money a stop-held sleeve cannot use goes to the core, and is not reserved for that sleeve.**
   The core card's "an unfunded sleeve has first claim" deferral (PR 60) counts only the part of a sleeve's gap the app
   may buy: a ticker under a stop hold (with PR 141, every 2x/3x fund once one is stopped) is left out. `book_target`
