@@ -38,6 +38,24 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## D134 — commodities live inside the core; the 10% carve-out is a setting, default 0
+
+**Why.** Owner, 2026-10-24 (screenshot of My mix: a "Commodities 10.8% / 10.0%" row beside the core): "I want to
+remove the commodities from my mix, it should be considered as part of the sleeves/core and not as stand alone";
+chose "Inside the core". PR 71 (2026-09-22, "10% carved from core") carved the objective table's Commodities weight
+out of any core that names none.
+
+**What.** `commodities_carve_out_pct` (Card thresholds, 0-50, default 0; 10 restores PR 71). `book_target.compose`
+and the core-basket check (`measured_assumptions`) read it. My mix folds commodity holdings into the core row unless
+something is carved out (sw iw-v76). On the owner's book (core Diversified Global Growth, Equities only), UGA, COMT
+and USO become off-basket: the core card offers to move them; nothing sells by itself.
+
+**Verified.** `test_d134_commodities_live_inside_the_core.py` (3). First gate: 3 failed -- PR 71 tests asserting the
+10% carve-out (two rewritten to the new default; the "a held commodity is never sold back" test now runs with the
+setting at 10). Full Postgres suite: 2,973 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-d134-commodities-inside-the-core.ps1`. Measured after deploy below.
+
 ## PR 146c — the goal projection is kept for the same inputs (146b's smoke FAILED)
 
 **Incident.** 146b deployed (b951765); its smoke: PASS 4 FAIL 1 -- `goal_projection` median still 250 ms. Root cause
