@@ -48,7 +48,7 @@ honour_holds=True)`, the call Accept makes; a refusal turns the card into the sa
 **Inferred, not observed** (owner, 2026-10-24: "ship it as a guard"). The live book has no ticker two sleeves want, and
 in tests a sleeve shares a ticker only when it follows a live signal, so the route and the funder's answer are forced
 in the test, as PR 137's does. `test_c16_the_whole_plan_top_up_asks_first.py`: the refused case fails on `2e86e36`
-(1 failed, 1 passed) and passes with the guard; PR 137's four tests unchanged. Full Postgres suite: GATE_RESULT.
+(1 failed, 1 passed) and passes with the guard; PR 137's four tests unchanged. Full Postgres suite: 2,924 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-c16-whole-plan-top-up-asks-first.ps1`. Production before (`2e86e36`): PASS 2 FAIL 0
 SKIP 2 (no top-up card of either kind today). After deploy: PROD_RESULT. Also: P19 parked (owner, 2026-10-24).
