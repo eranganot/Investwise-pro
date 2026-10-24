@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-24 by Claude (A1: fixed stops sell once; SPY). Last product PR: **A1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-10-24 by Claude (A2r: the retune tries stop widths). Last product PR: **A2r**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,31 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## A2r — the protection retune tries wider stops and ranks by the amount at the bar (D129)
+
+**Why.** The 10-24 solve's retune tried 28 setups (the 15-25% book guard, its sell size and re-arm gap, pausing
+take-profits); every one read 0.1% goal odds, which is what it ranked on, and none moved the amount at the 65% bar by
+more than ₪300. It never tried how far the stops sit, the lever the rules review found (A1). Owner, 2026-10-24: "Widen
+up to x3"; "Rank by confident amount".
+
+**What.** `_tune_protection` adds, for every replay column with an exit (`trail` or `stop_ratio`), the setups "every
+exit at x1.5 / x2 / x3" and, with more than one column, each column alone at each width (`EXIT_WIDEN_FACTORS`).
+`_setup_specs` applies them (`_widen`: a trail times f, capped at 90%; a fixed stop's distance from today times f).
+Never off (D115). Ranking: amount at the bar, then goal odds, then halving. Material: +2% at the bar
+(`RETUNE_MATERIAL_AMOUNT_PCT`), the usual goal-odds points, or a halving breach. `changes.widen` lists each rule's new
+level (`widened_levels`: a trailing percent times f; a price stop at today's price less f times its distance). The
+card lists "Widen: TQQQ trailing stop 20% -> 40%", says "widen N stops (none is removed)", and quotes the amount at the
+bar before and after; Accept (`apply_rules_tuning`) checks each stop is still on at the measured level, sets it, and
+writes an "edited" rule event; a moved stop refuses the whole card untouched.
+
+**Verified.** `test_a2r_the_retune_tries_stop_widths.py` (4): widening a trail and a fixed stop; the retune tries 1.5,
+2 and 3, retires nothing, and its best has the most at the bar; Accept widens the measured stop and refuses one that
+moved; the card lists the widened stop, quotes the amount, and its Accept sets the level (end to end). Goal/rules subset
+652 passed. Full Postgres suite: 2,931 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-a2r-retune-tries-stop-widths.ps1`. Production before (`7292092`): PASS 2 SKIP 1 (the
+stored solve predates the build). After deploy and a solve: PROD_RESULT.
+
 ## A1 — the goal model replays a fixed stop as a one-time sale; the goal is held against SPY (D128)
 
 **Root cause (observed, 2026-10-24 on `2e86e36`).** The stored solve's rules replay showed the TQQQ vol-target sleeve
@@ -60,7 +85,7 @@ fixed stop exits at most once while a trail at the same distance exits again and
 solve has it. Goal/rules subset 649 passed. Full Postgres suite: 2,927 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-a1-fixed-stops-and-spy.ps1`. Production before (`aa575b0`): PASS 2 SKIP 1 (the stored
-solve predates the build). After deploy and a solve: PROD_RESULT. Opened: A2r (the retune tries stop widths), A3r (one
+solve predates the build). After deploy (`7292092`): PASS 2 SKIP 1 (the solve stored at 07:12 predates the build); measured after the next solve. Opened: A2r (the retune tries stop widths), A3r (one
 exit per holding, a deterministic protection manager).
 
 ## C16 — a top-up routed to the whole-plan funder asks it first (a guard)

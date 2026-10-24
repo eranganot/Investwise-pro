@@ -34,6 +34,15 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D129 · 2026-10-24 · The protection retune may widen a stop up to x3, never remove one; it ranks by the amount at the bar.**
+  Each replay column with an exit (a sleeve, or a held ticker) is tried at x1.5, x2 and x3 its current distance, all
+  together and one at a time, beside the guard and take-profit options; a stop is never switched off (D115 stands).
+  Candidates rank by the amount reached at the goal's confidence bar, then goal odds, then halving; a setup is
+  material when it raises that amount by 2% or more (or the goal odds by the usual points, or the halving limit is
+  breached). Accept edits each stop's level (a trailing percent, or a price stop's distance from today's price) and
+  leaves an "edited" rule event. *Why:* owner, 2026-10-24 ("Widen up to x3"; "Rank by confident amount"): on 10-24 the
+  28 setups tried all read 0.1% goal odds, so the ranking could not tell them apart, and none tried the stop widths.
+  → A2r
 - **D128 · 2026-10-24 · The goal model replays a fixed stop as a one-time sale at its price; the goal is held against SPY.**
   A price-mode `stop_loss` was modelled as a trailing stop at today's distance (`1 - level/price`), so a stop the price
   had drifted down to (TQQQ 65.73 vs 66.29) became a 0.8% trail for five years. It is now `stop_ratio`: the sleeve sells
