@@ -40,6 +40,23 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
     return await build_recommendations(session, user, simulate_cash_ils=simulate_cash)
 
 
+def refusal_text(result: dict) -> str:
+    """C17: the whole refusal, as the Plan tab shows it -- the short error, the reason
+    (what would work instead) and the legs it would have traded -- not just the error."""
+    parts = [str(result.get("error") or "Not applied.").rstrip(".") + "."]
+    reason = result.get("reason")
+    if isinstance(reason, str) and reason.strip() and reason.strip() not in parts[0]:
+        parts.append(reason.strip())
+    if isinstance(result.get("funding_summary"), str) and result["funding_summary"].strip():
+        parts.append(result["funding_summary"].strip())
+    legs = [b for b in (result.get("buys") or []) if isinstance(b, dict) and b.get("ticker")]
+    if legs:
+        parts.append("It would have bought: " + ", ".join(
+            f"{b['ticker']} \u20aa{float(b.get('buy_ils') or b.get('amount_ils') or 0):,.0f}" for b in legs[:6])
+            + (f" and {len(legs) - 6} more" if len(legs) > 6 else "") + ".")
+    return " ".join(parts)
+
+
 @router.post("/recommendations/{rec_id}/accept", dependencies=[Depends(require_role(Role.ANALYST))])
 async def accept_recommendation(rec_id: str, state: CardState | None = None,
                                 choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy|trim|raise|o[1-9])$"),
@@ -68,7 +85,7 @@ async def accept_recommendation(rec_id: str, state: CardState | None = None,
     # A decision that was not taken is not done. Marking the card complete here
     # would hide a question the user has not answered yet.
     if result.get("ok") is False:
-        raise HTTPException(status_code=400, detail=result.get("error") or "Not applied.")
+        raise HTTPException(status_code=400, detail=refusal_text(result))
     # Accepting/completing is NOT the same as ignoring: it goes in the completed
     # bucket so the card is gone rather than parked in the ignored list.
     await complete_recommendation(session, user, rec_id,
