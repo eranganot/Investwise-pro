@@ -38,6 +38,32 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 146b — Today skips the behind-your-goal projection while the goal story owns the goal
+
+**Root cause (measured).** PR 146a on production (6b56882), five warm reads: `goal_projection` median 250 ms of a
+~0.5 s Today. `_goal_levers` (a Monte-Carlo bisection) measured 220-325 ms locally on the same inputs: it is the
+whole stage. Its only reader is the behind-your-goal card, which stands down while a fresh goal-mode verdict owns the
+goal (PR 92); production's verdict is goal-mode, so the 250 ms was computed and discarded on every Today. Ruled out:
+`compute_goal` / `portfolio_stats` (DB reads, a few ms in the local run) and `goal_story_active` (one row). Silent
+because the result was simply unused; nothing measured the stage until 146a split it.
+
+**What.** `goal_story_active` is asked first; the standing order, the goal, the stats and the levers are computed only
+when the older card speaks. No card changes.
+
+**Verified.** `test_pr146b_the_unused_projection_is_not_computed.py` (2): owned -> `_goal_levers` never runs;
+not owned -> it runs once. Full Postgres suite: 2,962 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr146b-today-skips-the-unused-projection.ps1`. Measured after deploy below.
+
+## P17 measured: no stock ranking beats SPY; rotation is not built (D133)
+
+Production a456a2c, `GET /strategies/round2/stocks/{key}/measure?sleeve_pct=15`, 10 years to 2026-10-23, SPY 15.35%/yr
+and QQQ 20.28%/yr on the same engine: S2 Quality Momentum 5 13.75 (selection edge -4.64, worst drop 36.8%, book at
+15%: 24.7 -> 24.3%/yr); R1 30-day momentum 9.58 (book at 25%: 21.9); R2 12-month + 30-day filter 10.96 (-7.43; 23.7);
+R3 Quality Momentum + 30-day filter 9.33 (-9.06; 23.8); S1 9.24 (-9.15; 23.6); S3 8.54 (-9.85; 22.8). None passes
+the gate or beats SPY; every one lowers the book. By D133's pre-registered rule live rotation is not built; P17 is
+parked. P17a smoke: PASS 5, FAIL 0, SKIP 0.
+
 ## P17a — three more stock rankings, held against SPY, sized 15/25/30 (D133); P20 parked
 
 **Why.** Owner, 2026-10-24, on P17: "Test other rankings first". Measured on production before building rotation
