@@ -346,6 +346,17 @@ def start_scheduler() -> None:
     except Exception:  # noqa: BLE001
         logger.warning("Book optimizer job not scheduled.", exc_info=False)
 
+    try:
+        # A3r (D132): one exit per holding, measured on the goal replay after the
+        # 04:10 goal solve; Today's card reads the stored plan.
+        from app.services.protection_manager import run_protection_manager_blocking
+        _scheduler.add_job(_guarded("protection_manager", run_protection_manager_blocking),
+                           "cron", hour=5, minute=40, id="protection_manager",
+                           misfire_grace_time=21600)
+        logger.info("Protection manager scheduled (05:40 daily).")
+    except Exception:  # noqa: BLE001
+        logger.warning("Protection manager job not scheduled.", exc_info=False)
+
     # PR 77: the holding review's backtests (each holding's own ~10 years, both
     # sell signals against holding). Nightly, after the strategy backtests, so the
     # history they fetched is cached; the Today build only reads the results.

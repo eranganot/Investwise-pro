@@ -78,7 +78,9 @@ _ACTIONABLE_KINDS = {"trim", "sell_losers", "fee_swap", "rebalance_to_objective"
                      # PR 135c: an overweight position -- trim, or raise the sleeve.
                      "overweight_choice",
                      # C29: the book against SPY -- one of the ranked measured changes.
-                     "book_review"}
+                     "book_review",
+                     # A3r: one exit per holding -- delete, re-level and add exits.
+                     "protection_plan"}
 
 
 async def _offload(fn, *args, **kwargs):
@@ -2458,6 +2460,18 @@ async def build_recommendations(session: AsyncSession, user: User,
     except Exception:  # noqa: BLE001
         logger.warning("optimizer card failed", exc_info=True)
         degraded.append("optimizer")
+    # A3r (D132): one exit per holding, from the protection manager's stored plan.
+    try:
+        async with _agent_tx(session):
+            from app.services import protection_manager
+            _pm_cards = await protection_manager.card(session, user)
+        if _pm_cards:
+            # The goal's protection retune (A2r) widens the very stops this card removes;
+            # one card about the exits at a time -- the manager's (D132).
+            recs = [r for r in recs if r.get("id") != "rec_goal_protect_book"] + _pm_cards
+    except Exception:  # noqa: BLE001
+        logger.warning("protection manager card failed", exc_info=True)
+        degraded.append("protection_manager")
 
     # Signals the agent pipeline approved (same decisions the war room shows).
     try:
@@ -2909,6 +2923,9 @@ async def build_recommendations(session: AsyncSession, user: User,
         async with _agent_tx(session):
             from app.services.rules_service import suggest_rules_for_holdings
             _sugg = await suggest_rules_for_holdings(session, user)
+        # A3r (D132): exits are the protection manager's; never suggested here.
+        from app.services.protection_manager import filter_suggestions as _pm_fs
+        _sugg = _pm_fs(_sugg)
         _flat = [{**r, "ticker": r.get("ticker") or h["ticker"]}
                  for h in (_sugg or []) for r in (h.get("rules") or [])]
         if _flat:
@@ -3011,6 +3028,15 @@ async def build_recommendations(session: AsyncSession, user: User,
                 continue
             _kept.append(r)
         recs = _kept
+
+    # A3r (D132): one exit per holding. No generated card arms a stop, trailing stop,
+    # take-profit or profit-protect; the protection manager's one card does.
+    try:
+        from app.services import protection_manager as _pm
+        recs, _pm_dropped = _pm.filter_generated(recs)
+    except Exception:  # noqa: BLE001 -- Today must not break
+        logger.warning("protection filter failed", exc_info=True)
+        degraded.append("protection_filter")
 
     # PR 148: the 2x/3x ceiling. Buys that do not fit are dropped (and listed);
     # a share already over it gets one trim card.
@@ -6700,6 +6726,11 @@ async def apply_recommendation(session: AsyncSession, user: User, rec_id: str,
             logger.warning("re-solve after a rules retune failed", exc_info=True)
             detail["note"] = ("Done. Your rules are changed; the goal's odds update after the next solve "
                               "(Plan > Goal > Re-solve now).")
+    elif kind == "protection_plan":
+        from app.services.protection_manager import apply as _pm_apply
+        detail = await _pm_apply(session, user, spec)
+        if detail.get("refused"):
+            return {"ok": False, "applied": "none", "title": rec["title"], **detail}
     elif kind == "sleeve_move":
         from app.services.sleeve_moves import apply_move
         detail = await apply_move(session, user, spec)

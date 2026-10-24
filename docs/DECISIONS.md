@@ -34,6 +34,18 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D132 · 2026-10-24 · One exit per holding: core funds have none, sleeve and 2x/3x holdings one trailing stop sized from volatility, no take-profits; the protection manager is the one place that proposes an exit.**
+  Core funds (held, in no sleeve, not 2x/3x) carry no stop-loss, trailing stop, take-profit or profit-protect: the
+  rebalance bands and the book's drawdown guard protect them. A sleeve's tickers and any 2x/3x fund held carry exactly
+  one trailing stop at k x the holding's measured monthly volatility (k from 2, 3, 4, picked on the goal replay: the
+  most at the bar inside the halving limit), clamped 5-60%; no history -> left as it is. No take-profits anywhere. The
+  manager measures nightly (05:40 UTC) and on demand (`POST /plan/protection/refresh`) and offers the whole change on
+  one card; Accept DELETES retired exits (a paused one would come back with the 3-day re-arm, D124), re-levels or adds
+  the trailing stops, logs a rule event for each, and refuses whole if any rule moved. No generated card or rule
+  suggestion arms an exit any more; rules the owner adds by hand are untouched. Refines D115 (a card never switches off
+  downside protection) for core funds only, by the owner's choice; the goal's retune card (A2r) is not shown beside
+  this one. *Why:* owner, 2026-10-24: "Bands + book guard only"; "From measured volatility"; take-profits "Drop them".
+  Live that day: 39 active rules, most core funds with a fixed stop ~8% down, a 10-17% trail and a take-profit. → A3r
 - **D131 · 2026-10-24 · The scheduled production smoke uses its own read-only key.**
   `SMOKE_API_KEY` (Railway variable), sent as `X-Agent-Key` like the agent key, acts as the owner for GET/HEAD only;
   any other method is refused 403 ("the smoke key is read-only"). It keeps the owner's role on the principal because

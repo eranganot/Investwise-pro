@@ -127,6 +127,11 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
     Each pause writes a `paused` rule event (`action.by` = card or you); downside rules that are off sit on one
     "N protective rules are switched off" heads-up whose act is `rearm_rules`. It screens on 250 paths in two passes, capped at 120 setups, and re-measures the best 3 on every path. The card
     and the Plan sentence say how many setups were measured, and mention take-profits only when they were.
+    **A3r (D132): one exit per holding.** `protection_manager` is the one place that proposes an exit: core funds
+    none (bands + book guard), sleeve / 2x-3x holdings one trailing stop at k x measured monthly volatility (k = 2/3/4
+    on the goal preview), no take-profits. Measured nightly 05:40 (`kv_settings` `protection_manager:<email>`), one
+    card (`rec_protection_one_exit`, apply `protection_plan`) that deletes, re-levels and adds; generated cards and
+    rule suggestions never arm an exit (`filter_generated`, `filter_suggestions`). Beside it the retune card is hidden.
     PR 123 (D85): a held stock with a sale rule is its own column in the replay (its history, re-centred on the
     core's drift), and every rule's effect is measured by switching it off alone on 500 paths
     (`rules.per_rule`); GET /rules carries it as `goal_impact`.

@@ -1773,6 +1773,10 @@ async def preview(session, user, *, roi_pct: float | None = None, target_date: s
             "p_halve_pct": on.get("p_halve_pct", (v.get("tail") or {}).get("before", {}).get("p_halve_pct")),
             "p_halve_without_rules_pct": off.get("p_halve_pct"),
             "median": on.get("median"), "worst5_mean": on.get("worst5_mean"),
+            # A3r: the amount reached at the bar with these rules, and as a yearly return.
+            "amount_at_confidence": on.get("amount_at_confidence"),
+            "roi_at_confidence_pct": (_roi_for_amount(goal, float(on["amount_at_confidence"]))
+                                      if on.get("amount_at_confidence") else None),
             # PR 124: what the proposed rules change, and which of them the model replays.
             "compare": rb.get("compare"),
             "proposed": [{"ticker": (x.get("ticker") or "").upper(), "rule_type": x.get("rule_type"),

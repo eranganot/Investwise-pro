@@ -457,6 +457,24 @@ async def optimizer_latest(session: AsyncSession = Depends(get_session),
                    "detail": "the optimiser has not run yet - POST /plan/optimizer/refresh runs it"}
 
 
+@router.get("/plan/protection")
+async def protection_latest(session: AsyncSession = Depends(get_session),
+                            user: User = Depends(acting_user)) -> dict:
+    """A3r: the protection manager's stored plan (one exit per holding, measured)."""
+    from app.services import protection_manager
+    got = await protection_manager.load(session, user)
+    return got or {"ok": False, "reason": "NOT_RUN",
+                   "detail": "the protection manager has not run yet - POST /plan/protection/refresh runs it"}
+
+
+@router.post("/plan/protection/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
+async def protection_refresh(session: AsyncSession = Depends(get_session),
+                             user: User = Depends(acting_user)) -> dict:
+    """A3r: measure the managed exits on the goal replay now and store the plan. Changes no rule."""
+    from app.services import protection_manager
+    return await protection_manager.refresh(session, user)
+
+
 @router.post("/plan/optimizer/refresh", dependencies=[Depends(require_role(Role.ANALYST))])
 async def optimizer_refresh(session: AsyncSession = Depends(get_session),
                             user: User = Depends(acting_user)) -> dict:

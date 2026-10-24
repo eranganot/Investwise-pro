@@ -37,7 +37,8 @@ async def list_rules(session: AsyncSession = Depends(get_session),
 @router.get("/suggestions")
 async def suggest_rules(session: AsyncSession = Depends(get_session),
                         user: User = Depends(acting_user)) -> dict:
-    return {"suggestions": await rules_service.suggest_rules_for_holdings(session, user)}
+    from app.services.protection_manager import filter_suggestions
+    return {"suggestions": filter_suggestions(await rules_service.suggest_rules_for_holdings(session, user))}
 
 
 @router.get("/events")
