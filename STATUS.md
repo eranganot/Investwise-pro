@@ -62,7 +62,7 @@ use `DATABASE_URL` when it is set, and the gate scripts set it, so nothing chang
 
 **Verified.** 3 new tests; the read-only guard fails on `dc4aa1d`'s `smoke-all.ps1` (it POSTs `/rules/evaluate`).
 `smoke-all` with the change against production: 22 passed, 3 failed (Gemini credits), section 5 "rule check ran
-(newly triggered: 0)". Full Postgres suite: GATE_RESULT.
+(newly triggered: 0)". Full Postgres suite: 2,922 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-pr145-hygiene.ps1`. Production before (`dc4aa1d`): PASS 4 FAIL 0 SKIP 0 (it checks the
 recorded rule check smoke-all now reads, and that Today still builds; this PR changes no app code). After deploy:
