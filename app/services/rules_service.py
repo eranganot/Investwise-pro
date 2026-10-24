@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -1539,7 +1540,9 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
             current, unit = (cur, "price")
 
         out.append({"id": str(r.id), "ticker": r.ticker, "rule_type": r.rule_type,
-                    "mode": r.mode, "level": r.level, "note": r.note,
+                    "mode": r.mode, "level": r.level,
+                    "note": (band_note_now(r.note, r.ticker, (pos or {}).get("plan_target_pct"), r.level)
+                             if r.rule_type == "rebalance_band" else r.note),
                     "strategy_id": r.strategy_id,
                     "active": r.active, "triggered": r.triggered,
                     "current_price": cur,
@@ -1556,6 +1559,29 @@ async def list_rules(session: AsyncSession, user: User) -> list[dict]:
                     "status": status, "params": r.params,
                     "last_triggered_at": r.last_triggered_at.isoformat() if r.last_triggered_at else None})
     return out
+
+
+# C28 (2026-10-24, live): a band's note is the suggestion's sentence, written once when it
+# was armed -- "Your plan targets 7.2% of the book in QQQ" -- while the band measures
+# against the LIVE plan target (12.3% that day; all four bands were stale). The generated
+# sentence is re-worded from the live target whenever it is read; a note the owner wrote
+# himself is left alone.
+_BAND_NOTE = re.compile(r"^Your plan targets [\d.]+% of the book in (\S+)\. Trims above [\d.]+% and tops up "
+                        r"below [\d.]+%, back to the target\.$")
+
+
+def band_sentence(ticker: str, target_pct: float, level: float) -> str:
+    t, lv = float(target_pct), float(level)
+    return (f"Your plan targets {t:g}% of the book in {ticker}. Trims above {t + lv:g}% and tops up "
+            f"below {max(0.0, t - lv):g}%, back to the target.")
+
+
+def band_note_now(note: str | None, ticker: str, target_pct: float | None, level) -> str | None:
+    if not note or not _BAND_NOTE.match(note.strip()):
+        return note
+    if target_pct is None:
+        return f"Your plan has no target for {ticker} right now, so this band does nothing until it does."
+    return band_sentence(ticker, round(float(target_pct), 1), float(level or 0))
 
 
 def _adv_status(r, pos: dict) -> str | None:
