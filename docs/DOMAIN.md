@@ -12,7 +12,8 @@ The user owns a **book**: holdings plus cash, valued in ILS. They set a **plan**
 (Grow / Balanced / Income / Preserve), a risk tolerance, and a **goal**, which is a target ROI per
 year on the money they put in, by a deadline. The plan resolves to one **book target**: the
 **sleeves** (rule-based strategies with a % of the book each), the **core** (a static basket
-holding the remainder), a 10% Commodities carve-out, and a cash reserve. All of it sums to 100%.
+holding the remainder, commodities included when its basket has them -- D134), and a cash reserve. All of
+it sums to 100%.
 Every few minutes the app compares the book to the book target, the user's **trading rules**,
 the market, and the odds of reaching the goal. It then emits **cards**. A card is a single,
 sized, funded proposal. Pressing **Accept** executes it on the *tracked* book and writes the
@@ -79,7 +80,7 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
   sleeves' per-ticker targets (classified)
   + core mix × core's remaining share
   − cash reserve
-  − 10% Commodities carve-out
+  − Commodities carve-out (`commodities_carve_out_pct`, default 0 since D134; was 10%, PR 71)
   = 1.0  (asserted)
   ```
 

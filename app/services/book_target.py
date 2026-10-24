@@ -78,6 +78,20 @@ def sleeve_class_mix(sleeve_targets: dict[str, float]) -> dict[str, float]:
     return out
 
 
+# D134 (owner, 2026-10-24: "remove the commodities from my mix, it should be part of the
+# sleeves/core and not stand alone"; chose "Inside the core"). PR 71 carved the objective
+# table's Commodities weight (Grow: 10%) out of any core that names none. Now the carve-out
+# is a Card-thresholds setting, `commodities_carve_out_pct`, default 0: the core's own basket
+# decides commodities (All-Weather holds some; Diversified Global Growth none), and a
+# commodity bet beyond that is a sleeve. Setting it back to 10 restores PR 71 exactly.
+COMMODITIES_CARVE_OUT_PCT = 0.0
+
+
+def carve_out_fraction() -> float:
+    from app.services import thresholds
+    return max(0.0, float(thresholds.get("commodities_carve_out_pct", COMMODITIES_CARVE_OUT_PCT) or 0.0)) / 100.0
+
+
 def carved_classes(core_mix: dict | None, objective: str | None,
                    commodities_pct: float | None = None) -> set[str]:
     """The classes carved OUT of the core region (PR 71): {"Commodities"} when
@@ -288,7 +302,7 @@ async def book_target(session, user, objective: str) -> dict:
         targets, held = planned, {}
 
     out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective,
-                  cash_pct=cash_pct, held_back=held)
+                  cash_pct=cash_pct, held_back=held, commodities_pct=carve_out_fraction())
     out["planned_sleeve_targets"] = {k.upper(): round(float(v), 4) for k, v in planned.items()}
     out["ceiling_cut"] = {k: round(v, 4) for k, v in _ceiling_cut.items() if v > 0}
     if held:

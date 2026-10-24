@@ -3580,10 +3580,11 @@ function mixPanel(){
   const sl=(S.sleeves||[]).map(x=>({name:_stratName(x.strategy_id),held:(x.held_pct||0)*100,tgt:+x.sleeve_pct||0,id:x.strategy_id}));
   const sleevesT=sl.reduce((a,x)=>a+x.tgt,0);
   const coreT=Math.max(0,100-sleevesT-comT-cashT);
-  const coreH=Math.max(0,(S.core_held_pct||0)*100-comH-cashH);
+  // D134: with no carve-out, commodities are part of the core -- no row of their own.
+  const coreH=Math.max(0,(S.core_held_pct||0)*100-(comT>0?comH:0)-cashH);
   const rows=[...sl.map(x=>({...x,kind:"sleeve"})),
     {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core"},
-    ...(comT>0||comH>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
+    ...(comT>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
     {name:"Cash",held:cashH,tgt:cashT,kind:"cash"}];
   const max=Math.max(1,...rows.map(x=>Math.max(x.held,x.tgt)));
   // PR 131: both sides. This counted only the under-funded sleeves, so a sleeve

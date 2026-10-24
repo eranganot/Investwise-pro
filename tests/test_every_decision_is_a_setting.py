@@ -27,7 +27,7 @@ def _with(overrides):
 def test_the_thirteen_are_settings_with_todays_defaults():
     from app.services import frontier_service as fs
     from app.services import recommendations as rec
-    assert NEW <= set(thresholds.SPEC) and len(thresholds.SPEC) == 35   # PR 121 (+4), PR 116 (+1), PR 132 (+2), PR 133 (+2), PR 136a (+1), C18 (+1), PR 148 (+1)
+    assert NEW <= set(thresholds.SPEC) and len(thresholds.SPEC) == 36   # PR 121 (+4), PR 116 (+1), PR 132 (+2), PR 133 (+2), PR 136a (+1), C18 (+1), PR 148 (+1), D134 (+1)
     d = thresholds.defaults()
     assert d["concentration_cap_pct"] == 25.0                              # Medium risk tolerance
     assert thresholds.defaults(SimpleNamespace(risk_tolerance="High"))["concentration_cap_pct"] == 40.0
@@ -99,5 +99,5 @@ def test_no_trade_card_or_headsup_below_the_funded_minimum():
 def test_plan_reports_the_effective_floor_and_23_settings():
     with TestClient(app) as c:
         p = c.get("/api/v1/plan").json()
-    assert len(p["thresholds_spec"]) == 35 and NEW <= set(p["thresholds_spec"])
+    assert len(p["thresholds_spec"]) == 36 and NEW <= set(p["thresholds_spec"])
     assert p["thresholds_effective_card_floor_ils"] >= p["thresholds"]["min_funded_trade_ils"]

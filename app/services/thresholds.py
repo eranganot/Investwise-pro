@@ -103,6 +103,10 @@ SPEC: dict[str, tuple[str, str, float, float]] = {
     "near_cap_pts": ("\"Nearly at your cap\" within (points)",
                      "How close a holding must be to its max-weight cap for a heads-up.", 0.1, 20.0),
     "ideas_shown": ("Buy ideas listed", "How many screener ideas the cash card lists.", 1.0, 20.0),
+    # D134: commodities live inside the core; this carves a fixed share out of it (PR 71's 10%).
+    "commodities_carve_out_pct": ("Commodities carved out of your core (% of the book)",
+                                  "0 = your core's own basket decides commodities, and a commodity bet beyond it is "
+                                  "a sleeve. 10 restores the fixed 10% Commodities slice beside the core.", 0.0, 50.0),
     # PR 116 (D80): 1 = when a core is chosen, commodity buys use its commodity
     # tickers (All-Weather: IAU, DBC); 0 = the best-ranked commodity of all.
     "commodity_buys_core_only": ("Commodity buys from your core only (1 = yes, 0 = any)",
@@ -131,6 +135,7 @@ def defaults(plan=None) -> dict:
     from app.services import recommendations as rec
     from app.services import book_effect as bfx
     from app.services import book_optimizer as bopt
+    from app.services import book_target as _bt
     from app.services import sleeve_diversity as div
     from app.services.advanced_rules import DEFAULTS as ADV
     from app.services.advanced_rules import DERISK_FRACTION, REARM_GAP_PTS
@@ -159,6 +164,7 @@ def defaults(plan=None) -> dict:
             "ideas_shown": rec.IDEAS_SHOWN,
             "max_idea_cards": rec._MAX_BUY_IDEA_CARDS,
             "commodity_buys_core_only": rec.COMMODITY_BUYS_CORE_ONLY,
+            "commodities_carve_out_pct": _bt.COMMODITIES_CARVE_OUT_PCT,
             "min_card_tax_ils": headsup.MIN_TAX_SAVING_ILS,
             "min_card_trade_ils": headsup.MIN_CARD_TRADE_ILS,
             "min_card_trade_pct": headsup.MIN_TRADE_PCT_OF_BOOK,

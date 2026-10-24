@@ -34,6 +34,15 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D134 · 2026-10-24 · Commodities live inside the core; the fixed 10% carve-out is a setting, default 0.**
+  PR 71 carved the objective table's Commodities weight (Grow: 10%) out of any core that names none, and the Plan tab
+  showed it as its own row. Now `commodities_carve_out_pct` (Card thresholds) decides it, default 0: the core's own
+  basket holds commodities or not (All-Weather does; Diversified Global Growth does not), and a commodity bet beyond
+  it is a sleeve. Commodity funds a core without commodities does not name are off-basket like any other holding --
+  the core card offers to move them, nothing sells by itself. 10 restores PR 71 exactly. My mix shows commodity
+  holdings inside the core row unless something is carved out. *Why:* owner, 2026-10-24: "I want to remove the
+  commodities from my mix, it should be considered as part of the sleeves/core and not as stand alone"; chose
+  "Inside the core". Supersedes the 2026-09-22 "10% carved from core". → D134 PR
 - **D133 · 2026-10-24 · Before live stock rotation, three more rankings are measured against SPY; P20 waits for a TASE price source.**
   Measured on production (10 years to 2026-10-23): Quality Momentum 5 13.8%/yr vs QQQ 20.3% (selection edge -4.6%/yr,
   worst drop 37%); at 15% of the book it lowers return 24.7 -> 24.3%/yr and cuts the worst drop 3 points -- a hedge,
