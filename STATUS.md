@@ -38,6 +38,35 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## A3r — one exit per holding: the protection manager (D132)
+
+**Why.** Live 2026-10-24 (`GET /rules`): 43 rules, 39 active. VTI, VXUS, QQQ, SMH, XLE, COMT, USO, UGA, UGL and BIL each
+carried a fixed stop ~8% below the price when armed, a 10-17% trailing stop and a take-profit; TQQQ a fixed stop, a 20%
+trail and a +50% take-profit. Their notes show five generators arming independently (rule suggestions "Caps downside",
+"Locks in gains", "Takes some off the table"; holding review; uptrend alert). The A1 replay put the remaining drag on
+these trails. Owner, 2026-10-24: core funds "Bands + book guard only"; sleeve / 2x-3x holdings one exit "From measured
+volatility"; take-profits "Drop them".
+
+**What.** `protection_manager`: roles (core = held, in no sleeve, not 2x/3x; sleeve = a sleeve's tickers or a 2x/3x
+fund); `plan_changes` (pure): core -> every exit deleted (switched-off ones too: the 3-day re-arm would return them);
+sleeve -> one trailing stop at k x monthly volatility (250 sessions of log returns x sqrt 21; clamped 5-60%), the rest
+deleted; no history -> left as is. Measured on the goal preview (now returning the amount at the bar) at k = 2, 3, 4;
+the most at the bar inside the halving limit wins. Nightly job `protection_manager` 05:40 UTC, `GET/POST
+/plan/protection[/refresh]`. One Today card `rec_protection_one_exit` (apply `protection_plan`): Accept deletes,
+re-levels and adds, writes a rule event each, refuses whole if any rule moved; shown only while the rules are the ones
+measured; the retune card is hidden beside it. Generated cards and rule suggestions no longer arm an exit
+(`filter_generated`, `filter_suggestions`).
+
+**Verified.** `test_a3r_one_exit_per_holding.py` (8): the plan per role; clamping and nothing-to-change; the volatility
+measure; the generator and suggestion filters; refresh -> card -> Accept end to end (k=3 chosen over k=4, which breaks
+the halving limit; one TQQQ trail left; 5 deleted + 1 edited events; the card goes); a moved rule refuses whole; a real
+measurement on the goal model. Four older tests asserted that generated cards arm stops (holding review, trend card,
+suggestions) and were rewritten to the new rule. First gate: 5 failed -- those four, and the event-loop guard catching
+the volatility fetch nested in an async function (moved to module level, offloaded). Full Postgres suite: 2,954
+passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-a3r-one-exit-per-holding.ps1`. Measured after deploy below.
+
 ## D-1 — a read-only key for the scheduled production smoke (D131)
 
 **Why.** Owner, 2026-10-24 (D-1): a daily production smoke at 08:30 Israel time, message on FAIL only. Its key runs
