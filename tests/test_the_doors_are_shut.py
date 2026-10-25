@@ -21,6 +21,7 @@ COMPUTE_ONLY = {
     ("POST", "/api/v1/ask"), ("POST", "/api/v1/ai/holding/{ticker}/research"),
     ("POST", "/api/v1/plan/frontier/preview"),
     ("POST", "/api/v1/plan/frontier/rule-impact"),   # PR 124: read-only replay, nothing saved
+    ("POST", "/api/v1/plan/optimizer/compare"),      # PR 152: scores books, nothing saved
     ("POST", "/api/v1/scenario"), ("POST", "/api/v1/whatif"),
 }
 # Unauthenticated on purpose. Every addition is a decision -- this list is the review.

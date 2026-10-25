@@ -457,6 +457,47 @@ async def optimizer_latest(session: AsyncSession = Depends(get_session),
                    "detail": "the optimiser has not run yet - POST /plan/optimizer/refresh runs it"}
 
 
+class CompareBooksRequest(BaseModel):
+    """PR 152: sleeve sets to score side by side, each {strategy_id: sleeve_pct}."""
+    books: list[dict[str, float]] = Field(min_length=1, max_length=4)
+
+
+@router.post("/plan/optimizer/compare")
+async def optimizer_compare(req: CompareBooksRequest, session: AsyncSession = Depends(get_session),
+                            user: User = Depends(acting_user)) -> dict:
+    """PR 152: the goal's odds for each of up to four HYPOTHETICAL sleeve sets, scored
+    together by the optimiser's own solve (`frontier_service.score_books`) so the
+    numbers compare with each other and with the optimiser's. Read-only: nothing is
+    stored and no sleeve changes. A sleeve left out of a book is removed from it."""
+    from app.services import frontier_service as fs
+    from app.services import sleeve_service as sv
+
+    books: list[dict[str, float]] = []
+    for b in req.books:
+        book = {}
+        for sid, pct in b.items():
+            if strategy_catalog.get(sid) is None:
+                raise HTTPException(status_code=400, detail=f"unknown strategy '{sid}'")
+            if not 0.0 <= float(pct) <= 100.0:
+                raise HTTPException(status_code=400, detail=f"{sid}: sleeve_pct must be 0-100")
+            if float(pct) > 0:
+                book[sid] = float(pct)
+        if sum(book.values()) > 100.0 + 1e-9:
+            raise HTTPException(status_code=400, detail="a book's sleeves add up to more than 100%")
+        books.append(book)
+    held = {s.strategy_id for s in await sv.list_sleeves(session, user)}
+    adds = sorted({sid for b in books for sid in b} - held)
+    res = await fs.score_books(session, user, books, extra_sleeves=adds or None)
+    if not res.get("ok"):
+        return {"ok": False, "reason": res.get("reason") or "NOT_SCORED"}
+    keys = ("ok", "reason", "p_goal_pct", "p_halve_pct", "median", "growth_cagr_pct",
+            "p_goal_without_rules_pct", "p_halve_without_rules_pct",
+            "amount_at_confidence", "roi_at_confidence_pct")
+    return {"ok": True, "books": [{"book": b, **{k: sc.get(k) for k in keys if k in sc}}
+                                  for b, sc in zip(books, res.get("scores") or [])],
+            "note": "Scored together on the optimiser's goal solve. Nothing was saved or changed."}
+
+
 @router.get("/plan/protection")
 async def protection_latest(session: AsyncSession = Depends(get_session),
                             user: User = Depends(acting_user)) -> dict:

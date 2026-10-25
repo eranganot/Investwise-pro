@@ -11,7 +11,7 @@ import re
 WRITES = re.compile(r"\bApi\s+(POST|PUT|PATCH|DELETE)\b|-Method\s+(Post|Put|Patch|Delete)\b", re.I)
 # A POST that writes nothing: dry runs, and endpoints that only compute an answer.
 READ_ONLY = re.compile(r"dry_run=true|/api/v1/(ask|whatif|portfolio/risk|portfolio/performance|"
-                       r"plan/frontier/preview|plan/frontier/rule-impact|auth/m2m)\b", re.I)
+                       r"plan/frontier/preview|plan/frontier/rule-impact|plan/optimizer/compare|auth/m2m)\b", re.I)
 # Older smokes that refresh a cache or act on the book, from before this rule. Frozen:
 # a NEW smoke that writes fails here. Review before re-running any of them.
 # (Every smoke before PR 139 that refreshes the goal solve, a backtest or a review.)
