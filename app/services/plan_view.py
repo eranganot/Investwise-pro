@@ -284,11 +284,16 @@ async def sleeves_view(session, user) -> dict:
     # PR 71: what the unclaimed remainder is split into, from THE book target,
     # so the Plan tab can say the core is not all of the remainder.
     _comm = _cashr = 0.0
+    _core_tgt = None
     try:
         from app.services.book_target import book_target as _bt
         _p = await get_plan(session, user)
         _btv = await _bt(session, user, getattr(_p, "objective", None) or "Balanced")
         _comm, _cashr = float(_btv.get("commodities_pct") or 0.0), float(_btv.get("cash_pct") or 0.0)
+        # PR 151: the core's target AS THE CARDS USE IT. A stop-held sleeve's
+        # share goes to the core (PR 149, D127), so the planned remainder below
+        # (`core_pct`) is not what anything is managed to while a hold lasts.
+        _core_tgt = round(float(_btv.get("core_pct") or 0.0), 4)
     except Exception:  # noqa: BLE001 -- the sleeve table must still render
         logger.warning("book target unavailable for the sleeves view", exc_info=False)
     # PR 132 (D97): every sleeve must be a different bet. `same_bet` says, per
@@ -321,6 +326,16 @@ async def sleeves_view(session, user) -> dict:
                 "cut_pct": {k: round(100.0 * v, 2) for k, v in _cut.items()}}
     except Exception:  # noqa: BLE001 -- the sleeve table must still render
         logger.warning("leveraged ceiling unavailable for the sleeves view", exc_info=True)
+    # PR 151: which sleeve legs a stop hold blocks, so My mix can say "on hold"
+    # rather than count them as money to fund.
+    try:
+        from app.services import buyback_hold as _bh151
+        _stopped = set(_bh151.stop_held(await _bh151.load(session, user)))
+    except Exception:  # noqa: BLE001 -- the sleeve table must still render
+        _stopped = set()
+    for d in _sleeves:
+        _tks = [str(t).upper() for t in (d.get("tickers") or [])]
+        d["on_stop_hold"] = sorted(t for t in _tks if t in _stopped)
     return {
         "sleeves": _sleeves,
         "leveraged_ceiling": _lev,
@@ -332,6 +347,8 @@ async def sleeves_view(session, user) -> dict:
         "allocated_held_pct": occ["allocated_held_pct"],
         "allocated_held_ils": occ["allocated_held_ils"],
         "core_pct": sv.remainder_pct(sleeves),
+        # PR 151: what the core is managed to (a fraction), stop holds included.
+        "core_target_pct": _core_tgt,
         # The core's ACTUAL share against its target. Same distinction.
         "core_held_pct": occ["core_held_pct"],
         "nav_ils": occ["nav_ils"],

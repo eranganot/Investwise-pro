@@ -38,6 +38,26 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 151 — My mix shows the core target the cards use; a stop-held sleeve reads "on hold"
+
+**Report.** Owner, 2026-10-25 09:43 (screenshot of My mix after funding DBMF): core "49.2% / 26.2%" in warning colour,
+"23.0 pts to fund".
+
+**Root cause (seen on production, 5e23da8).** `book_target.core_pct` = 0.4924: since PR 149 SOXL's 23% stop-held share
+is managed in the core (D127). `mixPanel` computed its own core target in the page as 100 - every sleeve target -
+cash, which knows nothing of holds, and counted the held sleeve as money to fund. Display only: no card acts on it
+(Today had no cards). Ruled out: a wrong book target -- the cards and the funder both read 0.4924.
+
+**Fix.** `/plan/sleeves` adds `core_target_pct` (the book target's) and per-sleeve `on_stop_hold`. My mix uses the
+server's core target, notes "26.2% + 23.0% while SOXL is on hold", marks the SOXL row "on hold" and leaves it out of
+"pts to fund". Shell cache iw-v77.
+
+**Tests.** `test_pr151_my_mix_shows_the_stop_hold.py` (3; the first fails on main: no `core_target_pct`). Rendered
+`mixPanel` with the live numbers: core 49.2% / 49.2%, SOXL "on hold", "on plan". Full Postgres suite: 2,983 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr151-my-mix-shows-the-stop-hold.ps1`. Local build (a fired and accepted SOXL stop):
+PASS 7 FAIL 0 SKIP 0. Production after: PROD_RESULT
+
 ## PR 150 — the core realign keeps the core's size while a sleeve is unfunded (C30, D135)
 
 **Report.** Found 2026-10-25 answering "why so much cash": "Bring your core back to Diversified Global Growth"
@@ -67,7 +87,9 @@ encoded PR 60's deferral; rewritten to D135. Full Postgres suite: 2,980 passed, 
 SKIP 1 (no accept yet); after Accept, XLE and XLF swapped into the basket and cash unchanged (0 -> 0). Seen on the
 same run, and the same on main: a ticker both a sleeve and the basket hold (QQQ) is bought into the core leg, so the
 sleeve then reads over -- pre-existing, not this PR; the owner's sleeves share no ticker with his basket. Production
-before the merge: no core card on Today since PR 149 (the core grew to 49%), so section 1 SKIPs. PROD_RESULT
+before the merge: no core card on Today since PR 149 (the core grew to 49%), so section 1 SKIPs. Production after (5e23da8, 07:01 UTC, read in the signed-in app): PASS 5 FAIL 0 SKIP 1 --
+the card swaps COMT, UGA, USO, XLE, XLF (₪6,694) into the basket, ₪14 tax, no step to cash, "keeps its size" on the
+card. Owner accepted at 07:41; DBMF funded 07:42; by 07:44 no cash-card buy of anything the realign sold.
 
 ## PR 149 — a stop-held sleeve's share goes to the core, not to cash (D127 made true)
 
