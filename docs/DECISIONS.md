@@ -105,7 +105,8 @@
   may buy: a ticker under a stop hold (with PR 141, every 2x/3x fund once one is stopped) is left out. `book_target`
   already gives that share to the core; the deferral now agrees with it. *Why:* owner, 2026-10-23, "Currently I have two
   triggered rules but no recommendation on how to act"; offered "into the core / park in cash / keep", chose "Into the
-  core". → C27
+  core". → C27. *Correction (PR 149, 2026-10-25):* `book_target` did NOT give that share to the core -- it parked
+  it in Cash as a take-profit hold (production 10-25: 23% of the book). It does now; take-profit holds still park cash.
 - **D124 · 2026-10-23 · Switched-off protection re-arms itself after 3 days, never one already crossed.**
   A stop-loss, trailing stop, profit-protect, trend break or drawdown guard that has been off `rearm_after_days` (a
   Card-thresholds setting, default 3; 0 = never) is switched back on by the 30-minute rule check, logged `resumed` by

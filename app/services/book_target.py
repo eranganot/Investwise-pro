@@ -283,6 +283,14 @@ async def book_target(session, user, objective: str) -> dict:
             if _act:
                 _nav_h = book_nav_ils(_rows)
                 targets, held = bh.apply_holds(targets, _act, bh.weights_of(_rows, _nav_h))
+                # PR 149 (D127): a STOP hold still cuts its ticker's target (no
+                # buyer may buy it), but its share goes to the CORE, not to Cash.
+                # Parking it was PR 75's design for a take-profit hold, which
+                # waits for a lower price to buy the same ticker back. A stop has
+                # no price that ends it, so the cash waited on a signal with no
+                # date; production 2026-10-25 held 23% of the book in cash for
+                # SOXL. Only take-profit holds park cash now.
+                held = {tk: w for tk, w in held.items() if not bh.is_stop(_act.get(tk))}
                 # PR 86: a hold reserves cash that EXISTS. The held-cash card
                 # already caps its reserve at the cash above the floor
                 # (`spendable_cash`); the target did not, so after Eran invested
