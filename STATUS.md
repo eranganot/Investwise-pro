@@ -38,6 +38,43 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 149 — a stop-held sleeve's share goes to the core, not to cash (D127 made true)
+
+**Report.** Owner, 2026-10-25 08:11 (screenshot of My mix: Cash 23.8% / 0.8%, both sleeves 0%): "Why do I have so
+much cash and none in my sleeves?"
+
+**Root cause (seen on production, 31a2d00).** `/recommendations.book_target`: `held_back = {"SOXL": 0.23}`, target
+Cash 0.2376 against a deliberate reserve of 0.0076; cash held ₪4,699 of ₪19,778 (23.8%). The SOXL sleeve is on a
+stop hold since the 10-23 05:45 stop-out. `book_target.compose` parks every hold's cut in Cash -- PR 75's design for
+a take-profit hold, which waits for a lower price to buy the same ticker back. A stop hold has no price that ends it,
+so the cash waited on a signal with no date. PR 86 caps the reserve at the cash that exists, and the cash existed
+because the reserve kept it: a loop that looks right from inside. D127 (10-23, owner: "Into the core") said
+`book_target` "already gives that share to the core"; it did not. Reproduced:
+`test_pr149_a_stop_held_share_goes_to_the_core.py` fails on main (`held_back` SOXL 0.2026).
+
+**Ruled out.** (1) The cash being unspent proceeds of an unexecuted Accept: the ledger shows every redeploy and
+realign leg recorded, and target Cash equals held Cash. (2) The leveraged ceiling (C24): `ceiling_cut` is empty,
+2x/3x chosen 23% < 44%. (3) The DBMF sleeve: it is a separate cause -- a cold-start sleeve is funded only from
+"Fund this sleeve" by design (heads-up `rec_5aa348`), so its 40% sits in the oversized core, not in cash.
+
+**Fix.** `book_target`: a STOP hold still cuts its ticker's target (no buyer may buy it), but its share is no longer
+returned as `held_back`, so the core takes it. Take-profit holds still park cash. `compose` is unchanged.
+
+**Blast radius.** Every reader of `held_back`: the shared funding ledger's reserve, the cash card's reserve and the
+held-cash card. With no take-profit hold, they reserve nothing; cash above the trigger is offered to the core like
+any other cash. The held-cash card for a stop no longer appears (it offered "keep / buy back / redeploy" for money
+D127 says is not the sleeve's).
+
+**Tests.** `test_pr149_a_stop_held_share_goes_to_the_core.py` (3: the stop gives its share to the core; NOT CHANGED,
+a take-profit hold keeps its cash; `compose` unchanged). On main: 1 failed (`held_back` SOXL 0.2026). Full Postgres suite: 2,976 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr149-stop-held-share-to-core.ps1`. Local build (Postgres, `REQUIRE_AUTH=true`, a fired
+and accepted SOXL stop): PASS 6 FAIL 0 SKIP 0. Production before the merge (read in the signed-in app; no agent key on
+this machine, A2): section 1 would FAIL, `held_back` SOXL 0.23. Production after: PROD_RESULT
+
+**Also found (not fixed here, BACKLOG C30).** The core realign and the cash redeploy undo each other while sleeves
+are unfunded: `rec_f6f017` was accepted 7 times 10-23..10-25.
+
 ## D134 — commodities live inside the core; the 10% carve-out is a setting, default 0
 
 **Why.** Owner, 2026-10-24 (screenshot of My mix: a "Commodities 10.8% / 10.0%" row beside the core): "I want to
