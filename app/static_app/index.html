@@ -3577,26 +3577,32 @@ function mixPanel(){
   const cur=(MYMIX&&MYMIX.current_allocation)||{};
   const comT=(S.commodities_pct||0)*100, cashT=(S.cash_reserve_pct||0)*100;
   const comH=(cur.Commodities||0)*100, cashH=(cur.Cash||0)*100;
-  const sl=(S.sleeves||[]).map(x=>({name:_stratName(x.strategy_id),held:(x.held_pct||0)*100,tgt:+x.sleeve_pct||0,id:x.strategy_id}));
+  const sl=(S.sleeves||[]).map(x=>({name:_stratName(x.strategy_id),held:(x.held_pct||0)*100,tgt:+x.sleeve_pct||0,id:x.strategy_id,
+    hold:(x.on_stop_hold||[]).length?x.on_stop_hold:null}));
   const sleevesT=sl.reduce((a,x)=>a+x.tgt,0);
-  const coreT=Math.max(0,100-sleevesT-comT-cashT);
+  const coreP=Math.max(0,100-sleevesT-comT-cashT);
+  // PR 151: a stop-held sleeve's share is managed in the core (PR 149, D127), so the
+  // core's target is the server's, not the planned remainder.
+  const coreT=S.core_target_pct!=null?Math.max(0,S.core_target_pct*100):coreP;
+  const heldBack=sl.filter(x=>x.hold);
   // D134: with no carve-out, commodities are part of the core -- no row of their own.
   const coreH=Math.max(0,(S.core_held_pct||0)*100-(comT>0?comH:0)-cashH);
   const rows=[...sl.map(x=>({...x,kind:"sleeve"})),
-    {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core"},
+    {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core",
+     note:(heldBack.length&&coreT-coreP>=0.5)?`${(Math.round(coreP*10)/10).toFixed(1)}% + ${(Math.round((coreT-coreP)*10)/10).toFixed(1)}% while ${heldBack.map(x=>x.hold.join(", ")).join(", ")} ${heldBack.length>1?"are":"is"} on hold`:""},
     ...(comT>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
     {name:"Cash",held:cashH,tgt:cashT,kind:"cash"}];
   const max=Math.max(1,...rows.map(x=>Math.max(x.held,x.tgt)));
   // PR 131: both sides. This counted only the under-funded sleeves, so a sleeve
   // 20 points over read as "1.5 pts to fund".
-  const toFund=sl.reduce((a,x)=>a+Math.max(0,x.tgt-x.held),0);
+  const toFund=sl.filter(x=>!x.hold).reduce((a,x)=>a+Math.max(0,x.tgt-x.held),0);
   const over=sl.reduce((a,x)=>a+Math.max(0,x.held-x.tgt),0);
   const r1=v=>(Math.round(v*10)/10).toFixed(1);
   const bar=x=>{const off=Math.abs(x.held-x.tgt)>=1;
     return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span>${x.name}</span>
-        <span style="display:flex;gap:6px;align-items:center">${_chip(`${r1(x.held)}% / ${r1(x.tgt)}%`,off?"warn":"ok")}
+        <span>${x.name}${x.note?`<div class="mk" style="font-size:11px">${x.note}</div>`:""}${x.hold?`<div class="mk" style="font-size:11px">Stop hold on ${x.hold.join(", ")}: not bought until its signal is out and back in; its share sits in the core</div>`:""}</span>
+        <span style="display:flex;gap:6px;align-items:center">${x.hold?_chip("on hold",""):""}${_chip(`${r1(x.held)}% / ${r1(x.tgt)}%`,x.hold?"":(off?"warn":"ok"))}
           ${x.kind==="sleeve"?`<button class="ghost" style="font-size:11px;padding:2px 6px" onclick="removeSleeve('${x.id}','${x.name.replace(/'/g,"")}')" aria-label="Remove the ${x.name} sleeve">Remove</button>`:""}</span></div>
       <div style="position:relative;height:8px;background:var(--line);border-radius:4px;margin-top:6px">
         <i style="position:absolute;left:0;top:0;height:8px;border-radius:4px;background:#4f8df7;width:${Math.min(100,x.held/max*100)}%"></i>
