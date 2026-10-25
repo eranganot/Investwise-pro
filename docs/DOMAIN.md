@@ -220,7 +220,7 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
 | 1 | `trim`: Trim X | A single name is over the concentration cap | `trim`: sell the excess to cash |
 | 2 | `tax`: Harvest a tax loss | A loser outside the sleeves/core; the saving is measured only on what it sells | `sell_losers` |
 | 3 | `rebal_merged`: Buy/Sell <class> | `AllocationEngine` drift vs the book target (Cash skipped) | `rebalance_to_objective`: a whole-book rebalance as real trades, tax quoted |
-| 3a | `corebasket`: Bring your core back | Core basket off by > 5 pts | `core_to_basket` (prices the buys first; a sleeve trim comes only from sleeves over their size, from their own holdings, never a basket ticker: C15, D119) |
+| 3a | `corebasket`: Bring your core back | Core basket off by > 5 pts | `core_to_basket` (prices the buys first; a sleeve trim comes only from sleeves over their size, from their own holdings, never a basket ticker: C15, D119; while a buyable sleeve is unfunded the basket is sized to what the core holds and nothing is trimmed to cash: D135) |
 | 3b | `divrisk`: geo / currency / liquidity | `risk_alerts` vectors | geo: `buy_funded` VXUS (swap allowed); others: heads-up |
 | 4 | `behind`: behind goal | The projection is short **and no fresh frontier goal verdict owns the goal** | `set_standing_order` / `set_objective_and_rebalance` |
 | 5 | Fee swap | Expense ratio above threshold and a cheaper same-class alternative exists (FeeAgent) | `fee_swap` |

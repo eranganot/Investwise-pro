@@ -1897,7 +1897,11 @@ async def build_recommendations(session: AsyncSession, user: User,
                         "action": (f"Rebalance about {_ils(_moved)} inside your own book — "
                                    f"no new money."),
                         "impact": (f"Puts the core back on {_cname}, so its measured return and "
-                                   f"volatility start pricing {_core_pct:.0%} of your book."
+                                   f"volatility start pricing "
+                                   f"{float(_plan.get('core_size_pct') or _core_pct):.0%} of your book."
+                                   + (" The core keeps its size: your sleeves are not funded yet, "
+                                      "and \"Fund all sleeves\" on Plan is what moves money from the core into them."
+                                      if _plan.get("keep_size") else "")
                                    + (f" About {_ils(_to_cash)} of the proceeds would sit in "
                                       f"cash — the basket does not need it."
                                       if _to_cash >= _REFIRE_FLOOR_ILS else "")
@@ -7355,7 +7359,9 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         tot = sum(sleeve_val.values())
         gain["__sleeves__"] = sum(gain.get(t, 0.0) * v for t, v in sleeve_val.items()) / tot
 
-    # AN UNFUNDED SLEEVE HAS FIRST CLAIM ON UNCLAIMED MONEY.
+    # AN UNFUNDED SLEEVE HAS FIRST CLAIM ON UNCLAIMED MONEY. (PR 60's history,
+    # kept for the record: C30 below replaced the deferral with a keep-size
+    # realign, because the deferred money went to cash and came straight back.)
     #
     # The core is the REMAINDER -- everything no sleeve claims -- so the moment a
     # sleeve is retired or swapped, its old instrument falls in here and rule 1
@@ -7402,17 +7408,15 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
             unfunded_ils += gap / 100.0 * nav
     _short_all = unfunded_ils
     unfunded_ils = max(0.0, unfunded_ils - blocked_ils)
-    if unfunded_ils >= core_realign.MIN_LEG_ILS:
-        for tk in sorted(held):
-            if tk in {t.upper() for t in basket}:
-                continue
-            deferred.append({
-                "ticker": tk, "ils": round(held[tk], 2),
-                "why": (f"your sleeves are about ₪{unfunded_ils:,.0f} short of the "
-                        f"sizes you set, and this is money no sleeve claims — "
-                        f"funding a sleeve with it is a decision you already made")})
-        for d in deferred:
-            held.pop(d["ticker"], None)
+    # C30 (owner, 2026-10-25: "Swap contents, keep size"). PR 60 reserved every
+    # off-basket holding for an unfunded sleeve and sized the basket to the core
+    # TARGET, so the card trimmed basket legs to cash; the cash card bought the
+    # core back, and the off-basket names it meant to retire were what it bought
+    # (production 10-23..10-25: `rec_f6f017` accepted seven times). Now, while a
+    # sleeve the app may buy is unfunded, nothing is deferred and the basket is
+    # sized to what the core holds: off-basket names are swapped into the basket
+    # and the core keeps its size. "Fund sleeves" is what moves money out of it.
+    keep_size = unfunded_ils >= core_realign.MIN_LEG_ILS
 
     from app.core.config import get_settings
     plan_row = await get_plan(session, user)   # module-level import; one loader
@@ -7427,7 +7431,7 @@ async def _core_plan(session: AsyncSession, user: User, rows, nav: float,
         basket=basket, core_pct=core_pct, nav=nav, held=held,
         cash_ils=cash_ils, cash_floor_ils=cash_target_amount_ils(nav, objective, plan_row),
         sleeve_over_ils=over, cgt_rate=float(get_settings().cgt_rate),
-        gain_frac=gain, deferred=deferred, no_buy=_no_buy)
+        gain_frac=gain, deferred=deferred, no_buy=_no_buy, keep_size=keep_size)
     out["core_strategy_id"] = core_id
     out["core_strategy_name"] = btgt.get("core_strategy_name") or core_id
     out["sleeve_values_ils"] = {t: round(v, 2) for t, v in sorted(sleeve_val.items())}
