@@ -38,6 +38,23 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 152 — score sleeve sets of your choosing on the optimiser's goal solve
+
+**Why.** Owner, 2026-10-25: "which sleeve is better for me? which one will increase my chances to meet my goals?" --
+the held Trend-Filtered Semiconductors (23%) or Trend-Filtered Leveraged Nasdaq. The nightly optimiser never scores
+that swap: the two are one bet (0.83), so neither is a candidate while the other is held (15 candidates on 10-25, none
+of them TQQQ). No endpoint scored a book you name.
+
+**What.** `POST /plan/optimizer/compare {books: [{strategy_id: sleeve_pct}, ...]}` (1-4 books): every book scored
+together by `frontier_service.score_books`, the optimiser's own light goal solve, so the numbers compare with each other
+and with the optimiser's. Read-only (COMPUTE_ONLY in the doors test; allowed in smokes). Unknown strategies and books
+over 100% are refused.
+
+**Tests.** `test_pr152_compare_books.py` (2). First gate: 1 failed -- `test_every_write_route_is_analyst_or_above`:
+the new POST had to be listed as compute-only; listed. Full Postgres suite: 2,984 passed, then the 3 guard files 16/16.
+
+**Smoke.** `scripts/smoke/smoke-pr152-compare-books.ps1`. PROD_RESULT
+
 ## PR 151 — My mix shows the core target the cards use; a stop-held sleeve reads "on hold"
 
 **Report.** Owner, 2026-10-25 09:43 (screenshot of My mix after funding DBMF): core "49.2% / 26.2%" in warning colour,
@@ -56,7 +73,9 @@ server's core target, notes "26.2% + 23.0% while SOXL is on hold", marks the SOX
 `mixPanel` with the live numbers: core 49.2% / 49.2%, SOXL "on hold", "on plan". Full Postgres suite: 2,983 passed, 0 failed.
 
 **Smoke.** `scripts/smoke/smoke-pr151-my-mix-shows-the-stop-hold.ps1`. Local build (a fired and accepted SOXL stop):
-PASS 7 FAIL 0 SKIP 0. Production after: PROD_RESULT
+PASS 7 FAIL 0 SKIP 0. Production after (3246027, 08:11 UTC, read in the signed-in app): PASS 6 FAIL 0 SKIP 0 --
+core_target_pct 0.4924 = book_target.core_pct, SOXL marked on hold on btm_trend_soxl, core_pct 27 the planned
+remainder, sw iw-v77.
 
 ## PR 150 — the core realign keeps the core's size while a sleeve is unfunded (C30, D135)
 
