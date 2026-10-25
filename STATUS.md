@@ -38,6 +38,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 150 — the core realign keeps the core's size while a sleeve is unfunded (C30, D135)
+
+**Report.** Found 2026-10-25 answering "why so much cash": "Bring your core back to Diversified Global Growth"
+(`rec_f6f017`) accepted seven times 10-23..10-25.
+
+**Root cause (seen on production).** The live card trimmed QQQ, SMH, VTI and VXUS (₪3,153) and left ALL of it in
+cash ("the basket does not need it"): `plan_realign` sized the basket to the core TARGET (26%) while the core held
+~76%, money waiting for the unfunded 40% DBMF sleeve. PR 60 kept the off-basket names (XLE, XLF, COMT, UGA, USO) "for
+the sleeves". The cash card then bought the core back, XLE and XLF included: ledger 10-25 06:07 UTC, ₪1,197 sold by
+the realign, ₪1,758 bought by `rec_41ac4b` the same minute. Each round moved money out of the basket into the names
+the card wanted gone, so the card never went away. Reproduced: `test_pr150_the_core_realign_keeps_its_size.py`
+(3 of 4 fail on main; end to end, XLE and XLF survive the accept).
+
+**Ruled out.** (1) A stale card spec: `_apply_core_to_basket` re-plans from live rows at Accept. (2) The stop hold
+(C27): the blocked part is already excluded from the shortfall (`sleeve_short_blocked_ils` 4,549 of 14,396).
+
+**Fix (owner's choice, "Swap contents, keep size").** `plan_realign(keep_size=True)` sizes the basket to
+max(target, what the core region holds). `_core_plan` passes it while a sleeve the app may buy is unfunded and no
+longer defers off-basket names. The card says the core keeps its size and that "Fund all sleeves" moves money into
+the sleeves. A core under its target is unchanged.
+
+**Tests.** `test_pr150_the_core_realign_keeps_its_size.py` (4). `test_c27_...::test_a_sleeve_the_app_can_buy_still_has_first_claim`
+encoded PR 60's deferral; rewritten to D135. Full Postgres suite: 2,980 passed, 0 failed.
+
+**Smoke.** `scripts/smoke/smoke-pr150-core-realign-keeps-size.ps1` (`-Since` for the ledger loop check). Local build
+(Postgres, `REQUIRE_AUTH=true`, VTI/QQQ/XLE/XLF, a 30% QQQ sleeve short, core Diversified Global Growth): PASS 5 FAIL 0
+SKIP 1 (no accept yet); after Accept, XLE and XLF swapped into the basket and cash unchanged (0 -> 0). Seen on the
+same run, and the same on main: a ticker both a sleeve and the basket hold (QQQ) is bought into the core leg, so the
+sleeve then reads over -- pre-existing, not this PR; the owner's sleeves share no ticker with his basket. Production
+before the merge: no core card on Today since PR 149 (the core grew to 49%), so section 1 SKIPs. PROD_RESULT
+
 ## PR 149 — a stop-held sleeve's share goes to the core, not to cash (D127 made true)
 
 **Report.** Owner, 2026-10-25 08:11 (screenshot of My mix: Cash 23.8% / 0.8%, both sleeves 0%): "Why do I have so
@@ -70,7 +101,8 @@ a take-profit hold keeps its cash; `compose` unchanged). On main: 1 failed (`hel
 
 **Smoke.** `scripts/smoke/smoke-pr149-stop-held-share-to-core.ps1`. Local build (Postgres, `REQUIRE_AUTH=true`, a fired
 and accepted SOXL stop): PASS 6 FAIL 0 SKIP 0. Production before the merge (read in the signed-in app; no agent key on
-this machine, A2): section 1 would FAIL, `held_back` SOXL 0.23. Production after: PROD_RESULT
+this machine, A2): section 1 would FAIL, `held_back` SOXL 0.23. Production after (b47ae10, 06:40 UTC, read in the signed-in app): PASS 6 FAIL 0 SKIP 0 -- SOXL parks nothing, target Cash
+0.76% = the reserve, core_pct 49.2%, the plan still shows SOXL 23%, no card buys SOXL.
 
 **Also found (not fixed here, BACKLOG C30).** The core realign and the cash redeploy undo each other while sleeves
 are unfunded: `rec_f6f017` was accepted 7 times 10-23..10-25.

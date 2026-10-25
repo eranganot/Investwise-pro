@@ -34,6 +34,12 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D135 · 2026-10-25 · While a sleeve the app may buy is unfunded, the core realign swaps contents and keeps the core's size.**
+  It sells off-basket names into the basket and sizes the basket to what the core holds (never below its target); it
+  never trims the core to cash. Moving money from the core into sleeves is "Fund all sleeves". Supersedes PR 60's
+  "an unfunded sleeve has first claim" deferral. *Why:* 10-23..10-25 the realign trimmed basket legs to cash, the cash
+  card bought the core back (XLE, XLF included), seven accepts of one card. Owner, 2026-10-25 ("Swap contents, keep
+  size"). → PR 150, C30
 - **D134 · 2026-10-24 · Commodities live inside the core; the fixed 10% carve-out is a setting, default 0.**
   PR 71 carved the objective table's Commodities weight (Grow: 10%) out of any core that names none, and the Plan tab
   showed it as its own row. Now `commodities_carve_out_pct` (Card thresholds) decides it, default 0: the core's own

@@ -42,8 +42,11 @@ def test_money_kept_for_a_stop_held_sleeve_goes_to_the_core():
         assert pl["sleeve_short_ils"] > 0 and pl["sleeve_short_blocked_ils"] == pl["sleeve_short_ils"], pl
 
 
-def test_a_sleeve_the_app_can_buy_still_has_first_claim():
-    """Not changed: with no hold, an unfunded sleeve keeps first claim (PR 60)."""
+def test_a_sleeve_the_app_can_buy_keeps_the_core_its_size():
+    """C30 (owner, 2026-10-25, "Swap contents, keep size") replaces PR 60's first
+    claim: with an unfunded sleeve the app may buy, the core card swaps the
+    off-basket name into the basket and leaves nothing in cash for the cash card
+    to buy back."""
     with TestClient(m.app) as c:
         c.post("/api/v1/intake/portfolio", json={"entity_name": "Personal", "positions": [
             _pos("VTI", 60.0), _pos("BND", 40.0, cls="Fixed Income"), _pos("GOOGL", 15.0)]})
@@ -52,6 +55,8 @@ def test_a_sleeve_the_app_can_buy_still_has_first_claim():
         assert c.post("/api/v1/strategies/btm_qqq_hold/apply?sleeve_pct=30").status_code == 200
         assert c.post("/api/v1/plan/core", json={"strategy_id": "grow_diversified"}).status_code == 200
         card = _core_card(c)
-        if card is not None:
-            how = " ".join(card.get("how") or [])
-            assert "GOOGL" not in how or "NOT sold here" in how, how
+        assert card is not None
+        how = " ".join(card.get("how") or [])
+        assert "Sell all GOOGL" in how and "NOT sold here" not in how, how
+        assert "stay as cash" not in how, how
+        assert "keeps its size" in card["impact"], card["impact"]

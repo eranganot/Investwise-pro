@@ -70,7 +70,8 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
                  gain_frac: dict[str, float] | None = None,
                  allow_sleeve_trim: bool = True,
                  deferred: list[dict] | None = None,
-                 no_buy: set[str] | None = None) -> dict:
+                 no_buy: set[str] | None = None,
+                 keep_size: bool = False) -> dict:
     """What it would take to bring the core back to the basket it names.
 
     ``held`` is the CORE REGION only -- what no sleeve claims and is not cash,
@@ -97,9 +98,19 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
         return {"ok": False, "reason": NO_BASKET, "legs": [],
                 "detail": "this core names no basket, so there is nothing to hold it to"}
 
-    want = {t.upper(): (w / bsum) * core_pct * nav
-            for t, w in basket.items() if w > 0}
     have = {t.upper(): float(v) for t, v in held.items() if float(v) > 0}
+    # C30 (owner, 2026-10-25: "Swap contents, keep size"). While a sleeve the app
+    # may buy is unfunded, the core is bigger than its target because that money
+    # is waiting for the sleeve. Sizing the basket to the TARGET trimmed the legs
+    # and left the proceeds in cash, and the cash card bought the core back --
+    # production 10-23..10-25, seven accepts. So the realign changes what the
+    # core holds, never how big it is: the basket is sized to what the core
+    # region holds when that is more. Shrinking the core is "Fund sleeves"' job.
+    size_ils = core_pct * nav
+    if keep_size:
+        size_ils = max(size_ils, sum(have.values()))
+    want = {t.upper(): (w / bsum) * size_ils
+            for t, w in basket.items() if w > 0}
 
     sells: list[dict] = []
     buys: list[dict] = []
@@ -213,6 +224,9 @@ def plan_realign(*, basket: dict[str, float], core_pct: float, nav: float,
                                    - tax - sum(b["funded_ils"] for b in buys))),
         "shortfall_ils": shortfall,
         "want_ils": {t: _round2(v) for t, v in sorted(want.items())},
+        # C30: the size the basket was sized to, as a share of the book.
+        "core_size_pct": round(size_ils / nav, 4),
+        "keep_size": bool(keep_size and size_ils > core_pct * nav + 1e-6),
         "have_ils": {t: _round2(v) for t, v in sorted(have.items())},
         "detail": (f"{shortfall:,.0f} ILS of the core is still unfunded after "
                    f"selling what the basket does not name, trimming what is over "
