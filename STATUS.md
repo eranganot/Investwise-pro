@@ -69,7 +69,13 @@ CHANGED) checks the SOXL sleeve is still on hold and no card buys a geared equit
 
 **Also in this PR (smokes only).** The smokes accept the read-only key `IW_SMOKE_KEY` (D131), so a scheduled run
 needs no one's computer; `Api` keeps the last HTTP status and the PR 141 / 154 dry-run sections SKIP on its 403.
-`smoke-all` section 7 no longer reads a created / edited / deleted rule record as a firing (10-26: a false FAIL).
+`smoke-all` section 7 no longer reads a created / edited / deleted rule record as a firing (10-26: a false FAIL). `smoke-all` takes `-Sha` / `-BaseUrl` (it was hardwired to production,
+so a local build could not be smoked). Checked against a local build (Postgres, `REQUIRE_AUTH=true`, only
+`IW_SMOKE_KEY` set): the key resolves as read-only, every GET answers, the dry-run POST is 403 and SKIPs; smoke-all's
+FAILs there were the empty local book, no scheduler and no Gemini, none from the key.
+
+**Daily production smoke (plan D-1).** A cloud scheduled task, 08:09 Israel time, runs `smoke-all` and the newest PR
+smoke with the read-only key and pushes the owner only on a FAIL. No computer needed.
 ## PR 153 — "Some checks didn't run: history_stale" means something failed in the last 30 minutes (D136)
 
 **Report.** Owner, 2026-10-26 17:04: a Today banner "Some checks didn't run. Couldn't evaluate: history_stale."

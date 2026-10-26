@@ -2,10 +2,12 @@
 # Reads real values from the API (never hardcodes caps/floors) and SKIPs or FAILs
 # on a null payload rather than passing on missing data.
 #
-#   .\scripts\smoke\smoke-all.ps1
+#   .\scripts\smoke\smoke-all.ps1 [-Sha <short sha>] [-BaseUrl <url>]
 
+# PR 154: parameters, so a locally served build can be smoked too. -Sha is accepted
+# for the daily scheduled run's sake and printed; the build check lives in the PR smokes.
+param([string]$Sha = "", [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
 $ErrorActionPreference = 'Continue'
-$BaseUrl = "https://investwise-pro-production.up.railway.app"
 # NOT $H. PowerShell variable names are CASE-INSENSITIVE, so `$h = Api GET
 # '/api/v1/health-check'` in section 3 silently overwrote the auth headers with
 # the health-check response object. Every call after it died instantly at
@@ -70,6 +72,7 @@ function Api($method, $path, $tmo = 60) {
 }
 
 Write-Host "`n===== INVESTWISE FULL SMOKE =====" -ForegroundColor Magenta
+Write-Host ("   {0}{1}" -f $BaseUrl, $(if ($Sha) { "  (expected build $Sha)" } else { "" })) -ForegroundColor DarkGray
 
 # ---------- PREFLIGHT: is the deploy settled? ----------
 # /health is async and touches nothing; /health/ready opens a DB connection. If
