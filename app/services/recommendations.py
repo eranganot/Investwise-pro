@@ -2222,25 +2222,9 @@ async def build_recommendations(session: AsyncSession, user: User,
     # empty list quietly broke.
     try:
         from app.providers.registry import provider_health
-        _ph = provider_health()
-        _open = {n for n in ("history", "fundamentals")
-                 if (_ph.get(n) or {}).get("circuit_state") == "OPEN"}
-        if "history" in _open:
-            for _a in ("holding_verdicts", "momentum", "war_room"):
-                if _a not in degraded:
-                    degraded.append(_a)
-        if "fundamentals" in _open:
-            for _a in ("holding_verdicts", "hedge"):
-                if _a not in degraded:
-                    degraded.append(_a)
-        # Cards built on an expired series are not the same claim as cards built
-        # on today's, even when the numbers are identical -- and for daily bars
-        # they usually are. Naming it separately keeps "we served you something
-        # older" distinct from "we have nothing", which are the two very
-        # different things an empty `degraded` used to conflate.
-        if any((_ph.get(n) or {}).get("stale_served") for n in ("history", "fundamentals")):
-            if "history_stale" not in degraded:
-                degraded.append("history_stale")
+        for _a in _provider_degraded(provider_health()):
+            if _a not in degraded:
+                degraded.append(_a)
     except Exception:  # noqa: BLE001 -- reporting health must never break Today
         logger.warning("provider health unavailable for degraded[]", exc_info=False)
 
@@ -7669,3 +7653,26 @@ async def _apply_fee_swap(session: AsyncSession, user: User, by_ticker: dict, sp
     await session.commit()
     return {"swapped": True, "sold": [sell_tk], "bought": buy_tk.upper(),
             "value_ils": round(net_ils, 2), "tax_ils": round(tax, 2)}
+
+
+def _provider_degraded(ph: dict) -> list[str]:
+    """The agents an unhealthy provider leaves unable to answer, for `degraded`.
+
+    An OPEN circuit for EVERY symbol produces empty lists and no exception, so
+    without this the response claims health (live 2026-08-23). `history_stale`
+    names "we served you something older" apart from "we have nothing".
+
+    PR 153: it reads `stale_warning` -- a stale read a FAILURE forced within the
+    window -- not `stale_served`, a lifetime count that a single rate-limited
+    read after a deploy kept above zero until the next deploy.
+    """
+    out: list[str] = []
+    _open = {n for n in ("history", "fundamentals")
+             if (ph.get(n) or {}).get("circuit_state") == "OPEN"}
+    if "history" in _open:
+        out += [a for a in ("holding_verdicts", "momentum", "war_room") if a not in out]
+    if "fundamentals" in _open:
+        out += [a for a in ("holding_verdicts", "hedge") if a not in out]
+    if any((ph.get(n) or {}).get("stale_warning") for n in ("history", "fundamentals")):
+        out.append("history_stale")
+    return out

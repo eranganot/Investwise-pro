@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     # A failed key is remembered this long, so callers queued behind it inherit
     # the error instead of each sending their own request upstream.
     provider_failure_cooloff_sec: float = 20.0
+    # PR 153: how long a stale read forced by a failure keeps Today's
+    # "history_stale" warning up. It used to last until the next deploy.
+    provider_stale_warning_window_sec: float = 1800.0
     enable_scheduler: bool = True     # start APScheduler cron jobs in-process (hourly market refresh)
     # Google sign-in (Phase A)
     google_oauth_client_id: str = ""

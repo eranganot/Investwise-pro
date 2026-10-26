@@ -393,7 +393,15 @@ class ResilienceTier:
         self._inflight_lock = threading.Lock()
         self._recent_failure: dict[str, tuple[float, BaseException]] = {}
         self._stale_lock = threading.Lock()
+        # Every stale read, lifetime. Kept for the health page and the smokes.
         self.stale_served = 0
+        # PR 153: only the stale reads a FAILURE forced, and when the last one
+        # was. Today warned on `stale_served > 0`, a number that only grows, so
+        # one throttled read after a deploy kept "history_stale" up until the
+        # next deploy. A rate-limit pause served from stock is the cache doing
+        # its job (identical daily bars) and is not news.
+        self.stale_served_on_failure = 0
+        self.last_stale_on_failure_at: float | None = None
 
     def _claim(self, key: str) -> tuple[bool, threading.Event | None]:
         """Become the leader for `key`, or get the event to wait on."""
@@ -417,19 +425,36 @@ class ResilienceTier:
         value = self.cache.get(key)
         return None if value is _MISSING else value
 
-    def _serve_stale(self, key: str):
-        """Last resort before raising: yesterday's answer beats no answer."""
+    def _serve_stale(self, key: str, *, failure: bool = True):
+        """Last resort before raising: yesterday's answer beats no answer.
+
+        `failure=False` is the rate-limit path: nothing failed, the bucket was
+        empty. Counted, but never a warning (PR 153).
+        """
         if self.cache is None:
             return _MISSING
         value = self.cache.get_stale(key)
         if value is not _MISSING:
             with self._stale_lock:
                 self.stale_served += 1
+                if failure:
+                    self.stale_served_on_failure += 1
+                    self.last_stale_on_failure_at = self._now()
         return value
+
+    def stale_snapshot(self, window_sec: float) -> dict:
+        """Stale reads, and whether a FAILURE forced one within `window_sec`."""
+        with self._stale_lock:
+            at = self.last_stale_on_failure_at
+            ago = None if at is None else round(self._now() - at, 1)
+            return {"stale_served": self.stale_served,
+                    "stale_served_on_failure": self.stale_served_on_failure,
+                    "seconds_since_stale_on_failure": ago,
+                    "stale_warning": ago is not None and ago <= window_sec}
 
     def _fetch(self, key: str, fn: Callable):
         if self.bucket is not None and not self.bucket.take():
-            stale = self._serve_stale(key)
+            stale = self._serve_stale(key, failure=False)
             if stale is not _MISSING:
                 return stale
             raise RateLimitedError(f"rate limit exceeded for {key}")
