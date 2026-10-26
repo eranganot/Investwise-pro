@@ -2,10 +2,12 @@
 # Reads real values from the API (never hardcodes caps/floors) and SKIPs or FAILs
 # on a null payload rather than passing on missing data.
 #
-#   .\scripts\smoke\smoke-all.ps1
+#   .\scripts\smoke\smoke-all.ps1 [-Sha <short sha>] [-BaseUrl <url>]
 
+# PR 154: parameters, so a locally served build can be smoked too. -Sha is accepted
+# for the daily scheduled run's sake and printed; the build check lives in the PR smokes.
+param([string]$Sha = "", [string]$BaseUrl = "https://investwise-pro-production.up.railway.app")
 $ErrorActionPreference = 'Continue'
-$BaseUrl = "https://investwise-pro-production.up.railway.app"
 # NOT $H. PowerShell variable names are CASE-INSENSITIVE, so `$h = Api GET
 # '/api/v1/health-check'` in section 3 silently overwrote the auth headers with
 # the health-check response object. Every call after it died instantly at
@@ -70,6 +72,7 @@ function Api($method, $path, $tmo = 60) {
 }
 
 Write-Host "`n===== INVESTWISE FULL SMOKE =====" -ForegroundColor Magenta
+Write-Host ("   {0}{1}" -f $BaseUrl, $(if ($Sha) { "  (expected build $Sha)" } else { "" })) -ForegroundColor DarkGray
 
 # ---------- PREFLIGHT: is the deploy settled? ----------
 # /health is async and touches nothing; /health/ready opens a DB connection. If
@@ -225,7 +228,9 @@ if ($null -eq $events) { Skip "events unreachable (NOT a pass)" } elseif ($event
   $res = @($events | Where-Object { $_.outcome -ne 'triggered' })
   if ($res.Count -gt 0) { Ok "outcomes stamped: $(($res | ForEach-Object { $_.outcome } | Select-Object -Unique) -join ', ')" } else { Skip "nothing acted on yet" }
   # C18.1: a switch on/off (paused/resumed) is not a firing; the newest FIRING must carry its quote.
-  $fired = @($events | Where-Object { $_.outcome -notin @('paused', 'resumed') })
+  # PR 154: nor is a rule change (created / edited / deleted). 10-26 the newest two events were the
+  # "One exit per holding" accept creating two trailing stops, and this reported "no trigger_price".
+  $fired = @($events | Where-Object { $_.outcome -notin @('paused', 'resumed', 'created', 'edited', 'deleted') })
   if ($fired.Count -eq 0) { Skip "no firing in the last 50 events" }
   elseif ($fired[0].trigger_price) { Ok "grounded in a real quote ($($fired[0].ticker) @ $($fired[0].trigger_price))" } else { Bad "no trigger_price" } }
 

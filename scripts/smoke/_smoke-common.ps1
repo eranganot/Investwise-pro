@@ -33,8 +33,12 @@ function Start-Smoke($name) {
 }
 
 function Api($method, $path, $tmo = 300) {
+    $script:LastStatus = 200
     try { return Invoke-RestMethod -Method $method -Uri "$BaseUrl$path" -Headers $script:ApiHeaders -TimeoutSec $tmo }
-    catch { Write-Host "        $method $path -> $($_.Exception.Message)" -ForegroundColor DarkRed; return $null }
+    catch {
+        # PR 154: kept so a smoke can tell "the read-only key may not POST" (403) from a failure.
+        $script:LastStatus = try { [int]$_.Exception.Response.StatusCode } catch { 0 }
+        Write-Host "        $method $path -> $($_.Exception.Message)" -ForegroundColor DarkRed; return $null }
 }
 
 # Waits up to $WaitSec for /health to serve $Sha (Railway takes a few minutes),

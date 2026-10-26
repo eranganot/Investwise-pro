@@ -38,6 +38,44 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 154 — a SOXL stop no longer holds 2x gold or the Treasury funds (D138; D137 keeps the SOXL hold)
+
+**Report.** Owner, 2026-10-26: "review again the SOXL stop hold rule against the current price".
+
+**Review (live, 2026-10-26 ~15:20 UTC, `f610693`).** The hold: `buy_back` kind `stop`, level 82.11 (sold 10-23
+05:45), `strategy_id` btm_trend_soxl, `signal_out: false`. SOXL 92.09 (+12.2% over the sale). The SMH gate: 544 vs a
+200-day average of 516 (+5.4%), signal SOXL 100% (`/strategies/signal`, as of 10-26). So the hold waits for SMH to
+close under its average for 3 days and come back, possibly weeks; the rebound missed so far is about $157 (~₪485) on
+15.78 shares. Working as D114 says; the owner kept it (D137).
+
+**Found on the way: the hold blocked 2x gold.** `with_group` holds every fund in `GEARED`, which carries UGL, TMF and
+UBT. Proven by calling `stop_held({"SOXL": stop})` on main: the result includes UGL `via SOXL`. The 2x Gold Trend sleeve
+(10%, added 10-25) owns UGL; it held BIL on 10-26 (gold's signal out), so nothing was refused yet. The day gold's signal
+turned in, the funder, the cards and the Plan buttons would all have refused UGL "because SOXL was stopped out".
+Silent because the sleeve came after PR 141 and has not been "in" since.
+
+**Root cause.** PR 141 used one set for two jobs: what the ceiling counts (every geared fund) and what a stop holds
+(the same bet). D116's evidence was SOXL / TQQQ only.
+
+**Fix.** `strategy_profile.STOP_GROUP` = GEARED without UGL, TMF, UBT; `buyback_hold.with_group` reads it. The ceiling
+still reads GEARED. The refusal sentence says "2x/3x equity fund". The PR 141 smoke's list now matches STOP_GROUP (it
+would have reported a UGL buy as a FAIL).
+
+**Tests.** `test_pr154_a_stop_holds_its_own_bet_not_gold_or_bonds.py` (4): failed on main (4/4), pass. PR 141's 8 and
+PR 148's tests pass. Full Postgres suite: 2,989 passed before the rebase onto PR 153, 2,998 after.
+
+**Smoke.** `scripts/smoke/smoke-pr154-stop-holds-its-own-bet.ps1`: 1-2 SKIP while gold's signal is out; 3 (NOT
+CHANGED) checks the SOXL sleeve is still on hold and no card buys a geared equity fund. PROD_RESULT
+
+**Also in this PR (smokes only).** The smokes accept the read-only key `IW_SMOKE_KEY` (D131), so a scheduled run
+needs no one's computer; `Api` keeps the last HTTP status and the PR 141 / 154 dry-run sections SKIP on its 403.
+`smoke-all` section 7 no longer reads a created / edited / deleted rule record as a firing (10-26: a false FAIL). `smoke-all` takes `-Sha` / `-BaseUrl` (it was hardwired to production,
+so a local build could not be smoked). Checked against a local build (Postgres, `REQUIRE_AUTH=true`, only
+`IW_SMOKE_KEY` set): the key resolves as read-only, every GET answers, the dry-run POST is 403 and SKIPs; smoke-all's
+FAILs there were the empty local book, no scheduler and no Gemini, none from the key.
+
+**Daily production smoke (plan D-1).** A cloud scheduled task, 08:09 Israel time, runs `smoke-all` and the newest PR
+smoke with the read-only key and pushes the owner only on a FAIL. No computer needed.
 ## PR 153 — "Some checks didn't run: history_stale" means something failed in the last 30 minutes (D136)
 
 **Report.** Owner, 2026-10-26 17:04: a Today banner "Some checks didn't run. Couldn't evaluate: history_stale."
@@ -64,7 +102,7 @@ through `recommendations._provider_degraded`, which also keeps the OPEN-circuit 
 passed.
 
 **Smoke.** `scripts/smoke/smoke-pr153-stale-warning-is-recent-and-real.ps1`. Before the merge, on `f610693`:
-PASS 2 FAIL 3 SKIP 2 (FAIL: no `stale_warning` on history and fundamentals; `history_stale` on Today 33,544 s after the last error). After: PROD_RESULT
+PASS 2 FAIL 3 SKIP 2 (FAIL: no `stale_warning` on history and fundamentals; `history_stale` on Today 33,544 s after the last error). After, on `bc97e0e` (2026-10-26 ~15:55 UTC): PASS 5 FAIL 0 SKIP 2 (no warning, Today's `degraded` empty; skips: nothing failed in the window, no circuit open). `smoke-all`: 24 passed, 1 failed (section 7 read a "created" rule record as a firing: a smoke fault, fixed in PR 154); the three Gemini FAILs are gone (credits topped up).
 
 ## PR 152 — score sleeve sets of your choosing on the optimiser's goal solve
 
