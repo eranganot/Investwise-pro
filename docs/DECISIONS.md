@@ -34,6 +34,11 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D136 · 2026-10-26 · Today's "history_stale" warning means a stale read a failure forced in the last 30 minutes.**
+  A stale read the rate limit caused (the cache answering while the 20/s bucket refills) is counted on the health page
+  but never warned about. The window is a setting, `provider_stale_warning_window_sec` (1800). *Why:* 10-26, the warning
+  sat on Today for 8.7 hours after one Yahoo timeout, because it read a lifetime counter only a restart resets.
+  Owner, 2026-10-26 (option A of three; B was a window for every stale read, C a reset on recovery). → PR 153
 - **D135 · 2026-10-25 · While a sleeve the app may buy is unfunded, the core realign swaps contents and keeps the core's size.**
   It sells off-basket names into the basket and sizes the basket to what the core holds (never below its target); it
   never trims the core to cash. Moving money from the core into sleeves is "Fund all sleeves". Supersedes PR 60's
