@@ -115,6 +115,13 @@ function Get-AgentKey {
         $candidates += ,@{ key = $env:IW_AGENT_KEY; from = "IW_AGENT_KEY" }
     }
 
+    # PR 154: the read-only smoke key (D131), set on the cloud environment so a
+    # scheduled run needs no one's computer. GET/HEAD only: a smoke's POST is
+    # refused with 403, and the smokes report that as SKIP.
+    if ($env:IW_SMOKE_KEY) {
+        $candidates += ,@{ key = $env:IW_SMOKE_KEY; from = "IW_SMOKE_KEY (read-only)" }
+    }
+
     $keyFile = Join-Path $PSScriptRoot ".agent-key"
     if (Test-Path $keyFile) {
         $fromFile = (Get-Content $keyFile -TotalCount 1).Trim()

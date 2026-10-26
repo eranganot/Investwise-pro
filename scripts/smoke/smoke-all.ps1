@@ -225,7 +225,9 @@ if ($null -eq $events) { Skip "events unreachable (NOT a pass)" } elseif ($event
   $res = @($events | Where-Object { $_.outcome -ne 'triggered' })
   if ($res.Count -gt 0) { Ok "outcomes stamped: $(($res | ForEach-Object { $_.outcome } | Select-Object -Unique) -join ', ')" } else { Skip "nothing acted on yet" }
   # C18.1: a switch on/off (paused/resumed) is not a firing; the newest FIRING must carry its quote.
-  $fired = @($events | Where-Object { $_.outcome -notin @('paused', 'resumed') })
+  # PR 154: nor is a rule change (created / edited / deleted). 10-26 the newest two events were the
+  # "One exit per holding" accept creating two trailing stops, and this reported "no trigger_price".
+  $fired = @($events | Where-Object { $_.outcome -notin @('paused', 'resumed', 'created', 'edited', 'deleted') })
   if ($fired.Count -eq 0) { Skip "no firing in the last 50 events" }
   elseif ($fired[0].trigger_price) { Ok "grounded in a real quote ($($fired[0].ticker) @ $($fired[0].trigger_price))" } else { Bad "no trigger_price" } }
 

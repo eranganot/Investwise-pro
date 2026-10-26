@@ -18,9 +18,9 @@ if (-not $haveKey) { $script:ApiHeaders = @{} }
 Assert-Build -Sha $Sha -Schema '0029_drop_legacy_tables' -Why "(no migration in this PR)"
 if (-not $haveKey) { Skip "no agent key: set IW_AGENT_KEY"; Stop-Smoke }
 
-# strategy_profile.GEARED (the leveraged set without the -1x PSQ and SH)
-$geared = @("TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA", "QLD", "TMF", "FAS",
-            "CURE", "ERX", "LABU", "DRN", "SSO", "UBT", "UGL")
+# strategy_profile.STOP_GROUP (PR 154: the geared EQUITY funds; not UGL, TMF, UBT)
+$geared = @("TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA", "QLD", "FAS",
+            "CURE", "ERX", "LABU", "DRN", "SSO")
 $rules = @((Api GET "/api/v1/rules").rules)
 $stops = @($rules | Where-Object { $_.rule_type -eq "buy_back" -and $_.active -and $_.params.kind -eq "stop" })
 $stopTk = @($stops | ForEach-Object { "$($_.ticker)".ToUpper() })
@@ -34,7 +34,8 @@ Sec "1  Fund my sleeves (dry run) buys nothing blocked"
 if ($blocked.Count -eq 0) { Skip "no stop hold on the book" }
 else {
     $f = Api POST "/api/v1/plan/sleeves/fund?dry_run=true"
-    if (-not $f) { Bad "the preview did not answer" }
+    if (-not $f -and $script:LastStatus -eq 403) { Skip "read-only key: the dry-run preview is a POST" }
+    elseif (-not $f) { Bad "the preview did not answer" }
     else {
         $hit = 0
         foreach ($s in @($f.sleeves)) {

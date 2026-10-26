@@ -52,6 +52,12 @@ _LEVERAGED = {"TQQQ", "SQQQ", "UPRO", "SPXL", "SOXL", "TECL", "UDOW", "TNA",
 # sessions SOXL dropped more than 3%. PSQ and SH are -1x: inverse, not geared,
 # so they are not in this group.
 GEARED = frozenset(_LEVERAGED - {"PSQ", "SH"})
+# PR 154 (D116 amended, 2026-10-26): WHAT A STOP HOLDS is the geared EQUITY
+# funds only. PR 141's evidence was equity on equity (SOXL / TQQQ); GEARED also
+# carries 2x gold (UGL) and 3x / 2x Treasuries (TMF, UBT), so a SOXL stop held
+# the 2x Gold Trend sleeve's UGL. Not the same bet. The leveraged ceiling
+# (PR 148) still counts all of GEARED.
+STOP_GROUP = frozenset(GEARED - {"UGL", "TMF", "UBT"})
 _BROAD = {"VTI", "VT", "ITOT", "VOO"}
 _INTL = {"VXUS", "VEA", "VWO", "IEFA", "IEMG", "EFA"}
 _SECTOR = {"SMH", "SOXX", "XLK", "XLF", "XLE", "XLV", "IBB", "VNQ"}
