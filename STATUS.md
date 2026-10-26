@@ -64,7 +64,7 @@ through `recommendations._provider_degraded`, which also keeps the OPEN-circuit 
 passed.
 
 **Smoke.** `scripts/smoke/smoke-pr153-stale-warning-is-recent-and-real.ps1`. Before the merge, on `f610693`:
-PRE_RESULT. After: PROD_RESULT
+PASS 2 FAIL 3 SKIP 2 (FAIL: no `stale_warning` on history and fundamentals; `history_stale` on Today 33,544 s after the last error). After: PROD_RESULT
 
 ## PR 152 — score sleeve sets of your choosing on the optimiser's goal solve
 
