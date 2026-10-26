@@ -34,6 +34,16 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D138 · 2026-10-26 · A stop on a geared equity fund holds the geared equity funds only, not 2x gold or the Treasury funds.**
+  Amends D116. The group a stop holds is `strategy_profile.STOP_GROUP`: GEARED without UGL, TMF and UBT. A stop on one of
+  those three holds only that fund. The leveraged ceiling (D125) still counts every geared fund. *Why:* reviewing the
+  SOXL hold on 10-26 found that it also held UGL, which the 2x Gold Trend sleeve (added 10-25) buys when gold's signal
+  is in. D116's evidence was equity on equity (SOXL / TQQQ); gold and Treasuries are not that bet. Owner, 2026-10-26
+  ("continue with your recommendation"). → PR 154
+- **D137 · 2026-10-26 · The SOXL stop hold stays as D114 says: no price ends it.**
+  Reviewed with SOXL at 92.09, 12% above the 82.11 sale, and the SMH trend signal "in" (SMH 5.4% above its 200-day
+  average), so the hold may last weeks. Considered and declined: ending a stop hold when the price has recovered (the
+  whipsaw D114 was written against) and ending it by hand. Owner, 2026-10-26 ("continue with your recommendation").
 - **D135 · 2026-10-25 · While a sleeve the app may buy is unfunded, the core realign swaps contents and keeps the core's size.**
   It sells off-basket names into the basket and sizes the basket to what the core holds (never below its target); it
   never trims the core to cash. Moving money from the core into sleeves is "Fund all sleeves". Supersedes PR 60's
@@ -432,6 +442,7 @@
   position stayed and its stop was gone (reproduced; never yet hit on production, whose visible log since 08-23 has no
   ignored stop). Owner, 2026-10-23 ("Re-arm below today"). → PR 142
 - **D116 · 2026-10-23 · After a stop sells a 2x/3x fund, the app buys no 2x/3x fund until that hold ends.**
+  *Amended by D138 (PR 154): the group is the geared equity funds; 2x gold and the Treasury funds are not in it.*
   Every buyer (cards, Plan buttons, sleeve funding, the core realign, the cash redeploy) reads the group from the stop hold;
   it is derived, never stored. The held-cash card offers non-blocked places only and still recommends investing part of
   the reserve. -1x funds (PSQ, SH) are inverse, not geared, and are not in the group. A stop on a plain fund still holds

@@ -234,7 +234,8 @@ def active(holds: dict[str, dict], rows) -> dict[str, dict]:
 
 
 def with_group(holds: dict[str, dict]) -> dict[str, dict]:
-    """PR 141 (D116): a stop hold on a 2x/3x fund holds EVERY 2x/3x fund.
+    """PR 141 (D116, narrowed by PR 154): a stop hold on a geared equity fund holds
+    every geared EQUITY fund (`STOP_GROUP`; not 2x gold or the Treasury funds).
 
     10-22: a trailing stop sold SOXL; the same morning Fund-my-sleeves funded the
     TQQQ sleeve and the held-cash card put TQQQ first among the places to invest
@@ -247,12 +248,13 @@ def with_group(holds: dict[str, dict]) -> dict[str, dict]:
     hold's rule id: ending the SOXL hold ends the block. Nothing is stored; the
     group is derived on every read, so it can never outlive its source.
     """
-    from app.services.strategy_profile import GEARED
-    src = sorted(tk for tk, h in holds.items() if is_stop(h) and not h.get("via") and tk in GEARED)
+    # PR 154: STOP_GROUP, not GEARED -- a SOXL stop does not hold gold or bonds.
+    from app.services.strategy_profile import STOP_GROUP
+    src = sorted(tk for tk, h in holds.items() if is_stop(h) and not h.get("via") and tk in STOP_GROUP)
     if not src:
         return holds
     out = dict(holds)
-    for tk in sorted(GEARED):
+    for tk in sorted(STOP_GROUP):
         if tk not in out:
             out[tk] = {**holds[src[0]], "via": src[0], "price_now": None}
     return out
@@ -271,7 +273,7 @@ def refusal(ticker: str, h: dict) -> str:
             else "until you end the hold")
     if h.get("via"):
         return (f"{ticker} is a 2x/3x fund, and your {what} sold {h['via']} (also 2x/3x) at "
-                f"{float(h.get('level') or 0):,.2f}: the app will not buy any 2x/3x fund {tail}. "
+                f"{float(h.get('level') or 0):,.2f}: the app will not buy any 2x/3x equity fund {tail}. "
                 f"End the {h['via']} hold on Holdings > Rules to buy it now.")
     return (f"{ticker} is on hold since your {what} sold it at {float(h.get('level') or 0):,.2f}: "
             f"the app will not buy it back {tail}. End the hold on Holdings > Rules to buy it now.")

@@ -38,6 +38,35 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 154 — a SOXL stop no longer holds 2x gold or the Treasury funds (D138; D137 keeps the SOXL hold)
+
+**Report.** Owner, 2026-10-26: "review again the SOXL stop hold rule against the current price".
+
+**Review (live, 2026-10-26 ~15:20 UTC, `f610693`).** The hold: `buy_back` kind `stop`, level 82.11 (sold 10-23
+05:45), `strategy_id` btm_trend_soxl, `signal_out: false`. SOXL 92.09 (+12.2% over the sale). The SMH gate: 544 vs a
+200-day average of 516 (+5.4%), signal SOXL 100% (`/strategies/signal`, as of 10-26). So the hold waits for SMH to
+close under its average for 3 days and come back, possibly weeks; the rebound missed so far is about $157 (~₪485) on
+15.78 shares. Working as D114 says; the owner kept it (D137).
+
+**Found on the way: the hold blocked 2x gold.** `with_group` holds every fund in `GEARED`, which carries UGL, TMF and
+UBT. Proven by calling `stop_held({"SOXL": stop})` on main: the result includes UGL `via SOXL`. The 2x Gold Trend sleeve
+(10%, added 10-25) owns UGL; it held BIL on 10-26 (gold's signal out), so nothing was refused yet. The day gold's signal
+turned in, the funder, the cards and the Plan buttons would all have refused UGL "because SOXL was stopped out".
+Silent because the sleeve came after PR 141 and has not been "in" since.
+
+**Root cause.** PR 141 used one set for two jobs: what the ceiling counts (every geared fund) and what a stop holds
+(the same bet). D116's evidence was SOXL / TQQQ only.
+
+**Fix.** `strategy_profile.STOP_GROUP` = GEARED without UGL, TMF, UBT; `buyback_hold.with_group` reads it. The ceiling
+still reads GEARED. The refusal sentence says "2x/3x equity fund". The PR 141 smoke's list now matches STOP_GROUP (it
+would have reported a UGL buy as a FAIL).
+
+**Tests.** `test_pr154_a_stop_holds_its_own_bet_not_gold_or_bonds.py` (4): failed on main (4/4), pass. PR 141's 8 and
+PR 148's tests pass. Full Postgres suite: GATE_RESULT
+
+**Smoke.** `scripts/smoke/smoke-pr154-stop-holds-its-own-bet.ps1`: 1-2 SKIP while gold's signal is out; 3 (NOT
+CHANGED) checks the SOXL sleeve is still on hold and no card buys a geared equity fund. PROD_RESULT
+
 ## PR 152 — score sleeve sets of your choosing on the optimiser's goal solve
 
 **Why.** Owner, 2026-10-25: "which sleeve is better for me? which one will increase my chances to meet my goals?" --
