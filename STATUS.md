@@ -38,6 +38,34 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 153 — "Some checks didn't run: history_stale" means something failed in the last 30 minutes (D136)
+
+**Report.** Owner, 2026-10-26 17:04: a Today banner "Some checks didn't run. Couldn't evaluate: history_stale."
+
+**Evidence (live, `f610693`, ~15:15 UTC).** Today `degraded: ["history_stale"]`. `providers/health` history: circuit
+CLOSED, `opened_count` 0, last success 351 s before, one `TimeoutError` on `histtr:SPY:2600` 31,420 s (8.7 h) before,
+`stale_served: 3`. Every other tier 0.
+
+**Root cause.** `recommendations` added `history_stale` whenever `stale_served > 0`. That counter only grows and only a
+restart resets it, so one stale read after a deploy kept the banner up until the next deploy. And it counts reads the
+rate limit served from stock with no failure at all. Reproduced with the real `ResilienceTier`: a 25-key burst on the
+20/s bucket with a healthy provider serves 5 stale reads, and the counter is still 5 hours later with every key fresh.
+
+**Ruled out.** Gemini credits (another path). A Yahoo outage (circuit closed, success minutes before). A broken build
+(`/health` ok). The other tiers (0 stale reads). A new UI change (banner and counter both date from PR 29). The advice
+itself was not affected: the 3 stale reads were the same daily bars.
+
+**Fix.** The tier counts `stale_served_on_failure` and `last_stale_on_failure_at` (failed fetch, open circuit, a
+follower inheriting a failure); a rate-limit stale read is counted in `stale_served` only. `provider_health` adds
+`stale_warning` (a forced stale read within `provider_stale_warning_window_sec`, 1800). Today reads `stale_warning`
+through `recommendations._provider_degraded`, which also keeps the OPEN-circuit naming.
+
+**Tests.** `test_pr153_stale_warning_is_recent_and_real.py` (9): all failed on main, pass. Full Postgres suite: 2,994
+passed.
+
+**Smoke.** `scripts/smoke/smoke-pr153-stale-warning-is-recent-and-real.ps1`. Before the merge, on `f610693`:
+PASS 2 FAIL 3 SKIP 2 (FAIL: no `stale_warning` on history and fundamentals; `history_stale` on Today 33,544 s after the last error). After: PROD_RESULT
+
 ## PR 152 — score sleeve sets of your choosing on the optimiser's goal solve
 
 **Why.** Owner, 2026-10-25: "which sleeve is better for me? which one will increase my chances to meet my goals?" --

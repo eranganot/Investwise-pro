@@ -224,7 +224,9 @@ def provider_health() -> dict:
             out[name] = {"circuit_state": "n/a"}
             continue
         snap = tier.breaker.snapshot()
-        snap["stale_served"] = tier.stale_served
+        # PR 153: `stale_warning` is what Today reads -- a stale read a failure
+        # forced within the window. `stale_served` stays: the lifetime count.
+        snap.update(tier.stale_snapshot(get_settings().provider_stale_warning_window_sec))
         out[name] = snap
     out["market_data_provider"] = market_provider().name
     out["fx_provider"] = fx_provider().name
