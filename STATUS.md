@@ -62,7 +62,7 @@ still reads GEARED. The refusal sentence says "2x/3x equity fund". The PR 141 sm
 would have reported a UGL buy as a FAIL).
 
 **Tests.** `test_pr154_a_stop_holds_its_own_bet_not_gold_or_bonds.py` (4): failed on main (4/4), pass. PR 141's 8 and
-PR 148's tests pass. Full Postgres suite: 2,989 passed (on the branch before the rebase onto PR 153).
+PR 148's tests pass. Full Postgres suite: 2,989 passed before the rebase onto PR 153, 2,998 after.
 
 **Smoke.** `scripts/smoke/smoke-pr154-stop-holds-its-own-bet.ps1`: 1-2 SKIP while gold's signal is out; 3 (NOT
 CHANGED) checks the SOXL sleeve is still on hold and no card buys a geared equity fund. PROD_RESULT
