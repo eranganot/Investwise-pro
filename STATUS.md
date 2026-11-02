@@ -73,7 +73,7 @@ quotes 64.2%. Redeploy / card-claims suites pass. Full Postgres suite on Python 
 **Smoke.** `scripts/smoke/smoke-pr155-an-empty-sleeve-slot-is-the-sleeves.ps1`. Before the deploy (`0a71df4`):
 §3 FAIL ×4 (Hold: VTI / SMH / QQQ / VXUS read "30% of book" against a 64.2% core); §1-2 SKIP -- the owner funded the
 gold sleeve (BIL 35%) during the investigation, so the live book no longer has an empty slot; the unit tests carry that
-proof. PROD_RESULT
+proof. After the deploy (`75696bf`): **PASS 6 FAIL 0 SKIP 4** -- §0 build, §3 all four core cards read "64.2% of book"; §1, §2, §4 SKIP (no unfunded sleeve). Also read live: `?simulate_cash=12000` builds a card that tops up the now-held BIL leg and keeps nothing back (`sleeve_slot_kept_ils` 0); Today `degraded: []`.
 
 ## PR 154 — a SOXL stop no longer holds 2x gold or the Treasury funds (D138; D137 keeps the SOXL hold)
 
