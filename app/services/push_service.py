@@ -300,6 +300,23 @@ _TRIGGER_RULES: tuple[tuple[str, str, int | None], ...] = (
 )
 
 
+# PR 156 (D140): cards push by id. The P4.2 trigger table above now only names a
+# card's kind (its icon, and which cards the weekly digest lists as waiting);
+# it no longer decides whether a card is pushed.
+MAX_CARD_PUSHES_PER_RUN = 5
+_CARD_ICON = {"rule_fired": "⚡", "signal_flip": "\U0001f504",
+              "sleeve_drift": "⚖️", "sleeve_coldstart": "⚖️"}
+
+
+def card_signature(rec: dict) -> str:
+    """One card, one push: the ledger key is the card's own id."""
+    return f"rec:{rec.get('id')}"
+
+
+def _baseline_key(subject: str) -> str:
+    return f"push_cards_baseline:{subject}"
+
+
 def classify_trigger(rec: dict) -> tuple[str, int | None]:
     """(trigger, rate_limit_hours) for one card. Falls back to the old behaviour.
 
@@ -371,40 +388,66 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
 
     sev = _sev_set()
     sent = 0
+    sent_cards = 0
 
-    # 1) Recommendations
+    # 1) Recommendations -- PR 156 (D140): every NEW card pushes.
+    #
+    # Owner, 2026-11-02: a push every time a new card appears, and "new" means a
+    # card id not pushed before (he chose this over a stable-topic key, knowing a
+    # drift card re-rendered with a new amount gets a new id and pushes again).
+    # So the P4.2 gates no longer apply to cards: no severity filter, no
+    # never-live "ready to arm", no per-trigger 12 h / 24 h windows. What stays:
+    # the same id is pushed once per `push_dedupe_days`, and nothing is dropped
+    # -- past MAX_CARD_PUSHES_PER_RUN, the rest go out as one summary push.
     try:
         built = await build_recommendations(session, user)
-        for r in built.get("recommendations", []):
-            if sent >= max_sends:
-                break
-            trigger, limit = classify_trigger(r)
-            # A card whose trigger is never-live is skipped regardless of
-            # severity: the digest carries it instead.
-            if limit is None:
-                continue
-            # The four P4.2 triggers carry their own urgency and bypass the
-            # severity filter -- a fired rule the user armed themselves is worth
-            # a push even at MEDIUM, and drift is MEDIUM by design.
-            if trigger == "recommendation" and r.get("severity", "").upper() not in sev:
-                continue
-            sig = trigger_signature(trigger, r)
-            if limit > 0 and await _seen_within(session, subject, sig, limit):
-                continue
-            if limit == 0 and await _seen(session, subject, sig):
-                continue      # immediate still means once per event, not per run
-            icon = {"rule_fired": "\u26a1", "signal_flip": "\U0001f504",
-                    "sleeve_drift": "\u2696\ufe0f", "sleeve_coldstart": "\u2696\ufe0f"}.get(trigger, "\U0001f4a1")
-            sent += await send_to_subject(
-                session, subject, f"{icon} {r.get('title', 'New recommendation')}",
-                r.get("action") or "Open InvestWise to review.", url="/app/", tag=sig)
-            await _mark(session, subject, sig)
+        try:
+            cards = [r for r in built.get("recommendations", []) if r.get("id")]
+            if await _kv_get(session, _baseline_key(subject)) is None:
+                # First run after the switch: what is already on Today is not new.
+                # Mark it, say once that the rule changed, push nothing per card.
+                for r in cards:
+                    await _mark(session, subject, card_signature(r))
+                await _kv_set(session, _baseline_key(subject), datetime.now(timezone.utc).isoformat())
+                sent += await send_to_subject(
+                    session, subject, "\U0001f514 You'll now get a push for every new card",
+                    f"{len(cards)} card(s) are on Today now. From here, each new one is pushed.",
+                    url="/app/", tag="rec:baseline", category="info")
+                cards = []
+            fresh, queued = [], set()
+            for r in cards:
+                sig = card_signature(r)
+                if sig in queued or await _seen(session, subject, sig):
+                    continue
+                queued.add(sig)
+                fresh.append((r, sig))
+            for r, sig in fresh[:MAX_CARD_PUSHES_PER_RUN]:
+                trigger, _limit = classify_trigger(r)
+                icon = _CARD_ICON.get(trigger, "\U0001f4a1")
+                sent += await send_to_subject(
+                    session, subject, f"{icon} {r.get('title', 'New recommendation')}",
+                    r.get("action") or "Open InvestWise to review.", url="/app/", tag=sig)
+                await _mark(session, subject, sig)
+            rest = fresh[MAX_CARD_PUSHES_PER_RUN:]
+            if rest:
+                n = len(rest)
+                sent += await send_to_subject(
+                    session, subject, f"\U0001f4a1 {n} more new card{'s' if n != 1 else ''}",
+                    "; ".join(str(r.get("title")) for r, _ in rest)[:300],
+                    url="/app/", tag="rec:overflow")
+                for _r, sig in rest:
+                    await _mark(session, subject, sig)
+        except Exception:  # noqa: BLE001
+            # Logged, and never allowed to take the app-health push below with it.
+            logger.warning("card push eval failed", exc_info=True)
+        # Heads-ups, risk alerts and price moves keep their own budget.
+        sent_cards = sent
         # PR 144: the app's own health is pushed too. A heads-up is not a
         # recommendation, so this loop never saw PR 143's "rules not checked" or
         # a failing job. Once per heads-up id (the id carries what is failing) per
         # 12 hours.
         for h in built.get("headsups", []):
-            if sent >= max_sends:
+            if sent - sent_cards >= max_sends:
                 break
             card = h.get("card") or h
             if ((card.get("meta") or {}).get("headsup_kind")) not in ("rule_check", "job_health"):
@@ -430,7 +473,7 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
             snap = compute_snapshot(positions)
             cap = effective_caps(await get_plan(session, user)).get("concentration_cap")
             for a in risk_alerts(snap, cap).get("alerts", []):
-                if sent >= max_sends:
+                if sent - sent_cards >= max_sends:
                     break
                 if a.get("severity", "").upper() not in sev:
                     continue
@@ -447,7 +490,7 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
         # price moves vs last-notified baseline (stored per ticker in KV)
         thr = get_settings().push_price_move_pct
         for p in positions:
-            if sent >= max_sends:
+            if sent - sent_cards >= max_sends:
                 break
             tk, cur = p.get("ticker"), float(p.get("current_price") or 0)
             if not tk or cur <= 0:
@@ -529,7 +572,9 @@ async def diagnostics(session: AsyncSession, user: User) -> dict:
     last_run = await _kv_get(session, KV_LAST_PUSH_RUN)
     recent = (await session.scalars(
         select(NotifiedEvent).where(NotifiedEvent.subject == subject)
-        .order_by(NotifiedEvent.created_at.desc()).limit(10))).all()
+        # PR 156: 50, not 10. Every card now leaves a `rec:<id>` row, and the
+        # smoke checks each card on Today against this list.
+        .order_by(NotifiedEvent.created_at.desc()).limit(50))).all()
 
     library_ok, library_error = True, None
     try:

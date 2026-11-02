@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("investwise.scheduler")
 _scheduler = None
@@ -262,13 +262,17 @@ def start_scheduler() -> None:
     # Push notifications: scan portfolios for important changes, and a daily digest.
     try:
         from app.services.push_service import run_digests_blocking, run_evaluations_blocking
+        # PR 156 (D140): every 30 min, 5 min behind the 30-min price refresh
+        # (both start at boot), because that is when cards change. Hourly let a
+        # card that lived under an hour come and go with no push.
         _scheduler.add_job(_guarded("push_evaluate", run_evaluations_blocking),
-                           "interval", minutes=60, id="push_evaluate")
+                           "interval", minutes=30, id="push_evaluate",
+                           next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5))
         # The digest is idempotent per calendar day (its dedupe signature is the
         # date), so a wide grace window can only make it late, never duplicate.
         _scheduler.add_job(_guarded("push_digest", run_digests_blocking), "cron",
                            hour=7, minute=0, id="push_digest", misfire_grace_time=21600)
-        logger.info("Push notification jobs scheduled (evaluate hourly, digest 07:00).")
+        logger.info("Push notification jobs scheduled (evaluate every 30 min, digest 07:00).")
     except Exception:  # noqa: BLE001
         logger.warning("Push notification jobs not scheduled.", exc_info=False)
 

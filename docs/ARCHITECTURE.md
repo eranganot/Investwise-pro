@@ -162,7 +162,7 @@ failed or none has succeeded for 75 minutes (`_rule_check_headsup`). Since PR 14
 |---|---|---|
 | `price_refresh` | every 30 min (primed at boot) | Reprice every position (primary → Yahoo fallback, minor-unit/currency repair), then evaluate trading rules |
 | `futures_warm` | every 5 min (primed at boot) | Refresh the strategies' regime cache (`regime_service`, hourly) that Today reads, then the futures cross-check snapshot; a futures outage keeps the last snapshot, marked stale, and fails the job |
-| `push_evaluate` | every 60 min | Per subscriber: push new important cards, risk alerts, price moves |
+| `push_evaluate` | every 30 min (5 min after the price refresh) | Per subscriber: push every new card (by id, D140), app-health heads-ups, risk alerts, price moves |
 | `standing_orders` | every 60 min | Credit due monthly deposits (contribution + cash), idempotent |
 | `push_digest` | 07:00 daily | Daily digest push |
 | `nav_snapshot` | 22:10 (trading days) | Record real NAV (`nav_snapshots`) + health snapshot |
@@ -205,6 +205,7 @@ before debugging Today:
 | `vapid_public_key` / `vapid_private_key` | Web-push keypair (see [OPERATIONS.md](OPERATIONS.md): pin it in env) |
 | `last_price_refresh` / `last_price_source` | Price freshness / effective source |
 | `pxbase:{subject}:{ticker}` | Price-move push baselines |
+| `push_cards_baseline:{subject}` | When PR 156's every-card rule first ran for this subscriber (cards already on Today were marked, not pushed) |
 | `caps_to_bands_done:*`, `plan_sleeves_backfilled_v1`, `plan_core_backfilled_v1` | One-shot migration flags |
 | `job_state:{job id}` | Each scheduled job's last outcome (PR 143), reloaded at boot |
 

@@ -920,6 +920,10 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
             n["event"].notified = bool(sent)
             if sent:
                 await push_service._mark(session, user.email, sig)  # noqa: SLF001
+                # PR 156: this firing's card (`rule_<id[:8]>`) has been pushed
+                # here already, so the card loop must not push it a second time.
+                await push_service._mark(session, user.email,  # noqa: SLF001
+                                         push_service.card_signature({"id": f"rule_{n['id'][:8]}"}))
         await session.commit()
     for n in newly:
         n["event_id"] = str(n["event"].id)
