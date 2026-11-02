@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-10-24 by Claude (A2r: the retune tries stop widths). Last product PR: **A2r**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-02 by Claude (PR 155: an unfunded sleeve's slot is the sleeve's). Last product PR: **155**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,43 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 155 — the cash card leaves an unfunded sleeve's slot to the sleeve; core cards quote the managed core (D139)
+
+**Report.** Owner, 2026-11-02: a "Put ₪5,008 of cash back to work" card bought BND ("you hold no Fixed Income; the plan
+targets 35%"), scoped "Core · Diversified Global Growth · 30% of book", while the 2x Gold Trend sleeve sat unfunded.
+
+**Evidence (live, 2026-11-02 ~14:50 UTC, `0a71df4`).** `/plan/sleeves`: `div_2x_gold_trend` 35%, held 0, leg **BIL**
+(gold's signal out); `btm_trend_tqqq` 35% on stop hold; `core_pct` 30.0, `core_target_pct` 0.6423. `/mix`:
+`target_from_sleeves` = {Fixed Income: 0.35} -- BIL is Fixed Income. Book: VTI 5,768, QQQ 3,606, VXUS 2,886, SMH 2,161,
+cash 5,158; NAV 19,579. Reproduced offline on those numbers: `_redeploy_cash_recs` returned the identical card (₪5,008.45
+BND, same reason text).
+
+**Root cause.** The class-gap pass sees "Fixed Income short 35%, held by nothing" and takes the no-holding branch, which
+buys the screener's top name in the class. Nothing told it the gap was a sleeve's slot: `sleeve_targets` only reached
+`_redeploy_name_targets`, which covers held names. Silent because the heads-up for the same sleeve ("hold none of it --
+Fund this sleeve") is a separate card and the cash card's claim was internally true. The label: `card_scope.annotate`
+used `remainder_pct` (planned 30%) while the core is managed to 64% with TQQQ's share in it (D127).
+
+**Ruled out.** The leveraged ceiling (chosen 35 ≤ 44, `cut_pct` {}); a stop hold on gold (`on_stop_hold` []; PR 154
+already freed UGL); TQQQ's slot (its share is the core's -- the first draft of this fix used the planned targets and
+parked a real core gap for TQQQ; caught on a 12k-cash case, now `managed_sleeve_targets`).
+
+**Fix.** `book_target` exposes `managed_sleeve_targets` (holds applied). `_redeploy_cash_recs(sleeve_slots=)` takes
+the part of each class gap that belongs to a sleeve leg nothing holds out of the gap, keeps that cash back (bounded by the
+actual gap), and adds a line: "₪X more stays in cash for your BIL sleeve ... Fund this sleeve on Plan spends it"
+(`meta.sleeve_slot_kept_ils` / `sleeve_slot_tickers`). `card_scope.annotate(core_pct_managed=)` gets book_target's
+`core_pct`. Blast radius: the cash card and every core-scoped label; nothing else reads the new keys.
+
+**Tests.** `test_redeploy_leaves_an_empty_sleeve_slot.py` (5): the live book gets no card; the control reproduces
+the old BND card; 12k cash fills only core names and keeps 35% of NAV back; a stop-held leg keeps nothing; the core label
+quotes 64.2%. Redeploy / card-claims suites pass. Full Postgres suite on Python 3.12: 3,003 passed. (On 3.13
+`test_the_two_cards_are_gone_from_the_source` fails on main too -- 3.13 dedents `__doc__`.) Ruff 0.15.22 clean.
+
+**Smoke.** `scripts/smoke/smoke-pr155-an-empty-sleeve-slot-is-the-sleeves.ps1`. Before the deploy (`0a71df4`):
+§3 FAIL ×4 (Hold: VTI / SMH / QQQ / VXUS read "30% of book" against a 64.2% core); §1-2 SKIP -- the owner funded the
+gold sleeve (BIL 35%) during the investigation, so the live book no longer has an empty slot; the unit tests carry that
+proof. PROD_RESULT
 
 ## PR 154 — a SOXL stop no longer holds 2x gold or the Treasury funds (D138; D137 keeps the SOXL hold)
 

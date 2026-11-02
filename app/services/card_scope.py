@@ -138,8 +138,14 @@ def scope_for(rec: dict, *, ticker_owner: dict[str, str], sleeve_names: dict[str
     return _BOOK
 
 
-async def annotate(session, user, recs: list[dict]) -> list[dict]:
+async def annotate(session, user, recs: list[dict],
+                   core_pct_managed: float | None = None) -> list[dict]:
     """Stamp `scope` on every card. Returns the same list, mutated in place.
+
+    PR 155: `core_pct_managed` is the core's share AS THE CARDS MANAGE IT --
+    book_target's `core_pct`, in percent, which includes a stop-held sleeve's
+    share (D127). The planned remainder said "Core · 30% of book" on a card
+    working against a 64% core on 2026-11-02. The remainder stays the fallback.
 
     Called once, after reconciliation, so a merged card is scoped from what it
     actually ended up containing rather than from whichever leg happened to be
@@ -153,6 +159,8 @@ async def annotate(session, user, recs: list[dict]) -> list[dict]:
         sleeves = await sv.list_sleeves(session, user)
         core_id = await sv.core_strategy_id(session, user)
         core_pct = sv.remainder_pct(sleeves)
+        if core_pct_managed is not None and core_pct_managed > 0:
+            core_pct = round(float(core_pct_managed), 1)
     except Exception:  # noqa: BLE001 -- a label is never worth breaking Today
         for r in recs:
             r.setdefault("scope", _BOOK)

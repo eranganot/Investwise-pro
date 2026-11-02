@@ -2259,7 +2259,8 @@ async def build_recommendations(session: AsyncSession, user: User,
                                    float(simulate_cash_ils), btgt["target"], _name_caps,
                                    _sleeve_share, _holds_active,
                                    round(sum((btgt.get("held_back") or {}).values())
-                                         * (_sim_snap.get("nav") or 0.0), 2))
+                                         * (_sim_snap.get("nav") or 0.0), 2),
+                                   sleeve_slots=btgt.get("managed_sleeve_targets"))
         return {"simulated": True, "simulate_cash_ils": float(simulate_cash_ils),
                 "cash_now_ils": round(_cash_ils, 2),
                 "note": ("Read-only preview: the cash card as if you held this much cash "
@@ -2282,7 +2283,8 @@ async def build_recommendations(session: AsyncSession, user: User,
     _redeploy = await _offload(_redeploy_cash_recs, rows, snap, plan, objective, cap, _cash_ils,
                                btgt["target"], _name_caps,
                                _sleeve_share, _holds_active, _reserve, _ideas,
-                               core_id=btgt.get("core_strategy_id"))
+                               core_id=btgt.get("core_strategy_id"),
+                               sleeve_slots=btgt.get("managed_sleeve_targets"))
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"], _name_caps, btgt.get("core_strategy_id"))
 
@@ -3262,7 +3264,9 @@ async def build_recommendations(session: AsyncSession, user: User,
         from app.services.card_scope import annotate as _scope
         from app.services.contradictions import check as _contra
 
-        recs = await _scope(session, user, recs)
+        _core_mgd = (btgt or {}).get("core_pct")
+        recs = await _scope(session, user, recs,
+                            round(float(_core_mgd) * 100.0, 1) if _core_mgd is not None else None)
         _sleeve_tgts = await sv.all_sleeve_targets(session, user)
         # FX-NORMALISED, from the ORM rows, exactly as `current_mix` does it.
         # `pdicts` carries quantity x current_price in the PRICE's currency, and
@@ -4950,7 +4954,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         holds: dict | None = None,
                         reserved_ils: float = 0.0,
                         ideas: list | None = None,
-                        _inner: bool = False, core_id: str | None = None) -> list[dict]:
+                        _inner: bool = False, core_id: str | None = None,
+                        sleeve_slots: dict | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     PR 75 -- `holds` are tickers under a take-profit buy-back hold and
@@ -5018,7 +5023,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             # with the reserve ignored (the held tickers stay excluded), plus
             # the screener's top ideas.
             under = _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils, book_mix,
-                                        name_caps, sleeve_targets, holds, 0.0, None, True, core_id=core_id)
+                                        name_caps, sleeve_targets, holds, 0.0, None, True, core_id=core_id,
+                                        sleeve_slots=sleeve_slots)
             return [_held_cash_card(holds, _reserved, cash_ils, float(_trigger or 0.0),
                                     nav=nav, mix=current_mix(rows)[0], target=book_mix or {},
                                     under_legs=((under[0].get("apply") or {}).get("legs") or [])
@@ -5075,14 +5081,49 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             return f"the {tk} sleeve is {w:.1%} of the book vs your {t:.1%} target"
         return f"{tk} holds your core {cls}: {w:.1%} vs {t:.1%} of the book"
 
+    # PR 155 -- A SLEEVE'S SLOT IS THE SLEEVE'S, EVEN WHILE IT IS EMPTY.
+    # Live 2026-11-02: the 2x Gold Trend sleeve (35%, signal out of gold, so its
+    # leg is BIL) had never been funded. BIL is Fixed Income, so the book target
+    # read "35% Fixed Income"; this card saw a class held by nothing, asked the
+    # screener for a bond fund and proposed ₪5,008 of BND -- a different
+    # instrument, in the sleeve's place, labelled as the core. Funding a sleeve
+    # is "Fund this sleeve" (it spends cash first, then shows every leg); a
+    # cold-start sleeve is never this card's to fill. So the part of a class's
+    # shortfall that belongs to a sleeve ticker you hold none of is taken out of
+    # the gap AND its cash is kept back -- otherwise the plan-weight pass would
+    # pour the same shekels into a core that is already over target.
+    # Bounded by the class's actual gap: a sleeve whose slot the core is
+    # covering (a stop-held TQQQ, D127) has no gap here and keeps nothing back.
+    # `sleeve_slots` is book_target's `managed_sleeve_targets` (holds applied);
+    # without it nothing is kept back, as before.
+    _unheld_sleeve = {str(t).upper(): float(w or 0.0) for t, w in (sleeve_slots or {}).items()
+                      if float(w or 0.0) > 0
+                      and not any(k.upper() == str(t).upper() and v > 0 for k, v in weights.items())}
+    _slot_by_cls: dict[str, list[str]] = {}
+    for _tk in _unheld_sleeve:
+        _slot_by_cls.setdefault(classify(_tk, None), []).append(_tk)
+    _sleeve_slot_ils = 0.0
+    _sleeve_slot_tks: list[str] = []
+
     # Gaps per asset class, largest shortfall first.
     gaps = []
     for cls, tw in (target or {}).items():
         if cls.lower() == "cash" or not tw:
             continue
         gap_ils = max(0.0, (float(tw) - float(mix.get(cls, 0.0)))) * nav
+        _tks_here = _slot_by_cls.get(cls) or []
+        if _tks_here and gap_ils > 0:
+            _slot = min(gap_ils, sum(_unheld_sleeve[t] for t in _tks_here) * nav)
+            gap_ils -= _slot
+            _sleeve_slot_ils += _slot
+            _sleeve_slot_tks += _tks_here
         if gap_ils >= _fund.MIN_TRADE_ILS:
             gaps.append((cls, gap_ils, float(tw)))
+    _sleeve_kept = round(min(spendable, _sleeve_slot_ils), 2)
+    if _sleeve_kept >= 1:
+        spendable = round(spendable - _sleeve_kept, 2)
+        if spendable < _fund.MIN_TRADE_ILS:
+            return []
     if not gaps and not name_tgt:
         return []
     gaps.sort(key=lambda g: g[1], reverse=True)
@@ -5257,7 +5298,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                          "reason": "no underweight holding had room for it under your "
                                    "concentration caps"})
     # Money the passes or the research could not (or would not) place.
-    _leftover = round(_reserved + sum(u["amount_ils"] for u in unplaced), 2) >= 1
+    _leftover = round(_reserved + _sleeve_kept + sum(u["amount_ils"] for u in unplaced), 2) >= 1
     floor_pct = _fund.cash_target_fraction(objective, plan, nav)
     new_names = [x["ticker"] for x in legs if x.get("new_position")]
 
@@ -5307,6 +5348,10 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                                 f"{float((holds or {}).get(t, {}).get('level') or 0):,.2f})"
                                 for t in sorted(_held))
                     + " -- your sleeve target is unchanged"] if _reserved >= 1 else [])
+                + ([f"{_ils(_sleeve_kept)} more stays in cash for your "
+                    + ", ".join(sorted(set(_sleeve_slot_tks)))
+                    + " sleeve, which you hold none of -- \"Fund this sleeve\" on Plan spends it"]
+                   if _sleeve_kept >= 1 else [])
                 + _research_lines(_research, objective)),
         "est_amount": deployed,
         "apply": {"kind": "redeploy_cash", "legs": legs},
@@ -5318,7 +5363,10 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                  "unplaced": [u for u in unplaced if u["amount_ils"] >= _fund.MIN_TRADE_ILS],
                  # What was researched, what won and why the rest lost, plus the
                  # assumption pins (investing-discipline §3).
-                 "research": _research},
+                 "research": _research,
+                 # PR 155: cash kept back for a sleeve you hold none of.
+                 "sleeve_slot_kept_ils": _sleeve_kept,
+                 "sleeve_slot_tickers": sorted(set(_sleeve_slot_tks))},
     }]
 
 
