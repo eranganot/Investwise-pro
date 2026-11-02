@@ -48,7 +48,7 @@ a false FAIL with fewer than 50 rows). Production evidence that it did run once:
 **Fix.** `_mark(session, subject, "rec:baseline")` after the switch-over push. The owner's device switched over before
 this, so it never gets the row; the smoke says so as a SKIP and FAILs only on two rows.
 
-**Tests.** The first-run test asserts the row (fails without the fix). Full suite on Postgres 16: GATE_RESULT. ruff clean.
+**Tests.** The first-run test asserts the row (fails without the fix). Full suite on Postgres 16: 3017 passed (22 min). ruff clean.
 **Smoke.** `smoke-pr156-every-new-card-pushes.ps1` (sections 1-4 unchanged in what they check). Production: PROD_RESULT.
 
 ## PR 156 — every new recommendation card is pushed (D140)
