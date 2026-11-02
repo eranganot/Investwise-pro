@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-02 by Claude (PR 156: every new card is pushed). Last product PR: **156**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-02 by Claude (PR 156.1: the switch-over push is in the ledger). Last product PR: **156.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,19 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 156.1 — the switch-over push leaves a ledger row
+
+**Found by PR 156's production smoke.** Section 2 looks for `rec:baseline` in `/push/status`, but the switch-over push
+used that only as its tag and never wrote a ledger row, so "sent exactly once" could not be seen (SKIP, would have been
+a false FAIL with fewer than 50 rows). Production evidence that it did run once: the first run at 17:26 UTC reported
+`sent=1` with one card marked and no card push.
+
+**Fix.** `_mark(session, subject, "rec:baseline")` after the switch-over push. The owner's device switched over before
+this, so it never gets the row; the smoke says so as a SKIP and FAILs only on two rows.
+
+**Tests.** The first-run test asserts the row (fails without the fix). Full suite on Postgres 16: GATE_RESULT. ruff clean.
+**Smoke.** `smoke-pr156-every-new-card-pushes.ps1` (sections 1-4 unchanged in what they check). Production: PROD_RESULT.
 
 ## PR 156 — every new recommendation card is pushed (D140)
 
@@ -84,7 +97,7 @@ rewritten for D140. Full suite on Postgres 16: 3017 passed (22 min). ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr156-every-new-card-pushes.ps1` (read-only; run 10+ min after the deploy). On
 production before the merge (`5672fc4`): PASS 7 FAIL 2 SKIP 1. The 2 FAILs are the bug: the job ran 60 min apart, and
-there was no baseline. Production after the merge: PROD_RESULT.
+there was no baseline. Production after the merge (`7b7ca98`, 17:21 UTC; run 17:32): **PASS 9 FAIL 0 SKIP 1**. The first run (17:26 UTC) sent 1 push, the switch-over, and marked the one card on Today (a LOW "2x gold" rules card the old rules never pushed). The SKIP was the smoke's own blind spot: the switch-over wrote no ledger row. Fixed in PR 156.1.
 
 ## PR 155 — the cash card leaves an unfunded sleeve's slot to the sleeve; core cards quote the managed core (D139)
 

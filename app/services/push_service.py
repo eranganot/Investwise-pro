@@ -413,6 +413,9 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
                     session, subject, "\U0001f514 You'll now get a push for every new card",
                     f"{len(cards)} card(s) are on Today now. From here, each new one is pushed.",
                     url="/app/", tag="rec:baseline", category="info")
+                # PR 156.1: a ledger row too, so /push/status (and the smoke) can
+                # show the switch-over happened exactly once.
+                await _mark(session, subject, "rec:baseline")
                 cards = []
             fresh, queued = [], set()
             for r in cards:
