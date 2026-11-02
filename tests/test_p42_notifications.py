@@ -92,15 +92,15 @@ def test_the_digest_carries_the_never_live_triggers():
     assert "waiting in the app" in src
 
 
-def test_the_push_loop_skips_never_live_and_bypasses_severity_for_real_triggers():
+def test_the_card_loop_no_longer_gates_on_trigger_or_severity():
+    """PR 156 (D140) replaced this. The P4.2 loop skipped never-live cards and
+    filtered ordinary cards by severity; the owner asked for a push for every
+    new card. classify_trigger still names a card's kind (icon, digest list);
+    behaviour is in tests/test_pr156_every_new_card_pushes.py."""
     import inspect
     src = inspect.getsource(ps.evaluate_and_notify)
-    # never-live is skipped before anything else can send it
-    assert "if limit is None:" in src
-    # the four triggers are not gated on the CRITICAL/HIGH severity filter
-    assert 'trigger == "recommendation" and r.get("severity"' in src
-    # and the windowed check is used, not only the global one
-    assert "_seen_within" in src
+    assert "card_signature(r)" in src
+    assert "if limit is None:" not in src
 
 
 @pytest.mark.parametrize("hours", [0, 24])

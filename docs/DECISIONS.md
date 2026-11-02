@@ -34,6 +34,13 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D140 · 2026-11-02 · Every new recommendation card is pushed.** Owner: "make sure that I'm getting notification every
+  time that a new recommendation card appears"; offered a stable-topic key, a MEDIUM bar, or literally every card, he
+  chose literally every card. A card is new when its id has not been pushed in `push_dedupe_days` (7): no severity
+  filter, no never-live "ready to arm", no per-trigger 12 h / 24 h windows for cards. A drift card whose amount moves
+  gets a new id and pushes again, knowingly. Past 5 new cards in one run the rest go as one "N more new cards" push,
+  never dropped. `push_evaluate` runs every 30 minutes, 5 behind the price refresh. Supersedes the card part of P4.2
+  (risk alerts keep `push_notify_severities`; rule firings keep their own 12 h push in `rules_service`). → PR 156
 - **D139 · 2026-11-02 · The cash card never fills an unfunded sleeve's slot; that cash waits for "Fund this sleeve".**
   The part of a class's shortfall that belongs to a sleeve leg nothing holds (book_target's `managed_sleeve_targets`,
   holds applied) is taken out of the cash card's gaps and its cash is kept back, with a line saying where it goes. A

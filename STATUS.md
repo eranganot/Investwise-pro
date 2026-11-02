@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-02 by Claude (PR 155: an unfunded sleeve's slot is the sleeve's). Last product PR: **155**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-02 by Claude (PR 156: every new card is pushed). Last product PR: **156**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,54 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 156 — every new recommendation card is pushed (D140)
+
+**Report.** Owner, 2026-11-02: "make sure that I'm getting notification every time that a new recommendation card
+appears". Asked what "new" means (a stable topic, a MEDIUM bar, or literally every card), he chose literally every card.
+
+**What was happening (reproduced on `5672fc4`).** `tests/test_pr156_every_new_card_pushes.py` drives
+`evaluate_and_notify` with the sender and ledger replaced: on main a LOW or MEDIUM card and a "ready to arm" card sent
+nothing, HIGH/CRITICAL sent one (9 of 11 failed). By design (P4.2), not a fault: cards below `push_notify_severities`
+(CRITICAL,HIGH) were skipped, "ready to arm" was digest-only, drift / cold-start keyed on the sleeve for 24 h, a re-fired
+rule on the rule for 12 h, the 6th card on was left for the next hourly run, and a card living under an hour was never
+seen.
+
+**Production, read-only, 2026-11-02 ~16:55 UTC.** One subscription; `push_evaluate` 228 runs, 0 failures, last
+`sent=0`. The 10 newest ledger rows hold no ordinary card push at all: 3 digests, 6 rule firings, 1 risk alert. Today
+had 0 cards. Rule events since 10-19: 74 rows, 51 `notified: false`, but 43 of those are edits / creations / deletions
+(31 from the 10-24 14:58 clean-up), not firings. The 8 real unpushed firings are rebalance-band / max-weight cards (QQQ,
+VTI, VXUS, SMH) inside the 12 h limit of the same rule's last push. **Ruled out:** no stop-loss or trailing stop that
+fired went unpushed; the 06:15 signal job's `notify=False` path produced none in the window; no failed fan-out (0
+failures). **Not measurable:** production keeps no history of which cards appeared, so past silent cards cannot be
+counted; the smoke counts from the deploy on.
+
+**Fix.**
+- `push_service.evaluate_and_notify`: a card is pushed when `rec:<id>` is not in the ledger within `push_dedupe_days`.
+  No severity filter, no never-live, no per-trigger windows for cards. Past `MAX_CARD_PUSHES_PER_RUN` (5), one
+  "N more new cards" push names the rest; all are marked. Cards no longer use up the 5-push budget of app-health
+  heads-ups, risk alerts and price moves, and a card failure no longer takes the app-health push down with it (one
+  `try` covered both before; caught by PR 144's test).
+- First run per subscriber: cards already on Today are marked, not pushed, and one "You'll now get a push for every
+  new card" is sent (`push_cards_baseline:{subject}` in kv_settings).
+- `rules_service.evaluate_user`: a firing it pushes also marks its card (`rec:rule_<id[:8]>`), so the card loop does not
+  push it a second time.
+- `push_evaluate` every 30 min, first run 5 min after boot (behind the 30-min price refresh); was hourly.
+- `/push/status` lists the 50 newest ledger rows (was 10), for the smoke.
+- Unchanged: the 07:00 digest, risk alerts (`push_notify_severities`), price moves, app-health heads-ups, the rule
+  path's own 12 h limit.
+
+**Known edge.** A card that appears and goes inside 30 minutes can still be missed. A card that returns with the same
+id inside 7 days is not re-pushed.
+
+**Tests.** `tests/test_pr156_every_new_card_pushes.py` (14): every severity, ready-to-arm, once per id, a changed id
+pushes again, a re-fired rule's new card, 8 at once (5 + a summary, none re-pushed), an old card not in the summary, the
+first-run baseline, the app-health budget, the rule-path mark, the 30-min schedule. `test_p42_notifications` loop test
+rewritten for D140. Full suite on Postgres 16: GATE_RESULT. ruff clean.
+
+**Smoke.** `scripts/smoke/smoke-pr156-every-new-card-pushes.ps1` (read-only; run 10+ min after the deploy). On
+production before the merge (`5672fc4`): PASS 7 FAIL 2 SKIP 1. The 2 FAILs are the bug: the job ran 60 min apart, and
+there was no baseline. Production after the merge: PROD_RESULT.
 
 ## PR 155 — the cash card leaves an unfunded sleeve's slot to the sleeve; core cards quote the managed core (D139)
 
