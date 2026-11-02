@@ -34,6 +34,13 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D139 · 2026-11-02 · The cash card never fills an unfunded sleeve's slot; that cash waits for "Fund this sleeve".**
+  The part of a class's shortfall that belongs to a sleeve leg nothing holds (book_target's `managed_sleeve_targets`,
+  holds applied) is taken out of the cash card's gaps and its cash is kept back, with a line saying where it goes. A
+  stop-held leg is not a slot (its share is the core's, D127). Core-scoped cards quote the core as managed
+  (book_target `core_pct`), not the planned remainder. *Why:* 2026-11-02 the unfunded 2x Gold Trend sleeve (leg BIL)
+  read as "35% Fixed Income" and the card proposed ₪5,008 of BND, labelled "Core · 30% of book". Owner: "fix the bug".
+  → PR 155
 - **D138 · 2026-10-26 · A stop on a geared equity fund holds the geared equity funds only, not 2x gold or the Treasury funds.**
   Amends D116. The group a stop holds is `strategy_profile.STOP_GROUP`: GEARED without UGL, TMF and UBT. A stop on one of
   those three holds only that fund. The leveraged ceiling (D125) still counts every geared fund. *Why:* reviewing the

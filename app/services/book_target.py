@@ -312,6 +312,11 @@ async def book_target(session, user, objective: str) -> dict:
     out = compose(sleeve_targets=targets, core_mix=core_mix, objective=objective,
                   cash_pct=cash_pct, held_back=held, commodities_pct=carve_out_fraction())
     out["planned_sleeve_targets"] = {k.upper(): round(float(v), 4) for k, v in planned.items()}
+    # PR 155: the sleeve targets the BUYERS are managed to -- holds applied, so a
+    # stop-held leg is absent (its share went to the core, D127). The cash card
+    # keeps cash back only for a slot in here that nothing holds yet.
+    out["managed_sleeve_targets"] = {k.upper(): round(float(v), 4)
+                                     for k, v in targets.items() if float(v or 0.0) > 0}
     out["ceiling_cut"] = {k: round(v, 4) for k, v in _ceiling_cut.items() if v > 0}
     if held:
         # What the book SHOWS as its sleeves stays the plan (review: the display
