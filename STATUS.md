@@ -49,7 +49,7 @@ a false FAIL with fewer than 50 rows). Production evidence that it did run once:
 this, so it never gets the row; the smoke says so as a SKIP and FAILs only on two rows.
 
 **Tests.** The first-run test asserts the row (fails without the fix). Full suite on Postgres 16: 3017 passed (22 min). ruff clean.
-**Smoke.** `smoke-pr156-every-new-card-pushes.ps1` (sections 1-4 unchanged in what they check). Production: PROD_RESULT.
+**Smoke.** `smoke-pr156-every-new-card-pushes.ps1` (sections 1-4 unchanged in what they check). Production (`ffb6d3d`, 17:55 UTC; run 18:06): **PASS 8 FAIL 0 SKIP 2**. Both SKIPs are expected: the owner's device switched over before the row existed, and Today had no card.
 
 ## PR 156 — every new recommendation card is pushed (D140)
 
