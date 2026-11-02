@@ -80,7 +80,7 @@ id inside 7 days is not re-pushed.
 **Tests.** `tests/test_pr156_every_new_card_pushes.py` (14): every severity, ready-to-arm, once per id, a changed id
 pushes again, a re-fired rule's new card, 8 at once (5 + a summary, none re-pushed), an old card not in the summary, the
 first-run baseline, the app-health budget, the rule-path mark, the 30-min schedule. `test_p42_notifications` loop test
-rewritten for D140. Full suite on Postgres 16: GATE_RESULT. ruff clean.
+rewritten for D140. Full suite on Postgres 16: 3017 passed (22 min). ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr156-every-new-card-pushes.ps1` (read-only; run 10+ min after the deploy). On
 production before the merge (`5672fc4`): PASS 7 FAIL 2 SKIP 1. The 2 FAILs are the bug: the job ran 60 min apart, and
