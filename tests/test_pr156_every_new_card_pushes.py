@@ -156,6 +156,7 @@ async def test_the_first_run_after_the_switch_pushes_no_old_card(harness):
     out = await harness["run"]()
     assert len(out) == 1 and "every new card" in out[0]["title"], out
     assert "4 card(s)" in out[0]["body"]
+    assert "rec:baseline" in harness["marks"], "PR 156.1: the switch-over leaves a ledger row"
     assert await harness["run"]() == []
     harness["cards"].append(_card("rec_new", "A new one"))
     out = await harness["run"]()
