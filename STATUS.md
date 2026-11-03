@@ -64,7 +64,7 @@ bound set the width. A plan stored before the deploy (BIL as "sleeve") shows no 
 On today's book the card disappears: there is nothing left to change.
 
 **Tests.** `tests/test_pr157_the_protection_card_says_what_it_does.py` (7, all fail on main);
-`test_a3r_one_exit_per_holding` now expects BIL as "cash". Full suite on Postgres 16: GATE_RESULT. ruff clean.
+`test_a3r_one_exit_per_holding` now expects BIL as "cash". Full suite on Postgres 16: 3024 passed (19 min). ruff clean.
 
 **Smoke.** `smoke-pr157-the-protection-card-says-what-it-does.ps1`. Before the merge (`f926449`): PASS 4 FAIL 4 (the
 four faults). After: PROD_RESULT.
