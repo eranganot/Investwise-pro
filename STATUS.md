@@ -67,7 +67,7 @@ On today's book the card disappears: there is nothing left to change.
 `test_a3r_one_exit_per_holding` now expects BIL as "cash". Full suite on Postgres 16: 3024 passed (19 min). ruff clean.
 
 **Smoke.** `smoke-pr157-the-protection-card-says-what-it-does.ps1`. Before the merge (`f926449`): PASS 4 FAIL 4 (the
-four faults). After: PROD_RESULT.
+four faults). After (`ca58918`, 06:16 UTC): **PASS 5 FAIL 0 SKIP 1**. The card is gone from Today (nothing left to change); the SKIP is section 2, no card to read. Bands and the drawdown guard unchanged.
 
 ## PR 156.1 — the switch-over push leaves a ledger row
 
