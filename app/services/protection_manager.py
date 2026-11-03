@@ -58,8 +58,18 @@ def trail_for(vol_pct: float, k: float) -> float:
     return float(min(MAX_TRAIL_PCT, max(MIN_TRAIL_PCT, round(k * vol_pct, 1))))
 
 
+def is_cash_like(ticker: str) -> bool:
+    """A T-bill fund (BIL, SGOV, SHV): `strategy_profile` already plans it as cash."""
+    from app.services.strategy_profile import _character
+    return _character(ticker) == "cash"
+
+
 def role_of(ticker: str, sleeve_tickers: set[str], geared: bool) -> str:
+    """PR 157 (D141): a cash-like fund gets no exit, even as a sleeve leg (owner, 2026-11-03:
+    "BIL don't need to get stop"). It moves ~0.3% a month; the 5% minimum stop never fires."""
     tk = ticker.upper()
+    if is_cash_like(tk):
+        return "cash"
     return "sleeve" if tk in sleeve_tickers or geared else "core"
 
 
@@ -77,8 +87,9 @@ def plan_changes(rules: list[dict], roles: dict[str, str], vols: dict[str, float
     out = {"delete": [], "edit": [], "create": [], "unchanged": [], "no_vol": []}
     for tk, role in sorted(roles.items()):
         exits = by.get(tk, [])
-        if role == "core":
-            out["delete"] += [_ref(r, "core fund: the bands and the book guard protect it") for r in exits]
+        if role in ("core", "cash"):
+            out["delete"] += [_ref(r, "core fund: the bands and the book guard protect it" if role == "core"
+                                   else "cash-like fund: a stop on it never fires") for r in exits]
             if not exits:
                 out["unchanged"].append(tk)
             continue
@@ -338,27 +349,33 @@ async def card(session, user) -> list[dict]:
     inp = await _inputs_rules_only(session, user, r.get("roles") or {})
     if fingerprint(inp) != r.get("fingerprint"):
         return []
+    # PR 157: a plan stored before cash-like funds had their own role (it would put a stop on
+    # BIL) is stale; the nightly refresh replaces it.
+    if any(ro != "cash" and is_cash_like(tk) for tk, ro in (r.get("roles") or {}).items()):
+        return []
     ch, cur, best = r["changes"], r.get("current") or {}, r.get("best") or {}
     n_del, n_set = len(ch["delete"]), len(ch["edit"]) + len(ch["create"])
     core = sorted(tk for tk, ro in (r.get("roles") or {}).items() if ro == "core")
+    cash = sorted(tk for tk, ro in (r.get("roles") or {}).items() if ro == "cash")
     how = []
     for d in ch["delete"]:
         how.append(f"Remove: {d['ticker']} {_WORDS.get(d['rule_type'], d['rule_type'])} {_lvl(d, d['level'])}"
                    + ("" if d.get("active") else " (switched off)"))
     for e in ch["edit"]:
         how.append(f"Set: {e['ticker']} trailing stop {e['from_level']:g}% -> {e['to_level']:g}% "
-                   f"({e['k']:g}x its monthly volatility, {e['vol_pct']:g}%)")
+                   f"({_sized(e['to_level'], e['k'], e['vol_pct'])})")
     for c in ch["create"]:
-        how.append(f"Add: {c['ticker']} trailing stop {c['level']:g}% ({c['k']:g}x its monthly volatility, "
-                   f"{c['vol_pct']:g}%)")
+        how.append(f"Add: {c['ticker']} trailing stop {c['level']:g}% ({_sized(c['level'], c['k'], c['vol_pct'])})")
     tried = "; ".join(f"{t['k']:g}x: {_ils(t['stats'].get('amount_at_confidence'))}, halving "
                       f"{_pct(t['stats'].get('p_halve_pct'))}" for t in r.get("tried") or [])
     when = str(r.get("as_of", ""))[:10]
-    why = (f"Today {sum(1 for _ in r.get('fingerprint') or [])} exit rules sit on your holdings, several on one fund, "
-           f"armed by different parts of the app. Your choice (2026-10-24): core funds "
+    why = (f"{_today(inp)} Your choice (2026-10-24): core funds "
            f"({', '.join(core) or 'none'}) have no exit of their own -- the rebalance bands and the book's drawdown "
            f"guard protect them; each sleeve or 2x/3x holding has one trailing stop sized from its own volatility; "
-           f"no take-profits. Measured on your goal model ({when}): at your bar about "
+           f"no take-profits."
+           + (f" Cash-like funds ({', '.join(cash)}) have no stop: they barely move, so one would never fire."
+              if cash else "")
+           + f" Measured on your goal model ({when}): at your bar about "
            f"{_ils(cur.get('amount_at_confidence'))} -> {_ils(best.get('amount_at_confidence'))}"
            + (f" ({cur['roi_at_confidence_pct']:.1f}%/yr -> {best['roi_at_confidence_pct']:.1f}%/yr)"
               if cur.get("roi_at_confidence_pct") is not None and best.get("roi_at_confidence_pct") is not None
@@ -371,8 +388,7 @@ async def card(session, user) -> list[dict]:
         why += f" Left as they are (no price history to size a stop): {', '.join(ch['no_vol'])}."
     return [{
         "id": CARD_ID, "dimension": "discipline", "severity": "HIGH",
-        "title": f"One exit per holding: remove {n_del} rule{'s' if n_del != 1 else ''}, "
-                 f"set {n_set} trailing stop{'s' if n_set != 1 else ''}",
+        "title": "One exit per holding: " + _title_parts(n_del, n_set),
         "why": why,
         "action": "Accept makes every change below in one go. Nothing is bought or sold.",
         "impact": ("Removed rules are deleted (not paused), so the 3-day auto re-arm cannot bring them back. "
@@ -384,6 +400,40 @@ async def card(session, user) -> list[dict]:
         "meta": {"protection_manager": True, "current": cur, "best": best, "tried": r.get("tried"),
                  "as_of": r.get("as_of")},
     }]
+
+
+def _title_parts(n_del: int, n_set: int) -> str:
+    """PR 157: only what Accept does -- no "remove 0 rules"."""
+    parts = []
+    if n_del:
+        parts.append(f"remove {n_del} rule{'s' if n_del != 1 else ''}")
+    if n_set:
+        parts.append(f"set {n_set} trailing stop{'s' if n_set != 1 else ''}")
+    return ", ".join(parts)
+
+
+def _sized(level: float, k: float, vol: float) -> str:
+    """How the width was chosen, saying so when the 5% / 60% bound moved it (PR 157)."""
+    raw = round(k * vol, 1)
+    if raw < MIN_TRAIL_PCT and level == MIN_TRAIL_PCT:
+        return f"the {MIN_TRAIL_PCT:g}% minimum; {k:g}x its monthly volatility, {vol:g}%, is {raw:g}%"
+    if raw > MAX_TRAIL_PCT and level == MAX_TRAIL_PCT:
+        return f"the {MAX_TRAIL_PCT:g}% maximum; {k:g}x its monthly volatility, {vol:g}%, is {raw:g}%"
+    return f"{k:g}x its monthly volatility, {vol:g}%"
+
+
+def _today(rules: list[dict]) -> str:
+    """The first sentence, counted from the rules (PR 157: it said "several on one fund" with 0)."""
+    exits = [r for r in rules if r["rule_type"] in EXIT_TYPES]
+    if not exits:
+        return "Today none of your holdings has an exit rule."
+    per: dict[str, int] = {}
+    for x in exits:
+        per[str(x["ticker"]).upper()] = per.get(str(x["ticker"]).upper(), 0) + 1
+    stacked = sorted(tk for tk, n in per.items() if n > 1)
+    n = len(exits)
+    s = f"Today {n} exit rule{'s' if n != 1 else ''} sit{'s' if n == 1 else ''} on your holdings"
+    return s + (f", more than one on {', '.join(stacked)}." if stacked else ".")
 
 
 async def _inputs_rules_only(session, user, roles: dict) -> list[dict]:

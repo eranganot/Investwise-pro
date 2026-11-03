@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-02 by Claude (PR 156.1: the switch-over push is in the ledger). Last product PR: **156.1**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-02 by Claude (PR 157: the protection card says what it does; no stop on BIL). Last product PR: **157**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,37 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 157 — the protection card says only what Accept does; cash-like funds get no stop (D141)
+
+**Report.** Owner, 2026-11-03 07:45 (Israel), screenshot: "One exit per holding: remove 0 rules, set 1 trailing stop" --
+"What does it mean to remove 0 rules?"
+
+**Evidence (live, `ffb6d3d`/`f926449`, 2026-11-03 ~05:50 UTC).** The card's `apply`: delete [], edit [], create [BIL
+trailing stop 5%, vol 0.3%, k 2]. Rules: rebalance bands on BIL/SMH/VXUS/VTI/QQQ, SOXL buy-back, QQQ max-weight (off),
+book drawdown guard -- no exit rule at all. Smoke before the merge: PASS 4 FAIL 4.
+
+**Root causes (all in `protection_manager`).**
+- Title: printed `remove {n_del}` and `set {n_set}` unconditionally.
+- First sentence: "Today {n} exit rules sit on your holdings, several on one fund, armed by different parts of the
+  app" was fixed text from the 10-24 clean-up (39 rules); only the number was computed.
+- "5% (2x its monthly volatility, 0.3%)": `trail_for` clamps to `MIN_TRAIL_PCT` (5); 2 x 0.3 = 0.6. The text named the
+  multiple, not the bound.
+- The stop itself: BIL is the 2x gold sleeve's leg while gold's signal is out (PR 155), so `role_of` gave it "sleeve"
+  and one trailing stop. Faithful to D132, useless on a T-bill fund that moves ~0.3%/month.
+- Silent because the card was LOW ("Minor") and nothing checked its prose against its spec.
+
+**Fix (owner: fix the wording; "BIL don't need to get stop").** `is_cash_like` (strategy_profile's "cash": BIL, SGOV,
+SHV) -> role `cash`: no exit, any exit on one removed. Title from `_title_parts` (no zero part). First sentence from
+`_today` (counted; names stacked tickers only when there are any). `_sized` says "the 5% minimum; 2x ... is 0.6%" when a
+bound set the width. A plan stored before the deploy (BIL as "sleeve") shows no card; the 05:40 refresh replaces it.
+On today's book the card disappears: there is nothing left to change.
+
+**Tests.** `tests/test_pr157_the_protection_card_says_what_it_does.py` (7, all fail on main);
+`test_a3r_one_exit_per_holding` now expects BIL as "cash". Full suite on Postgres 16: 3024 passed (19 min). ruff clean.
+
+**Smoke.** `smoke-pr157-the-protection-card-says-what-it-does.ps1`. Before the merge (`f926449`): PASS 4 FAIL 4 (the
+four faults). After: PROD_RESULT.
 
 ## PR 156.1 — the switch-over push leaves a ledger row
 

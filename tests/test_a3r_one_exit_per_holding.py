@@ -132,7 +132,7 @@ async def test_the_manager_measures_each_width_and_accept_leaves_one_exit_per_ho
             await _seed(c, own_session)
             r = c.post("/api/v1/plan/protection/refresh").json()
             assert r.get("stored"), r
-            assert r["roles"] == {"BIL": "core", "TQQQ": "sleeve", "VTI": "core"}
+            assert r["roles"] == {"BIL": "cash", "TQQQ": "sleeve", "VTI": "core"}, "PR 157: BIL is cash-like"
             assert r["k"] == 3.0 and r["within_halving"] is True
             assert [t["k"] for t in r["tried"]] == [2.0, 3.0, 4.0]
             assert c.get("/api/v1/plan/protection").json()["as_of"] == r["as_of"]
