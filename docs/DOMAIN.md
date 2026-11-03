@@ -130,7 +130,7 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
     and the Plan sentence say how many setups were measured, and mention take-profits only when they were.
     **A3r (D132): one exit per holding.** `protection_manager` is the one place that proposes an exit: core funds
     none (bands + book guard), sleeve / 2x-3x holdings one trailing stop at k x measured monthly volatility (k = 2/3/4
-    on the goal preview), no take-profits. Measured nightly 05:40 (`kv_settings` `protection_manager:<email>`), one
+    on the goal preview), no take-profits; cash-like T-bill funds (BIL, SGOV, SHV) none, even as a sleeve leg (PR 157, D141). Measured nightly 05:40 (`kv_settings` `protection_manager:<email>`), one
     card (`rec_protection_one_exit`, apply `protection_plan`) that deletes, re-levels and adds; generated cards and
     rule suggestions never arm an exit (`filter_generated`, `filter_suggestions`). Beside it the retune card is hidden.
     PR 123 (D85): a held stock with a sale rule is its own column in the replay (its history, re-centred on the

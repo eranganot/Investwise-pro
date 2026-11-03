@@ -34,6 +34,11 @@
 - **D10 · 2026-06-21 · Installable PWA + VAPID web push; dismissals stored server-side.** Bump the service-worker version on every shell change.
 - **D11 · 2026-07-18 · Cash is a first-class position (a synthetic `CASH` row), and every card is sized and funded by a funding engine.**
   Consequence: `CASH` is also a real NASDAQ ticker, which caused repeated "cash quoted as a bank stock" incidents (D33). → `archive/plans/PLAN_2026-07-18_alignment.md`
+- **D141 · 2026-11-03 · A cash-like fund gets no exit; the protection card names only what Accept does.** Owner, on
+  "One exit per holding: remove 0 rules, set 1 trailing stop" (a 5% stop on BIL): "BIL don't need to get stop", and fix
+  the wording. T-bill funds (`strategy_profile` "cash": BIL, SGOV, SHV) get role `cash` in the protection manager, even
+  as a sleeve leg: no exit, and any exit on one is removed. The card's title omits a zero count, its first sentence is
+  counted from the rules, and a width set by the 5% / 60% bound says so. → PR 157
 - **D140 · 2026-11-02 · Every new recommendation card is pushed.** Owner: "make sure that I'm getting notification every
   time that a new recommendation card appears"; offered a stable-topic key, a MEDIUM bar, or literally every card, he
   chose literally every card. A card is new when its id has not been pushed in `push_dedupe_days` (7): no severity
