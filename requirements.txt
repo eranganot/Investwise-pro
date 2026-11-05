@@ -7,10 +7,10 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 numpy==2.2.1
 aiosqlite==0.20.0
-python-multipart==0.0.20
+python-multipart==0.0.33
 APScheduler==3.11.0
-pyjwt==2.10.1
-cryptography==44.0.0
+pyjwt==2.15.1
+cryptography==50.0.2
 bcrypt==4.2.1
 prometheus-client==0.21.1
 pywebpush==2.3.0
@@ -28,9 +28,11 @@ tzdata==2025.2
 # MEASURED from the published wheel metadata:
 #     py-vapid 1.9.2   Requires-Dist: cryptography >=2.5
 #     py-vapid 1.9.4   Requires-Dist: cryptography >=46
-# Line 15 of this file pins cryptography==44.0.0, so 1.9.4 is UNSATISFIABLE:
-# pip fails before a single test runs. That is what took down all three CI
-# jobs in run #182 and the Railway build for c52cb17d.
+# Line 13 of this file pinned cryptography==44.0.0, so 1.9.4 was UNSATISFIABLE:
+# pip failed before a single test ran. That is what took down all three CI
+# jobs in run #182 and the Railway build for c52cb17d. (IW-1, 2026-11-05:
+# cryptography is now 50.0.2 for its CVEs, so 1.9.4+ resolves again; that move
+# is left to its own PR - 1.9.2 still installs and the reasoning below holds.)
 #
 # 1.9.2 is safe for a reason rather than by luck. Its one deprecated
 # curve-as-class call is py_vapid/__init__.py:200, inside `generate_keys()` --
