@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -50,11 +51,12 @@ async def _kv_get(session: AsyncSession, key: str) -> str | None:
 
 async def _kv_set(session: AsyncSession, key: str, value: str) -> None:
     row = await session.get(KVSetting, key)
-    if row:
-        row.value = value
-    else:
-        session.add(KVSetting(key=key, value=value))
-    await session.flush()
+    async with session.begin_nested():     # IW-B1: a refused write rolls back alone
+        if row:
+            row.value = value
+        else:
+            session.add(KVSetting(key=key, value=value))
+        await session.flush()
 
 
 def _b64url(b: bytes) -> str:
@@ -175,12 +177,28 @@ async def delete_subscription(session: AsyncSession, endpoint: str, subjects: tu
 # --------------------------------------------------------------------------- #
 # Dedupe ledger
 # --------------------------------------------------------------------------- #
+_SIGNATURE_MAX = 160    # notified_events.signature is String(160)
+
+
+def _ledger_key(signature: str) -> str:
+    """The signature as stored. IW-4: card_signature is "rec:" + the card id,
+    and nothing bounds an id's length; past 160 characters Postgres refused the
+    INSERT (SQLite does not check), which is IW-B1's trigger. A long signature
+    keeps a readable prefix and ends in a hash of the whole, so it stays unique
+    and stable across runs."""
+    signature = signature.replace("\x00", "")
+    if len(signature) <= _SIGNATURE_MAX:
+        return signature
+    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:40]
+    return f"{signature[:_SIGNATURE_MAX - 42]}#{digest}"[:_SIGNATURE_MAX]
+
+
 async def _seen(session: AsyncSession, subject: str, signature: str) -> bool:
     cutoff = datetime.now(timezone.utc) - timedelta(days=get_settings().push_dedupe_days)
     row = await session.scalar(
         select(NotifiedEvent).where(
             NotifiedEvent.subject == subject,
-            NotifiedEvent.signature == signature,
+            NotifiedEvent.signature == _ledger_key(signature),
             NotifiedEvent.created_at >= cutoff,
         )
     )
@@ -188,8 +206,24 @@ async def _seen(session: AsyncSession, subject: str, signature: str) -> bool:
 
 
 async def _mark(session: AsyncSession, subject: str, signature: str) -> None:
-    session.add(NotifiedEvent(subject=subject, signature=signature))
-    await session.flush()
+    """Record one push. IW-B1: in a SAVEPOINT, so a refused INSERT rolls back
+    only itself. Before, the flush error aborted the whole transaction on
+    Postgres; the card loop's `except` logged it and carried on with a dead
+    session, so every heads-up, risk alert and price move after it failed too,
+    and the final commit raised (losing the marks of cards already pushed, which
+    then pushed again next run). Same pattern as recommendations._savepoint."""
+    async with session.begin_nested():
+        session.add(NotifiedEvent(subject=subject, signature=_ledger_key(signature)))
+        await session.flush()
+
+
+async def _mark_or_log(session: AsyncSession, subject: str, signature: str) -> None:
+    """For loops over several pushes: one refused mark is logged and the loop
+    goes on (the card is already sent; worst case it is sent again next run)."""
+    try:
+        await _mark(session, subject, signature)
+    except Exception:  # noqa: BLE001
+        logger.warning("push ledger write refused for %s", signature[:80], exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -343,7 +377,7 @@ async def _seen_within(session: AsyncSession, subject: str, signature: str,
     row = await session.scalar(
         select(NotifiedEvent).where(
             NotifiedEvent.subject == subject,
-            NotifiedEvent.signature == signature,
+            NotifiedEvent.signature == _ledger_key(signature),
             NotifiedEvent.created_at >= cutoff,
         )
     )
@@ -430,7 +464,7 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
                 sent += await send_to_subject(
                     session, subject, f"{icon} {r.get('title', 'New recommendation')}",
                     r.get("action") or "Open InvestWise to review.", url="/app/", tag=sig)
-                await _mark(session, subject, sig)
+                await _mark_or_log(session, subject, sig)
             rest = fresh[MAX_CARD_PUSHES_PER_RUN:]
             if rest:
                 n = len(rest)
@@ -439,7 +473,7 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
                     "; ".join(str(r.get("title")) for r, _ in rest)[:300],
                     url="/app/", tag="rec:overflow")
                 for _r, sig in rest:
-                    await _mark(session, subject, sig)
+                    await _mark_or_log(session, subject, sig)
         except Exception:  # noqa: BLE001
             # Logged, and never allowed to take the app-health push below with it.
             logger.warning("card push eval failed", exc_info=True)

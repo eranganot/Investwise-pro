@@ -25,7 +25,7 @@ COMPUTE_ONLY = {
 }
 # Unauthenticated on purpose. Every addition is a decision -- this list is the review.
 PUBLIC = {
-    "/", "/health", "/health/ready", "/metrics", "/login", "/dashboard", "/dashboard/",
+    "/", "/health", "/health/ready", "/login", "/dashboard", "/dashboard/",
     "/auth/google/login", "/auth/google/callback", "/auth/logout",
     "/api/v1/auth/token", "/api/v1/auth/refresh", "/api/v1/auth/status",
     "/api/v1/push/public-key", "/api/v1/intake/template.csv", "/api/v1/commodities",

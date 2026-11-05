@@ -12,7 +12,9 @@ router = APIRouter(tags=["observability"])
 
 
 @router.get("/metrics")
-async def metrics() -> Response:
+async def metrics(principal: Principal = Depends(require_role(Role.READ_ONLY))) -> Response:
+    """IW-5 (2026-11-05): was public; it exposes process and request data (RSS,
+    route timings). Any signed-in role or the read-only smoke key can read it."""
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
