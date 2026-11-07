@@ -3264,7 +3264,7 @@ function goalRows(X){
   return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
     +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
     +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
-      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"))
+      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}% · flavor ${({1:"hot / hype",2:"mid",3:"backbone"})[p.preferred_depth]||"no preference"}</div>`,ed("openDialsSheet()"))
     +row("Cash",(()=>{const at=p.cash_redeploy_at_ils, keep=p.cash_target_ils;
         if(at==null&&keep==null&&p.cash_target_pct==null) return `Not set<div class="mk" style="font-weight:400">No cash card trigger yet</div>`;
         return `${at!=null?`Card above ${ils(at)}`:"No card trigger"}<div class="mk" style="font-weight:400">${keep!=null?`keeps ${ils(keep)}`:(p.cash_target_pct!=null?`keeps ${p.cash_target_pct}% of the book`:"no cash to keep set")} · the card puts everything over it to work</div>`;})(),ed("openCashRulesSheet()"))
@@ -3377,14 +3377,16 @@ async function saveDialsSheet(btn){
   put("return_confidence",$("rd_conf").value,f.return_confidence);
   put("halve_limit_pct",parseFloat($("rd_halve").value),f.halve_limit_pct);
   const tr=parseFloat($("rd_track").value); if(!isNaN(tr)&&Math.abs(tr-Math.round((f.goal_confidence??0.7)*100))>1e-9) b.on_track_pct=tr;
-  const dp=$("rd_depth").value; if(dp!==(p.preferred_depth?String(p.preferred_depth):"")&&dp) b.preferred_depth=+dp;
+  const dp=$("rd_depth").value; if(dp!==(p.preferred_depth?String(p.preferred_depth):"")) b.preferred_depth=dp===""?0:+dp;   // 0 = "No preference"
   put("target_yield_pct",parseFloat($("rd_yld").value),p.target_yield_pct);
   if(!Object.keys(b).length){closeSheet();return;}
   btn.disabled=true; btn.textContent="Saving…";
   try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.detail&&JSON.stringify(j.detail))||("Save failed ("+r.status+")"));}
-    btn.textContent="Re-solving your goal… (~20 s)";
-    await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    // The flavor does not feed the goal solve; only re-solve when something that does changed.
+    if(Object.keys(b).some(k=>k!=="preferred_depth")){
+      btn.textContent="Re-solving your goal… (~20 s)";
+      await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
 }

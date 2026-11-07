@@ -52,7 +52,14 @@ configuration list gains a **Cash** row (trigger, cash kept) with an Edit sheet 
 `cash_target_ils` through the same `PUT /api/v1/plan` and the same checks (keep >= 150, trigger above keep) as the Cash
 overlay, which stays. No backend change, no migration.
 
-**Tests.** `tests/test_plan_page_has_cash_rule.py` (1). Full suite on Postgres 16 / Python 3.12: SUITE_RESULT. ruff clean.
+**Owner QA on the Plan tab (2026-11-07).** (1) Target and Monthly deposit both open "Edit your goal": by design, one
+sheet holds both. (2) Risk dials > Investment flavor: "No preference" could not be saved (the sheet skipped an empty value
+and the API could not tell "clear" from "not sent"), and a flavor-only save still waited ~20 s on a goal re-solve that the
+flavor does not feed, then showed nothing changed. Now `preferred_depth` 0 clears it (API bounds 0-3), the sheet sends 0 for
+"No preference", skips the re-solve when only the flavor changed, and the Risk dials row shows the flavor. (3) The Cash
+button is not visible until this PR is merged and deployed.
+
+**Tests.** `tests/test_plan_page_has_cash_rule.py` (1), `tests/test_plan_flavor_can_be_set_and_cleared.py` (2). Full suite on Postgres 16 / Python 3.12: SUITE_RESULT. ruff clean.
 
 **Smoke.** `smoke-pr158-cash-rule-on-the-plan-page.ps1`. Before the merge (`116d7b0`): PASS 6 FAIL 2 (the Cash row and its
 save handler are not served yet). After the merge: SMOKE_RESULT. `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.

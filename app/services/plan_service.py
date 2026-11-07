@@ -29,6 +29,8 @@ async def upsert_plan(session: AsyncSession, user: User, **fields) -> Plan:
                # PR 104c / migration 0027: the goal's two limits.
                "halve_limit_pct", "on_track_pct"}
     data = {k: v for k, v in fields.items() if k in allowed and v is not None}
+    if fields.get("preferred_depth") == 0:
+        data["preferred_depth"] = None
     # ONE CASH TARGET AT A TIME: whichever unit was set last wins, and setting it
     # clears the other. Two live targets would leave every reader to guess.
     if "cash_redeploy_at_ils" in data:
