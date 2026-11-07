@@ -129,6 +129,7 @@ Verdicts: **P** = PROVEN by a reproducing probe or a live read; **I** = INFERRED
 
 ## Recently closed (do not re-open)
 
+- **Daily-smoke false FAIL on the redeploy card: closed 2026-11-07 (PR 158).** The smoke ignored `cash_redeploy_at_ils`; the app was right. The trigger is now also a Plan-page setting (D142).
 - **O1 VAPID pin: closed 2026-10-08, live.** `/api/v1/push/status`: `vapid_pinned_by_env: true`, `vapid_env_matches_db: true`; daily 07:00 digests delivered.
 - **C2c `redeploy_cash` claim: holds** (probe: drift vs book target 0.50 → 0.23).
 - **"$ amount" commodity copy: correct**; the amount is in the instrument's currency (USD).
