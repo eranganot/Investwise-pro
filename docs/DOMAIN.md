@@ -91,7 +91,7 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 - **Soft target** (default by objective, or `cash_target_ils`): routine cards stop spending here.
 - **Hard floor** (default ₪150, setting `cash_floor_ils`): only a card carrying a `reserve_reason` may spend below the soft
   target, and never below the floor. `plan_funding(allow_reserve=True)` without a reason is a TypeError.
-- The **redeploy card** fires above `cash_redeploy_at_ils` (default ₪1,500) and invests down to the target (PR 64/68.1). Edit both on the Plan tab (Cash row, PR 158) or in the Cash overlay.
+- The **redeploy card** fires above `cash_redeploy_at_ils` (default ₪1,500) and invests down to the target (PR 64/68.1). Edit both on the Plan tab (Cards & cash row, PR 158) or in the Cash overlay.
 - **Buy-back holds** (PR 75/83/87): after a take-profit sale the sleeve target stays.
   - While the price is ≥ the sale price, the hold is active: buyers treat the sleeve as met and the proceeds stay reserved in cash.
   - The first close below the sale price releases it for good.

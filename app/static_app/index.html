@@ -3261,15 +3261,12 @@ function goalRows(X){
     <div style="flex:1;min-width:0"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">${k}</span>
     <div style="font-weight:650;margin-top:2px">${v}</div></div>${btn}</div>`;
   const ed=fn=>`<div class="acts" style="margin:0"><button class="acc" style="font-weight:800;min-width:72px;min-height:40px" onclick="${fn}">Edit</button></div>`;
-  return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
-    +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
+  return row("Goal",(p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet")
+      +`<div class="mk" style="font-weight:400">Monthly deposit ${ils(o.monthly_total_ils||0)} · ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</div>`,ed("openGoalSheet()"))
     +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
       <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}% · flavor ${({1:"hot / hype",2:"mid",3:"backbone"})[p.preferred_depth]||"no preference"}</div>`,ed("openDialsSheet()"))
-    +row("Cash",(()=>{const at=p.cash_redeploy_at_ils, keep=p.cash_target_ils;
-        if(at==null&&keep==null&&p.cash_target_pct==null) return `Not set<div class="mk" style="font-weight:400">No cash card trigger yet</div>`;
-        return `${at!=null?`Card above ${ils(at)}`:"No card trigger"}<div class="mk" style="font-weight:400">${keep!=null?`keeps ${ils(keep)}`:(p.cash_target_pct!=null?`keeps ${p.cash_target_pct}% of the book`:"no cash to keep set")} · the card puts everything over it to work</div>`;})(),ed("openCashRulesSheet()"))
-    +row("Card thresholds",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{};
-        return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
+    +row("Cards & cash",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{}, at=p.cash_redeploy_at_ils;
+        return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">${at!=null?`Cash card above ${ils(at)}`:"No cash card trigger"} · Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
 }
 
 function openGoalSheet(){
@@ -3391,31 +3388,6 @@ async function saveDialsSheet(btn){
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
 }
 
-// The cash rule: above the trigger a card puts everything over "keep" to work.
-// Same fields and checks as the Cash overlay (saveCashRules), now on the Plan page too.
-function openCashRulesSheet(){
-  const p=PLX.p||{};
-  openSheet(_sheetHead("Cash rule")
-    +`<div class="mk">Once your cash is above the trigger, Today offers a card that invests everything over the amount you keep. At or below the trigger there is no card, however much could be spent.</div>`
-    +`<div style="padding:10px 0"><label class="mk" for="cs_at" style="display:block;font-weight:700;color:var(--ink)">Invest when cash is above (₪)</label>
-       <input id="cs_at" type="number" min="0" step="any" value="${p.cash_redeploy_at_ils??""}" style="width:100%;margin-top:4px"></div>`
-    +`<div style="padding:10px 0"><label class="mk" for="cs_keep" style="display:block;font-weight:700;color:var(--ink)">Keep in cash (₪, at least 150)</label>
-       <input id="cs_keep" type="number" min="150" step="any" value="${p.cash_target_ils??""}" style="width:100%;margin-top:4px"></div>`
-    +`<div id="cs_out" class="mk"></div>`
-    +`<div class="acts" style="margin-top:12px"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
-       <button class="acc" style="flex:2" onclick="saveCashRulesSheet(this)">Save cash rule</button></div>`);
-}
-async function saveCashRulesSheet(btn){
-  const at=parseFloat($("cs_at").value), keep=parseFloat($("cs_keep").value);
-  if(!(keep>=150)){$("cs_out").innerHTML='<span class="bad">Keep at least \u20aa150 (your hard floor).</span>';return;}
-  if(!(at>keep)){$("cs_out").innerHTML='<span class="bad">The investing trigger must be above what you keep.</span>';return;}
-  btn.disabled=true; btn.textContent="Saving\u2026";
-  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({cash_target_ils:keep,cash_redeploy_at_ils:at})});
-    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.detail&&JSON.stringify(j.detail))||("Save failed ("+r.status+")"));}
-    closeSheet(); _reloadView();
-  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save cash rule";}
-}
-
 // PR 104d: every card threshold, each with what it decides and its default
 // (Eran: "I want every decision to be controlled and changeable through the app").
 function openThresholdsSheet(){
@@ -3423,6 +3395,12 @@ function openThresholdsSheet(){
   const fmt=v=>Array.isArray(v)?v.join(", "):v;
   openSheet(_sheetHead("Card thresholds")
     +`<div class="mk">What decides which cards you get and how big they are. Change a value and Save; Reset puts one back to its default.</div>`
+    +`<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="mk" style="font-weight:700;color:var(--ink)">Cash rule</div>
+       <div class="mk">Once cash is above the trigger, Today offers a card that invests everything over what you keep. At or below it there is no card.</div>
+       <label class="mk" for="cs_at" style="display:block;margin-top:6px">Invest when cash is above (₪)</label>
+       <input id="cs_at" type="number" min="0" step="any" value="${p.cash_redeploy_at_ils??""}" style="width:100%">
+       <label class="mk" for="cs_keep" style="display:block;margin-top:6px">Keep in cash (₪, at least 150)</label>
+       <input id="cs_keep" type="number" min="150" step="any" value="${p.cash_target_ils??""}" style="width:100%"></div>`
     +Object.keys(spec).map(k=>{const s=spec[k], isList=Array.isArray(def[k]);
       return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <label class="mk" for="th_${k}" style="display:block;font-weight:700;color:var(--ink)">${esc(s.label)}${mine[k]!==undefined?' <span class="ok">· set by you</span>':""}</label>
@@ -3445,9 +3423,15 @@ async function saveThresholdsSheet(btn){
     if(el.dataset.reset==="1"||same(v,def[k])){ if((p.thresholds_overrides||{})[k]!==undefined) out[k]=null; continue; }
     if(!same(v,eff[k])) out[k]=v;
   }
-  if(!Object.keys(out).length){closeSheet();return;}
+  const at=parseFloat($("cs_at").value), keep=parseFloat($("cs_keep").value), body={};
+  if(!isNaN(at)&&!isNaN(keep)&&(at!==p.cash_redeploy_at_ils||keep!==p.cash_target_ils)){
+    if(!(keep>=150)){alert("Keep at least \u20aa150 (your hard floor).");return;}
+    if(!(at>keep)){alert("The investing trigger must be above what you keep.");return;}
+    body.cash_target_ils=keep; body.cash_redeploy_at_ils=at;}
+  if(Object.keys(out).length) body.thresholds=out;
+  if(!Object.keys(body).length){closeSheet();return;}
   btn.disabled=true; btn.textContent="Saving…";
-  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({thresholds:out})});
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||("Save failed ("+r.status+")"));}
     // the goal-odds gain and the guard's dials change what the retune offers (PR 121)
     if(["material_odds_pts","guard_levels","guard_fractions_tried","guard_rearm_gaps_tried","guard_sell_fraction_pct","guard_rearm_gap_pts"].some(k=>k in out)){btn.textContent="Re-solving your goal… (~1 min)";await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
