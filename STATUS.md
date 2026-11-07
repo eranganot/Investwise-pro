@@ -61,7 +61,7 @@ flavor does not feed, then showed nothing changed. Now `preferred_depth` 0 clear
 **Tests.** `tests/test_plan_page_has_cash_rule.py` (1), `tests/test_plan_flavor_can_be_set_and_cleared.py` (2). Full suite on Postgres 16 / Python 3.12: 3028 passed (21 min). ruff clean.
 
 **Smoke.** `smoke-pr158-cash-rule-on-the-plan-page.ps1`. Before the merge (`116d7b0`): PASS 6 FAIL 2 (the Cash row and its
-save handler are not served yet). After the merge: recorded after the deploy. `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.
+save handler are not served yet). After the merge (`901aabf`): **PASS 7 FAIL 0 SKIP 0**; `smoke-all.ps1` 24 passed, 0 failed, 1 skipped (ask unreachable). `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.
 
 ## PR 157 — the protection card says only what Accept does; cash-like funds get no stop (D141)
 
