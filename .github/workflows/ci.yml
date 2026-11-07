@@ -17,6 +17,9 @@ jobs:
   # looked (incident 5a6dfef) and cost ~9 runner-minutes per run.
   test-postgres:
     runs-on: ubuntu-latest
+    # IW-6: a hung test (a scheduler thread, a stuck socket) used to burn the
+    # default 6 hours of minutes; the suite takes ~16 min on Postgres.
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16
@@ -39,6 +42,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
