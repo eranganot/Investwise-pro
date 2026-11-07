@@ -58,10 +58,10 @@ and the API could not tell "clear" from "not sent"), and a flavor-only save stil
 flavor does not feed, then showed nothing changed. Now `preferred_depth` 0 clears it (API bounds 0-3), the sheet sends 0 for
 "No preference", skips the re-solve when only the flavor changed, and the Risk dials row shows the flavor. (3) The cash fields are not visible until this PR is merged and deployed.
 
-**Tests.** `tests/test_plan_page_has_cash_rule.py` (1), `tests/test_plan_flavor_can_be_set_and_cleared.py` (2). Full suite on Postgres 16 / Python 3.12: SUITE_RESULT. ruff clean.
+**Tests.** `tests/test_plan_page_has_cash_rule.py` (1), `tests/test_plan_flavor_can_be_set_and_cleared.py` (2). Full suite on Postgres 16 / Python 3.12: 3028 passed (21 min). ruff clean.
 
 **Smoke.** `smoke-pr158-cash-rule-on-the-plan-page.ps1`. Before the merge (`116d7b0`): PASS 6 FAIL 2 (the Cash row and its
-save handler are not served yet). After the merge: SMOKE_RESULT. `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.
+save handler are not served yet). After the merge: recorded after the deploy. `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.
 
 ## PR 157 — the protection card says only what Accept does; cash-like funds get no stop (D141)
 
