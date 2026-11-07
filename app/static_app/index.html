@@ -3261,12 +3261,12 @@ function goalRows(X){
     <div style="flex:1;min-width:0"><span class="mk" style="text-transform:uppercase;letter-spacing:.06em">${k}</span>
     <div style="font-weight:650;margin-top:2px">${v}</div></div>${btn}</div>`;
   const ed=fn=>`<div class="acts" style="margin:0"><button class="acc" style="font-weight:800;min-width:72px;min-height:40px" onclick="${fn}">Edit</button></div>`;
-  return row("Target",p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet",ed("openGoalSheet()"))
-    +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
+  return row("Goal",(p.target_roi_pct!=null?`${p.target_roi_pct}%/${(p.target_roi_period||"yearly")==="yearly"?"yr":p.target_roi_period} on what you put in · deadline ${p.target_date||"—"}`:"No target yet")
+      +`<div class="mk" style="font-weight:400">Monthly deposit ${ils(o.monthly_total_ils||0)} · ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</div>`,ed("openGoalSheet()"))
     +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
-      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"))
-    +row("Card thresholds",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{};
-        return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
+      <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}% · flavor ${({1:"hot / hype",2:"mid",3:"backbone"})[p.preferred_depth]||"no preference"}</div>`,ed("openDialsSheet()"))
+    +row("Cards & cash",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{}, at=p.cash_redeploy_at_ils;
+        return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">${at!=null?`Cash card above ${ils(at)}`:"No cash card trigger"} · Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
 }
 
 function openGoalSheet(){
@@ -3374,14 +3374,16 @@ async function saveDialsSheet(btn){
   put("return_confidence",$("rd_conf").value,f.return_confidence);
   put("halve_limit_pct",parseFloat($("rd_halve").value),f.halve_limit_pct);
   const tr=parseFloat($("rd_track").value); if(!isNaN(tr)&&Math.abs(tr-Math.round((f.goal_confidence??0.7)*100))>1e-9) b.on_track_pct=tr;
-  const dp=$("rd_depth").value; if(dp!==(p.preferred_depth?String(p.preferred_depth):"")&&dp) b.preferred_depth=+dp;
+  const dp=$("rd_depth").value; if(dp!==(p.preferred_depth?String(p.preferred_depth):"")) b.preferred_depth=dp===""?0:+dp;   // 0 = "No preference"
   put("target_yield_pct",parseFloat($("rd_yld").value),p.target_yield_pct);
   if(!Object.keys(b).length){closeSheet();return;}
   btn.disabled=true; btn.textContent="Saving…";
   try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.detail&&JSON.stringify(j.detail))||("Save failed ("+r.status+")"));}
-    btn.textContent="Re-solving your goal… (~20 s)";
-    await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
+    // The flavor does not feed the goal solve; only re-solve when something that does changed.
+    if(Object.keys(b).some(k=>k!=="preferred_depth")){
+      btn.textContent="Re-solving your goal… (~20 s)";
+      await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
 }
@@ -3393,6 +3395,12 @@ function openThresholdsSheet(){
   const fmt=v=>Array.isArray(v)?v.join(", "):v;
   openSheet(_sheetHead("Card thresholds")
     +`<div class="mk">What decides which cards you get and how big they are. Change a value and Save; Reset puts one back to its default.</div>`
+    +`<div style="padding:10px 0;border-bottom:1px solid var(--line)"><div class="mk" style="font-weight:700;color:var(--ink)">Cash rule</div>
+       <div class="mk">Once cash is above the trigger, Today offers a card that invests everything over what you keep. At or below it there is no card.</div>
+       <label class="mk" for="cs_at" style="display:block;margin-top:6px">Invest when cash is above (₪)</label>
+       <input id="cs_at" type="number" min="0" step="any" value="${p.cash_redeploy_at_ils??""}" style="width:100%">
+       <label class="mk" for="cs_keep" style="display:block;margin-top:6px">Keep in cash (₪, at least 150)</label>
+       <input id="cs_keep" type="number" min="150" step="any" value="${p.cash_target_ils??""}" style="width:100%"></div>`
     +Object.keys(spec).map(k=>{const s=spec[k], isList=Array.isArray(def[k]);
       return `<div style="padding:10px 0;border-bottom:1px solid var(--line)">
         <label class="mk" for="th_${k}" style="display:block;font-weight:700;color:var(--ink)">${esc(s.label)}${mine[k]!==undefined?' <span class="ok">· set by you</span>':""}</label>
@@ -3415,9 +3423,15 @@ async function saveThresholdsSheet(btn){
     if(el.dataset.reset==="1"||same(v,def[k])){ if((p.thresholds_overrides||{})[k]!==undefined) out[k]=null; continue; }
     if(!same(v,eff[k])) out[k]=v;
   }
-  if(!Object.keys(out).length){closeSheet();return;}
+  const at=parseFloat($("cs_at").value), keep=parseFloat($("cs_keep").value), body={};
+  if(!isNaN(at)&&!isNaN(keep)&&(at!==p.cash_redeploy_at_ils||keep!==p.cash_target_ils)){
+    if(!(keep>=150)){alert("Keep at least \u20aa150 (your hard floor).");return;}
+    if(!(at>keep)){alert("The investing trigger must be above what you keep.");return;}
+    body.cash_target_ils=keep; body.cash_redeploy_at_ils=at;}
+  if(Object.keys(out).length) body.thresholds=out;
+  if(!Object.keys(body).length){closeSheet();return;}
   btn.disabled=true; btn.textContent="Saving…";
-  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({thresholds:out})});
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error(j.detail||("Save failed ("+r.status+")"));}
     // the goal-odds gain and the guard's dials change what the retune offers (PR 121)
     if(["material_odds_pts","guard_levels","guard_fractions_tried","guard_rearm_gaps_tried","guard_sell_fraction_pct","guard_rearm_gap_pts"].some(k=>k in out)){btn.textContent="Re-solving your goal… (~1 min)";await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});}

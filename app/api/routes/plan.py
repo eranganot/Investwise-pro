@@ -39,7 +39,8 @@ class PlanRequest(BaseModel):
     target_roi_period: str | None = None
     target_yield_pct: float | None = None
     target_yield_period: str | None = None
-    preferred_depth: int | None = None
+    # 1/2/3 = favour that depth; 0 = clear the preference (None cannot say "clear": it means "not sent").
+    preferred_depth: int | None = Field(default=None, ge=0, le=3)
     # Percent of NAV held deliberately in cash. Bounded here rather than only
     # in `book_target`, so a 750 typed for 7.5 is a 422 at the boundary instead
     # of a clamp nobody sees. 50 is the same ceiling `cash_floor_pct` enforces.

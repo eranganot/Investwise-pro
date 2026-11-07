@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-02 by Claude (PR 157: the protection card says what it does; no stop on BIL). Last product PR: **157**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-07 by Claude (PR 158: the cash rule on the Plan page; smoke respects the redeploy trigger). Last product PR: **158**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,31 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 158 -- the cash rule is a Plan-page setting; the daily smoke respects the redeploy trigger (D142)
+
+**Report.** The 2026-11-07 daily smoke FAILed "no redeploy card despite 728 spendable above the floor". Owner: fix the
+smoke, and "add this parameter to the configuration pages in Plan".
+
+**Evidence (live, `116d7b0`).** Cash 1,309.26 (6.8% of NAV), plan `cash_redeploy_at_ils` 1500, `cash_target_ils` 150. The app
+is right: `_redeploy_cash_recs` returns nothing at or below the trigger (owner, 2026-09-21: "more than 1500, not by % of my
+portfolio"). The smoke compared only spendable cash to the floor.
+
+**Fix.** `smoke-all.ps1` section 8 reads the plan's trigger and passes when cash is at or under it. The Plan tab's
+configuration list is now three rows (owner: merge the two that open the same sheet): **Goal** (target + monthly deposit),
+**Risk dials**, and **Cards & cash**, whose sheet gains a Cash rule section (trigger, cash kept) that saves `cash_redeploy_at_ils` and
+`cash_target_ils` through the same `PUT /api/v1/plan` and the same checks (keep >= 150, trigger above keep) as the Cash
+overlay, which stays. No backend change, no migration.
+
+**Owner QA on the Plan tab (2026-11-07).** (1) Target and Monthly deposit both opened "Edit your goal": merged into one Goal row. (2) Risk dials > Investment flavor: "No preference" could not be saved (the sheet skipped an empty value
+and the API could not tell "clear" from "not sent"), and a flavor-only save still waited ~20 s on a goal re-solve that the
+flavor does not feed, then showed nothing changed. Now `preferred_depth` 0 clears it (API bounds 0-3), the sheet sends 0 for
+"No preference", skips the re-solve when only the flavor changed, and the Risk dials row shows the flavor. (3) The cash fields are not visible until this PR is merged and deployed.
+
+**Tests.** `tests/test_plan_page_has_cash_rule.py` (1), `tests/test_plan_flavor_can_be_set_and_cleared.py` (2). Full suite on Postgres 16 / Python 3.12: 3028 passed (21 min). ruff clean.
+
+**Smoke.** `smoke-pr158-cash-rule-on-the-plan-page.ps1`. Before the merge (`116d7b0`): PASS 6 FAIL 2 (the Cash row and its
+save handler are not served yet). After the merge: recorded after the deploy. `smoke-all.ps1` on `116d7b0` with the fix: 24 passed, 0 failed, 1 skipped.
 
 ## PR 157 — the protection card says only what Accept does; cash-like funds get no stop (D141)
 

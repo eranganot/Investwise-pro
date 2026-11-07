@@ -266,7 +266,13 @@ if ($null -eq $recs -or $null -eq $port) { Skip "need recommendations + portfoli
   }
   $card = @($recs.recommendations | Where-Object { $_.apply.kind -eq 'redeploy_cash' })[0]
   if ($null -eq $card) {
-    if ($spendable -lt 250) {
+    # The card only appears above the plan's own trigger (cash_redeploy_at_ils,
+    # Eran 2026-09-21: "more than 1500, not by % of my portfolio"); the app
+    # returns [] at or below it however much would be spendable.
+    $trigger = if ($plan -and $null -ne $plan.cash_redeploy_at_ils) { [double]$plan.cash_redeploy_at_ils } else { $null }
+    if ($null -ne $trigger -and [double]$port.cash_ils -le $trigger) {
+      Ok "no redeploy card, and none is due (cash $([math]::Round([double]$port.cash_ils)) is at or under your $([math]::Round($trigger)) trigger)"
+    } elseif ($spendable -lt 250) {
       Ok "no redeploy card, and none is due (spendable $([math]::Round($spendable)) is under the 250 minimum)"
     } else {
       Bad "no redeploy card despite $([math]::Round($spendable)) spendable above the floor"
