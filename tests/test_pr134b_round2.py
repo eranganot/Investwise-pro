@@ -5,6 +5,7 @@ written; option 3 at the suggested size AND at double ("both").
 
 Not financial advice.
 """
+import zlib
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
@@ -36,7 +37,7 @@ def _walk(seed, n=900, drift=0.0003, vol=0.01):
 
 def _fetch_from(paths):
     def fetch(tickers, **kw):
-        return {t: _series(paths[t] if t in paths else _walk(abs(hash(t)) % 1000)) for t in tickers}, []
+        return {t: _series(paths[t] if t in paths else _walk(zlib.crc32(t.encode()) % 1000)) for t in tickers}, []
     return fetch
 
 
