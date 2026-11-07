@@ -3265,6 +3265,9 @@ function goalRows(X){
     +row("Monthly deposit",`${ils(o.monthly_total_ils||0)} <span class="mk">· ${n?`${n} standing order${n>1?"s":""}`:"no standing order"}</span>`,ed("openGoalSheet()"))
     +row("Risk dials",`${p.objective||"—"} · ${p.risk_tolerance||"—"} · Kelly ${f.kelly_fraction!=null?(+f.kelly_fraction).toFixed(2)+"×":"—"} · ${f.return_confidence||"—"}
       <div class="mk" style="font-weight:400">Crash-risk limit ${f.halve_limit_pct??1}% · on track at ${Math.round((f.goal_confidence??0.7)*100)}%</div>`,ed("openDialsSheet()"))
+    +row("Cash",(()=>{const at=p.cash_redeploy_at_ils, keep=p.cash_target_ils;
+        if(at==null&&keep==null&&p.cash_target_pct==null) return `Not set<div class="mk" style="font-weight:400">No cash card trigger yet</div>`;
+        return `${at!=null?`Card above ${ils(at)}`:"No card trigger"}<div class="mk" style="font-weight:400">${keep!=null?`keeps ${ils(keep)}`:(p.cash_target_pct!=null?`keeps ${p.cash_target_pct}% of the book`:"no cash to keep set")} · the card puts everything over it to work</div>`;})(),ed("openCashRulesSheet()"))
     +row("Card thresholds",(()=>{const n=Object.keys(p.thresholds_overrides||{}).length, t=p.thresholds||{};
         return `${n?`${n} set by you`:"All at their defaults"}<div class="mk" style="font-weight:400">Smallest card ₪${t.min_card_trade_ils??100} or ${t.min_card_trade_pct??0.5}% · cash floor ₪${t.cash_floor_ils??150} · band ±${t.rebalance_band_pts??3}</div>`;})(),ed("openThresholdsSheet()"),true);
 }
@@ -3384,6 +3387,31 @@ async function saveDialsSheet(btn){
     await fetch("/api/v1/plan/frontier/refresh",{method:"POST"});
     closeSheet(); _reloadView();
   }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save dials";}
+}
+
+// The cash rule: above the trigger a card puts everything over "keep" to work.
+// Same fields and checks as the Cash overlay (saveCashRules), now on the Plan page too.
+function openCashRulesSheet(){
+  const p=PLX.p||{};
+  openSheet(_sheetHead("Cash rule")
+    +`<div class="mk">Once your cash is above the trigger, Today offers a card that invests everything over the amount you keep. At or below the trigger there is no card, however much could be spent.</div>`
+    +`<div style="padding:10px 0"><label class="mk" for="cs_at" style="display:block;font-weight:700;color:var(--ink)">Invest when cash is above (₪)</label>
+       <input id="cs_at" type="number" min="0" step="any" value="${p.cash_redeploy_at_ils??""}" style="width:100%;margin-top:4px"></div>`
+    +`<div style="padding:10px 0"><label class="mk" for="cs_keep" style="display:block;font-weight:700;color:var(--ink)">Keep in cash (₪, at least 150)</label>
+       <input id="cs_keep" type="number" min="150" step="any" value="${p.cash_target_ils??""}" style="width:100%;margin-top:4px"></div>`
+    +`<div id="cs_out" class="mk"></div>`
+    +`<div class="acts" style="margin-top:12px"><button class="ghost" style="flex:1" onclick="closeSheet()">Cancel</button>
+       <button class="acc" style="flex:2" onclick="saveCashRulesSheet(this)">Save cash rule</button></div>`);
+}
+async function saveCashRulesSheet(btn){
+  const at=parseFloat($("cs_at").value), keep=parseFloat($("cs_keep").value);
+  if(!(keep>=150)){$("cs_out").innerHTML='<span class="bad">Keep at least \u20aa150 (your hard floor).</span>';return;}
+  if(!(at>keep)){$("cs_out").innerHTML='<span class="bad">The investing trigger must be above what you keep.</span>';return;}
+  btn.disabled=true; btn.textContent="Saving\u2026";
+  try{const r=await fetch("/api/v1/plan",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({cash_target_ils:keep,cash_redeploy_at_ils:at})});
+    if(!r.ok){const j=await r.json().catch(()=>({}));throw new Error((j.detail&&JSON.stringify(j.detail))||("Save failed ("+r.status+")"));}
+    closeSheet(); _reloadView();
+  }catch(e){alert(e.message||e); btn.disabled=false; btn.textContent="Save cash rule";}
 }
 
 // PR 104d: every card threshold, each with what it decides and its default
