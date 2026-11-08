@@ -32,7 +32,7 @@ if (-not $haveKey) { Skip "no agent key: set IW_SMOKE_KEY" } else {
 }
 
 Sec "3  NOT CHANGED"
-if ($html -match 'function openThresholdsSheet' -and $html -match 'function openDialsSheet' -and $html -match 'row("Goal"') { Ok "Card thresholds and Risk dials sheets still served" } else { Bad "an existing Plan sheet disappeared" }
+if ($html -match 'function openThresholdsSheet' -and $html -match 'function openDialsSheet' -and $html -match 'row\("Goal"') { Ok "Card thresholds and Risk dials sheets still served" } else { Bad "an existing Plan sheet disappeared" }
 if ($haveKey) {
     $t = Api GET "/api/v1/recommendations"; $port = Api GET "/api/v1/portfolio"
     if ($t -and $port -and $p -and $null -ne $p.cash_redeploy_at_ils) {
