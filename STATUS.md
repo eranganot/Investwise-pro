@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-07 by Claude (PR 158: the cash rule on the Plan page; smoke respects the redeploy trigger). Last product PR: **158**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-08 by Claude (O6: CI is test-postgres + lint; the SQLite job is gone). Last product PR: **158**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,30 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## O6 -- CI is test-postgres + lint only; the SQLite job is gone (D143)
+
+**Why.** Owner, 2026-11-08, from the backlog ranking (#3). GitHub Actions came back on 2026-11-02 (every run on `main`
+green since; the last red was PR 154b on 10-26), but CI still ran the SQLite `test` job that PR 145 retired as a gate
+(owner, 2026-10-23: "focus mainly on Postgres").
+
+**Measured (run for `901aabf`, 2026-11-07).** `test` (SQLite) 9m20s, `test-postgres` 14m52s, `lint` 22s: about 24
+runner-minutes per run, two runs per merged PR (the PR and the push to `main`).
+
+**What.** `.github/workflows/ci.yml` keeps `test-postgres` and `lint`, on pushes to `main` and on PRs; the `test` job is
+removed. The job name `test-postgres` is kept because tests and docs cite it. No app code changed. Docs: CLAUDE.md and
+README no longer describe a SQLite CI job or the minutes outage; plan v4 §1.2 and §4.8; D143. BACKLOG: O6 closed; C26
+closed (it shipped as D126 on 10-23 but the row still read open); C23 part 3 marked done (the scheduled daily smoke runs);
+the "Revisit the goal (D122)" text that had been pasted into the O6 row is its own row, P21.
+
+**Verified.** The PR's own CI run is the suite on Postgres 16 / Python 3.12 plus ruff, on the exact tree that merges;
+no code changed, so no separate local run. The YAML parses to `['test-postgres', 'lint']`.
+
+**Smoke.** `scripts/smoke/smoke-o6-ci-postgres-only.ps1` (reads the public GitHub API: this repo is public).
+Production before (`901aabf`): PASS 4 FAIL 2 SKIP 0 -- the run for that commit still had `test`; the smoke sees it.
+After: PROD_RESULT.
 
 ---
 

@@ -1,6 +1,6 @@
 # InvestWise Pro — Claude working notes
 
-Personal investing dashboard / wealth system. Python, branch `main`. This is the **best-behaved repo**: sandbox-native git works directly, and CI runs lint/ruff on `app` **and** `tests` plus the suite on Postgres on push -- when GitHub Actions has minutes (off until 2026-11-01, BACKLOG O6). **The gate is the full suite on local Postgres** (PR 145); SQLite is a quick local run, never the gate.
+Personal investing dashboard / wealth system. Python, branch `main`. This is the **best-behaved repo**: sandbox-native git works directly, and CI runs two jobs on pushes to `main` and on PRs: ruff on `app` **and** `tests`, and the suite on Postgres (`test-postgres`). There is no SQLite job (D143). **The gate is the full suite on local Postgres** (PR 145); SQLite is a quick local run, never the gate.
 
 ## Documentation map
 - `docs/README.md` is the index. The pages that matter most when you work: `docs/DOMAIN.md` (how cards are built, funding, goal, invariants → tests), `docs/ARCHITECTURE.md` (layers, Today request flow, jobs, `kv_settings` state), `docs/DEVELOPMENT.md` (tests, migrations, shipping + smoke template), `docs/BACKLOG.md` (**the single open-work list**), `docs/DECISIONS.md` (D-numbered decision log).

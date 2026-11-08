@@ -13,16 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: pytest -q
-
+  # O6 (D143): no SQLite job. Postgres is the gate (PR 145); SQLite proved less than it
+  # looked (incident 5a6dfef) and cost ~9 runner-minutes per run.
   test-postgres:
     runs-on: ubuntu-latest
     services:

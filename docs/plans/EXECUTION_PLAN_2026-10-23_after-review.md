@@ -36,7 +36,7 @@ Read in this order, then pick the first item in §4 that is not marked DONE:
 - A product choice (what a button should mean, a limit's value) is the owner's: ask with 2–3 options and a
   recommendation (`AskUserQuestion`), then build. Record the answer as a `D` entry.
 
-### 1.2 The gate (until GitHub Actions minutes reset on 2026-11-01; BACKLOG O6)
+### 1.2 The gate (CI is back since 2026-11-02 as `test-postgres` + `lint`, D143; it still does not block a deploy)
 
 GitHub Actions does not run (Free-plan minutes exhausted). Railway deploys every push to `main` regardless. So the
 gate is local and must be green before a merge:
@@ -275,7 +275,7 @@ pre-push hook on the Mac), D-1 (where the daily smoke's key lives).
    boot_check after PR 144).
 6. **V1 / V2:** void the unrun QA docs (or re-scope). Owner OK needed only if he wants them kept.
 
-### 4.8 O6: CI after 2026-11-01
+### 4.8 O6: CI after 2026-11-01 — **DONE 2026-11-08 (D143)**
 
 **Value M · Effort S.** One Postgres job + ruff, on pushes to `main` and on PRs. No SQLite job. Then CI is the gate
 again, and §1.2 point 2 becomes a pre-push habit rather than the only gate.
