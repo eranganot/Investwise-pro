@@ -48,7 +48,7 @@ Or run everything in Docker with `docker compose up --build`. Data defaults to d
 ## Tests
 
 ```bash
-pytest -q                     # ~2,290 tests, SQLite (CI job "test")
+pytest -q                     # quick local run on SQLite -- not the gate, not in CI
 ruff check app tests          # CI job "lint"
 DATABASE_URL=postgresql+asyncpg://investwise:investwise@127.0.0.1:5432/investwise pytest -q   # CI job "test-postgres"; run it before pushing
 ```

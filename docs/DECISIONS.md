@@ -224,6 +224,9 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D143 · 2026-11-08 (O6) · CI is `test-postgres` + `lint` only; no SQLite job.** *Owner, 2026-10-23: "focus mainly on Postgres"; the
+  SQLite job proved less than it looked (D27) and cost ~9 of ~24 runner-minutes per run.* The local Postgres run stays the pre-push habit;
+  CI still does not block a deploy (D28).
 - **D38 · 2026-08-12 · Measure latency over a reused connection, with a control run in the same window.** *Two phantom defects were curl reconnecting.*
 - **D67 · 2026-08-31 · STATUS split:** `STATUS.md` = the per-PR history; the open-work list lives elsewhere (since 2026-10-07:
   [BACKLOG.md](BACKLOG.md)). *The top "spine" repeatedly lagged HEAD.* 2026-10-07: older history moved to `docs/archive/status/`.
