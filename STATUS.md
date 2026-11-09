@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-09 by Claude (PR 160: the card_sightings table). Last product PR: **161**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-09 by Claude (PR 162: Today stamps its cards; /cards/sightings). Last product PR: **162**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,25 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 162 -- C34b: Today stamps its cards; /cards/sightings counts the ones no push named
+
+**Why.** BACKLOG C34's open edge (PR 160 added the table). A card that lived under the 30-minute push check could be
+missed, and nothing could count how often.
+
+**What.** `services/card_sightings.py`. Every Today build stamps its cards: `GET /recommendations` (not a
+`?simulate_cash=` preview) and the push job's own build. Same list the push judges (`recommendations`, not the
+collapsed overflow). In a SAVEPOINT that never raises: bookkeeping must not cost the user Today. Rows unseen for 60 days
+are dropped. `GET /api/v1/cards/sightings?days=14` lists each card's first/last seen, how long it lived, whether a push
+named it (`notified_events`), and counts `never_pushed` and `never_pushed_short_lived` (under 30 min, never pushed --
+the C34 case). It is also the first record of which cards stood on Today together, which the 11-09 churn review had to
+rebuild from the ledger.
+
+**Next.** After two weeks, read `never_pushed_short_lived`. Only if it is not zero: push from the build itself.
+
+**Verified.** `tests/test_c34_card_sightings.py` (5: first/last seen and count, retention, pushed vs never pushed and
+short-lived, no raise, a Today request stamps and a simulation does not). CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr162-card-sightings.ps1`. After: PROD_RESULT.
 ## PR 160 -- C34a: the card_sightings table, alone (migration 0030)
 
 **Why.** BACKLOG C34's open edge: a card that lives under the 30-minute push check can be missed, and production
