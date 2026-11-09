@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-09 by Claude (PR 159: no card buys what the core realign sells; C33 closed). Last product PR: **159**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-09 by Claude (PR 161: which holdings moved the book). Last product PR: **161**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,30 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
+
+**Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
+which holdings moved it. The intraday "today" point P9 also asked for already exists (PR 138's provisional point), so
+this PR is the attribution.
+
+**What.** `services/day_attribution.py` and `GET /api/v1/portfolio/day-movers`: per holding, shares held now x the
+price move on its latest session x today's FX, largest first; the rows add up to the total. Each row says which
+session: "today so far" only when the quote is newer than the last daily close, otherwise "last session" with its
+date. On 2026-11-05 the chart's "Today so far" read -1.12% before the US market opened (the week to date); this list
+cannot do that. Cash and stale or unpriced holdings are skipped and named; a holding traded today is flagged. Tel
+Aviv closes in agorot are scaled with `position_history._agorot_scale`. Today shows it as "What moved -- <session>"
+under the chart (checked at 390 px: no sideways scroll).
+
+**Not done.** The chart's own "Today so far" label (PR 138) still compares live prices with the last snapshot, which
+can be several sessions old; that relabel is a separate small fix if wanted.
+
+**Verified.** `tests/test_p9_day_movers.py` (5: open market, closed market named by date, agorot, too few closes,
+parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: PROD_RESULT.
 
 ---
 
@@ -79,8 +103,7 @@ under-target class can take stays in cash.
 full suite on Postgres 16 + ruff, on the exact merged tree.
 
 **Smoke.** `scripts/smoke/smoke-pr159-no-card-buys-what-the-realign-sells.ps1`. Before, on `99f73b0`: PASS 7 FAIL 0
-SKIP 0 (no buy idea on Today, nothing over target, so the before-run proves the field names, not the fix). After:
-PROD_RESULT.
+SKIP 0 (no buy idea on Today, nothing over target, so the before-run proves the field names, not the fix). After (`953d8b4`, 2026-11-09): PASS 7 FAIL 0 SKIP 0.
 
 ---
 
