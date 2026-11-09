@@ -24,7 +24,7 @@ first_seen, last_seen and seen_count; no card body, no amounts. ADD-ONLY and GUA
 nothing reads or writes it until PR 162.
 
 **Verified.** The migration tests on Postgres 16 (chain from nothing, migrations-only schema, startup DDL, deploy runs
-the migrations: 16 passed). CI on the PR: the full suite + ruff.
+the migrations: 16 passed). CI on the PR: the first run was red on one test -- `test_the_legacy_tables_are_dropped` stepped DOWN "-1" from head, which undid 0029 only while 0029 was head; with 0030 it undid 0030 and the legacy tables never came back. It now steps down to `0028_plan_thresholds` by name. 3035 other tests passed.
 
 **Smoke.** `scripts/smoke/smoke-pr160-card-sightings-migration.ps1`: schema `0030_card_sightings`; /plan and
 /recommendations answer as before. After: PROD_RESULT.
