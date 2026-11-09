@@ -50,6 +50,7 @@ export default defineRailway(() => {
       REGIME_GATE_ENABLED_FOR: preserve(),
       REGIME_GATE_MAX_CAGR_GIVEUP_PCT: preserve(),
       REQUIRE_AUTH: preserve(),
+      SMOKE_API_KEY: preserve(),
       SUPERADMIN_NAME: preserve(),
       SURTAX_RATE: preserve(),
       SURTAX_THRESHOLD_ILS: preserve(),
