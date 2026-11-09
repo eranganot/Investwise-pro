@@ -649,5 +649,26 @@ class PlanApplication(Base, PKMixin, TimestampMixin):
     note: Mapped[str] = mapped_column(Text, default="")
 
 
+class CardSighting(Base, PKMixin, TimestampMixin):
+    """C34: when each Today card was first and last seen (one row per card id).
+
+    Production kept no record of which cards appeared, so a card that lived
+    under the 30-minute push check could vanish unseen and nobody could count
+    how often. It is also the only record of which cards stood on Today
+    TOGETHER -- what the 2026-11-09 churn review had to rebuild from the trade
+    ledger. Ships ALONE (D17); the writer and reader come in the next PR.
+    """
+    __tablename__ = "card_sightings"
+    __table_args__ = (UniqueConstraint("subject", "card_id", name="uq_card_sightings_subject_card"),)
+
+    subject: Mapped[str] = mapped_column(String(255), index=True)   # user email
+    card_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(40), default="")
+    title: Mapped[str] = mapped_column(String(200), default="")
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+
+
 # Deprecated alias (PR 116, L9): two helpers shared one name.
 money = db_money

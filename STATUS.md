@@ -14,6 +14,23 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Code comments and tests that cite "STATUS.md PR 58", "STATUS.md PR 57" and so on (any PR ≤ 87) mean that file. Their
   `STATUS.md:NNNN` line numbers are from before the split.
 
+## PR 160 -- C34a: the card_sightings table, alone (migration 0030)
+
+**Why.** BACKLOG C34's open edge: a card that lives under the 30-minute push check can be missed, and production
+keeps no record of which cards appeared, so misses cannot be counted. Owner, 2026-11-09: start C34.
+
+**What.** Migration `0030_card_sightings` and the `CardSighting` model: one row per (subject, card id) with
+first_seen, last_seen and seen_count; no card body, no amounts. ADD-ONLY and GUARDED like 0017. Ships ALONE (D17):
+nothing reads or writes it until PR 162.
+
+**Verified.** The migration tests on Postgres 16 (chain from nothing, migrations-only schema, startup DDL, deploy runs
+the migrations: 16 passed). CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr160-card-sightings-migration.ps1`: schema `0030_card_sightings`; /plan and
+/recommendations answer as before. After: PROD_RESULT.
+
+---
+
 ## Where things are — 2026-10-08
 
 - **Production:** `88bb5d4` (PR #1 docs merge on top of PR 104d.1), schema `0028_plan_thresholds`, `sw.js` `iw-v51`.
