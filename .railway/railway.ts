@@ -36,7 +36,6 @@ export default defineRailway(() => {
       DEBUG: preserve(),
       ENVIRONMENT: preserve(),
       FMP_API_KEY: preserve(),
-      FRONTEND_ORIGIN: preserve(),
       FX_PROVIDER: preserve(),
       GOOGLE_API_KEY: preserve(),
       GOOGLE_OAUTH_CLIENT_ID: preserve(),
