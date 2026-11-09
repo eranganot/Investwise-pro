@@ -30,7 +30,9 @@ def test_0029_drops_the_legacy_tables_and_round_trips(tmp_path):
     tables, cols = _schema(db)
     assert not (LEGACY & tables) and "bucket_id" not in cols      # a fresh chain never has them
 
-    down = _alembic(["downgrade", "-1"], url)
+    # By name, not "-1": once a later migration exists (0030, PR 160), "-1" undoes
+    # that one and 0029's drop is never tested.
+    down = _alembic(["downgrade", "0028_plan_thresholds"], url)
     assert down.returncode == 0, down.stderr[-2000:]
     tables, cols = _schema(db)
     assert LEGACY <= tables and "bucket_id" in cols, (tables, cols)   # production's shape before 0029

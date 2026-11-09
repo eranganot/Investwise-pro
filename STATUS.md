@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-09 by Claude (PR 161: which holdings moved the book). Last product PR: **161**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-09 by Claude (PR 160: the card_sightings table). Last product PR: **161**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -38,6 +38,20 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
 
 ---
 
+## PR 160 -- C34a: the card_sightings table, alone (migration 0030)
+
+**Why.** BACKLOG C34's open edge: a card that lives under the 30-minute push check can be missed, and production
+keeps no record of which cards appeared, so misses cannot be counted. Owner, 2026-11-09: start C34.
+
+**What.** Migration `0030_card_sightings` and the `CardSighting` model: one row per (subject, card id) with
+first_seen, last_seen and seen_count; no card body, no amounts. ADD-ONLY and GUARDED like 0017. Ships ALONE (D17):
+nothing reads or writes it until PR 162.
+
+**Verified.** The migration tests on Postgres 16 (chain from nothing, migrations-only schema, startup DDL, deploy runs
+the migrations: 16 passed). CI on the PR: the first run was red on one test -- `test_the_legacy_tables_are_dropped` stepped DOWN "-1" from head, which undid 0029 only while 0029 was head; with 0030 it undid 0030 and the legacy tables never came back. It now steps down to `0028_plan_thresholds` by name. 3035 other tests passed.
+
+**Smoke.** `scripts/smoke/smoke-pr160-card-sightings-migration.ps1`: schema `0030_card_sightings`; /plan and
+/recommendations answer as before. After: PROD_RESULT.
 ## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
 
 **Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
