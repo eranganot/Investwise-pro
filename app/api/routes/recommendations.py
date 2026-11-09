@@ -37,7 +37,26 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
                           user: User = Depends(acting_user)) -> dict:
     """`?simulate_cash=3000` (PR 75): a read-only preview of the cash card as if
     you held that much cash. Returns only that card, marked simulated."""
-    return await build_recommendations(session, user, simulate_cash_ils=simulate_cash)
+    built = await build_recommendations(session, user, simulate_cash_ils=simulate_cash)
+    if simulate_cash is None:
+        # C34: stamp what Today showed. The same list the push job judges
+        # (`recommendations`, not the collapsed overflow). Never raises.
+        from app.services import card_sightings
+        if await card_sightings.record(session, user.email, built.get("recommendations", [])):
+            try:
+                await session.commit()
+            except Exception:  # noqa: BLE001 -- bookkeeping must not cost the user Today
+                await session.rollback()
+    return built
+
+
+@router.get("/cards/sightings")
+async def card_sightings_summary(days: int = Query(14, ge=1, le=60),
+                                 session: AsyncSession = Depends(get_session),
+                                 user: User = Depends(acting_user)) -> dict:
+    """C34: the cards Today showed in the last `days`, and which no push named."""
+    from app.services import card_sightings
+    return await card_sightings.summary(session, user.email, days=days)
 
 
 def refusal_text(result: dict) -> str:

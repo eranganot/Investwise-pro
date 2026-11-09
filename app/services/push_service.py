@@ -435,6 +435,9 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
     # -- past MAX_CARD_PUSHES_PER_RUN, the rest go out as one summary push.
     try:
         built = await build_recommendations(session, user)
+        # C34: the push job's builds count as sightings too (savepoint, never raises).
+        from app.services import card_sightings
+        await card_sightings.record(session, subject, built.get("recommendations", []))
         try:
             cards = [r for r in built.get("recommendations", []) if r.get("id")]
             if await _kv_get(session, _baseline_key(subject)) is None:
