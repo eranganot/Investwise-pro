@@ -134,7 +134,7 @@ Useful reads:
 | # | Action | Why | How |
 |---|---|---|---|
 | A1 | **Top up Gemini credits** | AI summary and Ask fail (HTTP 402); the only red in `smoke-all` | Google AI Studio → billing |
-| A2 | **Rotate the agent key** | It was pasted in a chat on 2026-10-22 | Railway env `AGENT_API_KEY` → redeploy; give Claude the new one; update `scripts/.agent-key` locally |
+| A2 | ~~**Rotate the agent key**~~ -- **DONE** (owner confirmed 2026-11-09; `scripts/.agent-key` rewritten 2026-10-26) | It was pasted in a chat on 2026-10-22 | -- |
 | A3 | **O3: confirm database backups** | No backup = one bad migration loses the book | Railway → Postgres → Backups; note the schedule and a restore test in `docs/OPERATIONS.md` |
 | A4 | **O2: rotate the GitHub PAT and the Railway token** | Never rotated since 2026-08-03 | GitHub settings; Railway project token |
 | A5 | R2: delete the orphan `redis-volume` | 150 MB attached to nothing | Railway dashboard |

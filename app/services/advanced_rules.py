@@ -372,7 +372,7 @@ def most_volatile(idx: dict, exclude: set[str]) -> tuple[str, float] | None:
 
 
 async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
-                      book_target, name_caps, ledger) -> list[dict]:
+                      book_target, name_caps, ledger, exclude=None) -> list[dict]:
     """Band buys, drawdown de-risks, trend stops, tuning suggestions and the
     one-time caps-to-bands card. Never raises."""
     from sqlalchemy import select
@@ -403,7 +403,7 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
                     c = _band_buy_card(r, pos, rows=rows, snap=snap, plan=plan,
                                        objective=objective, cap=cap, cash=cash,
                                        book_target=book_target, name_caps=name_caps,
-                                       ledger=ledger)
+                                       ledger=ledger, exclude=exclude)
                     if c:
                         out.append(c)
                 elif r.triggered and r.rule_type == "drawdown_guard":
@@ -434,7 +434,13 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
 
 
 def _band_buy_card(rule, pos, *, rows, snap, plan, objective, cap, cash, book_target,
-                   name_caps, ledger) -> dict | None:
+                   name_caps, ledger, exclude=None) -> dict | None:
+    """C36 (2026-11-09): funded with `exclude` = the book's sleeve tickers. Core
+    names stay sellable (a band IS the per-name rebalance inside the core). Without
+    it, when nothing was over target by a minimum trade,
+    `plan_funding`'s fallback sold a sleeve at its own target: 2026-11-06 06:32
+    the QQQ band sold 912 ILS of BIL (35.3% vs 35%), the BIL band bought it back
+    from cash 15 minutes later, and the double-bought QQQ was trimmed at 16:02."""
     side, t, trade = band_side(rule, pos)
     if side != "below":
         return None
@@ -446,7 +452,7 @@ def _band_buy_card(rule, pos, *, rows, snap, plan, objective, cap, cash, book_ta
         rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
         book_target=book_target, name_caps=name_caps, ticker=tk, buying_class=cls,
         cash_ils=cash, requested_ils=trade, market=pos.get("market") or "NYSE",
-        allow_within_class_swap=True, ledger=ledger)
+        allow_within_class_swap=True, ledger=ledger, exclude=exclude)
     w = float(pos.get("weight_pct") or 0.0)
     rid = f"rule_{str(rule.id)[:8]}"
     base = {"id": rid, "dimension": "rule", "severity": "HIGH", "rule_id": str(rule.id),

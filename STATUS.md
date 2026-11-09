@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-09 by Claude (PR 162: Today stamps its cards; /cards/sightings). Last product PR: **162**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-09 by Claude (PR 163: a band top-up never sells a sleeve; C36 closed). Last product PR: **163**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,49 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 163 -- C36: a band top-up never funds itself by selling a sleeve (D146)
+
+**Why.** Owner, 2026-11-09: investigate C36 (inferred in PR 159). Investigated before any fix.
+
+**Reproduced.** The book rebuilt from the trade ledger at 2026-11-06 06:32:27 (current holdings, every later trade
+undone, valued at the 06:3x trade prices, FX 3.1717): BIL 6,725 / VTI 3,696 / DBMF 2,858 / QQQ 2,345 / VXUS 544 / SMH 405,
+cash 2,483 ILS; NAV 19,057. It matches the rule events of that morning (VTI 19.4%, QQQ 12.3%). Fed to the QQQ band card
+with the book target of that morning (QQQ 35 / BIL 35 / DBMF 15 sleeves, core 14.23%): **with the cash already
+committed by an earlier card in the build, it sells 916 ILS of BIL and buys 916 of QQQ** -- production sold 912.19 BIL
+and bought 912.11 QQQ (`rule_dfe351f1`). 15 minutes later the BIL band bought 433 + 81 back from cash, and the
+double-bought QQQ was trimmed 750 at 16:02.
+
+**Root cause.** Nothing was over target by a minimum trade (Fixed Income 35.3% vs 35%: a 57 ILS budget), so
+`plan_funding` fell back to "fund from wherever" -- and `_band_buy_card` (via `advanced_rules.extra_cards`) was the one
+funded producer on Today built with no `exclude`. Every other one gets `_funding_exclusions` (fixed 2026-09-03 for the
+same fallback selling BND). So a sleeve sitting at its own target was the first thing sold.
+
+**Ruled out.** (1) BIL over its name cap: 35.3% vs a 35% concentration cap licenses 57 ILS, not 916. (2) The Fixed Income
+overweight budget: also 57 ILS. (3) A card sized at 06:17 and executed stale: on the 06:17 book (before the SMH/VXUS trims,
+cash at the floor, Equities at target) there is no card at all -- it was sized at the 06:32 build. (4) The cash itself:
+with the cash free the same card pays 916 from cash and sells nothing; the sale needs the cash already spoken for.
+
+**What.** `extra_cards(..., exclude=)` -> `_band_buy_card` -> `propose_funded_buy(exclude=)`, and the build passes the
+book's sleeve tickers (`planned_sleeve_targets` + `managed_sleeve_targets`). NOT the whole `_funding_exclusions`: that
+also holds the core basket, and a band is the per-name rebalance INSIDE the core -- the first version excluded it and
+`test_a_band_breached_below_becomes_a_funded_buy_on_today` (BND funds VTI on a 60/40 core) went red, rightly. On the 11-06
+book the card now sells 916 of VTI (19.4% vs a 5.7% band) instead of BIL -- the oversized core, the same money the sleeve
+funding moved 30 seconds later.
+
+**Blast radius.** Band buys only, and only when nothing is over target by a minimum trade and the cash is committed.
+Silent because every leg was correct on its own terms: each card was "toward target" for its own class.
+
+**Verified.** `tests/test_a_band_buy_never_sells_a_sleeve.py` (3; 2 fail on main). Advanced rules, card claims,
+funding and PR 159's tests on Postgres: 123 passed. CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr163-band-buy-never-sells-a-sleeve.ps1`. Before, on `12dbed7`: PASS 5 FAIL 0 SKIP 1
+(no band breached below today: the band check is a SKIP until one is). After: PROD_RESULT.
+
+**Also.** A2 closed: owner confirmed 2026-11-09 that the agent key was rotated (Mac `scripts/.agent-key` rewritten
+2026-10-26, two days after the 10-24 exposure). L2's follow-up was done by the owner in #103.
 
 ---
 

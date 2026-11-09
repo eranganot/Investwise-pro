@@ -2512,13 +2512,19 @@ async def build_recommendations(session: AsyncSession, user: User,
     # PR 81 -- the advanced rules' own cards: a band BUY (funded through
     # `propose_funded_buy`), the drawdown de-risk, a trend stop without a measured
     # edge, tuning suggestions, and the one-time caps-to-bands offer.
+    # C36: a band card may not sell a SLEEVE to fund itself (11-06: the QQQ band
+    # sold BIL at its own 35% target). Core names stay sellable: a band is the
+    # per-name rebalance INSIDE the core, and selling an over-band core name to buy
+    # an under-band one is what it is for -- so not the whole `_sleeve_names`.
+    _band_exclude = {str(t).upper() for t in list((btgt.get("planned_sleeve_targets") or {}))
+                     + list((btgt.get("managed_sleeve_targets") or {}))}
     try:
         async with _agent_tx(session):
             from app.services.advanced_rules import extra_cards
             _adv_cards = await extra_cards(
                 session, user, rows=rows, snap=snap, plan=plan, objective=objective,
                 cap=cap, cash=_cash_ils, book_target=btgt.get("target"), name_caps=_name_caps,
-                ledger=_ledger)
+                ledger=_ledger, exclude=_band_exclude)
             # A trend-break rule is the user's own subscription to the signal the
             # holding review also reads; one card per ticker, the rule's.
             _trend_tks = {str((c.get("meta") or {}).get("ticker") or "").upper()
