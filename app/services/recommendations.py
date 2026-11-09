@@ -160,6 +160,25 @@ def _rid(*parts) -> str:
     return "rec_" + hashlib.sha1("|".join(str(p) for p in parts).encode()).hexdigest()[:6]
 
 
+def realign_keeps(core_id: str | None, core_pct: float | None = None) -> set[str] | None:
+    """C30 (2026-11-09): the names the core realign will NOT sell, or None.
+
+    While the core holds a basket, `core_realign.plan_realign` sells every
+    core-region holding the basket does not name, whatever its class. So a card
+    that opens a NEW position in a name outside the basket (and outside every
+    sleeve, which callers check) is bought and then sold by the app's own next
+    card. Production 2026-11-06: CVX bought by `rec_f23044` (a buy idea), sold
+    7 s later by the realign. None means no basketed core: nothing sells
+    off-basket names, so there is nothing to filter. Same source the realign
+    reads (`core_weights`), so the two cannot disagree.
+    """
+    if not core_id or (core_pct is not None and float(core_pct or 0) <= 0):
+        return None
+    from app.services.strategies import core_weights
+    w = core_weights(core_id)
+    return {str(t).upper() for t in w} if w else None
+
+
 # Multiples of `allocation_drift_threshold` at which a rebalance stops being
 # routine. The threshold is the number that DECIDED this card should exist, so
 # it is also the honest unit for how far past it the book has gone.
@@ -4688,16 +4707,24 @@ def _redeploy_name_targets(held_by_class: dict, weights: dict, target: dict | No
 
 
 def _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, cap,
-                      name_caps, name_gap, name_reason) -> None:
+                      name_caps, name_gap, name_reason, over_classes=frozenset()) -> None:
     """Spend what the class pass left: first every name still below its target,
     then the rest at plan weights. Mutates ``legs``.
 
     The class pass cannot see a sleeve that is short inside a class that is on
     target in aggregate -- SOXL under while QQQ is over nets to "Equities fine".
+
+    C33 (2026-11-09): but a class OVER target gets nothing here, even when one
+    of its names is short. Reproduced: Equities 67.5% vs 62%, BIL capped so
+    Fixed Income could not take the cash, and the leftover bought VTI because
+    VTI was under ITS name target -- Equities went to 72%. What no under-target
+    class can take stays in cash.
     """
     from app.services import funding_service as _fund
 
     cls_of = {p.ticker: cls for cls, held in held_by_class.items() for p in held}
+    if over_classes:
+        name_tgt = {tk: t for tk, t in name_tgt.items() if cls_of.get(tk) not in over_classes}
     placed = {x["ticker"]: x for x in legs}
 
     def _room(tk):
@@ -5178,8 +5205,12 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             # becomes a NEW POSITION in a class the book is empty of. Ranking
             # that on a growth-weighted default while the plan says Preserve is
             # the contradiction item 2 is about, arriving as an actual holding.
+            # C30: with a basketed core, only a basket name survives the realign.
+            _keeps = realign_keeps(core_id)
             pick = next((b for b in _buy_ideas(snap, _ccy, objective)
-                         if classify(b.get("ticker"), None) == cls), None)
+                         if classify(b.get("ticker"), None) == cls
+                         and (_keeps is None
+                              or str(b.get("ticker") or "").upper() in _keeps)), None)
             amt = round(min(budget, remaining), 2)
             if pick and amt >= _fund.MIN_TRADE_ILS:
                 # THE DISCLOSURE RIDES WITH THE LEG, not just the audit trail.
@@ -5210,8 +5241,10 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     # Concentrating is the honest fallback: one trade that clears the minimum
     # beats four that do not, and it still respects the single-name cap.
     if name_tgt and remaining >= _fund.MIN_TRADE_ILS:
+        _over = {c for c, tw in target.items()
+                 if c != "Cash" and mix.get(c, 0.0) > float(tw) + 1e-9}
         _plan_weight_pass(legs, remaining, name_tgt, held_by_class, weights, nav, cap,
-                          name_caps, _name_gap, _name_reason)
+                          name_caps, _name_gap, _name_reason, over_classes=_over)
         remaining = round(spendable - sum(x["amount_ils"] for x in legs), 2)
 
     # With name targets the plan-weight pass above already placed the surplus;
@@ -5562,11 +5595,16 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
     held = {str(getattr(r, "ticker", "") or "").upper() for r in (rows or [])
             if float(getattr(r, "quantity", 0) or 0) > 0}
 
+    # C30: a new name outside a basketed core is sold by the realign straight back.
+    _bt = book_target or {}
+    keeps = realign_keeps(_bt.get("core_strategy_id"), _bt.get("core_pct"))
     for idea in ideas:
         if len(out) >= int(_setting("max_idea_cards", _MAX_BUY_IDEA_CARDS)):
             break
         tk = str(idea.get("ticker") or "").upper()
         if not tk or tk in already_named or tk in sleeve_names:
+            continue
+        if keeps is not None and tk not in keeps:
             continue
         # ALREADY HELD IS NOT A REASON TO SAY NOTHING, but it is a reason to let
         # the rebalance and drift cards own that ticker. Topping up a position
