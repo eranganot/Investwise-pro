@@ -26,7 +26,7 @@
 > **Closed in PR 119:** R1 (`railway.json` replaced by `.railway/railway.ts`, every setting kept).
 > **Closed in PR 116:** L3 (Sentry deleted, D81), L4 (cash target naming), L5 (stale docstrings + the dead pytest filter), L6 (copy names real places), L9 (`display_money` / `db_money`), L14 (commodity buys use the core's funds, D80).
 > **Closed in PR 117:** L12 (one `.seg`, D84; theme variables defined; focus ring; 17 click targets keyboard-reachable; Escape, Enter/Space and the sheet's focus handling).
-> **Closed in W0-5:** L2 (`investwise.db` and `frontend/` removed; CORS is off unless `FRONTEND_ORIGIN` is set). Owner follow-up: production still sets `FRONTEND_ORIGIN=http://localhost:5173`; delete its line from `.railway/railway.ts`, then `railway config apply` removes it.
+> **Closed in W0-5:** L2 (`investwise.db` and `frontend/` removed; CORS is off unless `FRONTEND_ORIGIN` is set). Owner follow-up **done 2026-11-09**: `FRONTEND_ORIGIN` was deleted from the production service (the live API sends no `Access-Control-Allow-Origin`) and its `preserve()` line removed from `.railway/railway.ts`.
 > **Closed in PR 123:** P3 (held stocks with sale rules are simulated as their own columns; every rule shows its goal impact, D85).
 > **Closed in PR 118a/118b:** L7 (routes are thin; no service imports a route, guarded by `test_services_never_import_routes`).
 >
