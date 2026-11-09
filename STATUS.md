@@ -56,7 +56,7 @@ rebuild from the ledger.
 **Verified.** `tests/test_c34_card_sightings.py` (5: first/last seen and count, retention, pushed vs never pushed and
 short-lived, no raise, a Today request stamps and a simulation does not). CI on the PR: the full suite + ruff.
 
-**Smoke.** `scripts/smoke/smoke-pr162-card-sightings.ps1`. After: PROD_RESULT.
+**Smoke.** `scripts/smoke/smoke-pr162-card-sightings.ps1`. After: (`a2fcb4f`, 2026-11-09): PASS 7 FAIL 0 SKIP 0 -- the three cards on Today stamped; a simulation stamped nothing; 0 never pushed.
 ## PR 160 -- C34a: the card_sightings table, alone (migration 0030)
 
 **Why.** BACKLOG C34's open edge: a card that lives under the 30-minute push check can be missed, and production
@@ -70,7 +70,7 @@ nothing reads or writes it until PR 162.
 the migrations: 16 passed). CI on the PR: the first run was red on one test -- `test_the_legacy_tables_are_dropped` stepped DOWN "-1" from head, which undid 0029 only while 0029 was head; with 0030 it undid 0030 and the legacy tables never came back. It now steps down to `0028_plan_thresholds` by name. 3035 other tests passed.
 
 **Smoke.** `scripts/smoke/smoke-pr160-card-sightings-migration.ps1`: schema `0030_card_sightings`; /plan and
-/recommendations answer as before. After: PROD_RESULT.
+/recommendations answer as before. After: (`8a55cfb`, 2026-11-09): PASS 4 FAIL 0 SKIP 0 -- schema `0030_card_sightings`.
 ## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
 
 **Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
@@ -91,7 +91,7 @@ can be several sessions old; that relabel is a separate small fix if wanted.
 **Verified.** `tests/test_p9_day_movers.py` (5: open market, closed market named by date, agorot, too few closes,
 parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
 
-**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: PROD_RESULT.
+**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: (`e73260c`, 2026-11-09, Monday before the US open): PASS 8 FAIL 0 SKIP 0 -- 7 holdings, +151.36 ILS, every row "last session 2026-11-06".
 
 ---
 
