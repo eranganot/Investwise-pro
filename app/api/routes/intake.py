@@ -194,6 +194,14 @@ async def portfolio_performance(range: str | None = None,
     return out
 
 
+@router.get("/portfolio/day-movers")
+async def portfolio_day_movers(session: AsyncSession = Depends(get_session),
+                               user: User = Depends(acting_user)) -> dict:
+    """P9: which holdings moved the book on the latest session, in ILS. Read-only."""
+    from app.services.day_attribution import day_movers
+    return await day_movers(session, user)
+
+
 @router.get("/portfolio/nav-history")
 async def portfolio_nav_history(range: str = "1M",
                                 session: AsyncSession = Depends(get_session),

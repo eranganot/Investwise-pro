@@ -341,6 +341,7 @@
       </div>
       <canvas id="ch_today" height="170" style="margin-top:8px"></canvas>
       <div class="muted" id="todayPerfCap" style="margin-top:8px;font-size:12px">Loading…</div>
+      <div class="muted" id="todayMovers" style="margin-top:8px;font-size:12px"></div>
     </div>
     <div class="card" id="aiSummaryCard">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
@@ -1016,8 +1017,29 @@ function dayMon(d){const p=String(d||"").slice(0,10).split("-");
   const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return p.length<3?String(d||""):`${+p[2]} ${M[+p[1]-1]||""}`;}
 
+// P9: which holdings moved the book, on the session each one actually had.
+// "today so far" only when a quote is newer than the last close; a closed market
+// names its last session by date (2026-11-05: "Today so far" was the week to date).
+async function loadDayMovers(){
+  const el=$("todayMovers"); if(!el)return;
+  let d; try{ d=await(await fetch("/api/v1/portfolio/day-movers")).json(); }catch(e){ return; }
+  if(!d||!d.ok||!(d.rows||[]).length){ el.innerHTML=""; return; }
+  const sgn=v=>(v>=0?"+":"-")+ils(Math.abs(v)).replace("₪-","₪");
+  const when=(d.basis||[]).length===1&&d.basis[0]==="today so far"
+    ? "Today so far"
+    : `Last session${(d.sessions||[]).length===1?` (${dayMon(d.sessions[0])})`:""}`;
+  const top=d.rows.slice(0,5).map(r=>
+    `<span style="white-space:nowrap"><b>${esc(r.ticker)}</b> <span class="${r.move_ils>=0?'ok':'bad'}">${sgn(r.move_ils)}</span>`+
+    ` <span class="mk">(${r.move_pct>=0?"+":""}${r.move_pct}%${r.basis!=="today so far"&&(d.basis||[]).length>1?`, ${dayMon(r.session)}`:""}${r.traded_today?", traded today":""})</span></span>`).join(" &middot; ");
+  el.innerHTML=`<div><b>What moved &mdash; ${when}:</b> <b class="${d.total_ils>=0?'ok':'bad'}">${sgn(d.total_ils)}</b>`+
+    (d.total_pct!=null?` <span class="mk">(${d.total_pct>=0?"+":""}${d.total_pct}%)</span>`:"")+`</div>`+
+    `<div style="margin-top:2px">${top}</div>`+
+    ((d.skipped||[]).length?`<div class="mk" style="margin-top:2px">Not counted: ${d.skipped.map(x=>esc(x.ticker)).join(", ")} (no fresh price)</div>`:"");
+}
+
 async function loadToday(){
   loadTodayPerf();
+  loadDayMovers();
   // PR 104c.1 (Eran: "it takes very long time ... to upload"): every request
   // starts NOW and each block renders as its own answer lands. They used to run
   // one after another, so the goal and the projection waited ~3.5 s behind the

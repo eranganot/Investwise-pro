@@ -224,6 +224,8 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D145 · 2026-11-09 (PR 161) · A day move names its session.** "Today so far" only when a quote is newer than the last
+  close; otherwise "last session" and its date. Shares held now x the move x today's FX, so the parts add up.
 - **D143 · 2026-11-08 (O6) · CI is `test-postgres` + `lint` only; no SQLite job.** *Owner, 2026-10-23: "focus mainly on Postgres"; the
   SQLite job proved less than it looked (D27) and cost ~9 of ~24 runner-minutes per run.* The local Postgres run stays the pre-push habit;
   CI still does not block a deploy (D28).

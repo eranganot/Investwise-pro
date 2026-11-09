@@ -14,6 +14,30 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   Code comments and tests that cite "STATUS.md PR 58", "STATUS.md PR 57" and so on (any PR ≤ 87) mean that file. Their
   `STATUS.md:NNNN` line numbers are from before the split.
 
+## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
+
+**Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
+which holdings moved it. The intraday "today" point P9 also asked for already exists (PR 138's provisional point), so
+this PR is the attribution.
+
+**What.** `services/day_attribution.py` and `GET /api/v1/portfolio/day-movers`: per holding, shares held now x the
+price move on its latest session x today's FX, largest first; the rows add up to the total. Each row says which
+session: "today so far" only when the quote is newer than the last daily close, otherwise "last session" with its
+date. On 2026-11-05 the chart's "Today so far" read -1.12% before the US market opened (the week to date); this list
+cannot do that. Cash and stale or unpriced holdings are skipped and named; a holding traded today is flagged. Tel
+Aviv closes in agorot are scaled with `position_history._agorot_scale`. Today shows it as "What moved -- <session>"
+under the chart (checked at 390 px: no sideways scroll).
+
+**Not done.** The chart's own "Today so far" label (PR 138) still compares live prices with the last snapshot, which
+can be several sessions old; that relabel is a separate small fix if wanted.
+
+**Verified.** `tests/test_p9_day_movers.py` (5: open market, closed market named by date, agorot, too few closes,
+parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: PROD_RESULT.
+
+---
+
 ## Where things are — 2026-10-08
 
 - **Production:** `88bb5d4` (PR #1 docs merge on top of PR 104d.1), schema `0028_plan_thresholds`, `sw.js` `iw-v51`.
