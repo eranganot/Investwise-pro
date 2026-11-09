@@ -1,6 +1,6 @@
 """AI assistant + digest endpoints (Phase H)."""
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import acting_user
@@ -13,7 +13,9 @@ router = APIRouter(prefix="/api/v1", tags=["assistant"])
 
 
 class AskRequest(BaseModel):
-    question: str = ""
+    # IW-5: every question goes into a Gemini prompt; unbounded, one request
+    # could carry megabytes of tokens. 2,000 characters is a long question.
+    question: str = Field(default="", max_length=2000)
 
 
 @router.post("/ask")

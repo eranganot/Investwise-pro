@@ -70,7 +70,8 @@ def test_the_healthcheck_path_is_a_route_this_app_serves():
     import app.main as m
 
     path = _deploy()["healthcheckPath"]
-    routes = {getattr(r, "path", None) for r in m.app.routes}
+    from tests._routes import flat_paths
+    routes = set(flat_paths(m.app.routes))
     assert path in routes, (
         f"railway.json health-checks {path!r}, which this app does not serve. "
         f"Every deploy would time out and fail.\n"

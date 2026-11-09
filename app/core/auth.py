@@ -163,7 +163,8 @@ def require_role(min_role: Role):
                 raise HTTPException(403, "the smoke key is read-only")
             return Principal(sub=s.superadmin_email, role=Role.SUPERADMIN)
         if s.agent_api_key and request is not None:
-            if request.headers.get("x-agent-key") == s.agent_api_key:
+            # IW-5: constant-time, like the smoke key above.
+            if _sent and hmac.compare_digest(_sent, s.agent_api_key):
                 return Principal(sub=s.superadmin_email, role=Role.SUPERADMIN)
         if not s.require_auth:
             return Principal(sub=s.superadmin_name, role=Role.SUPERADMIN)

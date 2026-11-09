@@ -8,7 +8,6 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import app.main as m
@@ -26,7 +25,7 @@ COMPUTE_ONLY = {
 }
 # Unauthenticated on purpose. Every addition is a decision -- this list is the review.
 PUBLIC = {
-    "/", "/health", "/health/ready", "/metrics", "/login", "/dashboard", "/dashboard/",
+    "/", "/health", "/health/ready", "/login", "/dashboard", "/dashboard/",
     "/auth/google/login", "/auth/google/callback", "/auth/logout",
     "/api/v1/auth/token", "/api/v1/auth/refresh", "/api/v1/auth/status",
     "/api/v1/push/public-key", "/api/v1/intake/template.csv", "/api/v1/commodities",
@@ -56,10 +55,23 @@ def _level(dependant, acc=None):
 
 
 def _routes():
-    for r in m.app.routes:
-        if isinstance(r, APIRoute):
-            for meth in sorted(r.methods - {"HEAD", "OPTIONS"}):
-                yield meth, r.path, _level(r.dependant)
+    from tests._routes import api_routes
+    for methods, path, dependant in api_routes(m.app):
+        for meth in sorted(methods - {"HEAD", "OPTIONS"}):
+            yield meth, path, _level(dependant)
+
+
+def test_the_gates_see_every_operation_the_api_publishes():
+    """The two gates below iterate _routes(). If it ever sees fewer endpoints than
+    the OpenAPI schema lists, they pass on a partial list (IW-1b: FastAPI 0.16x
+    stopped flattening include_router into app.routes and _routes() went from
+    every endpoint to the app's own handful, silently)."""
+    published = {(meth.upper(), path)
+                 for path, ops in m.app.openapi()["paths"].items()
+                 for meth in ops if meth.upper() not in ("HEAD", "OPTIONS")}
+    seen = {(mt, p) for mt, p, _lv in _routes()}
+    missing = published - seen
+    assert len(published) > 50 and not missing, f"{len(missing)} endpoints invisible to the gates, e.g. {sorted(missing)[:5]}"
 
 
 # ---- S1 / S4: the class-closers ------------------------------------------------
@@ -103,7 +115,8 @@ def test_read_only_cannot_write_and_the_owner_can_do_everything(enforced):
 def test_the_api_map_is_not_served_in_production(monkeypatch):
     monkeypatch.setattr(m, "settings", m.settings.model_copy(update={"environment": "production"}))
     app = m.create_app()
-    paths = {getattr(r, "path", None) for r in app.routes}
+    from tests._routes import flat_paths
+    paths = set(flat_paths(app.routes))
     assert not ({"/docs", "/redoc", "/openapi.json"} & paths)
 
 

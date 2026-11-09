@@ -156,7 +156,8 @@ def test_both_kinds_resolve():
 
 def test_the_routes_exist_and_the_literal_one_comes_first():
     import app.main as m
-    paths = [r.path for r in m.app.routes if hasattr(r, "path")]
+    from tests._routes import flat_paths
+    paths = flat_paths(m.app.routes)
     lit = paths.index("/api/v1/strategies/candidates/book-effect")
     var = paths.index("/api/v1/strategies/{strategy_id}/book-effect")
     assert lit < var

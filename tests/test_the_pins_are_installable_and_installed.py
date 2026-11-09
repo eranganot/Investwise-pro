@@ -119,27 +119,28 @@ def test_the_installed_version_is_the_pinned_version(name, pinned):
         "    pip install -r requirements.txt -r requirements-dev.txt")
 
 
-def test_py_vapid_is_below_the_version_that_demands_cryptography_46():
-    """The specific regression, named, so re-introducing it fails HERE.
+def test_py_vapid_stays_on_1_9_2_by_decision_now_that_cryptography_is_50():
+    """The PR 22 regression, named, so re-introducing it fails HERE.
 
-    Bumping to 1.9.4 is legitimate -- but only together with cryptography>=46,
-    and that is a deliberate upgrade of the library every key, token and
-    password hash in this app goes through. It is not a side effect of silencing
-    a warning.
+    History: py-vapid 1.9.4 requires cryptography>=46, and cryptography was
+    pinned at 44.0.0, so 1.9.4 was unresolvable and CI died before pytest.
+
+    IW-1 (2026-11-05) raised cryptography to 50.0.2 for its CVEs - the
+    deliberate upgrade this test used to demand be made on purpose. That makes
+    1.9.4+ installable again. Decision for IW-1: py-vapid STAYS on 1.9.2. Its one
+    deprecated call is unreachable (next test), so moving it is a separate,
+    single-purpose PR rather than a side effect of a security bump.
     """
     pins = dict(_pins())
     assert pins.get("py-vapid") == "1.9.2", (
-        f"py-vapid is pinned to {pins.get('py-vapid')}. 1.9.4 requires "
-        "cryptography>=46; this file pins cryptography==44.0.0, so pip cannot "
-        "resolve it and CI dies before pytest starts. If you are deliberately "
-        "moving to 1.9.4, raise the cryptography pin in the SAME commit and "
-        "update this test.")
+        f"py-vapid is pinned to {pins.get('py-vapid')}. Moving off 1.9.2 is fine "
+        "now that cryptography is >=46, but do it in its own PR and update this test.")
 
     crypto = pins.get("cryptography", "0")
     major = int(crypto.split(".")[0])
-    assert major < 46, (
-        f"cryptography is now {crypto}. py-vapid 1.9.4 is installable again - "
-        "reconsider the pin above, and fix this test either way.")
+    assert major >= 50, (
+        f"cryptography is {crypto}: below 50 reintroduces the CVEs IW-1 fixed "
+        "(pip-audit: 12 advisories on 44.0.0).")
 
 
 def test_the_vapid_keypair_does_not_need_py_vapid_at_all():

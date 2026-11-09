@@ -154,7 +154,11 @@ def test_a_late_name_is_not_picked_before_it_can_be_scored():
 def test_two_stage_needs_enough_names_in_a_sector():
     px = _px()
     for etf, dr in (("S1", 0.003), ("S2", 0.002), ("S3", 0.001)):
-        px[etf] = _walk(700, dr, 0.002, seed=hash(etf) % 100)
+        # Fixed seeds. This was hash(etf) % 100, and str hashes are randomised
+        # per process (PYTHONHASHSEED): the seeds changed every run, and the
+        # pair S2=10, S3=35 makes S3 the held sector (failed 1 of 3 full runs
+        # on 2026-11-05; a sweep of all 10,000 pairs finds exactly that one).
+        px[etf] = _walk(700, dr, 0.002, seed={"S1": 1, "S2": 2, "S3": 3}[etf])
     spec = {"weights": {}, "base": {"QQQ": 1.0},
             "overlay": {"kind": "rank_select", "score": "mom_12_1",
                         "two_stage": {"sectors": {"S1": ["W"], "S2": ["X", "Y"], "S3": ["Z", "W"]},

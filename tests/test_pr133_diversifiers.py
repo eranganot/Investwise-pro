@@ -9,6 +9,7 @@ the sleeves are good to be taken?".
 
 Not financial advice.
 """
+import zlib
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
@@ -41,7 +42,7 @@ def _walk(seed, n=900, drift=0.0003, vol=0.01):
 
 def _fetch_from(paths):
     def fetch(tickers):
-        out = {t: _series(paths[t] if t in paths else _walk(abs(hash(t)) % 1000)) for t in tickers}
+        out = {t: _series(paths[t] if t in paths else _walk(zlib.crc32(t.encode()) % 1000)) for t in tickers}
         return out, []
     return fetch
 

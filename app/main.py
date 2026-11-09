@@ -279,6 +279,10 @@ def create_app() -> FastAPI:
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "SAMEORIGIN"
         resp.headers["Referrer-Policy"] = "no-referrer"
+        # IW-5 (2026-11-05): HSTS was missing; frame-ancestors is the CSP form of
+        # SAMEORIGIN. No script-src policy yet (the SPA carries inline scripts).
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors 'self'"
         return resp
 
     @app.middleware("http")
