@@ -226,6 +226,9 @@
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
 - **D145 · 2026-11-09 (PR 161) · A day move names its session.** "Today so far" only when a quote is newer than the last
   close; otherwise "last session" and its date. Shares held now x the move x today's FX, so the parts add up.
+- **D144 · 2026-11-09 (PR 159) · While the core holds a basket, a new position must be a basket or sleeve name; a class over target gets no cash.**
+  The realign sells every core holding its basket does not name, so a card that buys one is a card the app undoes (CVX, 11-06,
+  7 seconds). `realign_keeps` reads the same `core_weights` the realign does. Cash no under-target class can take stays cash.
 - **D143 · 2026-11-08 (O6) · CI is `test-postgres` + `lint` only; no SQLite job.** *Owner, 2026-10-23: "focus mainly on Postgres"; the
   SQLite job proved less than it looked (D27) and cost ~9 of ~24 runner-minutes per run.* The local Postgres run stays the pre-push habit;
   CI still does not block a deploy (D28).

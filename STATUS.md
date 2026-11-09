@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-08 by Claude (O6: CI is test-postgres + lint; the SQLite job is gone). Last product PR: **158**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-09 by Claude (PR 161: which holdings moved the book). Last product PR: **161**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -13,30 +13,6 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   [`docs/archive/status/STATUS-HISTORY-to-PR87.md`](docs/archive/status/STATUS-HISTORY-to-PR87.md).
   Code comments and tests that cite "STATUS.md PR 58", "STATUS.md PR 57" and so on (any PR ≤ 87) mean that file. Their
   `STATUS.md:NNNN` line numbers are from before the split.
-
-## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
-
-**Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
-which holdings moved it. The intraday "today" point P9 also asked for already exists (PR 138's provisional point), so
-this PR is the attribution.
-
-**What.** `services/day_attribution.py` and `GET /api/v1/portfolio/day-movers`: per holding, shares held now x the
-price move on its latest session x today's FX, largest first; the rows add up to the total. Each row says which
-session: "today so far" only when the quote is newer than the last daily close, otherwise "last session" with its
-date. On 2026-11-05 the chart's "Today so far" read -1.12% before the US market opened (the week to date); this list
-cannot do that. Cash and stale or unpriced holdings are skipped and named; a holding traded today is flagged. Tel
-Aviv closes in agorot are scaled with `position_history._agorot_scale`. Today shows it as "What moved -- <session>"
-under the chart (checked at 390 px: no sideways scroll).
-
-**Not done.** The chart's own "Today so far" label (PR 138) still compares live prices with the last snapshot, which
-can be several sessions old; that relabel is a separate small fix if wanted.
-
-**Verified.** `tests/test_p9_day_movers.py` (5: open market, closed market named by date, agorot, too few closes,
-parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
-
-**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: PROD_RESULT.
-
----
 
 ## Where things are — 2026-10-08
 
@@ -62,6 +38,75 @@ parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
 
 ---
 
+## PR 161 -- P9: which holdings moved the book, on the session each one actually had (D145)
+
+**Why.** BACKLOG P9 (owner, 2026-10-24), started 2026-11-09. The Today chart says how much the book moved, not
+which holdings moved it. The intraday "today" point P9 also asked for already exists (PR 138's provisional point), so
+this PR is the attribution.
+
+**What.** `services/day_attribution.py` and `GET /api/v1/portfolio/day-movers`: per holding, shares held now x the
+price move on its latest session x today's FX, largest first; the rows add up to the total. Each row says which
+session: "today so far" only when the quote is newer than the last daily close, otherwise "last session" with its
+date. On 2026-11-05 the chart's "Today so far" read -1.12% before the US market opened (the week to date); this list
+cannot do that. Cash and stale or unpriced holdings are skipped and named; a holding traded today is flagged. Tel
+Aviv closes in agorot are scaled with `position_history._agorot_scale`. Today shows it as "What moved -- <session>"
+under the chart (checked at 390 px: no sideways scroll).
+
+**Not done.** The chart's own "Today so far" label (PR 138) still compares live prices with the last snapshot, which
+can be several sessions old; that relabel is a separate small fix if wanted.
+
+**Verified.** `tests/test_p9_day_movers.py` (5: open market, closed market named by date, agorot, too few closes,
+parts add up with cash/stale skipped). CI on the PR: the full suite + ruff.
+
+**Smoke.** `scripts/smoke/smoke-pr161-day-movers.ps1`. After: PROD_RESULT.
+
+---
+
+## PR 159 -- no card buys what the core realign sells; leftover cash never buys an over-target class (D144)
+
+**Why.** Owner, 2026-11-09: start C30, C33. Investigated on production first (read-only: rules, rule events, the
+trade ledger, a `?simulate_cash=2000` preview).
+
+**What production showed.** From 10-21 to 11-06 the ledger often traded 1.5-2.3x the book in a day, and up to
+19,907 ILS a day was the same ticker bought and sold again (10-24 16,738; 10-25 11,605; 10-31 19,907 with BND 9,651
+bought and sold; 11-06 5,053). Part of it follows the owner's plan changes. Part of it is cards undoing each other.
+
+**Root cause (proven).** 2026-11-06 06:32:46 `Buy 1.65 CVX 1,114 ILS buy_funded card rec_f23044`; 06:32:53 `Sell 1.65
+CVX core_to_basket card rec_f6f017`. `rec_f23044` is `_rid("buy_idea", "CVX", 1000)`: a screener buy idea. The core runs
+Diversified Global Growth (VTI/QQQ/VXUS/SMH) and `plan_realign` sells every core-region holding its basket does not
+name, whatever its class. `_buy_idea_recs` and the cash card's pick for a class the book holds none of
+(`_redeploy_cash_recs`, "you hold no X") both read the screener and never asked the basket. The 10-31 BND round trips
+(2,830 and 6,821 ILS bought by the cash card, sold by the realign within 40 s) are the same shape; they predate PR 155,
+but PR 155 did not touch this path. Reproduced: `test_a_buy_idea_off_the_core_basket_gets_no_card` and
+`test_the_cash_card_opens_no_position_the_realign_sells` fail on `99f73b0`.
+
+**C33 (proven by reproduction, not observed on production).** `_plan_weight_pass` step 1 tops up every name below
+its NAME target, whatever its class. Equities 67.5% vs 62%, BIL capped so Fixed Income could take only 400 of 2,100:
+the leftover bought 900 of VTI and Equities went to 72%. Production does not show it today: no class is over target
+and the 2,000 ILS preview only tops up the three sleeves.
+
+**Ruled out.** (1) Duplicate executions: the rule events on 10-31 17:36 and 20:36 list identical trims, but the ledger
+holds one trade each at 18:08. (2) C30 as written (band trims selling to cash while the core is oversized): not live
+today, the book is at target and every sleeve is funded. On 11-06 the VTI band trim (2,613 ILS) did sell to cash 16
+minutes before the QQQ sleeve was funded, and that cash funded it -- not a round trip.
+
+**Inferred, not fixed (C36).** 11-06 06:32:28 the QQQ band bought 912 ILS of QQQ by selling BIL while BIL was about at
+its 35% target (30.5% after the sale), then the sleeve funding bought QQQ again and 750 was trimmed at 16:02. It looks
+like a breach of "funding sells only what is over target"; the book at that minute cannot be rebuilt from the API.
+
+**What.** `recommendations.realign_keeps(core_id, core_pct)`: the names the realign will not sell (the basket, from the
+same `core_weights` the realign reads), or None without a basketed core. A buy idea outside it gets no card; the cash
+card's new-position pick must be in it. `_plan_weight_pass(over_classes=...)` skips names in a class over target; what no
+under-target class can take stays in cash.
+
+**Verified.** `tests/test_no_card_buys_what_the_realign_sells.py` (8 tests; 3 fail on `99f73b0`). CI on the PR: the
+full suite on Postgres 16 + ruff, on the exact merged tree.
+
+**Smoke.** `scripts/smoke/smoke-pr159-no-card-buys-what-the-realign-sells.ps1`. Before, on `99f73b0`: PASS 7 FAIL 0
+SKIP 0 (no buy idea on Today, nothing over target, so the before-run proves the field names, not the fix). After (`953d8b4`, 2026-11-09): PASS 7 FAIL 0 SKIP 0.
+
+---
+
 ## O6 -- CI is test-postgres + lint only; the SQLite job is gone (D143)
 
 **Why.** Owner, 2026-11-08, from the backlog ranking (#3). GitHub Actions came back on 2026-11-02 (every run on `main`
@@ -82,7 +127,7 @@ no code changed, so no separate local run. The YAML parses to `['test-postgres',
 
 **Smoke.** `scripts/smoke/smoke-o6-ci-postgres-only.ps1` (reads the public GitHub API: this repo is public).
 Production before (`901aabf`): PASS 4 FAIL 2 SKIP 0 -- the run for that commit still had `test`; the smoke sees it.
-After: PROD_RESULT.
+After (`99f73b0`, 2026-11-08): PASS 6 FAIL 0 SKIP 0 -- exactly `test-postgres` and `lint` ran, both green.
 
 ---
 
