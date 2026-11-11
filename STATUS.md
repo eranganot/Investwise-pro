@@ -86,7 +86,8 @@ skip set. GATE_RESULT
 
 **Smoke.** `scripts/smoke/smoke-pr164-band-cards-never-ping-pong.ps1`. Before, on `ee5d113`: **PASS 7 FAIL 2** -- both
 FAILs the loop ("rule_c4c331da: accepting it puts VTI below its band"; "sells VTI while XLF,XLE sits unsold").
-After: PROD_RESULT.
+After, on `50ded46` (2026-11-11): **PASS 9 FAIL 0 SKIP 0** -- `rule_c4c331da` now buys 1,335 of VXUS selling XLE 773
++ XLF 468 (rest from cash), and no other band is breached after the accept.
 
 **Owner.** The 16 legs were recorded in the app's book. If any were mirrored at the broker, reconcile before the next
 accept.
