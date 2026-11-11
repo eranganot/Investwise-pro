@@ -72,7 +72,7 @@ is exactly PR 131's. Not changed: the band rules (already combined), the book ta
 
 **Verified.** `tests/test_a_ticker_the_core_shares_is_split.py` (5): the sleeve holds its share; sleeve + core shares add
 up to the holding; no core -> PR 131 unchanged; no drift card on the combined plan; a real overweight still is one and
-names both parts. With the core's claim switched off, 3 of 5 fail. GATE_RESULT
+names both parts. With the core's claim switched off, 3 of 5 fail. Gate: full suite on local Postgres **3,070 passed, 1 failed** -- the same Python 3.13-only `test_the_two_cards_are_gone_from_the_source` as PR 164 (fails on unchanged `main` here; CI runs 3.12). Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr165-a-ticker-the-core-shares-is-split.ps1`. Before, on `50ded46`: **PASS 7 FAIL 3** --
 SMH not shared with the core; the sleeve "holds 19.0% against 10.0%"; "SMH has drifted to 19% of a 10% sleeve".
