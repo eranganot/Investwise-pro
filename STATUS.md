@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-11 by Claude (PR 164: band cards never ping-pong; C37 closed). Last product PR: **164**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-11 by Claude (PR 165: a ticker the core shares is split; C38 closed). Last product PR: **165**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,48 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 165 -- C38: a ticker a sleeve and the core both want is split between them (D148)
+
+**Report (owner, 2026-11-11).** Plan > My mix: "Trend-Filtered Semiconductors 19.0% / 10.0%", "Core 46.2% / 54.2%",
+"9.0 pts over" -- "why are the plans not meeting their goals?" Investigated before any fix.
+
+**Evidence (production, read-only).** `/plan/sleeves`: the Semis sleeve's `tickers` is `["SMH"]` (live signal, 11-10),
+`held_ils` 3,753.82 -- every shekel of SMH -- and `shared_with: {}`. `/rules`: the SMH band's target is 18.136% =
+sleeve 10% + 15% of the 54.24% Diversified Global Growth core (8.136%). The book holds 19.1% of SMH: 1 point over its
+combined plan, displayed as 9 over and 8 under. Trade ledger, 11-10: 13:01 the core realign bought 1,585 of SMH; 14:30
+"SMH has drifted to 19% of a 10% sleeve" (`rec_71675a`) trimmed 1,543 of it; 17:11 the SMH band bought 1,612 back by
+selling VXUS -- the trade that put VXUS under its band and started the loop PR 164 fixed.
+
+**Root cause.** PR 131 (D95) split a ticker between the SLEEVES that want it; the core was never a claimant. So
+`sleeve_occupancy` credited all of SMH to the sleeve (and `core_held_pct = 1 - sleeves` lost it), and the sleeve-drift
+card measured SMH's whole weight against the sleeve's 10% while the band rule measured it against 18.1%.
+
+**Ruled out.** (1) A real SMH overweight: 19.1% vs 18.1% combined, inside its +-3 band. (2) An under-funded core: with
+its SMH share the core holds ~54.8% vs 54.2%. (3) A stale sleeve target: the signal is 11-10 and points at SMH at 10%.
+(4) Cash: 0.8% vs 0.8%. The real drift inside the core (VXUS short, XLE/XLF off-plan) is what PR 164's VXUS card fixes.
+
+**Why silent.** Both numbers were true of the question each code path asked; no test had a sleeve ticker inside the
+core basket, and PR 131's own fixture had `shared_with == {}` for SMH as the expected answer.
+
+**What.** `sleeve_service.core_ticker_targets` (core basket x the core's managed share, the arithmetic
+`plan_ticker_targets` uses). `sleeve_occupancy` adds the core as a claimant: shared tickers split pro-rata to target,
+`shared_with` names `"core"`, `allocated_held_ils` sums the split rows, `core_shared_ils` reports the core's part.
+The sleeve-drift card measures sleeve + core and says so: "SMH has drifted to X% of your 18% plan (10% sleeve + 8% core)".
+
+**Blast radius.** Every reader of `sleeve_occupancy`: the Plan tab, the core realign's sleeve-overshoot trim (now only
+what is really over), `measured_assumptions` sleeve weights, `sleeve_moves`, `plan_health`. With no core basket the split
+is exactly PR 131's. Not changed: the band rules (already combined), the book target.
+
+**Verified.** `tests/test_a_ticker_the_core_shares_is_split.py` (5): the sleeve holds its share; sleeve + core shares add
+up to the holding; no core -> PR 131 unchanged; no drift card on the combined plan; a real overweight still is one and
+names both parts. With the core's claim switched off, 3 of 5 fail. GATE_RESULT
+
+**Smoke.** `scripts/smoke/smoke-pr165-a-ticker-the-core-shares-is-split.ps1`. Before, on `50ded46`: **PASS 7 FAIL 3** --
+SMH not shared with the core; the sleeve "holds 19.0% against 10.0%"; "SMH has drifted to 19% of a 10% sleeve".
+After: PROD_RESULT.
 
 ---
 

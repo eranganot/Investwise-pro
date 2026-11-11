@@ -265,6 +265,38 @@ async def sleeve_tickers(session: AsyncSession, user: User) -> set[str]:
     return set(await all_sleeve_targets(session, user))
 
 
+async def core_ticker_targets(session: AsyncSession, user: User,
+                              btgt: dict | None = None) -> dict[str, float]:
+    """PR 165 (D148): what the CORE wants of each ticker, as a fraction of NAV.
+
+    The core basket's weights scaled to the core's managed share of the book --
+    the same arithmetic `recommendations.plan_ticker_targets` adds on top of the
+    sleeves, so a band rule's target and this agree. Empty when there is no core
+    basket or the book target cannot be read: "no core claim known", which is
+    exactly the behaviour before this existed.
+    """
+    from app.services.strategies import core_weights
+    try:
+        if btgt is None:
+            from app.services.book_target import book_target
+            from app.services.plan_service import get_plan
+            plan = await get_plan(session, user)
+            btgt = await book_target(session, user, getattr(plan, "objective", None) or "Balanced")
+    except Exception:  # noqa: BLE001 -- no target is "no core claim known", never a crash
+        logger.warning("book target unavailable; the core claims no shared ticker",
+                       exc_info=False)
+        return {}
+    core_id, core_pct = (btgt or {}).get("core_strategy_id"), float((btgt or {}).get("core_pct") or 0.0)
+    basket = core_weights(core_id) if core_id else None
+    out: dict[str, float] = {}
+    if basket and core_pct > 0:
+        bsum = sum(w for w in basket.values() if w > 0)
+        for tk, w in basket.items():
+            if w > 0 and bsum > 0:
+                out[tk.upper()] = out.get(tk.upper(), 0.0) + (w / bsum) * core_pct
+    return out
+
+
 async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
     """What each sleeve TARGETS against what the book actually HOLDS.
 
@@ -313,6 +345,19 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
         for tk, w in targets.items():
             wanted.setdefault(tk, []).append(w)
 
+    # PR 165 (D148): THE CORE IS A CLAIMANT TOO. PR 131 split a ticker between
+    # the SLEEVES that want it and never asked whether the core basket wants it
+    # as well. Live 2026-11-11: SMH is the Semiconductors sleeve's 10% and 15% of
+    # a 54.24% core (8.14%); all 19.1% of it was credited to the sleeve, so the
+    # Plan tab read "sleeve 19% / 10%, core 46% / 54%" -- 9 points over and 8
+    # under -- for a ticker 1 point over its combined 18.1%. Split the same way,
+    # pro-rata to target, so sleeve + core over/under add up to the per-ticker
+    # drift the band rules measure.
+    _core_t = await core_ticker_targets(session, user)
+    for tk, w in _core_t.items():
+        if tk in wanted:
+            wanted[tk].append(w)
+
     def _share(tk: str, w: float) -> float:
         ws = wanted.get(tk) or [w]
         tot = sum(ws)
@@ -327,6 +372,7 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
         counted |= set(targets)
         shared_with = {tk: sorted(o.strategy_id for o, t in zip(sleeves, per_sleeve)
                                   if o is not s and tk in t)
+                                  + (["core"] if tk in _core_t else [])
                        for tk in targets if len(wanted.get(tk) or []) > 1}
         target_pct = round(float(s.sleeve_pct or 0.0), 4)
         held_pct = round(held_ils / nav, 4) if nav else 0.0
@@ -366,8 +412,16 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
     # The book total from the union of tickers. Since PR 131 the per-sleeve
     # figures add up to the same number (each shared ticker is split, not
     # counted in every sleeve); the union stays the source of truth.
-    allocated_held_ils = sum(held.get(tk, 0.0) for tk in counted)
+    # PR 165: the sleeves' SPLIT holdings, not the union of their tickers -- a
+    # ticker the core also wants is only partly the sleeves'. With no core claim
+    # this is the same number as the union (each shared ticker's sleeve shares
+    # sum to one).
+    allocated_held_ils = sum(o["held_ils"] for o in out)
     allocated_held_pct = round(allocated_held_ils / nav, 4) if nav else 0.0
+    # What of each shared ticker counts toward the core rather than a sleeve.
+    core_shared_ils = {tk: round(held.get(tk, 0.0) * _share(tk, w), 2)
+                       for tk, w in sorted(_core_t.items())
+                       if tk in counted and held.get(tk, 0.0) > 0}
     return {
         "nav_ils": round(nav, 2),
         "sleeves": out,
@@ -377,6 +431,8 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
         # The core's ACTUAL share, which is not `remainder_pct` -- that is the
         # core's TARGET. On this book the two differ by the same 49 points.
         "core_held_pct": round(max(0.0, 1.0 - allocated_held_pct), 4) if nav else 0.0,
+        # PR 165: the core's share of tickers it shares with a sleeve, in ILS.
+        "core_shared_ils": core_shared_ils,
         "core_pct": remainder_pct(sleeves),
     }
 
