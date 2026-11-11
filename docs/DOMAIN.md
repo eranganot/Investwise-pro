@@ -291,6 +291,8 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
   3. Same-class or preferred sales bypass the budget (they are swaps).
   4. A name over its own cap may sell its excess.
   5. It respects exclusions (sleeves, core), the ledger's reservations and name caps, and grosses up for CGT.
+  6. With `name_targets` / `name_floors` (band cards only, PR 164): names over their own plan weight -- an off-plan
+     name counts as fully over -- sell first, and no name is sold below its floor (bottom of its band, else its target).
 - **`propose_funded_buy`:**
   1. Size = min(class gap, room under the tighter of plan cap and per-name rule).
   2. Refuse if the class is at/over target unless a swap is allowed.
@@ -302,6 +304,7 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
   5. Overshoot guard; **total drift may not rise**.
   6. Impact prose comes from the simulation, and the ledger commits only on return.
 - **`FundingLedger`:** a per-build inventory. A card whose first funding source is taken is *re-sourced*, not dropped.
+  `skip` holds the ids of cards you have muted (not `rule_*`): they are built but commit nothing (PR 164).
 
 ## 6. Engines, agents and the war room
 
@@ -376,6 +379,7 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
 | Cash target soft, floor hard | `spendable_cash` | `test_the_cash_target_is_soft_and_the_floor_is_not.py`, `test_cash_rules_in_shekels.py` |
 | Every card acts or is a heads-up | `_ACTIONABLE_KINDS`, `headsup.split` | `test_every_card_can_be_acted_on.py`, `test_cards_are_short.py`, `test_the_server_alone_hides_cards.py` |
 | Accept conserves NAV; every share is a trade | `_conservation_report`, `_guard_every_share_is_a_trade` | `test_accept_conserves_nav.py`, `test_the_ledger_counts_every_share_once.py`, `test_a_rebalance_is_real_trades.py` |
+| Accepting a band card fires no other band | `advanced_rules.name_plan`, `plan_funding` floors | `test_band_cards_never_ping_pong.py` (accept, rebuild, repeat to a fixed point) |
 | No contradicting cards | `_reconcile`, `contradictions.check`, decision cards | `test_live_contradictions.py`, `test_a_rule_that_fights_a_sleeve_is_a_decision.py`, `test_a_rule_may_not_trim_through_the_plan.py` |
 | One book target summing to 1 | `book_target.compose` | `test_one_target_holds_commodities.py`, `test_a_core_is_a_strategy_too.py`, `test_sleeves_mean_what_they_say.py` |
 | ILS everywhere | `compute_snapshot`, `frontier_inputs` | `test_performance_fx.py`, `test_the_risk_report_is_in_shekels.py`, `test_minor_unit_currencies.py` |
