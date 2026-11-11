@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-09 by Claude (PR 163: a band top-up never sells a sleeve; C36 closed). Last product PR: **163**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-11 by Claude (PR 164: band cards never ping-pong; C37 closed). Last product PR: **164**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,61 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 164 -- C37: accepting one band card may never fire another (D147)
+
+**Report (owner, 2026-11-11).** "I'm in a loop": accepting "VXUS is 4.1% -- below your 10.8% +-3 band" (sell VTI, buy
+VXUS) brought back a card selling VXUS to buy VTI, and so on. Investigated before any fix.
+
+**Evidence (production, read-only).** `/portfolio/ledger`: from 11-10 17:27 to 11-11 17:40 `rule_c4c331da` (VXUS band)
+and `rule_41053012` (VTI band) alternated, 8 accepts, **16 legs, 10,407 ILS sold, 11.67 ILS estimated tax**, book back
+where it started. `/rules`: VXUS 10.848 +-3, VTI 21.696 +-3 (core 54.24% x 20% / 40%). Live book: VTI 21.8, VXUS 4.1,
+XLE 3.9, XLF 2.4 (neither in any part of the plan), QQQ 13.6, SMH 19.2, BIL 33.9. The live card sold 1.1272 VTI
+(~1,342), taking VTI to ~15%, under its 18.7% floor.
+
+**Reproduced.** The live book through the deployed `propose_funded_buy`: with the ignored geo card
+(`rec_54cf60`, "Diversify across regions") built first it reserves XLE + XLF in the shared `FundingLedger`, and the
+VXUS band card then sells 1.13 VTI -- the production card to price drift. Replayed accept-by-accept, the pair never
+settles: each card sells the other banded name, the least-taxed equity (VTI +0.8%, VXUS +0.3%), below its floor.
+
+**Root cause.** `rank_trim_candidates` knew classes, name caps and tax -- never a NAME's own plan weight. Inside one
+class a band top-up sold whatever was cheapest, which was the other banded core name, and nothing bounded the sale at
+that name's band. Compounded by the ledger: a muted card is still built and still reserved its sales, so the one
+right source (XLE + XLF) was spoken for by a card nobody could see.
+
+**Ruled out.** (1) Duplicate or overlapping rules: one band per ticker. (2) Wrong targets: the four equity name
+targets sum to the 64.24% Equities target exactly. (3) Price moves: VTI/VXUS moved <1% across the loop; the
+alternation is in the card ids. (4) PR 163's sleeve exclusion: it held (no sleeve sold); its own STATUS note -- "the
+card now sells 916 of VTI" -- is the seed of this loop.
+
+**Why silent.** Every card was true on its own terms ("does not move your Equities weight, swaps which equities you
+hold"). `test_card_claims` measures the class mix after an accept; nothing measured what an accept did to the other
+rules.
+
+**What.** `advanced_rules.name_plan` -> per-name plan targets and floors (bottom of the band; a planned name with no
+band: its target). `_band_buy_card` passes them to `propose_funded_buy` -> `plan_funding` -> `rank_trim_candidates`:
+a name over its own target by a minimum trade -- an off-plan name is fully over -- ranks above every fit-and-tax term
+(tiered: +1000), and no sale takes a name below its floor. Only the band card passes them; every other producer is
+unchanged. `FundingLedger.skip` = the ids you muted (Ignore/Done), minus `rule_*` (a rule comes back on its next
+firing); `propose_funded_buy(owner=)` (id or callable) on the war-room, geo, buy-idea, commodity and band producers.
+
+**Blast radius.** Band buys on core names (VTI, QQQ, VXUS, and any banded non-sleeve name). The 11-10 17:11 SMH band
+card selling 1,612 of VXUS is what first put VXUS under its band. Not changed: sleeve exclusion (PR 163), class
+budgets, every non-band producer's funding order.
+
+**Verified.** `tests/test_band_cards_never_ping_pong.py` (9): the live 11-11 book; the VXUS card sells XLE + XLF; accept
+-> rebuild -> repeat reaches a fixed point with no band newly breached and nothing reversed (fails without the name
+plan: "accepting it puts VTI below its band"); with XLE/XLF claimed it sells VTI/QQQ only down to their floors; the
+skip set. GATE_RESULT
+
+**Smoke.** `scripts/smoke/smoke-pr164-band-cards-never-ping-pong.ps1`. Before, on `ee5d113`: **PASS 7 FAIL 2** -- both
+FAILs the loop ("rule_c4c331da: accepting it puts VTI below its band"; "sells VTI while XLF,XLE sits unsold").
+After: PROD_RESULT.
+
+**Owner.** The 16 legs were recorded in the app's book. If any were mirrored at the broker, reconcile before the next
+accept.
 
 ---
 

@@ -224,6 +224,11 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D147 · 2026-11-11 (PR 164) · Accepting one band card may never fire another.** A band top-up sells first what the plan
+  does not hold or holds too much of, by NAME (`name_plan`), and never sells a name below its own band floor (a planned name
+  without a band: below its target). A card you muted is still built but reserves no funding (`FundingLedger.skip`;
+  `rule_*` cards excepted). *Why:* the VXUS and VTI bands sold each other back and forth, 16 legs in 24h, while XLE/XLF sat
+  unsold, reserved by an ignored geo card. Extends D146. → PR 164
 - **D146 · 2026-11-09 (PR 163) · A band top-up never sells a sleeve.** Band buys are funded with the book's sleeve tickers
   excluded; core names stay sellable, because a band is the per-name rebalance inside the core.
 - **D145 · 2026-11-09 (PR 161) · A day move names its session.** "Today so far" only when a quote is newer than the last

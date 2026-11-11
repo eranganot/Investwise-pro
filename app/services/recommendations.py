@@ -1336,7 +1336,8 @@ async def _war_room_recs(session: AsyncSession, user: User, rows, ledger=None) -
             # SOXL and TQQQ to buy QUAL and AVUV.
             exclude=sleeve_names,
             market=getattr(pos, "market", None) or "NYSE",
-            allow_within_class_swap=True, ledger=ledger)
+            allow_within_class_swap=True, ledger=ledger,
+            owner=_rid("warroom_buy", tk))
         if buy is None:
             continue  # not wanted by the plan, or not payable for -> not a card
         fund = buy.fund
@@ -1504,6 +1505,19 @@ async def build_recommendations(session: AsyncSession, user: User,
     # gone is re-sourced from what remains rather than dropped.
     from app.services import funding_service as _fs
     _ledger = _fs.FundingLedger()
+    # PR 164: a card you already muted must not spend shares the cards you CAN see
+    # need. Muted cards are still built (the mute rules below may bring one back),
+    # but their sales are not spoken for. Rule cards (`rule_*`) are left out:
+    # they come back on every fresh firing, which `settle_mutes` decides later.
+    # Live 2026-11-11: the ignored geo card held XLE + XLF, the only holdings
+    # outside the plan, so the VXUS band card sold VTI instead.
+    try:
+        _ledger.skip = {i for i in (await load_dismissed(session, user))
+                        | (await load_completed(session, user))
+                        if not str(i).startswith("rule_")}
+    except Exception:  # noqa: BLE001 -- unknown marks: reserve for every card, as before
+        logger.warning("mute marks unavailable; every built card reserves its funding",
+                       exc_info=True)
     # PR 87: a buy-back hold's reserve is cash already spoken for. Before this
     # only the cash card subtracted it, so every funded buy saw the reserve as
     # free -- production 2026-09-30: "Add to BND ₪841" funded with ₪553.49 from
@@ -1993,7 +2007,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                         ticker="VXUS", buying_class="Equities", cash_ils=_cash_ils,
                         requested_ils=_amt, exclude=_sleeve_names, market="NASDAQ",
                         allow_within_class_swap=True, ledger=_ledger,
-                        name_caps=_name_caps)
+                        name_caps=_name_caps, owner=_rid("divrisk", "geo"))
                     if _b is not None:
                         _f = _b.fund
                         _act = (f"Buy {_ils(_b.amount_ils)} of VXUS (global ex-US equities) to "
@@ -5632,7 +5646,8 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=tk, buying_class=cls, cash_ils=cash_ils,
             exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
-            ledger=ledger, book_target=book_target, name_caps=name_caps)
+            ledger=ledger, book_target=book_target, name_caps=name_caps,
+            owner=lambda b, _t=tk: _rid("buy_idea", _t, round(b.amount_ils / 250) * 250))
 
         # THE RESERVE IS A LAST RESORT, NOT A FIRST ONE. Eran, 2026-09-06: the
         # cash target is soft, "if there is a good/valueble/interesting holding
@@ -5661,7 +5676,8 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
                 ticker=tk, buying_class=cls, cash_ils=cash_ils,
                 exclude=sleeve_names, market=str(idea.get("market") or "NYSE"),
                 ledger=ledger, book_target=book_target, name_caps=name_caps,
-                allow_reserve=True, reserve_reason=_why)
+                allow_reserve=True, reserve_reason=_why,
+                owner=lambda b, _t=tk: _rid("buy_idea", _t, round(b.amount_ils / 250) * 250))
 
         if buy is None:
             # Not a failure and not worth logging as one. The plan does not want
@@ -5821,7 +5837,8 @@ def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,
             rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
             ticker=pick_tk, buying_class="Commodities", cash_ils=cash_ils,
             requested_ils=gap_ils, exclude=sleeve_names, market="NYSE", ledger=ledger,
-            book_target=book_mix, name_caps=name_caps)
+            book_target=book_mix, name_caps=name_caps,
+            owner=lambda b, _t=pick_tk: _rid("commodity_add", _t, round(b.amount_ils / 250) * 250))
         if buy is not None:
             fund = buy.fund
             affordable = buy.amount_ils

@@ -394,6 +394,7 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
                     idx[tk]["trend"] = {**meas, "fresh": hr.fresh(meas)[0]}
         except Exception:  # noqa: BLE001
             pass
+        _targets, _floors = name_plan(idx, rules)
         for r in rules:
             pos = idx.get(r.ticker.upper())
             if not pos:
@@ -403,7 +404,8 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
                     c = _band_buy_card(r, pos, rows=rows, snap=snap, plan=plan,
                                        objective=objective, cap=cap, cash=cash,
                                        book_target=book_target, name_caps=name_caps,
-                                       ledger=ledger, exclude=exclude)
+                                       ledger=ledger, exclude=exclude,
+                                       name_targets=_targets, name_floors=_floors)
                     if c:
                         out.append(c)
                 elif r.triggered and r.rule_type == "drawdown_guard":
@@ -433,14 +435,45 @@ async def extra_cards(session, user, *, rows, snap, plan, objective, cap, cash,
     return out
 
 
+def name_plan(idx: dict, rules) -> tuple[dict | None, dict | None]:
+    """PR 164 (D147): the plan's weight for each held name, and the lowest weight
+    a band top-up may sell it down to -- the bottom of its own band, or its plan
+    target when it has no band. Both as fractions of the book.
+
+    Without this a band top-up funded itself from whichever same-class holding
+    was cheapest to sell, which on 2026-11-10/11 was the OTHER banded core name:
+    VXUS's card sold VTI below VTI's band, VTI's card sold VXUS below VXUS's, and
+    the two alternated 16 legs (10,407 ILS sold) in 24 hours while XLE and XLF --
+    held, in no part of the plan -- were never touched.
+
+    (None, None) when no holding carries a target: an empty map would read every
+    name as off-plan, which is the opposite of not knowing.
+    """
+    targets = {str(tk).upper(): float(p["plan_target_pct"]) / 100.0
+               for tk, p in idx.items()
+               if tk != BOOK and p.get("plan_target_pct")}
+    if not targets:
+        return None, None
+    bands = {str(r.ticker).upper(): abs(float(r.level or _band_default())) / 100.0
+             for r in rules
+             if r.rule_type == "rebalance_band" and getattr(r, "active", True)}
+    floors = {tk: max(0.0, t - bands.get(tk, 0.0)) for tk, t in targets.items()}
+    return targets, floors
+
+
 def _band_buy_card(rule, pos, *, rows, snap, plan, objective, cap, cash, book_target,
-                   name_caps, ledger, exclude=None) -> dict | None:
+                   name_caps, ledger, exclude=None, name_targets=None,
+                   name_floors=None) -> dict | None:
     """C36 (2026-11-09): funded with `exclude` = the book's sleeve tickers. Core
     names stay sellable (a band IS the per-name rebalance inside the core). Without
     it, when nothing was over target by a minimum trade,
     `plan_funding`'s fallback sold a sleeve at its own target: 2026-11-06 06:32
     the QQQ band sold 912 ILS of BIL (35.3% vs 35%), the BIL band bought it back
-    from cash 15 minutes later, and the double-bought QQQ was trimmed at 16:02."""
+    from cash 15 minutes later, and the double-bought QQQ was trimmed at 16:02.
+
+    PR 164: and with `name_targets` / `name_floors` from `name_plan`, a name the
+    plan does not hold sells first and no banded name is sold below its band --
+    so accepting one band card can never fire another."""
     side, t, trade = band_side(rule, pos)
     if side != "below":
         return None
@@ -452,7 +485,9 @@ def _band_buy_card(rule, pos, *, rows, snap, plan, objective, cap, cash, book_ta
         rows=rows, snap=snap, plan=plan, objective=objective, cap=cap,
         book_target=book_target, name_caps=name_caps, ticker=tk, buying_class=cls,
         cash_ils=cash, requested_ils=trade, market=pos.get("market") or "NYSE",
-        allow_within_class_swap=True, ledger=ledger, exclude=exclude)
+        allow_within_class_swap=True, ledger=ledger, exclude=exclude,
+        name_targets=name_targets, name_floors=name_floors,
+        owner=f"rule_{str(rule.id)[:8]}")
     w = float(pos.get("weight_pct") or 0.0)
     rid = f"rule_{str(rule.id)[:8]}"
     base = {"id": rid, "dimension": "rule", "severity": "HIGH", "rule_id": str(rule.id),

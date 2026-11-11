@@ -292,7 +292,8 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                          exclude: set[str] | None = None,
                          book_target: dict | None = None,
                          prefer: set[str] | None = None,
-                         name_caps: dict | None = None) -> list[dict]:
+                         name_caps: dict | None = None,
+                         name_targets: dict | None = None) -> list[dict]:
     """Holdings ranked by how poorly they fit the plan — worst fit sells first.
 
     Ordering is deliberate: sell what the plan says you're carrying too much of,
@@ -318,6 +319,15 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
     A preferred candidate is never dropped for scoring zero, and carries its own
     reason, because "least-taxed position in the most overweight class" does not
     describe why it was chosen.
+
+    ``name_targets`` (PR 164) is the plan's own weight for each NAME, as a
+    fraction of the book. When it is given, a holding above its own target --
+    and a holding the plan does not name at all, whose target is zero -- ranks
+    ahead of every fit-and-tax term. Without it the ranking only knew classes,
+    and inside one class it picked by tax alone. Measured 2026-11-10/11: the
+    VXUS band card sold VTI (+0.8%) while XLE and XLF, which no part of the plan
+    holds, sat unsold; the sale took VTI below its own band, the VTI band card
+    sold VXUS (+0.3%) back, and the pair alternated 16 legs in 24 hours.
     """
     exclude = {t.upper() for t in (exclude or set())}
     prefer = {t.upper() for t in (prefer or set())} - exclude
@@ -349,6 +359,15 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
         # triggers CGT. Prefer the tax-cheaper sale, all else being equal.
         tax_friendliness = 1.0 if gain_pct < 0 else max(0.0, 1.0 - min(gain_pct, 100.0) / 100.0)
         score = (name_over * 400.0) + (class_over * 100.0) + (tax_friendliness * 10.0)
+        # Over the plan's own number for this name. Tiered, not weighted: a name
+        # 3.9% over its target must outrank a tax difference of 0.3 points, and
+        # a weight of 400 on 0.039 would not (15.6 vs 10).
+        plan_over = (max(0.0, p["weight"] - float(name_targets.get(p["ticker"], 0.0) or 0.0))
+                     if name_targets is not None else 0.0)
+        if plan_over * nav >= min_trade_ils():
+            score += 1000.0 + plan_over * 400.0
+        else:
+            plan_over = 0.0
         preferred = p["ticker"] in prefer
         if preferred:
             # Above every fit-and-tax term by construction: name_over maxes out
@@ -367,6 +386,12 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
                       else "your single-name cap")
             reason = (f"{p['ticker']} is {p['weight']:.0%} of the book, above "
                       f"{_whose} of {_cap_here:.0%}")
+        elif plan_over > 0:
+            _t = float(name_targets.get(p["ticker"], 0.0) or 0.0)
+            reason = (f"{p['ticker']} is not part of your plan ({p['weight']:.1%} of the book)"
+                      if _t <= 0 else
+                      f"{p['ticker']} is {p['weight']:.1%} of the book, above your plan's "
+                      f"{_t:.1%} for it")
         else:
             # This says why THIS position was picked to sell. It is NOT a claim
             # that selling it corrects the overweight.
@@ -407,7 +432,8 @@ def rank_trim_candidates(rows, snap, objective: str | None, cap: float,
         out.append({**p, "score": round(score, 2), "reason": reason,
                     "asset_class": cls, "preferred": preferred,
                     "gain_pct": round(gain_pct, 1),
-                    "trimmable_ils": round(max(name_over, class_over) * nav, 2)})
+                    "plan_over": round(plan_over, 4),
+                    "trimmable_ils": round(max(name_over, class_over, plan_over) * nav, 2)})
     out.sort(key=lambda x: x["score"], reverse=True)
     return out
 
@@ -422,8 +448,15 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
                  allow_reserve: bool = False,
                  reserve_reason: str | None = None,
                  name_caps: dict | None = None,
-                 swap_first: bool = False) -> dict:
+                 swap_first: bool = False,
+                 name_targets: dict | None = None,
+                 name_floors: dict | None = None) -> dict:
     """Work out how to pay for `amount_ils`: cash first, then worst-fit holdings.
+
+    ``name_targets`` / ``name_floors`` (PR 164, D147): the plan's weight for each
+    name, and the lowest weight a sale may leave it at (a banded name's floor is
+    the bottom of its band). Off-plan names rank first; no sale takes a name
+    below its floor. Passed by the band card only -- see `rank_trim_candidates`.
 
     ``swap_first`` (PR 138) is for a SLEEVE top-up: every sale that stays inside
     the class being bought (a swap, which moves no weight) is taken before any
@@ -537,7 +570,7 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
 
         _cands = rank_trim_candidates(rows, snap, objective, cap, exclude,
                                       book_target=book_target, prefer=prefer,
-                                      name_caps=name_caps)
+                                      name_caps=name_caps, name_targets=name_targets)
         if swap_first and buying_class:
             # sorted() is stable: inside each group the fit-and-tax order stands.
             _cands = sorted(_cands, key=lambda c: 0 if (c.get("preferred")
@@ -597,6 +630,15 @@ def plan_funding(rows, snap, plan, objective: str | None, cap: float,
             if avail_shares <= 0:
                 continue
             sellable_value = avail_shares * price_ils
+            # A NAME IS NEVER SOLD BELOW ITS OWN FLOOR. The floor is a weight of
+            # the book; what may go is what this position holds above it, less
+            # anything an earlier card already claimed.
+            _floor = (name_floors or {}).get(cand["ticker"])
+            if _floor is not None:
+                _held_after_claims = cand["value_ils"] - float(
+                    (reserved or {}).get(cand["ticker"], 0.0)) * price_ils
+                sellable_value = min(sellable_value,
+                                     max(0.0, _held_after_claims - float(_floor) * nav))
             take = min(want_gross, allow, sellable_value)
             if take < min_trade_ils():
                 continue
@@ -886,7 +928,10 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                        book_target: dict | None = None,
                        allow_reserve: bool = False,
                        reserve_reason: str | None = None,
-                       name_caps: dict | None = None) -> FundedBuy | None:
+                       name_caps: dict | None = None,
+                       name_targets: dict | None = None,
+                       name_floors: dict | None = None,
+                       owner=None) -> FundedBuy | None:
     """Size, fund, simulate and narrate a purchase — or return None.
 
     Returning None is the point as often as returning a card is. A purchase the
@@ -899,6 +944,10 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     shedding 3x leveraged exposure for factor exposure genuinely de-risks a book
     -- but it moves no weight, so it is *forced* to narrate as a swap. The caller
     opts into the trade, never into the label.
+
+    ``owner`` names the card this purchase becomes -- a card id, or a callable
+    taking the `FundedBuy` and returning one when the id carries the amount. The
+    ledger skips the commit of a card the user has already muted (PR 164).
     """
     nav = float((snap or {}).get("nav") or 0.0)
     tk = (ticker or "").upper()
@@ -948,7 +997,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
     fund = plan_funding(rows, snap, plan, objective, cap, want, cash_ils=cash_ils,
                         exclude=ex, reserved=_res, cash_used=_used,
                         book_target=book_target, allow_reserve=allow_reserve,
-                        reserve_reason=reserve_reason, name_caps=name_caps)
+                        reserve_reason=reserve_reason, name_caps=name_caps,
+                        name_targets=name_targets, name_floors=name_floors)
     amount = min(want, float(fund.get("funded_ils") or 0.0))
     if amount < min_trade_ils():
         return None
@@ -958,7 +1008,8 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         fund = plan_funding(rows, snap, plan, objective, cap, amount,
                             cash_ils=cash_ils, exclude=ex, reserved=_res, cash_used=_used,
                             book_target=book_target, allow_reserve=allow_reserve,
-                            reserve_reason=reserve_reason, name_caps=name_caps)
+                            reserve_reason=reserve_reason, name_caps=name_caps,
+                            name_targets=name_targets, name_floors=name_floors)
         amount = min(amount, float(fund.get("funded_ils") or 0.0))
         if amount < min_trade_ils():
             return None
@@ -1027,9 +1078,7 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
         impact = (f"Does not move your {buying_class} weight ({class_before:.0%}). "
                   f"Swaps which {buying_class.lower()} you hold.")
 
-    if ledger is not None:
-        ledger.commit(fund)      # only once the card is definitely being returned
-    return FundedBuy(
+    result = FundedBuy(
         ticker=tk, buying_class=buying_class, amount_ils=round(amount, 2), fund=fund,
         class_before=round(class_before, 4), class_after=round(class_after, 4),
         class_target=round(class_target, 4), kind=kind,
@@ -1038,6 +1087,11 @@ def propose_funded_buy(*, rows, snap, plan, objective: str | None, cap: float,
                     "asset_class": buying_class, "amount_ils": round(amount, 2),
                     "from_cash_ils": fund.get("from_cash_ils", 0.0),
                     "sells": fund.get("sells", [])})
+    if ledger is not None:
+        # Only once the card is definitely being returned.
+        _owner = owner(result) if callable(owner) else owner
+        ledger.commit(fund, owner=_owner)
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -1061,8 +1115,16 @@ class FundingLedger:
     """
     shares: dict = field(default_factory=dict)
     cash_ils: float = 0.0
+    # PR 164: cards the user has already muted (Ignore / Done). Such a card is
+    # still BUILT -- the mute rules decide later whether it stays hidden -- but
+    # its sales must not be spoken for. Live 2026-11-11: the ignored
+    # "Diversify across regions" card claimed XLE and XLF, the only two holdings
+    # outside the plan, and the visible VXUS band card was left selling VTI.
+    skip: set = field(default_factory=set)
 
-    def commit(self, fund: dict) -> None:
+    def commit(self, fund: dict, owner: str | None = None) -> None:
+        if owner is not None and owner in self.skip:
+            return
         self.cash_ils += float((fund or {}).get("from_cash_ils") or 0.0)
         for s in (fund or {}).get("sells", []):
             tk = str(s.get("ticker") or "").upper()
