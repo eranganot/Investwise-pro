@@ -2602,13 +2602,26 @@ async def build_recommendations(session: AsyncSession, user: User,
             for _t in (sleeve_targets(_s.strategy_id, _s.sleeve_pct,
                                       live=_sv._live_for(_live_sig, _s.strategy_id)) or {}):
                 _wanted_by.setdefault(_t.upper(), []).append(_s.strategy_id)
+        # PR 165 (D148): what the CORE wants of the same tickers. The book holds
+        # one SMH; the sleeve wants 10% of it and the core basket 8.14%. This
+        # card measured the whole 19.1% against the sleeve's 10% and offered
+        # "SMH has drifted to 19% of a 10% sleeve" -- accepted 2026-11-10 14:30,
+        # trimming 1,543 of SMH the core wanted; the SMH band (18.1%, core
+        # included) bought it back at 17:11 by selling VXUS, which is how the
+        # VXUS/VTI loop of PR 164 started.
+        _core_tw = await _sv.core_ticker_targets(session, user, btgt)
         if _targets and nav:
             _weights = snap.get("exposure_ticker") or {}
             for _tk, _w in sorted(_targets.items()):
                 _tk = _tk.upper()
                 _target_pct = _w * 100.0
+                _core_pct = float(_core_tw.get(_tk, 0.0) or 0.0) * 100.0
+                _plan_pct = _target_pct + _core_pct
+                _plan_label = (f"{_target_pct:.0f}% sleeve" if _core_pct < 0.05 else
+                               f"{_plan_pct:.0f}% plan ({_target_pct:.0f}% sleeve + "
+                               f"{_core_pct:.0f}% core)")
                 _actual_pct = (_weights.get(_tk, 0.0) or 0.0) * 100.0
-                _gap = _target_pct - _actual_pct
+                _gap = _plan_pct - _actual_pct
                 if abs(_gap) < _setting("sleeve_drift_band_pts", SLEEVE_DRIFT_BAND_PCT):
                     continue
                 if _gap > 0 and _tk in _held_tks:
@@ -2763,18 +2776,18 @@ async def build_recommendations(session: AsyncSession, user: User,
                 recs.append({
                     "id": _rid("sleeve_drift", _tk), "dimension": "strategy",
                     "severity": "MEDIUM",
-                    "title": (f"{_tk} has drifted to {_actual_pct:.0f}% of a "
-                              f"{_target_pct:.0f}% sleeve"),
-                    "why": (f"You chose {_target_pct:.0f}%. The market has moved you to "
+                    "title": (f"{_tk} has drifted to {_actual_pct:.0f}% of "
+                              + (f"a {_plan_label}" if _core_pct < 0.05 else f"your {_plan_label}")),
+                    "why": (f"You chose {_plan_label}. The market has moved you to "
                             f"{_actual_pct:.0f}%, which is "
                             f"{abs(_gap):.0f} points {'above' if _over else 'below'} it."),
                     "action": ((f"Trim about {_ils(_amount)} of {_tk} back to your "
-                                f"{_target_pct:.0f}% sleeve.") if _over else
+                                f"{_plan_label}.") if _over else
                                (f"Add about {_ils(_amount)} of {_tk} to get back to your "
-                                f"{_target_pct:.0f}% sleeve.")),
+                                f"{_plan_label}.")),
                     "impact": ("Puts the sleeve back at the size you chose. Accept executes "
                                "this against your tracked book; no brokerage order is placed."),
-                    "how": [f"Accept rebalances {_tk} toward {_target_pct:.0f}%",
+                    "how": [f"Accept rebalances {_tk} toward {_plan_pct:.0f}%",
                             "Every funding leg and its estimated tax is named first",
                             "The real trade is yours to place at your broker"],
                     "est_amount": round(_amount, 2),

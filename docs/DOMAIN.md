@@ -86,6 +86,10 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
 
   It carries provenance. `targets_for` *replaces* rather than merges (PR 71: the old merge summed to 110% and made cards fight).
 - `plan_ticker_targets` gives per-ticker plan targets. A sell rule may not trim through them (PR 79).
+- **A ticker two plans want is split by target** (PR 131 between sleeves; PR 165 / D148 between a sleeve and the core):
+  `sleeve_occupancy` credits each claimant `held × its target / the ticker's total target`, so the Plan tab's sleeve and
+  core rows add up to the per-ticker drift the band rules measure. `core_ticker_targets` is the core's half;
+  `core_shared_ils` reports it. The sleeve-drift card measures a shared ticker against sleeve + core.
 
 ### 3.4 Cash
 - **Soft target** (default by objective, or `cash_target_ils`): routine cards stop spending here.

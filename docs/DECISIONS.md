@@ -224,6 +224,10 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D148 · 2026-11-11 (PR 165) · A ticker a sleeve and the core both want is split between them by target.** Owner chose
+  "split by target" over "sleeve fills first" and "no overlap". The Plan tab's rows and the sleeve-drift card both measure
+  it that way. *Why:* SMH (sleeve 10% + core 8.1%) was credited wholly to the sleeve -- "19% / 10%" beside "core 46% / 54%"
+  -- and the drift card trimmed the core's SMH, which the SMH band bought back by selling VXUS. Extends D95. → PR 165
 - **D147 · 2026-11-11 (PR 164) · Accepting one band card may never fire another.** A band top-up sells first what the plan
   does not hold or holds too much of, by NAME (`name_plan`), and never sells a name below its own band floor (a planned name
   without a band: below its target). A card you muted is still built but reserves no funding (`FundingLedger.skip`;
