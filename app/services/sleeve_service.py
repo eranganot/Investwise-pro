@@ -418,6 +418,29 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
     # sum to one).
     allocated_held_ils = sum(o["held_ils"] for o in out)
     allocated_held_pct = round(allocated_held_ils / nav, 4) if nav else 0.0
+    # PR 166 (V4): WHAT THE CORE IS MADE OF. Each held name's part that no sleeve
+    # counts (its whole value, or the core's share of a ticker it shares), and
+    # every name the core basket wants even when nothing is held. A held name
+    # in no plan at all -- XLE and XLF on 2026-11-11 -- is the core's by the
+    # same arithmetic as `core_held_pct` (1 - sleeves), so it is listed here
+    # and marked, rather than hidden inside a total.
+    _sleeve_part: dict[str, float] = {}
+    for o in out:
+        for tk, v in (o.get("held_by_ticker_ils") or {}).items():
+            _sleeve_part[tk] = _sleeve_part.get(tk, 0.0) + float(v)
+    core_holdings = []
+    for tk in sorted(set(held) | set(_core_t)):
+        h = max(0.0, held.get(tk, 0.0) - _sleeve_part.get(tk, 0.0))
+        t = float(_core_t.get(tk, 0.0) or 0.0)
+        if h < 0.5 and t <= 0.0:
+            continue
+        core_holdings.append({
+            "ticker": tk, "held_ils": round(h, 2),
+            "held_pct": round(h / nav, 4) if nav else 0.0,
+            "target_pct": round(t, 6),
+            "shared": tk in counted and tk in _core_t,
+            "in_plan": t > 0.0 or tk in counted,
+        })
     # What of each shared ticker counts toward the core rather than a sleeve.
     core_shared_ils = {tk: round(held.get(tk, 0.0) * _share(tk, w), 2)
                        for tk, w in sorted(_core_t.items())
@@ -433,6 +456,7 @@ async def sleeve_occupancy(session: AsyncSession, user: User) -> dict:
         "core_held_pct": round(max(0.0, 1.0 - allocated_held_pct), 4) if nav else 0.0,
         # PR 165: the core's share of tickers it shares with a sleeve, in ILS.
         "core_shared_ils": core_shared_ils,
+        "core_holdings": core_holdings,
         "core_pct": remainder_pct(sleeves),
     }
 

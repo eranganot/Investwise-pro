@@ -90,6 +90,9 @@ One `plans` row per user. For every column see [DATA_MODEL.md](DATA_MODEL.md#the
   `sleeve_occupancy` credits each claimant `held × its target / the ticker's total target`, so the Plan tab's sleeve and
   core rows add up to the per-ticker drift the band rules measure. `core_ticker_targets` is the core's half;
   `core_shared_ils` reports it. The sleeve-drift card measures a shared ticker against sleeve + core.
+- `/plan/sleeves` lists what each plan holds (PR 166): `sleeves[].holdings` (the sleeve's share per ticker; `parked` /
+  `instead_of` for an off-signal leg) and `core_holdings` (the rest of every held name, the basket, off-plan names with
+  `in_plan: false`). Sleeve lines + core lines = every position once.
 
 ### 3.4 Cash
 - **Soft target** (default by objective, or `cash_target_ils`): routine cards stop spending here.

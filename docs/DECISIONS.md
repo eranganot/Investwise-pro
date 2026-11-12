@@ -224,6 +224,10 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D149 · 2026-11-12 (PR 166) · Each plan row shows what it holds, on tap, with at most one tag.** Held vs target as %
+  of the whole book plus the amount; a tag only for "not in your plan", "shared with ...", or an off-signal leg ("instead of
+  SOXL"). Off-plan names are listed under the core, which already counts them. *Why:* owner asked to see what builds each
+  plan without an overloaded screen. → PR 166
 - **D148 · 2026-11-11 (PR 165) · A ticker a sleeve and the core both want is split between them by target.** Owner chose
   "split by target" over "sleeve fills first" and "no overlap". The Plan tab's rows and the sleeve-drift card both measure
   it that way. *Why:* SMH (sleeve 10% + core 8.1%) was credited wholly to the sleeve -- "19% / 10%" beside "core 46% / 54%"

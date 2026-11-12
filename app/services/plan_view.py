@@ -261,6 +261,26 @@ async def sleeves_view(session, user) -> dict:
     # the present tense and called it the book.
     occ = await sv.sleeve_occupancy(session, user)
     _by_id = {o["strategy_id"]: o for o in occ["sleeves"]}
+    from app.services import strategy_catalog as _cat
+    _nav_occ = float(occ.get("nav_ils") or 0.0)
+
+    def _holdings(sid: str, o: dict) -> list[dict]:
+        # PR 166 (V4): what this sleeve is made of, one row per ticker. A ticker
+        # in the strategy's `base` and not its `weights` is where it parks when
+        # its signal is off (2x Gold Trend -> BIL while gold is under its trend).
+        spec = _cat.get(sid) or {}
+        _on = sorted(t.upper() for t in (spec.get("weights") or {}))
+        parked = {t.upper() for t in (spec.get("base") or {})} - set(_on)
+        hb, tb = o.get("held_by_ticker_ils") or {}, o.get("target_by_ticker") or {}
+        return [{"ticker": tk, "held_ils": round(float(hb.get(tk, 0.0)), 2),
+                 "held_pct": round(float(hb.get(tk, 0.0)) / _nav_occ, 4) if _nav_occ else 0.0,
+                 "target_pct": round(float(tb.get(tk, 0.0)), 6),
+                 "shared_with": (o.get("shared_with") or {}).get(tk) or [],
+                 "parked": tk in parked,
+                 # What the signal holds when it is ON, so the screen can say
+                 # "signal off, instead of SOXL" rather than an unexplained SMH.
+                 "instead_of": _on if tk in parked else []}
+                for tk in sorted(set(hb) | set(tb))]
     _sleeves = []
     for d in sv.as_dicts(sleeves):
         o = _by_id.get(d["strategy_id"]) or {}
@@ -280,7 +300,8 @@ async def sleeves_view(session, user) -> dict:
                          "tickers": o.get("tickers"),
                          # PR 131: a shared ticker is split between its sleeves;
                          # this says which ones share it.
-                         "shared_with": o.get("shared_with") or {}})
+                         "shared_with": o.get("shared_with") or {},
+                         "holdings": _holdings(d["strategy_id"], o)})
     # PR 71: what the unclaimed remainder is split into, from THE book target,
     # so the Plan tab can say the core is not all of the remainder.
     _comm = _cashr = 0.0
@@ -351,6 +372,8 @@ async def sleeves_view(session, user) -> dict:
         "core_target_pct": _core_tgt,
         # The core's ACTUAL share against its target. Same distinction.
         "core_held_pct": occ["core_held_pct"],
+        # PR 166 (V4): the core's holdings -- its basket and anything held in no plan.
+        "core_holdings": occ.get("core_holdings") or [],
         "nav_ils": occ["nav_ils"],
         # C6. Which strategy manages the core, or None for "the objective does".
         # The core's SIZE is still `core_pct` above and still computed -- this
