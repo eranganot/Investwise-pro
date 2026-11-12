@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-11 by Claude (PR 165: a ticker the core shares is split; C38 closed). Last product PR: **165**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-12 by Claude (PR 166: each plan row lists its holdings; V4 closed). Last product PR: **166**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -35,6 +35,29 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - ~~Delete the untracked `candidate_search.py` draft~~ and ~~commit the v8 / v2.2 plans + Plan-tab design~~: done by
     Claude 2026-10-11 (PR #3).
   - Rotate the GitHub PAT and the Railway token.
+
+---
+
+## PR 166 -- V4: each plan row lists the holdings that make it up (D149)
+
+**Ask (owner, 2026-11-11).** "Each plan (sleeves, core) will show what they are made of -- the holdings that build this
+plan." Decided with him: expand on tap; per holding, held vs target as % of the whole book and the amount; at most ONE
+tag, only when something is unusual.
+
+**What.** `/plan/sleeves`: each sleeve gains `holdings` -- one row per ticker, its PR 165 share (`held_ils`, `held_pct`,
+`target_pct`), `shared_with`, and `parked` + `instead_of` when the ticker is the strategy's off-signal leg (in the
+catalogue's `base`, not its `weights`). New `core_holdings`: every held name's part no sleeve counts plus every basket
+name, `in_plan` false for a name in no plan (it was already inside `core_held_pct`). Plan > My mix: sleeve and core rows
+expand on tap (`MIXOPEN`, `mixToggle`, keyboard-operable, Remove no longer toggles); one line per holding; tags "not in
+your plan", "shared with ...", "signal off - instead of SOXL".
+
+**Verified.** `tests/test_plan_rows_list_their_holdings.py` (3): a sleeve's lines equal its row and carry the off-leg;
+core lines cover basket + off-plan names, every shekel counted once, and add up to the core row; the panel source is
+tap-to-expand with a one-tag chain. `test_pr131...mix_chip` read 4,000 characters of `mixPanel` and now reads the whole
+function. Rendered at phone width on a local copy of the 11-11 book (no console errors). GATE_RESULT
+
+**Smoke.** `scripts/smoke/smoke-pr166-plan-rows-list-their-holdings.ps1`. Before, on `9296873`: **PASS 5 FAIL 5 SKIP 1**
+(no `holdings`, no `core_holdings`, page without the panel). After: PROD_RESULT.
 
 ---
 
@@ -76,7 +99,9 @@ names both parts. With the core's claim switched off, 3 of 5 fail. Gate: full su
 
 **Smoke.** `scripts/smoke/smoke-pr165-a-ticker-the-core-shares-is-split.ps1`. Before, on `50ded46`: **PASS 7 FAIL 3** --
 SMH not shared with the core; the sleeve "holds 19.0% against 10.0%"; "SMH has drifted to 19% of a 10% sleeve".
-After: PROD_RESULT.
+After, on `9296873` (2026-11-12): **PASS 10 FAIL 0 SKIP 0** -- Semis holds 10.4% against 10.0%, SMH shared with core,
+no drift card. Merged without waiting for CI on the owner's word ("skip the CI"): the PR's run sat queued 10 hours on
+GitHub's side and could be neither cancelled nor re-run; the local Postgres gate above was green.
 
 ---
 

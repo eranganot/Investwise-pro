@@ -3607,6 +3607,11 @@ function _goalGrid(gg,bar,deadline){
   </details>`;
 }
 
+// PR 166 (V4): which plan rows are expanded to show their holdings. Kept across
+// re-renders for the visit; not stored -- a page load starts compact.
+const MIXOPEN=new Set();
+function mixToggle(id){ if(MIXOPEN.has(id)) MIXOPEN.delete(id); else MIXOPEN.add(id);
+  const box=$("mixBox"); if(box) box.innerHTML=mixPanel(); }
 // What you hold against the plan: each sleeve, the core, commodities and cash.
 function mixPanel(){
   const S=MYSLEEVES; if(!S) return `<div class="card muted">Could not read your sleeves.</div>`;
@@ -3614,7 +3619,7 @@ function mixPanel(){
   const comT=(S.commodities_pct||0)*100, cashT=(S.cash_reserve_pct||0)*100;
   const comH=(cur.Commodities||0)*100, cashH=(cur.Cash||0)*100;
   const sl=(S.sleeves||[]).map(x=>({name:_stratName(x.strategy_id),held:(x.held_pct||0)*100,tgt:+x.sleeve_pct||0,id:x.strategy_id,
-    hold:(x.on_stop_hold||[]).length?x.on_stop_hold:null}));
+    hold:(x.on_stop_hold||[]).length?x.on_stop_hold:null,holdings:x.holdings||[]}));
   const sleevesT=sl.reduce((a,x)=>a+x.tgt,0);
   const coreP=Math.max(0,100-sleevesT-comT-cashT);
   // PR 151: a stop-held sleeve's share is managed in the core (PR 149, D127), so the
@@ -3624,7 +3629,7 @@ function mixPanel(){
   // D134: with no carve-out, commodities are part of the core -- no row of their own.
   const coreH=Math.max(0,(S.core_held_pct||0)*100-(comT>0?comH:0)-cashH);
   const rows=[...sl.map(x=>({...x,kind:"sleeve"})),
-    {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core",
+    {name:`Core${S.core?` · ${S.core.name}`:""}`,held:coreH,tgt:coreT,kind:"core",id:"core",holdings:S.core_holdings||[],
      note:(heldBack.length&&coreT-coreP>=0.5)?`${(Math.round(coreP*10)/10).toFixed(1)}% + ${(Math.round((coreT-coreP)*10)/10).toFixed(1)}% while ${heldBack.map(x=>x.hold.join(", ")).join(", ")} ${heldBack.length>1?"are":"is"} on hold`:""},
     ...(comT>0?[{name:"Commodities",held:comH,tgt:comT,kind:"com"}]:[]),
     {name:"Cash",held:cashH,tgt:cashT,kind:"cash"}];
@@ -3634,15 +3639,40 @@ function mixPanel(){
   const toFund=sl.filter(x=>!x.hold).reduce((a,x)=>a+Math.max(0,x.tgt-x.held),0);
   const over=sl.reduce((a,x)=>a+Math.max(0,x.held-x.tgt),0);
   const r1=v=>(Math.round(v*10)/10).toFixed(1);
+  // PR 166 (V4): what each plan is made of. One line per holding -- held vs target
+  // and the amount -- and at most ONE tag, only when something is unusual: held in
+  // no plan, shared with another plan, or a sleeve parked in its off-signal fund.
+  const sleeveOf={}; sl.forEach(x=>x.holdings.forEach(h=>{if(h.target_pct>0)(sleeveOf[h.ticker]=sleeveOf[h.ticker]||[]).push(x.name);}));
+  const hLine=(h,kind)=>{
+    let tag="";
+    if(kind==="core"&&!h.in_plan) tag="not in your plan";
+    else if(kind!=="core"&&h.parked&&h.held_ils>0) tag=`signal off · instead of ${(h.instead_of||[]).join(", ")||"its main holding"}`;
+    else if(kind!=="core"&&(h.shared_with||[]).length) tag=`shared with ${(h.shared_with||[]).map(w=>w==="core"?"core":_stratName(w)).join(", ")}`;
+    else if(kind==="core"&&h.shared) tag=`shared with ${(sleeveOf[h.ticker]||["a sleeve"]).join(", ")}`;
+    const off=h.target_pct>0?Math.abs(h.held_pct-h.target_pct)*100>=1:h.held_ils>=1;
+    return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:3px 0">
+      <span><b>${h.ticker}</b>${tag?` <span class="mk" style="font-size:11px">· ${tag}</span>`:""}</span>
+      <span style="white-space:nowrap"><span style="${off?"color:var(--amber,#e3a34a)":""}">${r1(h.held_pct*100)}% / ${r1(h.target_pct*100)}%</span>
+        <span class="mk">· ₪${Math.round(h.held_ils).toLocaleString()}</span></span></div>`;};
+  const hList=x=>{const hs=(x.holdings||[]).slice().sort((a,b)=>(b.target_pct-a.target_pct)||(b.held_ils-a.held_ils));
+    return hs.length?`<div style="margin:6px 0 2px 14px;padding-left:8px;border-left:2px solid var(--line)">${hs.map(h=>hLine(h,x.kind)).join("")}
+      <div class="mk" style="font-size:11px;margin-top:2px">% of the whole book: held / plan</div></div>`
+      :`<div class="mk" style="margin:6px 0 2px 14px;font-size:12px">Nothing held yet.</div>`;};
   const bar=x=>{const off=Math.abs(x.held-x.tgt)>=1;
-    return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span>${x.name}${x.note?`<div class="mk" style="font-size:11px">${x.note}</div>`:""}${x.hold?`<div class="mk" style="font-size:11px">Stop hold on ${x.hold.join(", ")}: not bought until its signal is out and back in; its share sits in the core</div>`:""}</span>
+    const expandable=x.kind==="sleeve"||x.kind==="core";
+    const open=expandable&&MIXOPEN.has(x.id);
+    const head=`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span>${expandable?`<span class="mk" style="display:inline-block;width:12px">${open?"▾":"▸"}</span>`:""}${x.name}${x.note?`<div class="mk" style="font-size:11px">${x.note}</div>`:""}${x.hold?`<div class="mk" style="font-size:11px">Stop hold on ${x.hold.join(", ")}: not bought until its signal is out and back in; its share sits in the core</div>`:""}</span>
         <span style="display:flex;gap:6px;align-items:center">${x.hold?_chip("on hold",""):""}${_chip(`${r1(x.held)}% / ${r1(x.tgt)}%`,x.hold?"":(off?"warn":"ok"))}
-          ${x.kind==="sleeve"?`<button class="ghost" style="font-size:11px;padding:2px 6px" onclick="removeSleeve('${x.id}','${x.name.replace(/'/g,"")}')" aria-label="Remove the ${x.name} sleeve">Remove</button>`:""}</span></div>
+          ${x.kind==="sleeve"?`<button class="ghost" style="font-size:11px;padding:2px 6px" onclick="event.stopPropagation();removeSleeve('${x.id}','${x.name.replace(/'/g,"")}')" aria-label="Remove the ${x.name} sleeve">Remove</button>`:""}</span></div>
       <div style="position:relative;height:8px;background:var(--line);border-radius:4px;margin-top:6px">
         <i style="position:absolute;left:0;top:0;height:8px;border-radius:4px;background:#4f8df7;width:${Math.min(100,x.held/max*100)}%"></i>
-        <i style="position:absolute;top:-4px;width:2px;height:16px;background:var(--ink,#e6edf6);left:${Math.min(100,x.tgt/max*100)}%"></i></div></div>`;};
+        <i style="position:absolute;top:-4px;width:2px;height:16px;background:var(--ink,#e6edf6);left:${Math.min(100,x.tgt/max*100)}%"></i></div>`;
+    if(!expandable) return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">${head}</div>`;
+    return `<div style="padding:9px 0;border-bottom:1px solid var(--line)">
+      <div role="button" tabindex="0" aria-expanded="${open}" aria-label="Show what ${x.name.replace(/"/g,"")} holds" style="cursor:pointer"
+        onclick="mixToggle('${x.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();mixToggle('${x.id}')}">${head}</div>
+      ${open?hList(x):""}</div>`;};
   return `<div style="display:flex;justify-content:space-between;align-items:center;margin:0 4px 6px">
       <span class="mk" style="text-transform:uppercase;letter-spacing:.06em">What you hold vs your plan</span>
       ${toFund>=0.5||over>=0.5?_chip([toFund>=0.5?`${r1(toFund)} pts to fund`:"",over>=0.5?`${r1(over)} pts over`:""].filter(Boolean).join(" · "),"warn"):_chip("on plan","ok")}</div>

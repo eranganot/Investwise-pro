@@ -199,7 +199,7 @@ def _html():
 def test_the_mix_chip_counts_over_as_well_as_under():
     html = _html()
     i = html.index("function mixPanel(")
-    body = html[i:i + 4000]
+    body = html[i:html.index("\n}\n", i)]   # PR 166: the whole function, not 4,000 chars of it
     assert "pts over" in body and "pts to fund" in body
 
 
