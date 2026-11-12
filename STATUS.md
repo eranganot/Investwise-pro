@@ -54,7 +54,7 @@ your plan", "shared with ...", "signal off - instead of SOXL".
 **Verified.** `tests/test_plan_rows_list_their_holdings.py` (3): a sleeve's lines equal its row and carry the off-leg;
 core lines cover basket + off-plan names, every shekel counted once, and add up to the core row; the panel source is
 tap-to-expand with a one-tag chain. `test_pr131...mix_chip` read 4,000 characters of `mixPanel` and now reads the whole
-function. Rendered at phone width on a local copy of the 11-11 book (no console errors). GATE_RESULT
+function. Rendered at phone width on a local copy of the 11-11 book (no console errors). Gate: full suite on local Postgres **3,073 passed, 1 failed** -- the same Python 3.13-only `test_the_two_cards_are_gone_from_the_source`. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr166-plan-rows-list-their-holdings.ps1`. Before, on `9296873`: **PASS 5 FAIL 5 SKIP 1**
 (no `holdings`, no `core_holdings`, page without the panel). After: PROD_RESULT.
