@@ -63,7 +63,7 @@ if ($parked.Count -eq 0) { Skip "no sleeve on its off-signal leg today" }
 foreach ($h in $parked) { if (@($h.instead_of).Count -gt 0) { Ok ("{0}: instead of {1}" -f $h.ticker, (@($h.instead_of) -join ',')) } else { Bad ("{0} is parked but names nothing it stands in for" -f $h.ticker) } }
 
 Sec "5  the page ships the panel"
-try { $html = (Invoke-WebRequest -Uri "$BaseUrl/app" -UseBasicParsing -TimeoutSec 60).Content } catch { $html = "" }
+try { $html = (Invoke-WebRequest -Uri "$BaseUrl/app/" -UseBasicParsing -TimeoutSec 60).Content } catch { $html = "" }
 if ($html -match 'function mixToggle\(' -and $html -match 'not in your plan' -and $html -match 'instead of') { Ok "/app has mixToggle and the three tags" } else { Bad "/app does not carry the PR 166 panel" }
 
 Sec "6  NOT CHANGED"

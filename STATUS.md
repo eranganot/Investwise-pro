@@ -57,7 +57,10 @@ tap-to-expand with a one-tag chain. `test_pr131...mix_chip` read 4,000 character
 function. Rendered at phone width on a local copy of the 11-11 book (no console errors). Gate: full suite on local Postgres **3,073 passed, 1 failed** -- the same Python 3.13-only `test_the_two_cards_are_gone_from_the_source`. Ruff clean.
 
 **Smoke.** `scripts/smoke/smoke-pr166-plan-rows-list-their-holdings.ps1`. Before, on `9296873`: **PASS 5 FAIL 5 SKIP 1**
-(no `holdings`, no `core_holdings`, page without the panel). After: PROD_RESULT.
+(no `holdings`, no `core_holdings`, page without the panel). After, on `2ec513a` (2026-11-12): **PASS 12 FAIL 0
+SKIP 0** -- every position = its sleeve lines + its core line; BIL "instead of UGL", SMH "instead of SOXL"; XLF (2 ILS left)
+marked not in plan. First run read section 5 as FAIL: `/app` 307s to `http://.../app/` and PowerShell refuses an
+HTTPS->HTTP redirect; the page was right (curl -L found `mixToggle`). The script now asks for `/app/`.
 
 ---
 
