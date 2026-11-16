@@ -1,5 +1,5 @@
 """Actionable recommendations endpoint (Today view)."""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,7 +41,7 @@ async def recommendations(simulate_cash: float | None = Query(None, ge=0.0, le=1
 
 
 @router.post("/recommendations/{rec_id}/accept", dependencies=[Depends(require_role(Role.ANALYST))])
-async def accept_recommendation(rec_id: str, state: CardState | None = None,
+async def accept_recommendation(request: Request, rec_id: str, state: CardState | None = None,
                                 choice: str | None = Query(None, pattern="^(sell|keep|buy|redeploy|trim|raise)$"),
                                 level: float | None = Query(None, gt=0),
                                 alloc: str | None = Query(None, max_length=600),
@@ -64,6 +64,12 @@ async def accept_recommendation(rec_id: str, state: CardState | None = None,
     # bucket so the card is gone rather than parked in the ignored list.
     await complete_recommendation(session, user, rec_id,
                                   state.model_dump() if state else None)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if posthog_client is not None:
+        posthog_client.capture(
+            "recommendation_accepted",
+            properties={"decision_choice": choice or "unspecified"},
+        )
     return {"ok": True, **result}
 
 

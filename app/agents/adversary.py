@@ -21,12 +21,14 @@ final-word call sites.
 from __future__ import annotations
 
 import os
+import time
 from enum import Enum
 
 from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
 from app.schemas.scoring import IMPACT_WEIGHTS
+from app.services.llm import ai_trace_id, capture_gemini_generation
 from app.schemas.safety import SafetyReport
 from app.schemas.state_machine import (
     DetectedSignal,
@@ -92,6 +94,8 @@ def _gemini_generate(key: str, model: str, prompt: str, timeout: float = 20.0) -
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+    trace_id = ai_trace_id()
+    started_at = time.perf_counter()
 
     def _call() -> str:
         req = urllib.request.Request(
@@ -109,8 +113,20 @@ def _gemini_generate(key: str, model: str, prompt: str, timeout: float = 20.0) -
         parts = (candidates[0].get("content") or {}).get("parts") or []
         return "".join(p.get("text", "") for p in parts).strip()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(_call).result(timeout=timeout + 5)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            output = ex.submit(_call).result(timeout=timeout + 5)
+    except Exception as exc:
+        capture_gemini_generation(
+            prompt, model, latency=time.perf_counter() - started_at, error=exc,
+            trace_id=trace_id, span_name="adversary_narrative",
+        )
+        raise
+    capture_gemini_generation(
+        prompt, model, output=output, latency=time.perf_counter() - started_at,
+        trace_id=trace_id, span_name="adversary_narrative",
+    )
+    return output
 
 
 class Adversary:

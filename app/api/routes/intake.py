@@ -3,7 +3,7 @@ import csv
 import io
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,16 +47,24 @@ async def intake_template() -> str:
 
 
 @router.post("/intake/portfolio", dependencies=[Depends(require_role(Role.ANALYST))])
-async def intake_portfolio(req: PortfolioIntakeRequest,
+async def intake_portfolio(req: PortfolioIntakeRequest, request: Request,
                            session: AsyncSession = Depends(get_session),
                            user: User = Depends(acting_user)) -> dict:
     if not req.positions:
         raise HTTPException(400, "no positions provided")
-    return await persist(session, user, req.entity_name, req.entity_type, req.account_name, req.positions)
+    result = await persist(session, user, req.entity_name, req.entity_type, req.account_name, req.positions)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if posthog_client is not None:
+        posthog_client.capture(
+            "portfolio_imported",
+            properties={"source": "form", "position_count": len(req.positions)},
+        )
+    return result
 
 
 @router.post("/intake/portfolio/csv", dependencies=[Depends(require_role(Role.ANALYST))])
 async def intake_portfolio_csv(
+    request: Request,
     file: UploadFile,
     entity_name: str = "Personal",
     entity_type: str = "Personal",
@@ -76,6 +84,12 @@ async def intake_portfolio_csv(
         raise HTTPException(400, {"message": "no valid rows", "errors": errors})
     result = await persist(session, user, entity_name, entity_type, account_name, positions)
     result["row_errors"] = errors
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if posthog_client is not None:
+        posthog_client.capture(
+            "portfolio_imported",
+            properties={"source": "csv", "position_count": len(positions), "has_row_errors": bool(errors)},
+        )
     return result
 
 
@@ -109,11 +123,19 @@ class AddHoldingRequest(BaseModel):
 
 
 @router.post("/portfolio/add", dependencies=[Depends(require_role(Role.ANALYST))])
-async def add_holding(req: AddHoldingRequest, session: AsyncSession = Depends(get_session),
+async def add_holding(req: AddHoldingRequest, request: Request,
+                      session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     """Buy a holding by a money amount, paid out of cash, priced live (`intake_service.add_by_amount`)."""
-    return await add_by_amount(session, user, ticker=req.ticker, amount=req.amount,
-                               asset_class=req.asset_class, market=req.market)
+    result = await add_by_amount(session, user, ticker=req.ticker, amount=req.amount,
+                                 asset_class=req.asset_class, market=req.market)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if result.get("ok") and posthog_client is not None:
+        posthog_client.capture(
+            "holding_added",
+            properties={"market": req.market, "has_asset_class": req.asset_class is not None},
+        )
+    return result
 
 
 @router.post("/portfolio/refresh-prices", dependencies=[Depends(require_role(Role.ANALYST))])

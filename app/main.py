@@ -1,4 +1,5 @@
 """InvestWise Pro - FastAPI application entrypoint."""
+import atexit
 import hashlib
 import logging
 import time
@@ -11,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 from fastapi.staticfiles import StaticFiles
+from posthog import Posthog
+from posthog.integrations.asgi import PosthogASGIMiddleware
 
 from app.api.routes import (
     adversary as adversary_routes, assistant, auth, commodities, gfinance, google_auth, health,
@@ -21,6 +24,11 @@ from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal, engine
 from app.core.logging_config import configure_logging
 from app.core.metrics import LATENCY, REQUESTS
+from app.core.posthog_logs import (
+    POSTHOG_LOGGER_NAME,
+    configure_posthog_log_export,
+    shutdown_posthog_log_export,
+)
 from app.core.request_context import set_request_id
 
 configure_logging()
@@ -221,6 +229,18 @@ async def lifespan(app: FastAPI):
     if settings.enable_scheduler:
         from app.worker.scheduler import shutdown_scheduler
         shutdown_scheduler()
+    posthog_log_provider = getattr(app.state, "posthog_log_provider", None)
+    if posthog_log_provider is not None:
+        try:
+            shutdown_posthog_log_export(posthog_log_provider)
+        except Exception:  # noqa: BLE001 -- log export must not block shutdown
+            logger.warning("could not flush PostHog logs", exc_info=True)
+    posthog_client = getattr(app.state, "posthog_client", None)
+    if posthog_client is not None:
+        try:
+            posthog_client.flush()
+        except Exception:  # noqa: BLE001 -- analytics must not block shutdown
+            logger.warning("could not flush PostHog events", exc_info=True)
     await engine.dispose()
 
 
@@ -253,6 +273,44 @@ def create_app() -> FastAPI:
         redoc_url=None if _prod else "/redoc",
         openapi_url=None if _prod else "/openapi.json",
     )
+    if settings.posthog_project_token and settings.posthog_host:
+        posthog_client = Posthog(
+            settings.posthog_project_token,
+            host=settings.posthog_host,
+            enable_exception_autocapture=True,
+            privacy_mode=False,
+        )
+        app.state.posthog_client = posthog_client
+        try:
+            app.state.posthog_log_provider = configure_posthog_log_export(
+                endpoint=f"{settings.posthog_host.rstrip('/')}/i/v1/logs",
+                project_token=settings.posthog_project_token,
+                environment=settings.environment,
+            )
+        except Exception:  # noqa: BLE001 -- log export must not block app boot
+            logger.warning("could not configure PostHog log export", exc_info=True)
+        else:
+            logging.getLogger(POSTHOG_LOGGER_NAME).info(
+                "posthog_log_export_configured",
+                extra={"event": "posthog_log_export_configured"},
+            )
+        from app.services.llm import configure_ai_observability
+        configure_ai_observability(posthog_client)
+        atexit.register(posthog_client.shutdown)
+        app.add_middleware(PosthogASGIMiddleware, client=posthog_client)
+    elif not _prod:
+        missing_variable = (
+            "POSTHOG_PROJECT_TOKEN"
+            if not settings.posthog_project_token
+            else "POSTHOG_HOST"
+        )
+        logger.warning(
+            "%s variable required by PostHog is missing or un-configured, this causes "
+            "events to be silently missed. This error stops appearing once %s is configured",
+            missing_variable,
+            missing_variable,
+        )
+
     if settings.frontend_origin:
         app.add_middleware(
             CORSMiddleware,
@@ -270,7 +328,18 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         response.headers["X-Request-ID"] = rid
         REQUESTS.labels(request.method, str(response.status_code)).inc()
-        LATENCY.labels(request.method).observe(time.perf_counter() - start)
+        duration_ms = round((time.perf_counter() - start) * 1_000)
+        LATENCY.labels(request.method).observe(duration_ms / 1_000)
+        if request.url.path != "/health":
+            logging.getLogger(POSTHOG_LOGGER_NAME).info(
+                "application_request_completed",
+                extra={
+                    "event": "application_request_completed",
+                    "http_method": request.method,
+                    "http_status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
         return response
 
     @app.middleware("http")

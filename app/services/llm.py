@@ -4,12 +4,105 @@ the Q&A assistant, and the digest. Off (returns None) unless GOOGLE_API_KEY is s
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import contextvars
 import json
 import os
+import time
 import urllib.error
 import urllib.request
+import uuid
+from typing import Any, Iterator
 
 from app.core.config import get_settings
+from app.core.request_context import get_request_id
+
+
+_ai_client: Any | None = None
+_ai_distinct_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ai_distinct_id", default=None
+)
+_ai_process_session_id = f"process-{uuid.uuid4()}"
+
+
+def configure_ai_observability(client: Any) -> None:
+    """Reuse the application PostHog client for manual Gemini generations."""
+    global _ai_client
+    _ai_client = client
+
+
+def set_ai_distinct_id(distinct_id: str) -> None:
+    """Attribute later model calls in this request to the resolved user."""
+    _ai_distinct_id.set(distinct_id)
+
+
+@contextlib.contextmanager
+def ai_observability_context(distinct_id: str) -> Iterator[None]:
+    """Supply identity for model calls made by a background job."""
+    token = _ai_distinct_id.set(distinct_id)
+    try:
+        yield
+    finally:
+        _ai_distinct_id.reset(token)
+
+
+def ai_trace_id() -> str:
+    """Use one trace per request turn; background jobs receive a fresh turn."""
+    return get_request_id() or uuid.uuid4().hex
+
+
+def _error_status(error: Exception) -> int | None:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code
+    words = str(error).split()
+    if len(words) >= 2 and words[0] == "HTTP":
+        try:
+            return int(words[1].rstrip(":"))
+        except ValueError:
+            return None
+    return None
+
+
+def capture_gemini_generation(
+    prompt: str,
+    model: str,
+    *,
+    output: str | None = None,
+    latency: float | None = None,
+    error: Exception | None = None,
+    trace_id: str | None = None,
+    span_name: str = "gemini_generate",
+    tools: list[dict] | None = None,
+) -> None:
+    """Queue a manual AI event without affecting the provider call's outcome."""
+    if _ai_client is None or (distinct_id := _ai_distinct_id.get()) is None:
+        return
+
+    properties: dict[str, Any] = {
+        "$ai_trace_id": trace_id or ai_trace_id(),
+        "$ai_session_id": _ai_process_session_id,
+        "$ai_span_id": uuid.uuid4().hex,
+        "$ai_span_name": span_name,
+        "$ai_model": model,
+        "$ai_provider": "gemini",
+        "$ai_input": [{"role": "user", "content": prompt}],
+    }
+    if output is not None:
+        properties["$ai_output_choices"] = [{"role": "assistant", "content": output}]
+    if latency is not None:
+        properties["$ai_latency"] = latency
+    if tools is not None:
+        properties["$ai_tools"] = tools
+    if error is not None:
+        properties["$ai_is_error"] = True
+        properties["$ai_error"] = type(error).__name__
+        if (status := _error_status(error)) is not None:
+            properties["$ai_http_status"] = status
+
+    try:
+        _ai_client.capture_ai("$ai_generation", distinct_id=distinct_id, properties=properties)
+    except Exception:  # noqa: BLE001 -- observability must not affect the LLM result
+        pass
 
 
 def gemini_key() -> str | None:
@@ -64,6 +157,8 @@ def _gemini_call(prompt: str, key: str, model: str | None, timeout: float) -> st
     model = model or getattr(get_settings(), "adversary_llm_model", "gemini-2.0-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+    trace_id = ai_trace_id()
+    started_at = time.perf_counter()
 
     def _call() -> str:
         req = urllib.request.Request(
@@ -80,8 +175,20 @@ def _gemini_call(prompt: str, key: str, model: str | None, timeout: float) -> st
         parts = (cands[0].get("content") or {}).get("parts") or []
         return "".join(p.get("text", "") for p in parts).strip()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(_call).result(timeout=timeout + 5)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            output = ex.submit(_call).result(timeout=timeout + 5)
+    except Exception as exc:
+        capture_gemini_generation(
+            prompt, model, latency=time.perf_counter() - started_at, error=exc,
+            trace_id=trace_id,
+        )
+        raise
+    capture_gemini_generation(
+        prompt, model, output=output, latency=time.perf_counter() - started_at,
+        trace_id=trace_id,
+    )
+    return output
 
 
 def gemini_generate(prompt: str, *, model: str | None = None, timeout: float = 20.0) -> str | None:
@@ -114,13 +221,7 @@ def gemini_generate_grounded_ex(prompt: str, *, model: str | None = None,
         return None, _classify(None, None)
     model = model or getattr(get_settings(), "adversary_llm_model", "gemini-2.0-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-    def _post(body: dict) -> dict:
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"), method="POST",
-            headers={"Content-Type": "application/json", "x-goog-api-key": key})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+    trace_id = ai_trace_id()
 
     def _extract(payload: dict) -> dict:
         cands = payload.get("candidates") or []
@@ -143,10 +244,32 @@ def gemini_generate_grounded_ex(prompt: str, *, model: str | None = None,
                 uniq.append(s)
         return {"text": text, "sources": uniq[:8]}
 
+    def _post(body: dict, *, tools: list[dict] | None = None) -> dict:
+        started_at = time.perf_counter()
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            capture_gemini_generation(
+                prompt, model, latency=time.perf_counter() - started_at, error=exc,
+                trace_id=trace_id, span_name="gemini_generate_grounded", tools=tools,
+            )
+            raise
+        capture_gemini_generation(
+            prompt, model, output=_extract(payload)["text"],
+            latency=time.perf_counter() - started_at, trace_id=trace_id,
+            span_name="gemini_generate_grounded", tools=tools,
+        )
+        return payload
+
     def _call() -> dict:
         base = {"contents": [{"parts": [{"text": prompt}]}]}
+        google_search = [{"google_search": {}}]
         try:
-            return _extract(_post({**base, "tools": [{"google_search": {}}]}))
+            return _extract(_post({**base, "tools": google_search}, tools=google_search))
         except urllib.error.HTTPError as e:
             # PR 110 (L15): fall back ONLY when the grounding tool itself is
             # rejected (HTTP 400). A 429 used to trigger a second, ungrounded

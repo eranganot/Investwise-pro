@@ -459,6 +459,7 @@ async def evaluate_and_notify(session: AsyncSession, user: User, max_sends: int 
 
 async def send_digest(session: AsyncSession, user: User) -> dict:
     from app.services.digest_service import build as build_digest
+    from app.services.llm import ai_observability_context
 
     subject = user.email
     has_subs = await session.scalar(
@@ -469,7 +470,8 @@ async def send_digest(session: AsyncSession, user: User) -> dict:
     if await _seen(session, subject, sig):
         return {"sent": 0, "reason": "already sent today"}
     try:
-        d = await build_digest(session, user)
+        with ai_observability_context(str(user.id)):
+            d = await build_digest(session, user)
         text = (d.get("digest") or "Your weekly summary is ready.").strip()
     except Exception:  # noqa: BLE001
         text = "Your weekly summary is ready."

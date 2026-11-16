@@ -1,5 +1,5 @@
 """AI assistant + digest endpoints (Phase H)."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +17,17 @@ class AskRequest(BaseModel):
 
 
 @router.post("/ask")
-async def ask(req: AskRequest, session: AsyncSession = Depends(get_session),
+async def ask(req: AskRequest, request: Request,
+              session: AsyncSession = Depends(get_session),
               user: User = Depends(acting_user)) -> dict:
-    return await answer(session, user, req.question)
+    result = await answer(session, user, req.question)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if posthog_client is not None:
+        posthog_client.capture(
+            "assistant_answered",
+            properties={"question_length": len(req.question)},
+        )
+    return result
 
 
 @router.get("/digest")

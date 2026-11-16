@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     app_version: str = "22.1"
     environment: str = "development"
     debug: bool = True
+
+    # PostHog (optional so deployments without analytics configuration still boot)
+    posthog_project_token: str = ""
+    posthog_host: str = ""
+
     # DEFAULT OFF SINCE C8 / PR 57. This flag builds the schema from today's
     # models at boot -- `create_all` plus the `ALTER TABLE ... IF NOT EXISTS`
     # list in `main.py` -- and for most of this app's life it was not a

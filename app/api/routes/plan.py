@@ -1,7 +1,7 @@
 """Planning / goals + goal projector + mix check."""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,7 +81,8 @@ async def get_my_plan(session: AsyncSession = Depends(get_session), user: User =
 
 
 @router.put("/plan", dependencies=[Depends(require_role(Role.ANALYST))])
-async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_session),
+async def put_my_plan(req: PlanRequest, request: Request,
+                      session: AsyncSession = Depends(get_session),
                       user: User = Depends(acting_user)) -> dict:
     fields = req.model_dump()
     th_req = fields.pop("thresholds", None)
@@ -105,6 +106,12 @@ async def put_my_plan(req: PlanRequest, session: AsyncSession = Depends(get_sess
     await session.commit()
     out = pv.plan_dict(plan, stats, goal)
     out["goal_chance"] = await _goal_chance(session, user)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if posthog_client is not None:
+        posthog_client.capture(
+            "plan_updated",
+            properties={"has_threshold_updates": th_req is not None},
+        )
     return out
 
 
@@ -280,7 +287,7 @@ class TargetApplyRequest(BaseModel):
 
 @router.post("/plan/target/apply",
              dependencies=[Depends(require_role(Role.ANALYST))])
-async def target_apply(body: TargetApplyRequest, confirm: bool = False,
+async def target_apply(request: Request, body: TargetApplyRequest, confirm: bool = False,
                        session: AsyncSession = Depends(get_session),
                        user: User = Depends(acting_user)) -> dict:
     """Accept the solver's answer, on the TRACKED BOOK ONLY.
@@ -306,6 +313,13 @@ async def target_apply(body: TargetApplyRequest, confirm: bool = False,
         # (a mid-plan refusal), and only a rollback makes "nothing was written"
         # true rather than merely intended.
         await session.rollback()
+    if out.get("ok"):
+        posthog_client = getattr(request.app.state, "posthog_client", None)
+        if posthog_client is not None:
+            posthog_client.capture(
+                "target_plan_applied",
+                properties={"resize_count": len(body.resizes)},
+            )
     return out
 
 

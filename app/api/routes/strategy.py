@@ -1,5 +1,5 @@
 """Strategy catalog + apply + load-basket (Plan page)."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -288,7 +288,7 @@ async def apply_strategy_preview(session, user, s, plan, mix, nav, *,
 
 
 @router.post("/strategies/{strategy_id}/apply", dependencies=[Depends(require_role(Role.ANALYST))])
-async def apply(strategy_id: str, sleeve_pct: float | None = None,
+async def apply(request: Request, strategy_id: str, sleeve_pct: float | None = None,
                 session: AsyncSession = Depends(get_session),
                 user: User = Depends(acting_user)) -> dict:
     """Apply a strategy. ``sleeve_pct`` is how much of the book it governs.
@@ -297,7 +297,14 @@ async def apply(strategy_id: str, sleeve_pct: float | None = None,
     rather than to 100%: putting an entire portfolio into a 3x fund because the
     model basket says so in isolation is not a default anyone wants.
     """
-    return await apply_strategy(session, user, strategy_id, sleeve_pct)
+    result = await apply_strategy(session, user, strategy_id, sleeve_pct)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if result.get("ok") and posthog_client is not None:
+        posthog_client.capture(
+            "strategy_applied",
+            properties={"strategy_id": strategy_id, "has_custom_sleeve_pct": sleeve_pct is not None},
+        )
+    return result
 
 
 class LoadBasketRequest(BaseModel):
@@ -318,13 +325,20 @@ class LoadBasketRequest(BaseModel):
 
 
 @router.post("/strategies/{strategy_id}/load-basket", dependencies=[Depends(require_role(Role.ANALYST))])
-async def load(strategy_id: str, req: LoadBasketRequest | None = None,
+async def load(request: Request, strategy_id: str, req: LoadBasketRequest | None = None,
                session: AsyncSession = Depends(get_session),
                user: User = Depends(acting_user)) -> dict:
     req = req or LoadBasketRequest()
-    return await load_basket(session, user, strategy_id, total=req.total,
-                             sleeve_pct=req.sleeve_pct, mode=req.mode,
-                             dry_run=req.dry_run)
+    result = await load_basket(session, user, strategy_id, total=req.total,
+                               sleeve_pct=req.sleeve_pct, mode=req.mode,
+                               dry_run=req.dry_run)
+    posthog_client = getattr(request.app.state, "posthog_client", None)
+    if result.get("ok") and posthog_client is not None:
+        posthog_client.capture(
+            "strategy_basket_loaded",
+            properties={"mode": req.mode or "default", "dry_run": req.dry_run},
+        )
+    return result
 
 
 @router.get("/strategies/signal")
