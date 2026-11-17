@@ -120,7 +120,10 @@ misses. Environment, not this PR.)
 **PASS 10 FAIL 5** (cap 35 < plan 42.3; the near-cap heads-up; VTI and SMH legs past their bands; an off-basket idea
 card); this branch **PASS 12 FAIL 0** before the first rules check (`-AllowStaleCap`: cash card = QQQ 1,291) and
 **PASS 12 FAIL 0 SKIP 1** after it (cap 42.3). Production before the deploy (`877d39f`, 2026-11-17): **PASS 10 FAIL 5**,
-the same five. Production after: PROD_RESULT
+the same five. Production after (`381d1d3`, 2026-11-17): **PASS 13 FAIL 0 SKIP 0**, strict (no `-AllowStaleCap`): the QQQ cap
+already read 42.3 ("Trend-Filtered Leveraged Nasdaq + your core both hold QQQ: capped at 42.3% (35% sleeve + 7.3% core)"),
+and the cash card reads "1,292 into QQQ -- QQQ is 35.0% of the book vs your 42.3% plan (35.0% sleeve + 7.3% core)".
+CVX is gone; its slot was taken by C42 (the geo card, VXUS 459.53 from cash), which is older behaviour, not this PR.
 
 ## PR 166 -- V4: each plan row lists the holdings that make it up (D149)
 
