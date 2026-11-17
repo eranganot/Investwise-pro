@@ -1540,9 +1540,18 @@ async def build_recommendations(session: AsyncSession, user: User,
     # skipping them.
     from app.services.intake_service import is_cash_position as _is_cash
     _exp = {t: w for t, w in (snap.get("exposure_ticker") or {}).items() if not _is_cash(t)}
-    if _exp and max(_exp.values()) > cap and nav:
-        tk = max(_exp, key=_exp.get)
+    # PR 167 (D150): each name against ITS limit -- the plan-wide cap, or the
+    # plan's own weight for that name when the plan asks for more (a sleeve
+    # parked in a ticker the core also holds). Measured against the bare cap,
+    # this card sold 1,299.59 of QQQ twelve seconds after the core realign had
+    # bought it (ledger 2026-11-16 18:27:47 / 18:27:59; plan 42.3%, cap 35%).
+    from app.services.funding_service import planned_weight as _planned_w
+    _lim = {t: max(cap, _planned_w(_name_caps, t)) for t in _exp}
+    _over_lim = {t: w - _lim[t] for t, w in _exp.items() if w > _lim[t]}
+    if _over_lim and nav:
+        tk = max(_over_lim, key=_over_lim.get)
         w = _exp[tk]
+        _cap_all, cap = cap, _lim[tk]          # this card's limit; restored below
         price = next((float(r.current_price or 0) for r in rows if r.ticker == tk), 0)
         trim = (w - cap) * nav
         # PR 102: the share of the POSITION that goes, not ILS over a native
@@ -1575,6 +1584,7 @@ async def build_recommendations(session: AsyncSession, user: User,
                   substituted=f"({w:.4f} - {cap:.4f}) x {nav:,.0f}", result=f"₪{trim:,.0f}"),
                 f("Shares to sell", "shares = trim / price",
                   substituted=f"{trim:,.0f} / {price:,.2f}", result=str(shares))])
+        cap = _cap_all
 
     # 2) Tax-loss harvesting
     tx = tax_opportunities(pdicts)
@@ -2285,6 +2295,13 @@ async def build_recommendations(session: AsyncSession, user: User,
                             objective, _pin_out)
     _tm.mark("buy_ideas")
 
+    # PR 167: what the CORE basket wants of each ticker (empty without a basket),
+    # so the cash card sizes every name against the plan the Plan tab shows.
+    try:
+        from app.services import sleeve_service as _sv_core
+        _core_tk = await _sv_core.core_ticker_targets(session, user, btgt)
+    except Exception:  # noqa: BLE001 -- no core claim known: the card sizes as it did
+        _core_tk = {}
     if simulate_cash_ils is not None:
         _sim_snap = {**snap, "nav": (snap.get("nav") or 0.0) + float(simulate_cash_ils) - _cash_ils,
                      "_real_nav": snap.get("nav") or 0.0}
@@ -2293,7 +2310,8 @@ async def build_recommendations(session: AsyncSession, user: User,
                                    _sleeve_share, _holds_active,
                                    round(sum((btgt.get("held_back") or {}).values())
                                          * (_sim_snap.get("nav") or 0.0), 2),
-                                   sleeve_slots=btgt.get("managed_sleeve_targets"))
+                                   sleeve_slots=btgt.get("managed_sleeve_targets"),
+                                   core_targets=_core_tk)
         return {"simulated": True, "simulate_cash_ils": float(simulate_cash_ils),
                 "cash_now_ils": round(_cash_ils, 2),
                 "note": ("Read-only preview: the cash card as if you held this much cash "
@@ -2317,7 +2335,8 @@ async def build_recommendations(session: AsyncSession, user: User,
                                btgt["target"], _name_caps,
                                _sleeve_share, _holds_active, _reserve, _ideas,
                                core_id=btgt.get("core_strategy_id"),
-                               sleeve_slots=btgt.get("managed_sleeve_targets"))
+                               sleeve_slots=btgt.get("managed_sleeve_targets"),
+                               core_targets=_core_tk)
     recs += await _offload(_commodity_recs, rows, snap, objective, plan, cap, _cash_ils,
                            _sleeve_names, _ledger, btgt["target"], _name_caps, btgt.get("core_strategy_id"))
 
@@ -2338,7 +2357,8 @@ async def build_recommendations(session: AsyncSession, user: User,
     _named |= {str(r.get("meta", {}).get("ticker") or "") for r in recs}
     recs += await _offload(_buy_idea_recs, _ideas, rows, snap, plan, objective, cap,
                            _cash_ils, _sleeve_names, _ledger, _named, btgt["target"],
-                           _name_caps)
+                           _name_caps, core_id=btgt.get("core_strategy_id"),
+                           core_pct=btgt.get("core_pct"))
     try:
         async with _agent_tx(session):
             from app.services.performance_service import performance as _perf_fn
@@ -2927,18 +2947,25 @@ async def build_recommendations(session: AsyncSession, user: User,
                                    _TRule.rule_type == "max_weight",
                                    _TRule.active.is_(True)))).all()
             _stale = []
+            # PR 167: a sleeve ticker the core basket also holds is planned at
+            # sleeve + core share, and that is what its cap may not sit under.
+            _core_share = await _sv.core_ticker_targets(session, user, btgt)
             for _c in _caps:
                 _want = (_targets or {}).get((_c.ticker or "").upper())
                 if _want is None:
                     continue
+                _want += float(_core_share.get((_c.ticker or "").upper()) or 0.0)
                 _want_pct = _want * 100.0
                 if float(_c.level or 0) < _want_pct - 0.05:
                     _stale.append({"ticker": (_c.ticker or "").upper(),
                                    "level": round(float(_c.level or 0), 1),
-                                   "sleeve_target_pct": round(_want_pct, 1)})
+                                   "sleeve_target_pct": round(_want_pct, 1),
+                                   "with_core": bool(_core_share.get((_c.ticker or "").upper()))})
             if _stale:
                 _names = ", ".join(f"{x['ticker']} capped at {x['level']:g}% against a "
-                                   f"{x['sleeve_target_pct']:g}% sleeve" for x in _stale)
+                                   f"{x['sleeve_target_pct']:g}% "
+                                   + ("plan (sleeve + core)" if x["with_core"] else "sleeve")
+                                   for x in _stale)
                 recs.append({
                     "id": _rid("cap_below_sleeve", *sorted(x["ticker"] for x in _stale)),
                     "dimension": "strategy", "severity": "HIGH",
@@ -3395,6 +3422,9 @@ async def build_recommendations(session: AsyncSession, user: User,
     from app.services import headsup as _hu
     recs, headsups, _dropped = _hu.split(recs, nav=float(snap.get("nav") or 0.0),
                                         actionable=_is_actionable)
+    # PR 167: a "take them together" note about a card this split just dropped.
+    from app.services.contradictions import drop_notes_about as _drop_notes
+    _drop_notes(recs, contradictions, [d.get("id") for d in _dropped])
     try:
         _hu_gone = await _hu.dismissed(session, user)
     except Exception:  # noqa: BLE001 -- a store hiccup shows them, never hides cards
@@ -4713,18 +4743,37 @@ def _momentum_recs(rows, snap, sleeve_floor: dict | None = None) -> list[dict]:
 
 
 def _redeploy_name_targets(held_by_class: dict, weights: dict, target: dict | None,
-                           sleeve_targets: dict | None) -> dict[str, float]:
+                           sleeve_targets: dict | None,
+                           core_targets: dict | None = None) -> dict[str, float]:
     """{ticker: target share of the book} for every held name, or {} without sleeves.
 
-    A sleeve name's target is the sleeve's. The core names in a class share what
-    the class target has left once its sleeve names are subtracted, split in
-    proportion to their current value -- the core's own composition is the
-    user's, and this card is not the place to change it.
+    WITH A CORE BASKET (``core_targets``, PR 167 / D150): a name's target is what
+    the PLAN asks for -- its sleeve share plus the core basket's share of the
+    same ticker, the number the band rules and the Plan tab already use. A held
+    name the plan does not hold has no target and gets no top-up.
+
+    Live 2026-11-16, before this: the core's whole 29.2% was split over the
+    non-sleeve names by what they happened to hold, so VTI read "11.7% vs 15.3%"
+    against a plan of 11.7%, and QQQ -- 35% sleeve + 7.3% core -- read as full at
+    35%. The card put 678 into VTI (to 15.2%, over its 14.7% band) while the
+    Nasdaq sleeve sat six points short.
+
+    WITHOUT one (an implicit core with no basket): a sleeve name's target is the
+    sleeve's, and the core names in a class share what the class target has left
+    once its sleeve names are subtracted, split in proportion to their current
+    value -- that core's composition is the user's, and this card is not the
+    place to change it.
     """
     if not sleeve_targets:
         return {}
     st = {str(k).upper(): float(v or 0.0) for k, v in sleeve_targets.items()}
+    ct = {str(k).upper(): float(v or 0.0) for k, v in (core_targets or {}).items()}
     out: dict[str, float] = {}
+    if ct:
+        for held in held_by_class.values():
+            for p in held:
+                out[p.ticker] = st.get(p.ticker.upper(), 0.0) + ct.get(p.ticker.upper(), 0.0)
+        return out
     for cls, held in held_by_class.items():
         tw = float((target or {}).get(cls) or 0.0)
         sleeve_names = [p for p in held if p.ticker.upper() in st]
@@ -5015,7 +5064,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
                         reserved_ils: float = 0.0,
                         ideas: list | None = None,
                         _inner: bool = False, core_id: str | None = None,
-                        sleeve_slots: dict | None = None) -> list[dict]:
+                        sleeve_slots: dict | None = None,
+                        core_targets: dict | None = None) -> list[dict]:
     """Surplus cash -> one sized, executable redeployment plan.
 
     PR 75 -- `holds` are tickers under a take-profit buy-back hold and
@@ -5084,7 +5134,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             # the screener's top ideas.
             under = _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils, book_mix,
                                         name_caps, sleeve_targets, holds, 0.0, None, True, core_id=core_id,
-                                        sleeve_slots=sleeve_slots)
+                                        sleeve_slots=sleeve_slots, core_targets=core_targets)
             return [_held_cash_card(holds, _reserved, cash_ils, float(_trigger or 0.0),
                                     nav=nav, mix=current_mix(rows)[0], target=book_mix or {},
                                     under_legs=((under[0].get("apply") or {}).get("legs") or [])
@@ -5126,7 +5176,9 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         if cls and cls.lower() != "cash":
             held_by_class.setdefault(cls, []).append(r)
 
-    name_tgt = _redeploy_name_targets(held_by_class, weights, target, sleeve_targets)
+    name_tgt = _redeploy_name_targets(held_by_class, weights, target, sleeve_targets,
+                                      core_targets)
+    _core_share = {str(k).upper(): float(v or 0.0) for k, v in (core_targets or {}).items()}
 
     def _value(tk: str) -> float:
         return weights.get(tk, 0.0) * nav
@@ -5138,6 +5190,11 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         t = name_tgt.get(tk, 0.0)
         w = weights.get(tk, 0.0)
         if tk.upper() in {k.upper() for k in (sleeve_targets or {})}:
+            _c = _core_share.get(tk.upper(), 0.0)
+            if _c > 0:
+                # PR 167: one holding, two parts of the plan -- say both.
+                return (f"{tk} is {w:.1%} of the book vs your {t:.1%} plan "
+                        f"({t - _c:.1%} sleeve + {_c:.1%} core)")
             return f"the {tk} sleeve is {w:.1%} of the book vs your {t:.1%} target"
         return f"{tk} holds your core {cls}: {w:.1%} vs {t:.1%} of the book"
 
@@ -5189,6 +5246,7 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
     gaps.sort(key=lambda g: g[1], reverse=True)
 
     total_gap = sum(g[1] for g in gaps) or 1.0
+    _capped: list[tuple] = []
     legs: list[dict] = []
     unplaced: list[dict] = []
     remaining = spendable
@@ -5206,10 +5264,15 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             for tk, g in sorted(short.items(), key=lambda kv: -kv[1]):
                 if remaining < _fund.MIN_TRADE_ILS:
                     break
-                room = _fund.name_room_ils(
-                    nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps))
+                _cap_tk = _fund.effective_name_cap(cap, tk, name_caps)
+                room = _fund.name_room_ils(nav, weights.get(tk, 0.0), _cap_tk)
                 amt = round(min(budget * g / tot, g, room, remaining), 2)
                 if amt < _fund.MIN_TRADE_ILS:
+                    # PR 167: NEVER DROPPED IN SILENCE. A name a full trade short
+                    # of its plan that a limit keeps out is the reason the money
+                    # went elsewhere, and the card has to say so.
+                    if g >= _fund.MIN_TRADE_ILS and room < _fund.MIN_TRADE_ILS:
+                        _capped.append((tk, g, _cap_tk))
                     continue
                 legs.append({"ticker": tk, "amount_ils": amt, "asset_class": cls,
                              "reason": _name_reason(tk, cls)})
@@ -5342,7 +5405,8 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
             _research = _rr.research(
                 legs, unplaced, sleeve_tickers=_sleeve_set,
                 held_tickers={t.upper() for t in weights},
-                scores=_core_commodities_only(_rr.live_scores(objective, _ccy), core_id),
+                scores=_core_basket_only(
+                    _core_commodities_only(_rr.live_scores(objective, _ccy), core_id), core_id),
                 trend=_rr.live_trend,
                 room_for=lambda tk: _fund.name_room_ils(
                     nav, weights.get(tk, 0.0), _fund.effective_name_cap(cap, tk, name_caps)),
@@ -5402,6 +5466,10 @@ def _redeploy_cash_recs(rows, snap, plan, objective, cap, cash_ils,
         "how": ([f"Buy {_ils(x['amount_ils'])} of {x['ticker']} — {x['reason']}" for x in legs]
                 + [f"⚠ {_ils(u['amount_ils'])} stays in cash — {u['reason']}"
                    for u in unplaced if u["amount_ils"] >= 1]
+                + [f"⚠ {tk} is {_ils(g)} short of its plan, but it is at its "
+                   f"{c * 100:.1f}".rstrip("0").rstrip(".") + "% limit -- none of this goes there"
+                   for tk, g, c in _capped
+                   if tk.upper() not in {x["ticker"].upper() for x in legs}]
                 + [(f"Keep {_ils(kept)} in cash"
                     + (" in total -- the amounts above plus " if _leftover else " (")
                     + (f"your {_soft} target; the hard floor is {_ils(_fund.CASH_HARD_FLOOR_ILS)}"
@@ -5566,7 +5634,8 @@ _MAX_BUY_IDEA_CARDS = 2
 def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
                    sleeve_names=None, ledger=None, already_named=None,
                    book_target: dict | None = None,
-                   name_caps: dict | None = None) -> list[dict]:
+                   name_caps: dict | None = None,
+                   core_id: str | None = None, core_pct: float | None = None) -> list[dict]:
     """Turn the screener's ranked names into fundable cards on Today.
 
     THE SCREENER HAD NO SURFACE. `buy_ideas` has been in the /recommendations
@@ -5629,8 +5698,16 @@ def _buy_idea_recs(ideas, rows, snap, plan, objective, cap=0.25, cash_ils=0.0,
             if float(getattr(r, "quantity", 0) or 0) > 0}
 
     # C30: a new name outside a basketed core is sold by the realign straight back.
+    # PR 167: THE CORE IS PASSED IN, NOT READ OFF `book_target`. The caller hands
+    # this function `btgt["target"]` -- the class mix funding needs -- which has
+    # no "core_strategy_id" key, so in production `keeps` was always None and
+    # the filter never ran: "Consider CVX" was on Today on 2026-11-16, seven
+    # days after C30 shipped. C30's own test passed a dict shaped like the whole
+    # book target, which is not what the caller sends. The `_bt` read stays as a
+    # fallback for a caller that does pass the whole thing.
     _bt = book_target or {}
-    keeps = realign_keeps(_bt.get("core_strategy_id"), _bt.get("core_pct"))
+    keeps = realign_keeps(core_id or _bt.get("core_strategy_id"),
+                          core_pct if core_pct is not None else _bt.get("core_pct"))
     for idea in ideas:
         if len(out) >= int(_setting("max_idea_cards", _MAX_BUY_IDEA_CARDS)):
             break
@@ -5778,6 +5855,20 @@ def _core_commodities_only(scores: dict, core_id: str | None) -> dict:
     if not keep:
         return scores
     return {t: v for t, v in scores.items() if v.get("screen") != "Commodities" or t.upper() in keep}
+
+
+def _core_basket_only(scores: dict, core_id: str | None) -> dict:
+    """PR 167 (C30's rule, at the site it missed): with a basketed core, the
+    cash card's research may only swap a top-up for another BASKET name.
+
+    Live 2026-11-16: the SMH top-up was swapped for XLE ("16 points above SMH")
+    -- a name the core realign sells on sight, hours after the owner accepted
+    that realign. No basket: every candidate stays, as before.
+    """
+    keep = realign_keeps(core_id)
+    if keep is None:
+        return scores
+    return {t: v for t, v in scores.items() if str(t).upper() in keep}
 
 
 def _commodity_recs(rows, snap, objective, plan=None, cap=0.25, cash_ils=0.0,

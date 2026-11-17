@@ -224,6 +224,13 @@
   must fail on HEAD. Validate the instrument before believing the number.
 - **D36 · 2026-10-07 (PR 104c.1) · `conftest.py` fails the run on any unregistered skip; caches have TTL settings tests can zero.**
 - **D37 · 2026-10-05 (PR 94) · CI cancels duplicate runs for the same SHA.**
+- **D150 · 2026-11-16 (PR 167) · A name the plan asks for may be held up to its plan weight; the single-name cap is for
+  everything else.** Owner chose "plan wins" over "the 35% cap wins" for a sleeve parked in a ticker the core also holds
+  (QQQ: 35% sleeve + 7.3% core = 42.3% under a 35% cap). The plan-wide cap is lifted to the planned weight per name; a
+  sleeve-armed cap is levelled at sleeve + core; a cap set by hand on a name is never lifted. Self-limiting: when the
+  signal moves the sleeve back to TQQQ, QQQ's plan is the core's 7.3% and the cap applies again. *Why:* the plan already
+  accepts 35% TQQQ + 7.3% QQQ when the signal is in; capping the unleveraged stand-in below the plan made the app buy
+  and sell the same shares 12 seconds apart. → PR 167
 - **D149 · 2026-11-12 (PR 166) · Each plan row shows what it holds, on tap, with at most one tag.** Held vs target as %
   of the whole book plus the amount; a tag only for "not in your plan", "shared with ...", or an off-signal leg ("instead of
   SOXL"). Off-plan names are listed under the core, which already counts them. *Why:* owner asked to see what builds each

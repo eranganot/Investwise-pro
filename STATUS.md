@@ -1,6 +1,6 @@
 # InvestWise Pro — Status
 
-_Last updated: 2026-11-12 by Claude (PR 166: each plan row lists its holdings; V4 closed). Last product PR: **166**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
+_Last updated: 2026-11-16 by Claude (PR 167: a planned name may reach its plan weight; C39 closed, C40-C41 opened). Last product PR: **167**. **Active plan:** [`docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md`](docs/plans/EXECUTION_PLAN_2026-10-23_after-review.md) (start a new session there). Sleeve plan [`docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md`](docs/plans/SLEEVE_OVERLAP_PLAN_2026-10-14.md): **complete** (PR 131-136b); follow-ups in BACKLOG P14-P19, O6, V3, C15-C17. 2026-10-22 review: PR 139-148 plan in the review doc. Gate until GitHub Actions minutes reset on 2026-11-01: full suite on local SQLite and local Postgres (Python 3.12), ruff on app and tests, and the PR's smoke against a locally served build; then the same smoke on production after deploy._
 
 **What this file is:** the changelog. Newest first, one `## PR NN — …` entry per shipped PR, covering what changed, why,
 how it was verified (tests, smoke result with SHA, QA), and what is still broken on purpose. Add an entry every time you ship.
@@ -37,6 +37,90 @@ how it was verified (tests, smoke result with SHA, QA), and what is still broken
   - Rotate the GitHub PAT and the Railway token.
 
 ---
+
+## PR 167 -- C39: a name the plan asks for may be held up to its plan weight (D150)
+
+**Report (owner, 2026-11-16).** Today: "Put 1,299 of cash back to work" into VTI / VXUS / XLE, tagged Core, while Plan >
+My mix showed Trend-Filtered Leveraged Nasdaq 29.0% / 35.0%. "Why are you telling me to fix my core if the sleeves are
+not full at targets? and obviously if I buy VTI and VXUS you will raise another card to trim them." Investigated before
+any fix; he was right on both counts.
+
+**Evidence (production `877d39f`, read-only).** `/plan/sleeves`: the Nasdaq sleeve is parked in QQQ (signal 11-06) and
+the core basket holds 25% QQQ, so `/rules` shows the QQQ band at "35.0% vs plan 42.3% +-5" (35 sleeve + 7.3 core). Two
+limits said 35: `thresholds.concentration_cap_pct` (his override) and the sleeve-armed `max_weight` on QQQ. Ledger:
+18:27:47 the core realign (`rec_f6f017`) bought 1,317.18 of QQQ; 18:27:59 `rec_449403` = `_rid("trim", "QQQ")`, the
+plan-cap card, sold 1,299.59 of it -- exactly the cash card's spendable. The cash card (`rec_d5eb9d`): QQQ had 7 ILS of
+room, so VTI 678.15 ("11.7% vs 15.3% of the book"; plan 11.7%), VXUS 360.78 ("6.2% vs 8.2%"; plan 5.8%, already over),
+and SMH 253.22 swapped by research for XLE. VTI after: 15.2%, band trims above 14.7% -- the VTI band had sold 838.54 at
+17:31 the same day. Also on Today: "Consider CVX -- 463", a name outside the basket.
+
+**Reproduced.** Tonight's book through the deployed functions (`tests/test_a_sleeve_cap_follows_the_plan.py` on
+`origin/main`): cash card VTI 678.88 / VXUS 361.17 / SMH 253.49, "Trim QQQ" present as `rec_449403`, cap armed at 35.0,
+"Consider CVX -- 464". By hand from `_redeploy_name_targets`: 678.15 / 360.78 / 253.22, the live legs to the agora.
+
+**Root cause (four, one family: a part of the app that does not read the plan per name).**
+1. *The limit.* `effective_name_cap` = min(plan-wide cap, own cap), and `_arm_sleeve_caps` levelled the sleeve's cap at
+   the SLEEVE's size. PR 165 split a shared ticker's HOLDING between sleeve and core; neither limit was told.
+2. *The cash card's targets.* `_redeploy_name_targets` gave a sleeve name the sleeve's target (QQQ 35%, so "full") and
+   split the core's whole class remainder over the non-sleeve names by CURRENT value -- never the basket.
+3. *Research.* `redeploy_research` could swap a core top-up for any screener name; C30's basket filter was applied to
+   the empty-class pick only.
+4. *The idea cards.* C30's filter in `_buy_idea_recs` read `core_strategy_id` off `book_target` -- but the caller passes
+   `btgt["target"]`, the class mix, which has no such key. The filter has never run in production. C30's test passed a
+   dict shaped like the whole book target.
+
+**Ruled out.** (1) A stop or buy-back hold on the sleeve: `on_stop_hold: []`, `held_back: {}`. (2) Cash kept back for an
+unfunded sleeve (PR 155): `sleeve_slot_kept_ils: 0`. (3) A wrong class target: Equities 57.2% vs 64.2% is right, and
+`/mix` agrees with Today. (4) The sleeve's cap rule as the seller at 18:27: the id is the plan-cap card's.
+
+**Why silent.** Every card was true on its own terms, and each measured one name against a different number (35 / 42.3
+/ 15.3 / 11.7). The cash card dropped the capped QQQ leg without a line (7 ILS is under a trade). Its "Another card
+sells Equities" note pointed at a tax card `headsup.split` had already dropped. C30's test and its caller disagreed
+about a dict's shape, and nothing ran the caller.
+
+**Decision (owner, 2026-11-16, D150).** "Plan wins": a name the plan asks for may be held up to its plan weight; the
+35% cap keeps applying to everything else; a cap set by hand on a name is not touched.
+
+**What.**
+- `funding_service.NameCaps` (a dict of per-name caps carrying `plan`, ticker -> planned share) and
+  `effective_name_cap`: the plan-wide cap is never below the planned weight; an own cap still binds. All 9 call sites
+  already pass the caps; `rules_service.name_caps` builds it. No signature changed.
+- `_arm_sleeve_caps` levels a cap at sleeve + core share and says so in the note. `relevel_sleeve_caps_to_plan` RAISES
+  a stale sleeve-armed cap from the rules check (`evaluate_user`; never from a read; never touches `triggered`, never
+  adopts or retires). `name_caps` reads a stale sleeve cap at the plan weight meanwhile. The `cap_below_sleeve` card
+  compares with sleeve + core.
+- Card 1 ("Trim X") measures each name against max(cap, its planned weight).
+- `_redeploy_name_targets(core_targets=)`: with a core basket a name's target is sleeve share + basket share; a held
+  name outside the plan gets none. Without a basket: unchanged. The leg's reason names both parts.
+- `_core_basket_only`: the cash card's research may only swap to a basket name.
+- A name a full trade short that a limit keeps out gets a line on the card.
+- `_buy_idea_recs(core_id=, core_pct=)`, passed by the caller.
+- `contradictions.drop_notes_about`: a take-them-together note about a card dropped from Today comes off.
+
+**Blast radius.** Every reader of `effective_name_cap` (funding sizing, trim ranking, the cash card, research room) and
+of `name_caps`. A book with no sleeve + core overlap and no planned name above the cap computes exactly what it did
+(`NameCaps.plan` only ever raises). Not changed: class targets, the band rules, hand-set caps, `near_cap` (it reads the
+rule's stored level, which the rules check now raises).
+
+**Known remaining.** C40: a war-room buy can still open a name outside the basket (not live today). C41: when a
+HAND-SET cap keeps the short name out, the cash card's plan-weight pass spreads the money over the other planned names
+without looking at their bands.
+
+**Verified.** `tests/test_a_planned_name_may_reach_its_plan_weight.py` (14: the limit; the live card reproduced without
+the plan; QQQ-only with it; every name inside its band after the accept; research; the dropped-note; an AST walk over
+every `effective_name_cap` call) and `tests/test_a_sleeve_cap_follows_the_plan.py` (11, on a database: cap armed at
+42.3; the rules check raises a stale one and nothing else; no "Trim QQQ" between cap and plan; an off-plan name still
+trimmed at 35; no idea card off the basket; and tonight's book accepted from each of the three cards first -- it settles
+in <= 2 accepts with nothing sold). On `origin/main`: 10 of those 11 fail.
+Gate: full suite on local Postgres 16, Python 3.12 (as CI): **3099 passed**; ruff on `app` and `tests` clean. (On Python
+3.13 `test_the_two_cards_are_gone_from_the_source` fails on `main` too: 3.13 dedents `__doc__`, so the test's replace
+misses. Environment, not this PR.)
+
+**Smoke.** `scripts/smoke/smoke-pr167-planned-name-ceiling.ps1`. Local builds seeded with tonight's book: `877d39f`
+**PASS 10 FAIL 5** (cap 35 < plan 42.3; the near-cap heads-up; VTI and SMH legs past their bands; an off-basket idea
+card); this branch **PASS 12 FAIL 0** before the first rules check (`-AllowStaleCap`: cash card = QQQ 1,291) and
+**PASS 12 FAIL 0 SKIP 1** after it (cap 42.3). Production before the deploy (`877d39f`, 2026-11-17): **PASS 10 FAIL 5**,
+the same five. Production after: PROD_RESULT
 
 ## PR 166 -- V4: each plan row lists the holdings that make it up (D149)
 

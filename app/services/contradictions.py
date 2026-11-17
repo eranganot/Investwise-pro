@@ -53,6 +53,37 @@ def _note(rec: dict, text: str) -> None:
         rec["notes"].append(text)
 
 
+def drop_notes_about(recs: list[dict], contradictions: list[dict], gone_ids) -> None:
+    """PR 167: a "take them together" note may only point at a card on the screen.
+
+    Live 2026-11-16: the cash card carried "Another card sells Equities. Take
+    them together or neither." -- the other card was a tax harvest saving under
+    the owner's 50 ILS floor, dropped from Today after this pass had run. The
+    note asked him to weigh a card he could not see. For every
+    `buys_and_sells_one_class` finding whose partner is in ``gone_ids``, the
+    note comes off the card that stayed and the finding says why. Mutates both.
+    """
+    gone = {str(i) for i in (gone_ids or []) if i}
+    if not gone:
+        return
+    by_id = {r.get("id"): r for r in recs}
+    for c in contradictions or []:
+        if c.get("kind") != "buys_and_sells_one_class":
+            continue
+        pair = (c.get("card"), c.get("other"))
+        if not (set(map(str, pair)) & gone):
+            continue
+        c["partner_not_shown"] = True
+        cls = c.get("asset_class")
+        for rid in pair:
+            notes = (by_id.get(rid) or {}).get("notes")
+            if not notes:
+                continue
+            notes[:] = [n for n in notes
+                        if not (n.startswith(f"Another card sells {cls}.")
+                                or n.startswith(f"Another card buys {cls}."))]
+
+
 def _direction_of(kind: str) -> str | None:
     if kind in _SELLS:
         return "sell"
