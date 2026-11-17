@@ -734,6 +734,11 @@ async def evaluate_user(session: AsyncSession, user: User, *, notify: bool = Fal
     # PR 109: moved here from the Today build, so a read never writes a rule.
     await heal_dismissed_rules(session, user)
     await auto_rearm(session, user, idx, _nav)          # C18
+    try:    # PR 167: a sleeve cap under its own plan is raised before it can fire
+        from app.services.strategy_service import relevel_sleeve_caps_to_plan
+        await relevel_sleeve_caps_to_plan(session, user)
+    except Exception:  # noqa: BLE001 -- a cap left stale is a card, never a failed check
+        logger.warning("sleeve caps could not be re-levelled to the plan", exc_info=True)
     rules = (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.active.is_(True)))).all()
@@ -1444,7 +1449,7 @@ async def _conflicting_rule(session: AsyncSession, user: User, ticker: str,
     return (await session.scalars(q)).first()
 
 
-async def name_caps(session: AsyncSession, user: User) -> dict[str, float]:
+async def name_caps(session: AsyncSession, user: User) -> "dict[str, float]":
     """Ticker -> its own ``max_weight`` cap, as a FRACTION of NAV.
 
     THE CAP THAT ALERTED AND NEVER CONSTRAINED. A ``max_weight`` rule has always
@@ -1476,7 +1481,23 @@ async def name_caps(session: AsyncSession, user: User) -> dict[str, float]:
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.rule_type == "max_weight",
                                   TradingRule.active.is_(True)))).all()
-    out: dict[str, float] = {}
+    # PR 167 (D150): the caps carry the plan's weight per ticker, so the one
+    # place that turns a cap into room (`funding_service.effective_name_cap`)
+    # never sets the plan-wide cap below what the plan asks for. And a cap the
+    # SLEEVE armed is read at the plan weight when it is stale: it was levelled
+    # at the sleeve's size alone, so a sleeve parked in a ticker the core also
+    # holds (QQQ: 35% sleeve + 7.3% core) was capped under its own plan. The
+    # stored level is raised by the rules check (`relevel_sleeve_caps_to_plan`),
+    # never by this read. A hand-set cap is returned exactly as set.
+    from app.services.funding_service import NameCaps
+    try:
+        from app.services.recommendations import plan_ticker_targets
+        plan = {str(tk).upper(): float(w or 0.0)
+                for tk, w in (await plan_ticker_targets(session, user)).items()}
+    except Exception:  # noqa: BLE001 -- no plan known: caps behave as they always did
+        logger.warning("plan targets unavailable; caps read without the plan", exc_info=True)
+        plan = {}
+    out = NameCaps({}, plan)
     for r in rows:
         tk = (r.ticker or "").upper()
         try:
@@ -1485,6 +1506,8 @@ async def name_caps(session: AsyncSession, user: User) -> dict[str, float]:
             continue
         if not tk or lvl <= 0:
             continue
+        if r.strategy_id == "sleeve":      # strategy_service.SLEEVE_OWNED
+            lvl = max(lvl, plan.get(tk, 0.0))
         # TWO CAPS ON ONE TICKER: the tighter one wins. `_ONE_PER_TICKER`
         # already makes this unreachable through the normal paths, and a
         # constraint that silently picks the looser of two limits is the wrong

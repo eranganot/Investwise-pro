@@ -17,6 +17,8 @@ say so.
 """
 from __future__ import annotations
 
+import logging
+
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +94,7 @@ SLEEVE_OWNED = "sleeve"
 # `trading_rules.note` is VARCHAR(160). SQLite does not enforce that and
 # Postgres does, so an over-long note is green locally and a 500 in production.
 # Mirrored from the model rather than guessed, so the two cannot drift.
+logger = logging.getLogger(__name__)
 MAX_RULE_NOTE = 160
 
 
@@ -111,7 +114,8 @@ def _nav(rows) -> float:
     return _snapshot(rows)["nav"] if rows else 0.0
 
 
-def _cap_note(ticker: str, level: float, sleeve_ids: list[str]) -> str:
+def _cap_note(ticker: str, level: float, sleeve_ids: list[str],
+              core_pct: float = 0.0) -> str:
     """The explanation stored on a sleeve-armed cap. **Must fit MAX_RULE_NOTE.**
 
     ``trading_rules.note`` is ``VARCHAR(160)``. SQLite ignores that; Postgres
@@ -140,6 +144,15 @@ def _cap_note(ticker: str, level: float, sleeve_ids: list[str]) -> str:
             return long_form
         return f"{len(names)} sleeves {tail}"[:MAX_RULE_NOTE]
     who = names[0] if names else "Your sleeve"
+    if core_pct and core_pct > 0:
+        # PR 167: the cap is the sleeve PLUS the core's share of the same ticker.
+        # Say the sum, or "35% sleeve, capped at 42.3%" cannot be reconstructed.
+        short = (f"{who} + your core both hold {ticker}: capped at {level:g}% "
+                 f"({level - core_pct:g}% sleeve + {core_pct:g}% core).")
+        if len(short) <= MAX_RULE_NOTE:
+            return short
+        return (f"Sleeve + core both hold {ticker}: capped at {level:g}% "
+                f"({level - core_pct:g}% + {core_pct:g}%).")[:MAX_RULE_NOTE]
     return (f"{who}: the sleeve you chose. Caps {ticker} at {level:g}% of the book "
             f"-- it does not make the rebalancer aim for it.")[:MAX_RULE_NOTE]
 
@@ -206,16 +219,22 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
     existing = {(r.ticker or "").upper(): r for r in (await session.scalars(
         select(TradingRule).where(TradingRule.subject == user.email,
                                   TradingRule.rule_type == "max_weight"))).all()}
+    # PR 167 (D150): a ticker the CORE basket also holds is capped at the plan's
+    # whole weight for it -- sleeve + core share (PR 165 split the HOLDING that
+    # way; the cap was never told). Live 2026-11-16: QQQ capped at 35.0 with a
+    # plan of 42.3; the realign bought to plan and the cap sold it back.
+    core_share = await sv.core_ticker_targets(session, user)
     out: list[dict] = []
     for tk, weight in sorted(targets.items()):
         tk = tk.upper()
-        level = round(float(weight) * 100.0, 1)
+        _core_pct = round(float(core_share.get(tk) or 0.0) * 100.0, 1)
+        level = round(float(weight) * 100.0 + _core_pct, 1)
         if level <= 0:
             # A 0% cap is breached by any holding at all, so it would fire the
             # instant it is armed. "I want none of this" is a decision to act on,
             # not a rule to spring on someone.
             continue
-        note = _cap_note(tk, level, sorted(contributors.get(tk, [])))
+        note = _cap_note(tk, level, sorted(contributors.get(tk, [])), _core_pct)
         row = existing.get(tk)
         if row is not None:
             was = float(row.level)
@@ -246,6 +265,59 @@ async def _arm_sleeve_caps(session: AsyncSession, user: User) -> list[dict]:
         out.append({"ticker": tk, "level": float(row.level),
                     "previous_level": float(row.level), "action": "retired"})
     await session.commit()
+    return out
+
+
+async def relevel_sleeve_caps_to_plan(session: AsyncSession, user: User) -> list[dict]:
+    """PR 167 (D150): RAISE a sleeve-armed cap that sits under the plan's weight.
+
+    Only raises, only caps this system armed (``SLEEVE_OWNED``), only when the
+    plan asks for more of the ticker than the cap allows by a visible margin.
+    It does not touch ``triggered``, does not adopt a hand-set cap and does not
+    retire anything -- `_arm_sleeve_caps` does those on an apply, and running it
+    from a check would reset a latched rule every cycle.
+
+    Called from the rules check (`rules_service.evaluate_user`), which already
+    writes rules; never from a read. It exists because the plan moves without an
+    apply: the day a sleeve's signal parks it in a ticker the core basket holds,
+    the plan for that ticker becomes sleeve + core while the cap stays at the
+    sleeve. Does not commit; the caller's commit carries it.
+    """
+    from sqlalchemy import select
+
+    from app.models.tables import TradingRule
+    from app.services import sleeve_service as sv
+
+    rows = (await session.scalars(
+        select(TradingRule).where(TradingRule.subject == user.email,
+                                  TradingRule.rule_type == "max_weight",
+                                  TradingRule.active.is_(True),
+                                  TradingRule.strategy_id == SLEEVE_OWNED))).all()
+    if not rows:
+        return []
+    sleeves = await sv.all_sleeve_targets(session, user)
+    core_share = await sv.core_ticker_targets(session, user)
+    _live = await sv.live_sleeve_targets(session, user)
+    contributors: dict[str, list[str]] = {}
+    for s in await sv.list_sleeves(session, user):
+        for _tk in (sleeve_targets(s.strategy_id, s.sleeve_pct,
+                                   live=sv._live_for(_live, s.strategy_id)) or {}):
+            contributors.setdefault(_tk.upper(), []).append(s.strategy_id)
+    out: list[dict] = []
+    for row in rows:
+        tk = (row.ticker or "").upper()
+        sleeve_w = float(sleeves.get(tk) or 0.0)
+        if sleeve_w <= 0:
+            continue                    # no sleeve wants it now: not this function's to move
+        _core_pct = round(float(core_share.get(tk) or 0.0) * 100.0, 1)
+        level = round(sleeve_w * 100.0 + _core_pct, 1)
+        was = float(row.level or 0.0)
+        if was >= level - 0.05:
+            continue
+        row.level = float(level)
+        row.note = _cap_note(tk, level, sorted(contributors.get(tk, [])), _core_pct)
+        out.append({"ticker": tk, "level": level, "previous_level": was, "action": "relevelled"})
+        logger.info("sleeve cap on %s raised %.1f -> %.1f (plan = sleeve + core)", tk, was, level)
     return out
 
 

@@ -224,7 +224,7 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
 
 | # | Card (id prefix) | Fires when | Accept (`apply.kind`) |
 |---|---|---|---|
-| 1 | `trim`: Trim X | A single name is over the concentration cap | `trim`: sell the excess to cash |
+| 1 | `trim`: Trim X | A single name is over its limit: the concentration cap, or its own plan weight when the plan asks for more (D150) | `trim`: sell the excess to cash |
 | 2 | `tax`: Harvest a tax loss | A loser outside the sleeves/core; the saving is measured only on what it sells | `sell_losers` |
 | 3 | `rebal_merged`: Buy/Sell <class> | `AllocationEngine` drift vs the book target (Cash skipped) | `rebalance_to_objective`: a whole-book rebalance as real trades, tax quoted |
 | 3a | `corebasket`: Bring your core back | Core basket off by > 5 pts | `core_to_basket` (prices the buys first; a sleeve trim comes only from sleeves over their size, from their own holdings, never a basket ticker: C15, D119; while a buyable sleeve is unfunded the basket is sized to what the core holds and nothing is trimmed to cash: D135) |
@@ -250,7 +250,7 @@ Each producer is wrapped in try/except, and a failure is added to `degraded`. Ri
 | 22 | `rule_<id>` | A rule latched `triggered` | per its `execution_plan` |
 | 23 | Advanced-rule cards | Band breach, buy-back level, drawdown ≥ guard, trend break, retune, one-time caps→bands | `buy_funded`, `redeploy_cash`, `trim`, `create_rules`, `edit_rule`, `caps_to_bands` |
 | 24 | `stratsig_*` + discipline | A sleeve's rule flipped | `set_plan` / `create_rules` |
-| 25 | `sleeve_coldstart`, `sleeve_drift`, `cap_below_sleeve` | Sleeve ticker ±5 pts off (skipped under a hold); a cap below the sleeve target | `fund_sleeve` / `fund_plan` / `trim` / `relevel_sleeve_caps` |
+| 25 | `sleeve_coldstart`, `sleeve_drift`, `cap_below_sleeve` | Sleeve ticker ±5 pts off (skipped under a hold); a cap below the ticker's plan weight (sleeve + core share, D150) | `fund_sleeve` / `fund_plan` / `trim` / `relevel_sleeve_caps` |
 | 26 | `rules_suggested` | Protective rules suggested for holdings | `create_rules` |
 
 ### 4.3 Post-processing
@@ -301,7 +301,8 @@ Non-mutating kinds return `advisory: true` ("Marked as done: nothing was bought 
   6. With `name_targets` / `name_floors` (band cards only, PR 164): names over their own plan weight -- an off-plan
      name counts as fully over -- sell first, and no name is sold below its floor (bottom of its band, else its target).
 - **`propose_funded_buy`:**
-  1. Size = min(class gap, room under the tighter of plan cap and per-name rule).
+  1. Size = min(class gap, room under the tighter of plan cap and per-name rule). The plan cap is never below the
+     name's planned weight (sleeves + core basket; `NameCaps.plan`, D150); a hand-set per-name rule still binds.
   2. Refuse if the class is at/over target unless a swap is allowed.
   3. Fund against the shared ledger.
   4. **Simulate the post-trade class mix:**

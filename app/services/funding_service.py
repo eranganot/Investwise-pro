@@ -185,15 +185,49 @@ def class_gap_ils(nav: float, mix: dict, cls: str, class_target: float) -> float
     return round(float(nav) * gap, 2)
 
 
+class NameCaps(dict):
+    """Ticker -> its own ``max_weight`` cap, CARRYING the plan's weight per ticker.
+
+    PR 167 (D150). A dict, so every consumer that reads ``name_caps.get(tk)``
+    works unchanged; ``plan`` is {TICKER: planned share of the book} (sleeves +
+    core basket, `recommendations.plan_ticker_targets`). The two travel together
+    because a limit that does not know what the plan asks for ends up fighting
+    it: 2026-11-16 the plan wanted 42.3% of QQQ (35% sleeve + 7.3% core) under a
+    35% single-name cap, the realign bought QQQ and the cap card sold it 12
+    seconds later. A plain dict (a test, an old caller) has no plan: nothing is
+    lifted, exactly the behaviour before this class existed.
+    """
+
+    def __init__(self, caps=None, plan=None):
+        super().__init__(caps or {})
+        self.plan = {str(k).upper(): float(v or 0.0) for k, v in (plan or {}).items()}
+
+
+def planned_weight(name_caps, ticker: str) -> float:
+    """What the plan asks for of ``ticker`` (fraction of the book), 0 when unknown."""
+    plan = getattr(name_caps, "plan", None) or {}
+    return float(plan.get((ticker or "").upper()) or 0.0)
+
+
 def effective_name_cap(cap: float, ticker: str, name_caps: dict | None = None) -> float:
-    """The tighter of the plan-wide cap and this ticker's own ``max_weight`` rule.
+    """The tighter of the plan-wide cap and this ticker's own ``max_weight`` rule
+    -- and the plan-wide cap is never below what the plan itself asks for.
 
     The tighter one, always. A hand-set cap is a limit the user chose for that
     position; the plan-wide one is a limit the objective implies for every
     position. Neither may be relaxed by the other, so the binding constraint is
     the minimum -- and a book with no rule on a ticker behaves exactly as before.
+
+    PR 167 (D150, owner 2026-11-16: "plan wins"). The PLAN-WIDE cap is a default
+    for names nobody chose a size for. A name the plan asks for at more than
+    that (a sleeve parked in a ticker the core also holds) may be held up to its
+    planned weight: the plan-wide number is lifted to it, here, once, for every
+    caller. A ticker's OWN cap is not lifted -- that one the user set for the
+    name (a sleeve-armed cap is levelled at the plan weight where it is armed
+    and read; see `rules_service.name_caps`).
     """
     base = float(cap) if cap is not None else 1.0
+    base = max(base, planned_weight(name_caps, ticker))
     own = (name_caps or {}).get((ticker or "").upper())
     return min(base, float(own)) if own is not None else base
 
